@@ -3262,10 +3262,10 @@ export class AgentRuntime implements IAgentRuntime {
 				serverId,
 				messageServerId,
 				worldId,
-				metadata: {
-					...(metadata ?? {}),
-					...(serverId === undefined ? {} : { serverId }),
-				},
+				metadata:
+					serverId === undefined
+						? metadata
+						: { ...(metadata ?? {}), serverId },
 			},
 		]);
 		// The existence probe above may have memoized null/stale for this id.
@@ -4795,10 +4795,10 @@ export class AgentRuntime implements IAgentRuntime {
 				serverId,
 				messageServerId,
 				worldId,
-				metadata: {
-					...(metadata ?? {}),
-					...(serverId === undefined ? {} : { serverId }),
-				},
+				metadata:
+					serverId === undefined
+						? metadata
+						: { ...(metadata ?? {}), serverId },
 			},
 		]);
 		if (!res.length) throw new Error("Failed to create room");

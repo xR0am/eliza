@@ -5264,7 +5264,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async updateRoom(room: Room): Promise<void> {
     return this.withDatabase(async () => {
-      const metadata = room.metadata ?? {};
+      const metadata =
+        room.serverId === undefined
+          ? room.metadata
+          : { ...(room.metadata ?? {}), serverId: room.serverId };
       assertJsonbStorable(metadata);
       await this.db
         .update(roomTable)
@@ -5284,10 +5287,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         ...room,
         agentId: this.agentId,
         id: room.id || v4(), // ensure each room has a unique ID
-        metadata: {
-          ...(room.metadata ?? {}),
-          ...(room.serverId === undefined ? {} : { serverId: room.serverId }),
-        },
+        metadata:
+          room.serverId === undefined
+            ? room.metadata
+            : { ...(room.metadata ?? {}), serverId: room.serverId },
       }));
       for (const room of roomsWithIds) assertJsonbStorable(room.metadata);
 
