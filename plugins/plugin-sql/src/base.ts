@@ -5201,6 +5201,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           channelId: roomTable.channelId,
           agentId: roomTable.agentId,
           messageServerId: roomTable.messageServerId,
+          serverId: roomTable.serverId,
           worldId: roomTable.worldId,
           type: roomTable.type,
           source: roomTable.source,
@@ -5217,9 +5218,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         agentId: room.agentId as UUID,
         messageServerId: room.messageServerId as UUID,
         serverId:
-          typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
+          room.serverId ??
+          (typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
             ? ((room.metadata as Metadata).serverId as string)
-            : (room.messageServerId as UUID),
+            : (room.messageServerId as UUID)),
         worldId: room.worldId as UUID,
         channelId: room.channelId as UUID,
         type: room.type as ChannelType,
@@ -5245,9 +5247,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         agentId: room.agentId as UUID,
         messageServerId: room.messageServerId as UUID,
         serverId:
-          typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
+          room.serverId ??
+          (typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
             ? ((room.metadata as Metadata).serverId as string)
-            : (room.messageServerId as UUID),
+            : (room.messageServerId as UUID)),
         worldId: room.worldId as UUID,
         channelId: room.channelId as UUID,
         type: room.type as ChannelType,
@@ -8261,9 +8264,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         agentId: room.agentId as UUID,
         messageServerId: room.messageServerId as UUID,
         serverId:
-          typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
+          room.serverId ??
+          (typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
             ? ((room.metadata as Metadata).serverId as string)
-            : (room.messageServerId as UUID),
+            : (room.messageServerId as UUID)),
         worldId: room.worldId as UUID,
         channelId: room.channelId as UUID,
         type: room.type as ChannelType,
