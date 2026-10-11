@@ -460,8 +460,12 @@ describe("HealthDomain connector lifecycle and summaries", () => {
       expect.objectContaining({
         provider: "strava",
         metrics: ["steps", "heart_rate"],
-        limit: 2_000,
       }),
+    );
+    // The date window bounds the read. A row limit drops the older days.
+    expect(repository.listHealthMetricSamples).toHaveBeenCalledWith(
+      AGENT_ID,
+      expect.not.objectContaining({ limit: expect.anything() }),
     );
   });
 
@@ -513,6 +517,13 @@ describe("HealthDomain connector lifecycle and summaries", () => {
       domain.getHealthSummary({
         startDate: "2026-07-10",
         endDate: "2026-07-01",
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    // 32 days. The window is the only bound of the sample read.
+    await expect(
+      domain.getHealthSummary({
+        startDate: "2026-06-10",
+        endDate: "2026-07-11",
       }),
     ).rejects.toMatchObject({ status: 400 });
   });
