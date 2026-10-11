@@ -8,7 +8,13 @@
  * ../index.ts; see the package CLAUDE.md for the routing priority.
  */
 import type { IAgentRuntime, TextEmbeddingParams } from "@elizaos/core";
-import { fetchWithConfidentialInference, logger, ModelType, VECTOR_DIMS } from "@elizaos/core";
+import {
+  fetchWithConfidentialInference,
+  logger,
+  ModelType,
+  toWellFormedUnicode,
+  VECTOR_DIMS,
+} from "@elizaos/core";
 
 import type { EmbeddingResponse } from "../types";
 import {
@@ -283,7 +289,11 @@ export async function handleTextEmbedding(
     throw new Error("Cannot generate embedding for empty text");
   }
 
-  const vectors = await requestEmbeddings(runtime, trimmed, embeddingDimension, signal);
+  // Wire-boundary guarantee: lone surrogates in the JSON body fail on strict
+  // provider parsers (#18025), as the OpenAI embedding handler notes.
+  const wellFormed = toWellFormedUnicode(trimmed);
+
+  const vectors = await requestEmbeddings(runtime, wellFormed, embeddingDimension, signal);
   const vector = vectors[0];
   if (!vector) {
     throw new Error("Embedding provider returned no vector for the input");
@@ -310,7 +320,7 @@ export async function handleBatchTextEmbedding(
     if (typeof text !== "string" || text.trim().length === 0) {
       throw new Error(`Cannot generate embedding for empty text at index ${i}`);
     }
-    return text.trim();
+    return toWellFormedUnicode(text.trim());
   });
 
   return requestEmbeddings(runtime, prepared, embeddingDimension, undefined);
