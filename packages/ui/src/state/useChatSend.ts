@@ -2725,6 +2725,7 @@ export function useChatSend(deps: UseChatSendDeps) {
         return false;
       if (admissionGeneration !== sendCancellationGenerationRef.current)
         return false;
+      const requestedConversationId = activeConversationIdRef.current;
       // Wait for the current turn instead of discarding the action. The
       // handoff freeze holds it too: a send to the shared agent after its
       // snapshot is lost to the skip-all import (see flushQueuedChatSends).
@@ -2735,6 +2736,10 @@ export function useChatSend(deps: UseChatSendDeps) {
         if (admissionGeneration !== sendCancellationGenerationRef.current)
           return false;
       }
+      // A queued choice belongs to the conversation that admitted it. Do not
+      // deliver it into a different conversation selected while it waited.
+      if (activeConversationIdRef.current !== requestedConversationId)
+        return false;
       chatSendBusyRef.current = true;
       const sendNonce = ++chatSendNonceRef.current;
       let controller: AbortController | null = null;
@@ -3070,7 +3075,11 @@ export function useChatSend(deps: UseChatSendDeps) {
     ): Promise<boolean> => {
       // A waiting action no longer fails the busy check, so a repeated
       // activation of the same control would start one agent turn each.
-      const actionKey = JSON.stringify([text.trim(), options?.metadata]);
+      const actionKey = JSON.stringify([
+        activeConversationIdRef.current,
+        text.trim(),
+        options?.metadata,
+      ]);
       const pending = pendingActionKeysRef.current.get(actionKey);
       if (pending) return pending;
       const delivery = deliverActionMessage(text, options);
@@ -3081,7 +3090,7 @@ export function useChatSend(deps: UseChatSendDeps) {
         pendingActionKeysRef.current.delete(actionKey);
       }
     },
-    [deliverActionMessage],
+    [activeConversationIdRef, deliverActionMessage],
   );
   const handleChatStop = useCallback(() => {
     interruptActiveChatPipeline();

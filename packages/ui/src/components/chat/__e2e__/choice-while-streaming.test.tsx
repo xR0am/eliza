@@ -40,6 +40,7 @@ type StreamResult = Awaited<
 let sendChatText: (text: string) => Promise<void>;
 let sendActionMessage: (text: string) => Promise<boolean>;
 let stopChat: () => void;
+let selectedConversation: { current: string | null };
 
 function Harness() {
   const [, setMessages] = useState<ConversationMessage[]>([]);
@@ -89,6 +90,7 @@ function Harness() {
     elizaCloudConnected: false,
     pollCloudCredits: async () => true,
   };
+  selectedConversation = deps.activeConversationIdRef;
   const chat = useChatSend(deps);
   sendChatText = (text) =>
     chat.sendChatText(text, { conversationId: "conv-1" });
@@ -253,4 +255,29 @@ it("reports an uncertain choice failure without dispatching it again", async () 
   expect((screen.getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
   expect(choose).toHaveBeenCalledTimes(1);
+});
+
+
+it("does not move a queued choice into a newly selected conversation", async () => {
+  const { sentTexts, finishFirstTurn } = await startStreamingTurn();
+  let action!: Promise<boolean>;
+  await act(async () => { action = sendActionMessage("production"); });
+  act(() => { selectedConversation.current = "conv-2"; });
+  await finishFirstTurn();
+  expect(await action).toBe(false);
+  expect(sentTexts).toEqual(["deploy my app"]);
+});
+
+
+it("does not deduplicate identical choices from different conversations", async () => {
+  const { sentTexts, finishFirstTurn } = await startStreamingTurn();
+  let oldAction!: Promise<boolean>;
+  let newAction!: Promise<boolean>;
+  await act(async () => { oldAction = sendActionMessage("production"); });
+  act(() => { selectedConversation.current = "conv-2"; });
+  await act(async () => { newAction = sendActionMessage("production"); });
+  await finishFirstTurn();
+  expect(await oldAction).toBe(false);
+  expect(await newAction).toBe(true);
+  expect(sentTexts).toEqual(["deploy my app", "production"]);
 });
