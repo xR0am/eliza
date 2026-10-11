@@ -306,16 +306,13 @@ export function formatPhoneNumber(phone: string): string {
   return cleaned;
 }
 
-/**
- * Split text for iMessage
- */
 // The pinned runtimes provide Intl.Segmenter, while the declaration library
 // does not expose its type.
 const GraphemeSegmenter = (
   Intl as unknown as {
     Segmenter: new (
       locale: string,
-      options: { granularity: "grapheme" },
+      options: { granularity: "grapheme" }
     ) => { segment(text: string): Iterable<{ segment: string }> };
   }
 ).Segmenter;
@@ -355,6 +352,9 @@ function takeAtLeastOneUnit(text: string, limit: number): string {
   return chunk.length > 0 ? chunk : truncateWellFormed(text, limit + 1);
 }
 
+/**
+ * Split text for iMessage
+ */
 export function splitMessageForIMessage(
   text: string,
   maxLength: number = MAX_IMESSAGE_MESSAGE_LENGTH
