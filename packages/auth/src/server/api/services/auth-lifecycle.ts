@@ -1,6 +1,6 @@
 /** Owns login stores and configuration-dependent providers across runtime restarts. */
 import { randomBytes } from "node:crypto";
-import { logger } from "@elizaos/core";
+import { ElizaError, logger } from "@elizaos/core";
 import { sql } from "drizzle-orm";
 import {
   ACCESS_TOKEN_EXPIRY,
@@ -31,6 +31,7 @@ import {
   TwilioSmsProvider,
   TwilioVerifyProvider,
 } from "../../auth/index.ts";
+import { revocationStore } from "../../auth/revocation";
 import {
   type accounts,
   getDb,
@@ -183,6 +184,31 @@ export async function createSessionToken(
   extra?: Record<string, unknown>,
   expiresIn: string = ACCESS_TOKEN_EXPIRY,
 ): Promise<string> {
+  if (typeof extra?.userId === "string") {
+    const cutoff = await revocationStore.getUserRevokedBefore(extra.userId);
+    if (cutoff !== null && Math.floor(Date.now() / 1000) <= cutoff) {
+      // JWT timestamps have second precision. A successful sign-in immediately
+      // after enrollment must not mint another token at the revoked timestamp.
+      // Never future-date it or weaken the inclusive revocation comparison.
+      const delay = (cutoff + 1) * 1000 - Date.now();
+      if (delay > 1000) {
+        throw new ElizaError(
+          "Session clock is behind the revocation timestamp",
+          {
+            code: "LOGIN_SESSION_CLOCK_BEHIND",
+          },
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, delay) + 1),
+      );
+      if (Math.floor(Date.now() / 1000) <= cutoff) {
+        throw new ElizaError("Session clock did not advance past revocation", {
+          code: "LOGIN_SESSION_CLOCK_BEHIND",
+        });
+      }
+    }
+  }
   return signAccessToken({ address, tenantId, ...extra }, expiresIn);
 }
 
