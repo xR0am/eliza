@@ -20,3 +20,25 @@ export function replaceConfigInPlace(
     stateRecord[key] = value;
   }
 }
+
+let liveConfigSource: (() => ElizaConfig) | null = null;
+
+/**
+ * The API server registers its in-memory config here. Writers outside the
+ * routes (chat actions, character persistence) save straight to disk; the
+ * next route save writes the in-memory copy, so they must mirror into it.
+ * Returns a release that only clears the source it registered.
+ */
+export function setLiveElizaConfigSource(read: () => ElizaConfig): () => void {
+  liveConfigSource = read;
+  return () => {
+    if (liveConfigSource === read) liveConfigSource = null;
+  };
+}
+
+/** Mirror a config just written with saveElizaConfig into the live copy. */
+export function mirrorSavedConfigToLive(saved: ElizaConfig): void {
+  const live = liveConfigSource?.();
+  if (live && live !== saved)
+    replaceConfigInPlace(live, structuredClone(saved));
+}

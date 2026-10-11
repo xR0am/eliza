@@ -159,7 +159,10 @@ import {
 } from "./blocked-object-keys.ts";
 import { resolveRegisteredTokenRoleAccess } from "./boundary-role-resolver.ts";
 import { handleStandaloneCloudPairRoute } from "./cloud-pair-route.ts";
-import { replaceConfigInPlace } from "./config-state.ts";
+import {
+  replaceConfigInPlace,
+  setLiveElizaConfigSource,
+} from "./config-state.ts";
 import { resolveConnectorHealthIntervalMs } from "./connector-health.ts";
 import { handleContextInspectorRoute } from "./context-inspector-routes.ts";
 import { restoreConversationsFromDb as restoreConversationsFromDbImpl } from "./conversation-restore.ts";
@@ -3507,6 +3510,7 @@ export async function startApiServer(opts?: {
     resolveAgentAutomationMode: resolveAgentAutomationModeFromConfig,
     resolveTradePermissionMode,
   });
+  const releaseLiveConfigSource = setLiveElizaConfigSource(() => state.config);
   const configuredAdminEntityId = config.agents?.defaults?.adminEntityId;
   if (configuredAdminEntityId && isUuidLike(configuredAdminEntityId)) {
     state.adminEntityId = configuredAdminEntityId;
@@ -5214,7 +5218,10 @@ export async function startApiServer(opts?: {
   });
   return {
     port: listener.port,
-    close: listener.close,
+    close: async () => {
+      releaseLiveConfigSource();
+      await listener.close();
+    },
     updateRuntime,
     runtimeOperations,
     reloadConfigFromDisk,

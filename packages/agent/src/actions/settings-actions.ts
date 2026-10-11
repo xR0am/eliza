@@ -24,6 +24,7 @@ import {
 } from "@elizaos/host/protocol";
 
 import { resolveDevCloudEnvAuthority } from "@elizaos/plugin-elizacloud/cloud-config/dev-cloud-env-authority";
+import { mirrorSavedConfigToLive } from "../api/config-state.ts";
 import {
   applyFirstRunConnectionConfig,
   createProviderSwitchConnection,
@@ -207,6 +208,7 @@ async function handleUpdateAiProvider(
     }
 
     saveElizaConfig(config);
+    mirrorSavedConfigToLive(config);
   } catch (err) {
     logger.error(
       { error: err instanceof Error ? err.stack : String(err) },
@@ -259,6 +261,7 @@ function handleToggleCapability(params: Record<string, unknown>): ActionResult {
     ui.capabilities = capabilities;
     config.ui = ui;
     saveElizaConfig(config as Parameters<typeof saveElizaConfig>[0]);
+    mirrorSavedConfigToLive(config as Parameters<typeof saveElizaConfig>[0]);
   } catch (err) {
     logger.error(
       { error: err instanceof Error ? err.stack : String(err) },
@@ -620,6 +623,7 @@ function handleSetBackend(
     const config = loadElizaConfig() as { env?: Record<string, unknown> };
     config.env = { ...(config.env ?? {}), ELIZA_BRAIN_PROVIDER: provider };
     saveElizaConfig(config as Parameters<typeof saveElizaConfig>[0]);
+    mirrorSavedConfigToLive(config as Parameters<typeof saveElizaConfig>[0]);
     // Immediate effect: the runtime's useModel override reads this via getSetting.
     runtime.setSetting?.("ELIZA_BRAIN_PROVIDER", provider);
     return ok(
@@ -670,6 +674,7 @@ function handleSetBackend(
     ELIZA_BACKEND_ROUTING: JSON.stringify({ coding }),
   };
   saveElizaConfig(config as Parameters<typeof saveElizaConfig>[0]);
+  mirrorSavedConfigToLive(config as Parameters<typeof saveElizaConfig>[0]);
 
   // Also write through to the in-memory character at the HIGHEST precedence the
   // orchestrator reads. Without this, a character that already declares
