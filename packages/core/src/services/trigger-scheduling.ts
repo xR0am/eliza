@@ -314,6 +314,52 @@ export function computeNextCronRunAtMs(
 	return null;
 }
 
+const OFFSETLESS_ISO_DATE_TIME =
+	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
+/**
+ * Pin an ISO date-time that carries no `Z` or UTC offset to an absolute
+ * instant by reading its wall-clock time in `timezone`. `Date.parse` reads
+ * such a value in the host process zone, which is not the user's zone on a
+ * cloud or container host. Values that already carry an offset, date-only
+ * values and anything else are returned unchanged for `parseScheduledAtIso`.
+ */
+export function resolveScheduledAtIsoInTimeZone(
+	scheduledAtIso: string,
+	timezone: string,
+): string {
+	const trimmed = scheduledAtIso.trim();
+	if (!OFFSETLESS_ISO_DATE_TIME.test(trimmed)) return scheduledAtIso;
+	const wallMs = Date.parse(`${trimmed}Z`);
+	if (!Number.isFinite(wallMs)) return scheduledAtIso;
+	const formatter = buildTzFormatter(timezone);
+	if (!formatter) {
+		throw new RangeError(`Invalid time zone: ${timezone}`);
+	}
+	// The formatter reads whole seconds, so offsets are taken at the whole
+	// second and the fraction is added back at the end.
+	const fractionMs = wallMs % 1000;
+	const wallSecondMs = wallMs - fractionMs;
+	const offsetAt = (atMs: number) => offsetMsFromFormatter(formatter, atMs);
+	// The zone's offsets a day either side bracket any DST transition near the
+	// wall clock. They give two candidate instants, which are equal away from
+	// a transition.
+	const dayMs = 24 * 60 * 60 * 1000;
+	const offsetBefore = offsetAt(wallSecondMs - dayMs);
+	const offsetAfter = offsetAt(wallSecondMs + dayMs);
+	const early = wallSecondMs - offsetBefore;
+	const late = wallSecondMs - offsetAfter;
+	// A candidate is real when the zone has its offset at that instant. Keep
+	// `early` unless only `late` is real. That reads a repeated hour as its
+	// first pass and a skipped hour forward, as `Date.parse` does for local
+	// times.
+	const instantMs =
+		offsetAt(early) !== offsetBefore && offsetAt(late) === offsetAfter
+			? late
+			: early;
+	return new Date(instantMs + fractionMs).toISOString();
+}
+
 export function parseScheduledAtIso(scheduledAtIso: string): number | null {
 	const timestamp = Date.parse(scheduledAtIso);
 	if (!Number.isFinite(timestamp)) return null;
