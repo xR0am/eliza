@@ -53,6 +53,37 @@ const seojun = { name: "이서준", email: "seojun@example.com" };
 const alice = { name: "Alice Park", email: "alice@example.com" };
 
 describe("meeting ghost attendee matching", () => {
+  it("prefers the exact name over an earlier partial match", () => {
+    const result = analyze(
+      [
+        { name: "김민수", email: "long@example.com" },
+        { name: "김", email: "exact@example.com" },
+      ],
+      [seg("김", 0, "I will send the notes tomorrow.")],
+    );
+    expect(result.commitments[0]?.recipientEmail).toBe("exact@example.com");
+  });
+
+  it("does not choose the first of ambiguous partial names", () => {
+    const result = analyze(
+      [
+        { name: "김민수", email: "first@example.com" },
+        { name: "김서준", email: "second@example.com" },
+      ],
+      [seg("김", 0, "I will send the notes tomorrow.")],
+    );
+    expect(result.commitments[0]?.recipientEmail).toBeNull();
+    expect(result.followUpApprovals).toHaveLength(0);
+  });
+
+  it("matches canonically equivalent names without dropping vowel marks", () => {
+    const result = analyze(
+      [{ name: "José", email: "jose@example.com" }],
+      [seg("Jose\u0301", 0, "I will send the notes tomorrow.")],
+    );
+    expect(result.commitments[0]?.recipientEmail).toBe("jose@example.com");
+  });
+
   it("does not hand an English speaker's follow-up to a Korean attendee", () => {
     const result = analyze(
       [minsu, alice],

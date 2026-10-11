@@ -266,8 +266,9 @@ const WEEKDAYS = new Map([
 
 function normalize(value: string): string {
   return value
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
     .trim();
 }
 
@@ -290,7 +291,7 @@ function speakerOf(segment: TranscriptSegment): string {
 // Letters and digits of every script are word characters, except Hangul,
 // Han and kana, which may abut particles or neighboring characters.
 const SPACED_WORD_CHAR =
-  /(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{N}]/u;
+  /(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{M}\p{N}]/u;
 
 function includesWholePhrase(text: string, phrase: string): boolean {
   const first = phrase[0] ?? "";
@@ -327,7 +328,12 @@ function findAttendeeEmail(
 ): string | null {
   const normalizedName = normalize(name);
   if (!normalizedName) return null;
-  const attendee = attendees.find((entry) => {
+  const exact = attendees.filter(
+    (entry) => normalize(entry.name) === normalizedName,
+  );
+  if (exact.length > 0)
+    return exact.length === 1 ? (exact[0].email ?? null) : null;
+  const matches = attendees.filter((entry) => {
     const attendeeName = normalize(entry.name);
     if (!attendeeName) return false;
     return (
@@ -336,7 +342,7 @@ function findAttendeeEmail(
       normalizedName.includes(attendeeName)
     );
   });
-  return attendee?.email ?? null;
+  return matches.length === 1 ? (matches[0].email ?? null) : null;
 }
 
 function parseDecision(
