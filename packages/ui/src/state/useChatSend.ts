@@ -55,6 +55,7 @@ import { emitViewEvent, VIEW_EVENTS } from "../events/view-events";
 import { logger } from "../logger.ts";
 import type { Tab } from "../navigation";
 import { isNative } from "../platform/init";
+import { isSafeAttachmentUrl } from "../utils/attachment-url";
 import { directCloudSharedAgentIdFromBase } from "../utils/cloud-agent-base";
 import { filesToImageAttachments } from "../utils/image-attachment";
 import {
@@ -401,6 +402,11 @@ async function readReplayedTurnImages(
       const transcript = attachment.transcriptId
         ? { transcriptId: attachment.transcriptId }
         : {};
+      // A redacted viewer holds only the scrubbed variant; replaying it would
+      // store that variant as the turn's original.
+      if (attachment.redacted) {
+        throw new Error(`attachment "${name}" is redacted for this viewer`);
+      }
       const inline = BASE64_DATA_URL.exec(attachment.url);
       if (inline) {
         const thumbnail = attachment.thumbnailUrl
@@ -416,7 +422,12 @@ async function readReplayedTurnImages(
           ...transcript,
         };
       }
-      if (!attachment.url.startsWith("/")) {
+      // Only a root-relative app path is read with the API credential; a
+      // scheme-relative `//host` URL would send it to another origin.
+      if (
+        !attachment.url.startsWith("/") ||
+        !isSafeAttachmentUrl(attachment.url)
+      ) {
         throw new Error(`attachment "${name}" is not stored media`);
       }
       const blob = await (await client.rawRequest(attachment.url)).blob();

@@ -408,3 +408,27 @@ it("keeps the stored turn when its image cannot be read for an edit", async () =
   expect(sentImages).toEqual([]);
   expect(harnessMessagesRef.current).toEqual(PHOTO_HISTORY);
 });
+
+it("does not read a scheme-relative attachment URL with the API credential", async () => {
+  const sentImages = mockServerImages();
+  const media = mockStoredMedia();
+  const history: ConversationMessage[] = [
+    {
+      ...PHOTO_HISTORY[0],
+      attachments: [
+        { id: "abc", url: "//media.example/abc.png", mimeType: "image/png" },
+      ],
+    },
+    PHOTO_HISTORY[1],
+  ];
+  render(<Harness history={history} armed={null} />);
+
+  await act(async () => {
+    await chat.handleChatRetry("m-agent-photo");
+  });
+
+  expect(media).not.toHaveBeenCalled();
+  expect(client.truncateConversationMessages).not.toHaveBeenCalled();
+  expect(sentImages).toEqual([]);
+  expect(harnessMessagesRef.current).toEqual(history);
+});
