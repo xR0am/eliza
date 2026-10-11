@@ -602,6 +602,19 @@ type AgentRow = typeof agentTable.$inferSelect;
 type AgentMessageExamples = NonNullable<Agent["messageExamples"]>;
 type AgentKnowledge = NonNullable<Agent["knowledge"]>;
 type MemoryRow = typeof memoryTable.$inferSelect;
+type RoomRow = Pick<
+  typeof roomTable.$inferSelect,
+  | "id"
+  | "name"
+  | "channelId"
+  | "agentId"
+  | "messageServerId"
+  | "serverId"
+  | "worldId"
+  | "type"
+  | "source"
+  | "metadata"
+>;
 
 class AtomicMemoryPublicationConflict extends Error {}
 
@@ -624,6 +637,21 @@ function memoryFromRow(row: MemoryRow, embedding?: number[], similarity?: number
         : (row.metadata as MemoryMetadata),
     ...(embedding ? { embedding } : {}),
     ...(similarity !== undefined ? { similarity } : {}),
+  };
+}
+
+function roomFromRow(room: RoomRow): Room {
+  return {
+    ...room,
+    id: room.id as UUID,
+    name: room.name ?? undefined,
+    agentId: room.agentId as UUID,
+    messageServerId: room.messageServerId as UUID,
+    serverId: room.serverId ?? undefined,
+    worldId: room.worldId as UUID,
+    channelId: room.channelId as UUID,
+    type: room.type as ChannelType,
+    metadata: room.metadata as Metadata,
   };
 }
 
@@ -5201,6 +5229,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           channelId: roomTable.channelId,
           agentId: roomTable.agentId,
           messageServerId: roomTable.messageServerId,
+          serverId: roomTable.serverId,
           worldId: roomTable.worldId,
           type: roomTable.type,
           source: roomTable.source,
@@ -5209,19 +5238,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .from(roomTable)
         .where(and(inArray(roomTable.id, roomIds), eq(roomTable.agentId, this.agentId)));
 
-      // Map the result to properly typed Room objects
-      const rooms = result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID, // Backward compatibility alias
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      const rooms = result.map(roomFromRow);
 
       return rooms;
     });
@@ -5235,18 +5252,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
   async getRoomsByWorld(worldId: UUID): Promise<Room[]> {
     return this.withDatabase(async () => {
       const result = await this.db.select().from(roomTable).where(eq(roomTable.worldId, worldId));
-      const rooms = result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID, // Backward compatibility alias
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      const rooms = result.map(roomFromRow);
       return rooms;
     });
   }
@@ -8240,18 +8246,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         query = query.limit(limit) as typeof query;
       }
       const result = await query;
-      return result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID,
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      return result.map(roomFromRow);
     });
   }
 
