@@ -33,6 +33,7 @@ interface ReplyCase {
   accounts: typeof telegramAccounts;
   sendHandlerKeys: string[];
   accountId?: string;
+  registeredProviders?: string[];
 }
 
 async function reply(input: ReplyCase) {
@@ -45,6 +46,7 @@ async function reply(input: ReplyCase) {
   const sends: Array<{ target: { accountId?: string } }> = [];
   const manager = {
     registerProvider() {},
+    getStorage: () => ({ listAccounts: async () => input.accounts }),
     evaluatePolicy: async () => ({ allowed: true }),
     getAccount: async (provider: string, id: string) =>
       input.accounts.find(
@@ -52,7 +54,8 @@ async function reply(input: ReplyCase) {
       ) ?? null,
     listAccounts: async (provider: string) =>
       input.accounts.filter((account) => account.provider === provider),
-    listProviders: () => [],
+    listProviders: () =>
+      (input.registeredProviders ?? []).map((provider) => ({ provider })),
   };
   const runtime = {
     agentId: "agent",
@@ -135,13 +138,32 @@ it("keeps source routing for a provider with no accounts and an unscoped handler
   expect(sends[0]?.target.accountId).toBeUndefined();
 });
 
-it("keeps account routing for a room whose stored account no longer exists", async () => {
+it("refuses a reply when the room account no longer exists", async () => {
   const unselected = await telegramRoom("removed");
-  expect(unselected.status).toBe(200);
-  expect(unselected.sends.map((send) => send.target.accountId)).toEqual([
-    "personal",
-  ]);
+  expect(unselected.status).toBe(404);
+  expect(unselected.body).toMatchObject({
+    code: "INBOX_CONNECTOR_ACCOUNT_NOT_FOUND",
+  });
+  expect(unselected.sends).toEqual([]);
   const selected = await telegramRoom("removed", "work");
-  expect(selected.status).toBe(200);
-  expect(selected.sends.map((send) => send.target.accountId)).toEqual(["work"]);
+  expect(selected.status).toBe(409);
+  expect(selected.body).toMatchObject({
+    code: "INBOX_CONNECTOR_ACCOUNT_ROOM_MISMATCH",
+  });
+  expect(selected.sends).toEqual([]);
+});
+
+it("does not fall back to an unscoped handler after the last managed account is removed", async () => {
+  const result = await reply({
+    source: "telegram",
+    roomAccountId: "removed",
+    accounts: [],
+    registeredProviders: ["telegram"],
+    sendHandlerKeys: ["telegram"],
+  });
+  expect(result.status).toBe(404);
+  expect(result.body).toMatchObject({
+    code: "INBOX_CONNECTOR_ACCOUNT_NOT_FOUND",
+  });
+  expect(result.sends).toEqual([]);
 });
