@@ -107,6 +107,7 @@ import {
   isScheduledTask,
   type ScheduledTask,
 } from "@elizaos/plugin-scheduling";
+import { agentIdentityName } from "../runtime/build-character-config.ts";
 import {
   type AgentHttpRequestAuthorization,
   getAgentHostBridge,
@@ -150,7 +151,6 @@ import {
   resolveTrustedApiPrincipal,
   setChatMessageIdOutcome,
 } from "./chat-routes.ts";
-
 import {
   createChatTokenStreamWriter,
   initSse,
@@ -1329,9 +1329,10 @@ function captureConversationConnection(
   requestFence?: () => void,
 ): ConversationConnectionDescriptor {
   const agentName = runtime.character.name ?? "Eliza";
+  const identityName = agentIdentityName(runtime.character) ?? "Eliza";
   const ownerId = ensureAdminEntityIdForRuntime(state, runtime);
-  const worldId = stringToUuid(`${agentName}-web-chat-world`);
-  const messageServerId = stringToUuid(`${agentName}-web-server`) as UUID;
+  const worldId = stringToUuid(`${identityName}-web-chat-world`);
+  const messageServerId = stringToUuid(`${identityName}-web-server`) as UUID;
   const descriptor = captureConversationConnectionDescriptor({
     runtime,
     conversationId: conv.id,
@@ -3105,7 +3106,7 @@ async function searchConversationMessages(
 ): Promise<boolean> {
   const { req, res, json, error, state, requestUrl } = ctx;
   if (!state.runtime) {
-    json(res, { results: [], count: 0 });
+    error(res, "Agent runtime not available", 503);
     return true;
   }
   const query = normalizeMessageSearchQuery(requestUrl.searchParams.get("q"));
@@ -3134,6 +3135,10 @@ async function searchConversationMessages(
   }
   const runtime = state.runtime;
   const waifuAccess = resolveWaifuChatAccess(req);
+  // The room scope below is read from the in-memory conversation list. Wait
+  // for the boot-time restore, or a search during startup would answer "no
+  // matches" for conversations that are not loaded yet.
+  await waitForConversationRestore(state);
   const conversationsByRoomId = new Map<UUID, ConversationMeta>();
   for (const conv of state.conversations.values()) {
     if (state.deletedConversationIds.has(conv.id)) continue;
@@ -3980,6 +3985,15 @@ async function importConversation(
       } => m !== null,
     );
   const sourceIds = importMessages.map((message) => message.sourceId);
+  // A lone surrogate cannot be encoded into the deterministic message id.
+  if (sourceIds.some((sourceId) => sourceId && !sourceId.isWellFormed())) {
+    error(
+      res,
+      "Imported message sourceIds must contain well-formed Unicode",
+      400,
+    );
+    return true;
+  }
   const exactImport = sourceIds.length > 0 && sourceIds.every(Boolean);
   if (sourceIds.some(Boolean) && !exactImport) {
     error(res, "Every imported message must include a sourceId", 400);
@@ -7029,7 +7043,7 @@ async function cleanupEmptyConversations(
   await waitForConversationRestore(state);
   const runtime = state.runtime;
   if (!runtime) {
-    json(res, { deleted: [] });
+    error(res, "Agent runtime not available", 503);
     return true;
   }
   const keepId = parsedCleanup.data.keepId;

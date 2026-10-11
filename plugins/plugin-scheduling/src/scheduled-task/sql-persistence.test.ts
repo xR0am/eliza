@@ -353,7 +353,7 @@ describe("scheduling SQL persistence", () => {
 
       expect(replay.replayed).toBe(true);
       expect(replay.commit.logId).toMatch(/^stl_apply_[a-f0-9]{64}$/);
-      expect(replay.task.state.firedAt).toBe("2026-08-16T03:07:00.000Z");
+      expect(replay.task.state.firedAt).toBe("2026-08-16T03:12:00.000Z");
       const counts = await harness.pg.query<{
         logs: number;
         metadata_json: string;
@@ -585,7 +585,7 @@ describe("scheduling SQL persistence", () => {
       `);
       const applied = await apply();
       expect(applied.replayed).toBe(false);
-      expect(applied.task.state.firedAt).toBe("2026-08-16T03:07:00.000Z");
+      expect(applied.task.state.firedAt).toBe("2026-08-16T03:12:00.000Z");
     },
     SQL_PERSISTENCE_TEST_TIMEOUT_MS,
   );
@@ -656,7 +656,7 @@ describe("scheduling SQL persistence", () => {
       expect(replay.commit.logId).toBe(created.commit.logId);
       expect(applyReplay.replayed).toBe(true);
       expect(applyReplay.commit.logId).toBe(applied.commit.logId);
-      expect(applyReplay.task.state.firedAt).toBe("2026-08-16T03:05:00.000Z");
+      expect(applyReplay.task.state.firedAt).toBe("2026-08-16T03:10:00.000Z");
       const raw = await logStore.list({
         agentId: harness.runtime.agentId,
         taskId: created.task.taskId,
@@ -665,6 +665,128 @@ describe("scheduling SQL persistence", () => {
       expect(raw.map((entry) => entry.logId)).toEqual([
         created.commit.logId,
         applied.commit.logId,
+      ]);
+    },
+    SQL_PERSISTENCE_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "merges a day rolled up across two maintenance runs into one rollup row",
+    async () => {
+      const harness = await createRuntimeHarness();
+      harnesses.push(harness);
+      const agentId = harness.runtime.agentId;
+      const logStore = createSchedulingSqlScheduledTaskLogStore({
+        runtime: harness.runtime,
+        agentId,
+      });
+      for (const [logId, occurredAtIso] of [
+        ["fire-morning", "2026-05-01T08:00:00.000Z"],
+        ["fire-evening", "2026-05-01T20:00:00.000Z"],
+      ]) {
+        await logStore.append({
+          logId,
+          taskId: "task-rollup-day",
+          agentId,
+          occurredAtIso,
+          transition: "fire_attempt",
+          reason: logId,
+          rolledUp: false,
+        });
+      }
+      const snapshot = async () =>
+        (
+          await harness.pg.query(
+            `SELECT id, occurred_at, transition, reason, rolled_up, detail_json
+               FROM app_scheduling.life_scheduled_task_log
+              ORDER BY id`,
+          )
+        ).rows;
+
+      const first = await logStore.rollupOlderThan({
+        agentId,
+        olderThanIso: "2026-05-01T12:00:00.000Z",
+      });
+      const second = await logStore.rollupOlderThan({
+        agentId,
+        olderThanIso: "2026-05-02T12:00:00.000Z",
+      });
+      const afterSecond = await snapshot();
+      const third = await logStore.rollupOlderThan({
+        agentId,
+        olderThanIso: "2026-05-02T12:00:00.000Z",
+      });
+
+      expect(first).toEqual({ rolledUp: 1, deletedRaw: 1 });
+      expect(second).toEqual({ rolledUp: 1, deletedRaw: 1 });
+      expect(third).toEqual({ rolledUp: 0, deletedRaw: 0 });
+      expect(await snapshot()).toEqual(afterSecond);
+      const history = await logStore.list({
+        agentId,
+        taskId: "task-rollup-day",
+      });
+      expect(history).toEqual([
+        {
+          logId: `rollup:${JSON.stringify(["task-rollup-day", "2026-05-01", "fire_attempt"])}`,
+          taskId: "task-rollup-day",
+          agentId,
+          occurredAtIso: "2026-05-01T00:00:00.000Z",
+          transition: "fire_attempt",
+          reason: "fire-evening",
+          rolledUp: true,
+          detail: { rollupCount: 2 },
+        },
+      ]);
+    },
+    SQL_PERSISTENCE_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "keeps raw log rows when a rollup id belongs to another agent",
+    async () => {
+      const harness = await createRuntimeHarness();
+      harnesses.push(harness);
+      const agentId = harness.runtime.agentId;
+      const logStore = createSchedulingSqlScheduledTaskLogStore({
+        runtime: harness.runtime,
+        agentId,
+      });
+      const rollupId = `rollup:${JSON.stringify(["task-shared", "2026-05-01", "fire_attempt"])}`;
+      await harness.pg.query(
+        `INSERT INTO app_scheduling.life_scheduled_task_log (
+          id, agent_id, task_id, occurred_at, transition, rolled_up, detail_json
+        ) VALUES (
+          '${rollupId}', 'agent-other', 'task-shared',
+          '2026-05-01T00:00:00.000Z', 'fire_attempt', TRUE, '{"rollupCount":5}'
+        )`,
+      );
+      await logStore.append({
+        logId: "fire-shared",
+        taskId: "task-shared",
+        agentId,
+        occurredAtIso: "2026-05-01T08:00:00.000Z",
+        transition: "fire_attempt",
+        rolledUp: false,
+      });
+
+      await expect(
+        logStore.rollupOlderThan({
+          agentId,
+          olderThanIso: "2026-05-02T00:00:00.000Z",
+        }),
+      ).rejects.toThrow("Scheduling rollup identity collides");
+      const rows = await harness.pg.query(
+        `SELECT id, agent_id, detail_json
+           FROM app_scheduling.life_scheduled_task_log
+          ORDER BY id`,
+      );
+      expect(rows.rows).toEqual([
+        { id: "fire-shared", agent_id: agentId, detail_json: null },
+        {
+          id: rollupId,
+          agent_id: "agent-other",
+          detail_json: '{"rollupCount":5}',
+        },
       ]);
     },
     SQL_PERSISTENCE_TEST_TIMEOUT_MS,

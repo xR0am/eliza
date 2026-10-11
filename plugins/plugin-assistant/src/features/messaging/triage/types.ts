@@ -138,7 +138,6 @@ export interface MessageAdapterCapabilities {
     spam?: boolean;
     label?: boolean;
     tag?: boolean;
-    muteThread?: boolean;
     markRead?: boolean;
     unsubscribe?: boolean;
   };
@@ -209,7 +208,6 @@ export type ManageOperationKind =
   | "label_remove"
   | "tag_add"
   | "tag_remove"
-  | "mute_thread"
   | "unsubscribe";
 
 export const MANAGE_OPERATION_KINDS: readonly ManageOperationKind[] = [
@@ -221,7 +219,6 @@ export const MANAGE_OPERATION_KINDS: readonly ManageOperationKind[] = [
   "label_remove",
   "tag_add",
   "tag_remove",
-  "mute_thread",
   "unsubscribe",
 ] as const;
 
@@ -234,7 +231,6 @@ export type ManageOperation =
   | { kind: "label_remove"; label: string }
   | { kind: "tag_add"; tag: string }
   | { kind: "tag_remove"; tag: string }
-  | { kind: "mute_thread" }
   | { kind: "unsubscribe" };
 
 export interface ManageResult {

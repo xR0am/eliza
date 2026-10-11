@@ -24,6 +24,15 @@ export type SharedGoogleReadRequest =
   | { kind: "gmail_message"; messageId: string }
   | { kind: "calendar"; timeMin: string; timeMax: string; timeZone: string };
 
+/**
+ * A calendar bound must name its own UTC offset. `Date.parse` reads an offset-less
+ * timestamp in the server's zone and a date-only value as UTC, so either would move
+ * the owner's window without any error.
+ */
+export const SHARED_GOOGLE_CALENDAR_BOUND_PATTERN =
+  "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$";
+const calendarBound = new RegExp(SHARED_GOOGLE_CALENDAR_BOUND_PATTERN, "u");
+
 function bounded(value: string, maximum: number): string {
   const result = value.trim();
   if (!result || result.length > maximum || /[\p{C}]/u.test(result)) {
@@ -46,20 +55,33 @@ function validateReadRequest(value: unknown): SharedGoogleReadRequest {
     request.kind === "calendar" &&
     typeof request.timeMin === "string" &&
     typeof request.timeMax === "string" &&
-    (request.timeZone === undefined || typeof request.timeZone === "string")
+    typeof request.timeZone === "string"
   ) {
     const start = Date.parse(request.timeMin),
       end = Date.parse(request.timeMax);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    if (
+      !calendarBound.test(request.timeMin) ||
+      !calendarBound.test(request.timeMax) ||
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      end <= start
+    ) {
       throw new ElizaError("SHARED_GOOGLE_CALENDAR_WINDOW_REQUIRED", {
         code: "SHARED_GOOGLE_CALENDAR_WINDOW_REQUIRED",
       });
+    }
+    const timeZone = bounded(request.timeZone, 100);
+    try {
+      // An unknown zone would otherwise surface later as a provider-side failure after consent.
+      new Intl.DateTimeFormat("en-US", { timeZone });
+    } catch {
+      throw new ElizaError("SHARED_GOOGLE_INVALID_INPUT", { code: "SHARED_GOOGLE_INVALID_INPUT" });
     }
     return {
       kind: "calendar",
       timeMin: new Date(start).toISOString(),
       timeMax: new Date(end).toISOString(),
-      timeZone: request.timeZone === undefined ? "UTC" : bounded(request.timeZone, 100),
+      timeZone,
     };
   }
   throw new ElizaError("SHARED_GOOGLE_INVALID_INPUT", { code: "SHARED_GOOGLE_INVALID_INPUT" });

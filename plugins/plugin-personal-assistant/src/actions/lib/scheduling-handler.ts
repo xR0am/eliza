@@ -52,6 +52,7 @@ import type {
   ApprovalRequest,
 } from "../../lifeops/approval-queue.types.js";
 import { getChannelRegistry } from "../../lifeops/channels/index.js";
+import { resolveKnownTimeZone } from "../../lifeops/defaults.js";
 import type { SchedulingMessageDraft } from "../../lifeops/domains/scheduling-service.js";
 import { SCHEDULE_PLAN_INSTRUCTIONS } from "../../lifeops/optimized-prompt-instructions.js";
 import {
@@ -171,6 +172,7 @@ type AvailabilityInterval = {
 };
 
 export type CheckAvailabilityParameters = AvailabilityInterval & {
+  timeZone?: string;
   interval?: AvailabilityInterval;
 };
 
@@ -597,22 +599,41 @@ export async function runProposeMeetingTimesHandler(
   const counterparties = params.counterparties ?? [];
   const bundleLocationLabel = deriveBundleLocationLabel(messageBody);
   const requestedDuration = params.duration?.minutes ?? params.durationMinutes;
+  // A supplied value outside its range is refused. Using the default in its
+  // place would answer a different question than the one asked.
+  const outOfRange = (
+    [
+      ["durationMinutes", requestedDuration, 5, 480],
+      ["slotCount", params.slotCount, 1, 10],
+      ["daysAhead", params.daysAhead, 1, MAX_DAYS_LOOKAHEAD],
+    ] as const
+  )
+    .filter(
+      ([, value, min, max]) =>
+        value != null &&
+        !(typeof value === "number" && value >= min && value <= max),
+    )
+    .map(([field, , min, max]) => `${field} (${min}-${max})`);
+  if (outOfRange.length > 0) {
+    return respond({
+      success: false,
+      scenario: "scheduling_invalid_proposal_arguments",
+      error: `INVALID_ARGUMENTS: Out of range: ${outOfRange.join(", ")}. No calendar read was performed. Correct the arguments from the user request before retrying.`,
+      fallback: `I can't propose times with those values. Out of range: ${outOfRange.join(", ")}.`,
+      context: { outOfRange },
+      data: { error: "INVALID_ARGUMENTS", outOfRange },
+    });
+  }
   let durationMinutes =
-    typeof requestedDuration === "number" &&
-    requestedDuration >= 5 &&
-    requestedDuration <= 480
+    typeof requestedDuration === "number"
       ? Math.floor(requestedDuration)
       : effectivePreferences.defaultDurationMinutes;
   const slotCount =
-    typeof params.slotCount === "number" &&
-    params.slotCount >= 1 &&
-    params.slotCount <= 10
+    typeof params.slotCount === "number"
       ? Math.floor(params.slotCount)
       : DEFAULT_SLOTS_COUNT;
   const daysAhead =
-    typeof params.daysAhead === "number" &&
-    params.daysAhead >= 1 &&
-    params.daysAhead <= MAX_DAYS_LOOKAHEAD
+    typeof params.daysAhead === "number"
       ? Math.floor(params.daysAhead)
       : DEFAULT_DAYS_LOOKAHEAD;
 
@@ -867,8 +888,15 @@ export async function runCheckAvailabilityHandler(
     (supplied.startAt !== undefined ||
       supplied.endAt !== undefined ||
       supplied.durationMinutes !== undefined);
-  const windowStart = parseOptionalIso(params.startAt);
-  const explicitEnd = parseOptionalIso(params.endAt);
+  const preferences = await readLifeOpsMeetingPreferences(runtime);
+  // A start or end without an offset is a local clock in the supplied zone,
+  // or in the owner's meeting-preference zone; never in the server's zone.
+  const localClockTimeZone =
+    typeof supplied.timeZone === "string" && supplied.timeZone.trim().length > 0
+      ? supplied.timeZone.trim()
+      : preferences.timeZone;
+  const windowStart = parseProposalBound(params.startAt, localClockTimeZone);
+  const explicitEnd = parseProposalBound(params.endAt, localClockTimeZone);
   const hasDuration = params.durationMinutes !== undefined;
   const durationMs =
     typeof params.durationMinutes === "number"
@@ -900,7 +928,6 @@ export async function runCheckAvailabilityHandler(
     });
   }
 
-  const preferences = await readLifeOpsMeetingPreferences(runtime);
   const { LifeOpsService, LifeOpsServiceError } =
     await loadLifeOpsServiceModule();
   const service = new LifeOpsService(runtime);
@@ -979,6 +1006,14 @@ export async function runCheckAvailabilityHandler(
   });
 }
 
+const MEETING_PREFERENCE_SCALAR_FIELDS = [
+  { key: "timeZone", expected: "IANA time zone" },
+  { key: "preferredStartLocal", expected: "HH:MM 24h" },
+  { key: "preferredEndLocal", expected: "HH:MM 24h" },
+  { key: "defaultDurationMinutes", expected: "5-480" },
+  { key: "travelBufferMinutes", expected: "0-240" },
+] as const;
+
 // Dispatched from the CALENDAR umbrella (action=update_preferences).
 // Not a planner-visible Action — no name:, similes:, or registration.
 export async function runUpdateMeetingPreferencesHandler(
@@ -1009,6 +1044,23 @@ export async function runUpdateMeetingPreferencesHandler(
   const params = getParams<Record<string, unknown>>(options);
   const patch: LifeOpsMeetingPreferencesPatch =
     normalizeLifeOpsMeetingPreferencesPatch(params);
+
+  // The patch normalizer drops a scalar it cannot accept. A supplied field
+  // that did not survive means the request is invalid; writing the rest would
+  // report success while losing part of what the owner asked for.
+  const invalidFields = MEETING_PREFERENCE_SCALAR_FIELDS.filter(
+    ({ key }) => params[key] != null && patch[key] === undefined,
+  ).map(({ key, expected }) => `${key} (${expected})`);
+  if (invalidFields.length > 0) {
+    return respond({
+      success: false,
+      scenario: "scheduling_preferences_invalid_fields",
+      error: `INVALID_FIELDS: ${invalidFields.join(", ")}. No preferences were changed. Correct the arguments from the user request before retrying.`,
+      fallback: `I didn't change your meeting preferences. These values are not valid: ${invalidFields.join(", ")}.`,
+      context: { invalidFields },
+      data: { error: "INVALID_FIELDS", invalidFields },
+    });
+  }
 
   if (Object.keys(patch).length === 0) {
     return respond({
@@ -1200,16 +1252,21 @@ async function surfaceSchedulingApproval(
   }
 }
 
-type SchedulingSubaction =
-  | "start"
-  | "propose"
-  | "respond"
-  | "finalize"
-  | "cancel"
-  | "list_active"
-  | "list_proposals";
+export const SCHEDULING_SUBACTIONS = [
+  "start",
+  "propose",
+  "respond",
+  "finalize",
+  "cancel",
+  "list_active",
+  "list_proposals",
+] as const;
+
+type SchedulingSubaction = (typeof SCHEDULING_SUBACTIONS)[number];
 
 export type SchedulingActionParameters = {
+  /** Declared planner selector on PERSONAL_ASSISTANT (action=scheduling). */
+  schedulingOp?: SchedulingSubaction;
   subaction?: SchedulingSubaction;
   intent?: string;
   negotiationId?: string;
@@ -1405,7 +1462,11 @@ export async function runSchedulingNegotiationHandler(
   const messageBody =
     typeof message.content.text === "string" ? message.content.text : "";
   const planIntent = (params.intent ?? messageBody).trim();
-  const explicitSubaction = normalizeSchedulingSubaction(params.subaction);
+  // The promoted PERSONAL_ASSISTANT_SCHEDULING virtual pins `subaction` to
+  // "scheduling", so the planner's operation arrives as `schedulingOp`.
+  const explicitSubaction = normalizeSchedulingSubaction(
+    params.schedulingOp ?? params.subaction,
+  );
   const llmPlan = await resolveSchedulingPlanWithLlm({
     runtime,
     message,
@@ -1467,6 +1528,20 @@ export async function runSchedulingNegotiationHandler(
           },
         });
       }
+      // The negotiation zone is the zone offset-less proposal clocks are read
+      // in, so a name that identifies no zone is refused instead of stored.
+      const timezone =
+        params.timezone === undefined
+          ? undefined
+          : resolveKnownTimeZone(params.timezone);
+      if (timezone === null) {
+        return respond({
+          success: false,
+          scenario: "scheduling_negotiation_start_unknown_timezone",
+          fallback: `I don't recognize the time zone "${params.timezone}". Give an IANA time zone such as America/New_York.`,
+          data: { error: "UNKNOWN_TIMEZONE", timezone: params.timezone },
+        });
+      }
       // Contact graph stores do not accept the PA transaction handle. Resolve
       // the delivery target before opening the transaction so PGlite does not
       // deadlock on a second connection while the negotiation write is open.
@@ -1486,7 +1561,7 @@ export async function runSchedulingNegotiationHandler(
             subject,
             relationshipId: params.relationshipId ?? null,
             durationMinutes: params.durationMinutes,
-            timezone: params.timezone,
+            timezone,
             tx,
           });
           const draft = await service.draftOpeningMessage(neg, counterparty);
@@ -1551,10 +1626,30 @@ export async function runSchedulingNegotiationHandler(
       }
       const proposedBy = params.proposedBy ?? "agent";
       const negotiationId = params.negotiationId;
-      const startAt = params.startAt;
-      const endAt = params.endAt;
       const negotiationBeforeMutation =
         await service.getNegotiation(negotiationId);
+      // An offset-less clock is a local time in the negotiation's zone, never
+      // the server's. A missing negotiation is reported by proposeTime.
+      const proposedStart = negotiationBeforeMutation
+        ? parseProposalBound(params.startAt, negotiationBeforeMutation.timezone)
+        : undefined;
+      const proposedEnd = negotiationBeforeMutation
+        ? parseProposalBound(params.endAt, negotiationBeforeMutation.timezone)
+        : undefined;
+      if (proposedStart === null || proposedEnd === null) {
+        return respond({
+          success: false,
+          scenario: "scheduling_negotiation_propose_invalid_time",
+          fallback: `I could not read the proposed ${proposedStart === null ? "start" : "end"} time. Give it as ISO-8601, either with a UTC offset or as a local time in ${negotiationBeforeMutation?.timezone}.`,
+          data: {
+            error: "INVALID_PROPOSAL_TIME",
+            field: proposedStart === null ? "startAt" : "endAt",
+            timezone: negotiationBeforeMutation?.timezone,
+          },
+        });
+      }
+      const startAt = proposedStart?.toISOString() ?? params.startAt;
+      const endAt = proposedEnd?.toISOString() ?? params.endAt;
       const counterparty = negotiationBeforeMutation
         ? await service.resolveCounterpartyTarget(negotiationBeforeMutation)
         : null;

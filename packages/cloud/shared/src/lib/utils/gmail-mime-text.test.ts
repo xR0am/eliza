@@ -167,3 +167,35 @@ test("0057: search attachment hint from metadata and full payloads; explicit in:
   expect(gmailSearchIncludesTrash("subject:in:trashcan")).toBe(false);
   expect(gmailSearchIncludesTrash(undefined)).toBe(false);
 });
+
+test("text/plain in a later sibling wins over text/html nested in an earlier container", () => {
+  const nest = (levels: number): { mimeType: string; parts: object[] } =>
+    levels === 0
+      ? {
+          mimeType: "multipart/mixed",
+          parts: [
+            { mimeType: "multipart/related", parts: [part("text/html", "<p>HTML version</p>")] },
+            part("text/plain", "PLAIN version"),
+          ],
+        }
+      : { mimeType: "multipart/mixed", parts: [nest(levels - 1)] };
+  expect(extractGmailBodyText(nest(0))).toBe("PLAIN version");
+  // The nesting limit is unchanged: 19 wrapping containers are read, 20 are refused.
+  expect(extractGmailBodyText(nest(19))).toBe("PLAIN version");
+  expect(() => extractGmailBodyText(nest(20))).toThrow("nesting exceeds");
+});
+
+test("numeric references in link text follow the WHATWG windows-1252 table", () => {
+  const html = `<a href="https://example.org/a">price &#128;100 &#150; deal &#159;</a>
+    <a href="https://example.org/b">unassigned &#129; stays</a>
+    <a href="https://example.org/c">surrogate &#xD800; stays</a>`;
+  const links = extractGmailHtmlLinks({
+    mimeType: "text/html",
+    body: part("text/html", html).body,
+  });
+  expect(links).toEqual([
+    { href: "https://example.org/a", text: "price \u20ac100 \u2013 deal \u0178" },
+    { href: "https://example.org/b", text: "unassigned &#129; stays" },
+    { href: "https://example.org/c", text: "surrogate &#xD800; stays" },
+  ]);
+});

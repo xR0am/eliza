@@ -26,6 +26,7 @@ import type {
 import type { QueryTweetsResponse } from "./api-types";
 import type { TwitterAuth } from "./auth";
 import { getEntityIdByScreenName } from "./profile";
+import { maxResultsFor, X_USER_TWEETS_MIN_RESULTS } from "./request-limits";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -329,7 +330,7 @@ export async function fetchTweets(
 
   try {
     const response = await client.v2.userTimeline(userId, {
-      max_results: maxTweets === undefined ? 100 : Math.min(maxTweets, 100),
+      max_results: maxResultsFor(maxTweets, X_USER_TWEETS_MIN_RESULTS),
       exclude: ["retweets", "replies"],
       "tweet.fields": [
         "id",
@@ -378,7 +379,7 @@ export async function fetchTweetsAndReplies(
 
   try {
     const response = await client.v2.userTimeline(userId, {
-      max_results: maxTweets === undefined ? 100 : Math.min(maxTweets, 100),
+      max_results: maxResultsFor(maxTweets, X_USER_TWEETS_MIN_RESULTS),
       "tweet.fields": [
         "id",
         "text",
@@ -1210,11 +1211,14 @@ export async function createQuoteTweetRequest(
   } catch (cause) {
     // error-policy:J2 Preserve the provider or request-assembly failure at the
     // connector boundary so callers can distinguish it from an accepted write.
-    throw new ElizaError("Failed to create quote tweet", {
-      code: "X_QUOTE_REQUEST_FAILED",
-      cause,
-      context: { quotedTweetId },
-    });
+    throw new ElizaError(
+      `Failed to create quote tweet: ${errorMessage(cause)}`,
+      {
+        code: "X_QUOTE_REQUEST_FAILED",
+        cause,
+        context: { quotedTweetId },
+      },
+    );
   }
 }
 

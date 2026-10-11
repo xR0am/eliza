@@ -196,11 +196,8 @@ type LifeParams = {
   minutes?: number;
   preset?: string;
   /**
-   * Planner-signalled owner confirmation of a previously previewed save.
-   * The preview -> confirm handshake has no structured cross-turn draft
-   * transport on the planner path, so the confirm turn ("yes, save that")
-   * must re-call create with `confirmed: true`; the handler then saves the
-   * re-extracted plan instead of previewing again.
+   * Declared on the owner surfaces but not read: consent to save a previewed
+   * item comes only from the owner's current message text.
    */
   confirmed?: boolean;
   createPlan?: unknown;
@@ -4983,7 +4980,7 @@ async function runLifeOperationHandlerInner(
                   detailString(details, "timeZone") ??
                     deferredDefinitionDraft?.request.timezone ??
                     windowPolicy?.timezone,
-                ) ?? undefined,
+                ) ?? ownerFactTimeZone,
             }));
         } catch (error) {
           // error-policy:J4 Explicit create parameters remain usable without a
@@ -6141,6 +6138,7 @@ async function runLifeOperationHandlerInner(
           currentWindows: target.definition.windowPolicy.windows.map(
             (w) => w.name,
           ),
+          timeZone: requestedTimeZone ?? target.definition.timezone,
         });
         if (llmFields) {
           if (llmFields.title) request.title = llmFields.title;

@@ -123,7 +123,7 @@ describe("browser workspace web-mode real-code command flow", () => {
       { id: tab.id, subaction: "get", selector: "body" },
       webEnv,
     );
-    expect(text.value).toBe("RehearsalKeep all prose.");
+    expect(text.value).toBe("Rehearsal Keep all prose.");
     const snapshot = await executeBrowserWorkspaceCommand(
       { id: tab.id, subaction: "snapshot" },
       webEnv,
@@ -139,6 +139,38 @@ describe("browser workspace web-mode real-code command flow", () => {
     );
     expect(html.value).toContain("script-noise");
     expect(html.value).toContain("style-noise");
+  });
+
+  it("separates line breaks and block elements in text reads, not inline elements", async () => {
+    const tab = await openBrowserWorkspaceTab(
+      { show: true, url: "about:blank" },
+      webEnv,
+    );
+    await executeBrowserWorkspaceCommand(
+      {
+        id: tab.id,
+        subaction: "network",
+        networkAction: "route",
+        url: "https://example.test/breaks",
+        responseBody:
+          '<html><body><p id="copy">First<br>Second<br><span>Third</span> <b>line</b></p><ul><li>One</li><li>Tw<i>o</i></li></ul>tail<table><tr><td>A</td><td>B</td></tr></table></body></html>',
+      },
+      webEnv,
+    );
+    await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "navigate", url: "https://example.test/breaks" },
+      webEnv,
+    );
+    const copy = await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "get", selector: "#copy" },
+      webEnv,
+    );
+    expect(copy.value).toBe("First Second Third line");
+    const body = await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "get", selector: "body" },
+      webEnv,
+    );
+    expect(body.value).toBe("First Second Third line One Two tail A B");
   });
 
   it("navigates, clicks, types, screenshots, and extracts DOM through the command router", async () => {
@@ -455,6 +487,62 @@ describe("browser workspace web-mode real-code command flow", () => {
       webEnv,
     );
     expect(title.value).toBe("");
+  });
+
+  it("closes a method=dialog form without a request and sends an invalid method as GET", async () => {
+    const tab = await openBrowserWorkspaceTab({ url: "about:blank" }, webEnv);
+    const page = "https://example.test/confirm";
+    const html = `<dialog open><form method="dialog"><button id="ok" value="yes">OK</button></form></dialog>
+      <form action="/item" method="put"><input name="q" value="1"><button id="put">Go</button></form>`;
+    for (const [url, responseBody] of [
+      [page, html],
+      ["https://example.test/item?q=1", "<h1>Item</h1>"],
+    ]) {
+      await executeBrowserWorkspaceCommand(
+        {
+          id: tab.id,
+          subaction: "network",
+          networkAction: "route",
+          url,
+          responseBody,
+        },
+        webEnv,
+      );
+    }
+    await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "navigate", url: page },
+      webEnv,
+    );
+    const clicked = await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "click", selector: "#ok" },
+      webEnv,
+    );
+    expect(clicked.tab?.url).toBe(page);
+    const openDialogs = await executeBrowserWorkspaceCommand(
+      {
+        id: tab.id,
+        subaction: "get",
+        selector: "dialog[open]",
+        getMode: "count",
+      },
+      webEnv,
+    );
+    expect(openDialogs.value).toBe(0);
+    const requests = await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "network", networkAction: "requests" },
+      webEnv,
+    );
+    expect(
+      (requests.value as Array<{ method: string; url: string }>).map(
+        (request) => `${request.method} ${request.url}`,
+      ),
+    ).toEqual([`GET ${page}`]);
+
+    const put = await executeBrowserWorkspaceCommand(
+      { id: tab.id, subaction: "click", selector: "#put" },
+      webEnv,
+    );
+    expect(put.tab?.url).toBe("https://example.test/item?q=1");
   });
 
   it("preserves semantic page content beyond the former fixed snapshot ceiling", async () => {

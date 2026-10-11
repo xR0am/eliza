@@ -361,6 +361,24 @@ describe("LifeOps work threads", () => {
       "SOURCE_REF_NOT_CURRENT_CHANNEL",
     );
 
+    // The current room as a read-only source is refused by its own code, so
+    // the planner is not told that the room is wrong.
+    const readOnlyAttach = await runThreadAction(runtime, roomB, [
+      {
+        type: "attach_source",
+        workThreadId: threadId,
+        sourceRef: {
+          connector: "test",
+          roomId: roomB.roomId,
+          canMutate: false,
+        },
+      },
+    ]);
+    expect(readOnlyAttach.success).toBe(false);
+    expect(operationResults(readOnlyAttach)[0].error).toBe(
+      "SOURCE_REF_READ_ONLY_NOT_SUPPORTED",
+    );
+
     const attached = await runThreadAction(runtime, roomB, [
       { type: "attach_source", workThreadId: threadId },
     ]);
@@ -485,6 +503,27 @@ describe("LifeOps work threads", () => {
         }
       }
     }
+
+    const rejectedTrigger = await runThreadAction(runtime, roomB, [
+      {
+        type: "steer",
+        workThreadId: threadId,
+        instruction: "Wait for the vendor reply.",
+      },
+      {
+        type: "schedule_followup",
+        workThreadId: threadId,
+        instruction: "Check for the reply.",
+        trigger: { kind: "cron", schedule: "0 9 * * *" },
+      },
+    ]);
+    expect(operationResults(rejectedTrigger)).toMatchObject([
+      { success: true, type: "steer" },
+      { success: false, type: "schedule_followup", error: "INVALID_TRIGGER" },
+    ]);
+    expect((await store.get(threadId))?.currentScheduledTaskId ?? null).toBe(
+      null,
+    );
 
     const scheduled = await runThreadAction(runtime, roomB, [
       {

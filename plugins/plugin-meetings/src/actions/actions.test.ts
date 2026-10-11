@@ -73,30 +73,18 @@ describe("JOIN_MEETING", () => {
     expect(joinMeetingAction.roleGate).toEqual({ minRole: "OWNER" });
   });
 
-  it("validate is true only for a real meeting URL", async () => {
+  it("validate is gated on the meetings service, not on a link", async () => {
     const v = joinMeetingAction.validate;
-    expect(await v({} as IAgentRuntime, msg(`join ${MEET}`), NO_STATE)).toBe(
-      true,
-    );
+    const up = harness({ service: {} });
+    const down = harness({ service: null });
+    expect(await v(up.runtime, msg(`join ${MEET}`), NO_STATE)).toBe(true);
+    // No link is not a missing capability: the handler asks for one.
     expect(
-      await v(
-        {} as IAgentRuntime,
-        msg("join https://example.com/not-a-meeting"),
-        NO_STATE,
-      ),
-    ).toBe(false);
-    expect(await v({} as IAgentRuntime, msg("no link"), NO_STATE)).toBe(false);
-  });
-
-  it("validate true via explicit option even with no URL in text", async () => {
-    expect(
-      await joinMeetingAction.validate(
-        {} as IAgentRuntime,
-        msg("please join"),
-        NO_STATE,
-        { meetingUrl: MEET },
-      ),
+      await v(up.runtime, msg("join my 3pm standup and take notes"), NO_STATE, {
+        parameters: {},
+      }),
     ).toBe(true);
+    expect(await v(down.runtime, msg(`join ${MEET}`), NO_STATE)).toBe(false);
   });
 
   it("asks for a link when none present", async () => {
@@ -222,6 +210,41 @@ describe("LEAVE_MEETING", () => {
         NO_STATE,
       ),
     ).toBe(true);
+  });
+
+  it("validate true for a planner-named target with no keyword in the message", async () => {
+    // The reply to "which one should I leave?" carries no leave keyword.
+    const two = harness({
+      service: svc([session({ id: "s1" }), session({ id: "s2" })]),
+    });
+    expect(
+      await leaveMeetingAction.validate(
+        two.runtime,
+        msg("the Zoom one"),
+        NO_STATE,
+        {
+          parameters: { sessionId: "s1" },
+        },
+      ),
+    ).toBe(true);
+    expect(
+      await leaveMeetingAction.validate(
+        two.runtime,
+        msg("that one"),
+        NO_STATE,
+        {
+          parameters: { meetingUrl: MEET },
+        },
+      ),
+    ).toBe(true);
+    expect(
+      await leaveMeetingAction.validate(
+        harness({ service: svc([]) }).runtime,
+        msg("the Zoom one"),
+        NO_STATE,
+        { parameters: { sessionId: "s1" } },
+      ),
+    ).toBe(false);
   });
 
   it("service down reply", async () => {
@@ -421,13 +444,22 @@ describe("GET_MEETING_TRANSCRIPT", () => {
     expect(res.text).toContain("hello");
   });
 
-  it("validate gated on service + sessions + keyword", async () => {
+  it("validate gated on service + sessions, not on message wording", async () => {
     const v = getMeetingTranscriptAction.validate;
     expect(
       await v(harness({ service: null }).runtime, msg("transcript"), NO_STATE),
     ).toBe(false);
+    expect(
+      await v(
+        harness({ service: svc([]) }).runtime,
+        msg("transcript"),
+        NO_STATE,
+      ),
+    ).toBe(false);
     const has = harness({ service: svc([session({})]) });
-    expect(await v(has.runtime, msg("hello there"), NO_STATE)).toBe(false);
     expect(await v(has.runtime, msg("show me the notes"), NO_STATE)).toBe(true);
+    expect(
+      await v(has.runtime, msg("summarize my last meeting"), NO_STATE),
+    ).toBe(true);
   });
 });

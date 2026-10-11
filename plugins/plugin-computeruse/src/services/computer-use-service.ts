@@ -61,6 +61,7 @@ import { detectPlatformCapabilities } from "../platform/capabilities.js";
 import { captureDisplay, capturePrimaryDisplay } from "../platform/capture.js";
 import { localToGlobalDefault } from "../platform/coords.js";
 import {
+  findDisplay,
   getPrimaryDisplay,
   listDisplays,
   warmDisplaysCache,
@@ -84,6 +85,7 @@ import {
   driverRightClick,
   driverScroll,
   driverSetValue,
+  driverSupportsModifier,
   driverType,
 } from "../platform/driver.js";
 import {
@@ -128,6 +130,7 @@ import {
   moveWindow,
   refreshWindows,
   resizeWindow,
+  resolveWindowArrangement,
   restoreWindow,
   switchWindow,
   warmScreenSizeCache,
@@ -461,6 +464,7 @@ export class ComputerUseService extends Service {
   async executeCommand(
     command: string,
     parameters: Record<string, unknown> = {},
+    signal?: AbortSignal,
   ): Promise<ComputerUseResult> {
     switch (command) {
       case "app_list_apps":
@@ -486,7 +490,7 @@ export class ComputerUseService extends Service {
       case "app_select_text":
       case "app_secondary_action":
       case "app_hover_target":
-        return this.executeAppAction(command, parameters);
+        return this.executeAppAction(command, parameters, signal);
       case "screenshot":
       case "click":
       case "click_with_modifiers":
@@ -510,10 +514,13 @@ export class ComputerUseService extends Service {
       case "launch":
       case "kill_app":
       case "set_value":
-        return this.executeDesktopAction({
-          ...commandParameters<DesktopActionParams>(parameters),
-          action: this.mapDesktopCommandToAction(command),
-        });
+        return this.executeDesktopAction(
+          {
+            ...commandParameters<DesktopActionParams>(parameters),
+            action: this.mapDesktopCommandToAction(command),
+          },
+          signal,
+        );
       case "browser_open":
       case "browser_connect":
       case "browser_close":
@@ -535,10 +542,13 @@ export class ComputerUseService extends Service {
       case "browser_open_tab":
       case "browser_close_tab":
       case "browser_switch_tab":
-        return this.executeBrowserAction({
-          ...commandParameters<BrowserActionParams>(parameters),
-          action: this.mapBrowserCommandToAction(command),
-        });
+        return this.executeBrowserAction(
+          {
+            ...commandParameters<BrowserActionParams>(parameters),
+            action: this.mapBrowserCommandToAction(command),
+          },
+          signal,
+        );
       case "list_windows":
       case "switch_to_window":
       case "arrange_windows":
@@ -547,10 +557,13 @@ export class ComputerUseService extends Service {
       case "maximize_window":
       case "restore_window":
       case "close_window":
-        return this.executeWindowAction({
-          ...commandParameters<WindowActionParams>(parameters),
-          action: this.mapWindowCommandToAction(command),
-        });
+        return this.executeWindowAction(
+          {
+            ...commandParameters<WindowActionParams>(parameters),
+            action: this.mapWindowCommandToAction(command),
+          },
+          signal,
+        );
       case "file_read":
       case "file_write":
       case "file_edit":
@@ -567,10 +580,13 @@ export class ComputerUseService extends Service {
       case "file_create_dir":
       case "file_directory_exists":
       case "file_get_file_size":
-        return this.executeFileAction({
-          ...commandParameters<FileActionParams>(parameters),
-          action: this.mapFileCommandToAction(command),
-        });
+        return this.executeFileAction(
+          {
+            ...commandParameters<FileActionParams>(parameters),
+            action: this.mapFileCommandToAction(command),
+          },
+          signal,
+        );
       case "terminal_connect":
       case "terminal_execute":
       case "terminal_read":
@@ -578,10 +594,13 @@ export class ComputerUseService extends Service {
       case "terminal_clear":
       case "terminal_close":
       case "execute_command":
-        return this.executeTerminalAction({
-          ...commandParameters<TerminalActionParams>(parameters),
-          action: this.mapTerminalCommandToAction(command),
-        });
+        return this.executeTerminalAction(
+          {
+            ...commandParameters<TerminalActionParams>(parameters),
+            action: this.mapTerminalCommandToAction(command),
+          },
+          signal,
+        );
       default:
         return {
           success: false,
@@ -663,6 +682,7 @@ export class ComputerUseService extends Service {
     const approvalError = await this.awaitApproval(
       command,
       this.appApprovalParameters(parameters),
+      signal,
     );
     if (approvalError) return { success: false, error: approvalError };
     try {
@@ -899,7 +919,11 @@ export class ComputerUseService extends Service {
           signal,
         );
       }
-      return this.executeCommand(action.command, action.parameters ?? {});
+      return this.executeCommand(
+        action.command,
+        action.parameters ?? {},
+        signal,
+      );
     }
 
     const targetId = target.targetId;
@@ -918,7 +942,11 @@ export class ComputerUseService extends Service {
           error: `Command is not allowed in a browser session: ${action.command}`,
         };
       }
-      return this.executeCommand(action.command, action.parameters ?? {});
+      return this.executeCommand(
+        action.command,
+        action.parameters ?? {},
+        signal,
+      );
     }
 
     return {
@@ -960,6 +988,7 @@ export class ComputerUseService extends Service {
 
   async executeDesktopAction(
     rawParams: DesktopActionParams,
+    signal?: AbortSignal,
   ): Promise<ComputerActionResult> {
     const params = this.normalizeDesktopActionParams(rawParams);
     const entry = this.createEntry(params.action, this.toParamsRecord(params));
@@ -975,6 +1004,7 @@ export class ComputerUseService extends Service {
       const approvalError = await this.awaitApproval(
         this.desktopApprovalCommand(params.action),
         this.toParamsRecord(params),
+        signal,
       );
       if (approvalError) {
         return this.failEntry(entry, { success: false, error: approvalError });
@@ -1345,6 +1375,7 @@ export class ComputerUseService extends Service {
 
   async executeBrowserAction(
     rawParams: BrowserActionParams,
+    signal?: AbortSignal,
   ): Promise<BrowserActionResult> {
     const action = this.normalizeBrowserAction(rawParams.action);
     let params: BrowserActionParams;
@@ -1368,6 +1399,7 @@ export class ComputerUseService extends Service {
       const approvalError = await this.awaitApproval(
         this.browserApprovalCommand(params.action),
         this.toParamsRecord(params),
+        signal,
       );
       if (approvalError) {
         return this.failEntry(entry, { success: false, error: approvalError });
@@ -1641,6 +1673,7 @@ export class ComputerUseService extends Service {
 
   async executeWindowAction(
     rawParams: WindowActionParams,
+    signal?: AbortSignal,
   ): Promise<WindowActionResult> {
     const params = this.normalizeWindowActionParams(rawParams);
     const entry = this.createEntry(
@@ -1657,6 +1690,7 @@ export class ComputerUseService extends Service {
       const approvalError = await this.awaitApproval(
         this.windowApprovalCommand(params.action),
         this.toParamsRecord(params),
+        signal,
       );
       if (approvalError) {
         return this.failEntry(entry, { success: false, error: approvalError });
@@ -1732,11 +1766,9 @@ export class ComputerUseService extends Service {
           });
         }
         case "get_application_windows": {
-          const appName = params.appName ?? params.title ?? params.window;
-          if (!appName) {
-            throw new Error("appName is required for get_application_windows");
-          }
-          const windows = getApplicationWindows(appName);
+          const windows = getApplicationWindows(
+            this.requireApplicationQuery(params),
+          );
           return this.succeedEntry(entry, {
             success: true,
             windows,
@@ -1755,8 +1787,10 @@ export class ComputerUseService extends Service {
         }
         case "get_window_size":
         case "get_window_position": {
-          // windowId is optional — defaults to the focused/foreground window.
-          const bounds = await getWindowBounds(params.windowId);
+          // The target is optional — defaults to the focused/foreground window.
+          const bounds = await getWindowBounds(
+            params.windowId ?? params.windowTitle,
+          );
           return this.succeedEntry(entry, {
             success: true,
             bounds,
@@ -1797,6 +1831,7 @@ export class ComputerUseService extends Service {
 
   async executeFileAction(
     rawParams: FileActionParams,
+    signal?: AbortSignal,
   ): Promise<FileActionResult> {
     const params = this.normalizeFileActionParams(rawParams);
     const entry = this.createEntry(
@@ -1808,6 +1843,7 @@ export class ComputerUseService extends Service {
       const approvalError = await this.awaitApproval(
         this.fileApprovalCommand(params.action),
         this.toParamsRecord(params),
+        signal,
       );
       if (approvalError) {
         return this.failEntry(entry, { success: false, error: approvalError });
@@ -1902,6 +1938,7 @@ export class ComputerUseService extends Service {
 
   async executeTerminalAction(
     rawParams: TerminalActionParams,
+    signal?: AbortSignal,
   ): Promise<TerminalActionResult> {
     const params = this.normalizeTerminalActionParams(rawParams);
     const entry = this.createEntry(
@@ -1913,6 +1950,7 @@ export class ComputerUseService extends Service {
       const approvalError = await this.awaitApproval(
         this.terminalApprovalCommand(params.action),
         this.toParamsRecord(params),
+        signal,
       );
       if (approvalError) {
         return this.failEntry(entry, { success: false, error: approvalError });
@@ -2166,9 +2204,36 @@ export class ComputerUseService extends Service {
     if (!KNOWN_DESKTOP_ACTIONS.has(action)) {
       throw new Error(`Unknown desktop action: ${action}`);
     }
+    // Coordinate actions translate through the named display after approval;
+    // an unknown id can only fail there, so reject it here.
+    if (
+      COORDINATE_BEARING_ACTIONS.has(action) &&
+      params.displayId !== undefined &&
+      !findDisplay(params.displayId)
+    ) {
+      throw new Error(
+        `Unknown displayId ${params.displayId}. Known displays: ${listDisplays()
+          .map((d) => `${d.id}(${d.name})`)
+          .join(", ")}`,
+      );
+    }
     if (action === "drag") {
       // A ≥2-point polyline supersedes the start→end pair (see the drag case).
-      if (params.path && params.path.length >= 2) return;
+      if (params.path && params.path.length >= 2) {
+        for (const [index, point] of params.path.entries()) {
+          if (
+            !Array.isArray(point) ||
+            point.length < 2 ||
+            !Number.isFinite(point[0]) ||
+            !Number.isFinite(point[1])
+          ) {
+            throw new Error(
+              `drag path point ${index} must be [x, y] with two finite numbers`,
+            );
+          }
+        }
+        return;
+      }
       this.requireCoordinate(params.startCoordinate, "drag", "startCoordinate");
       this.requireCoordinate(params.coordinate, "drag");
       return;
@@ -2177,6 +2242,20 @@ export class ComputerUseService extends Service {
       this.requireCoordinate(params.coordinate, action);
     }
     switch (action) {
+      case "click_with_modifiers":
+        for (const modifier of params.modifiers ?? []) {
+          if (!driverSupportsModifier(modifier)) {
+            throw new Error(`Unsupported modifier: "${modifier}"`);
+          }
+        }
+        // The drivers click the left button only; a declared non-left button
+        // would otherwise be dropped and reported as a successful click.
+        if (params.button && params.button !== "left") {
+          throw new Error(
+            `click_with_modifiers only clicks the left button (got ${params.button})`,
+          );
+        }
+        break;
       case "type":
         if (!params.text) throw new Error("text is required for type action");
         break;
@@ -2218,8 +2297,10 @@ export class ComputerUseService extends Service {
    */
   private validateWindowActionInput(params: WindowActionParams): void {
     switch (params.action) {
-      case "list":
       case "arrange":
+        resolveWindowArrangement(params.arrangement);
+        return;
+      case "list":
       case "get_current_window_id":
       case "get_window_size":
       case "get_window_position":
@@ -2241,11 +2322,17 @@ export class ComputerUseService extends Service {
         this.requireWindowTarget(params);
         this.requireNumber(params.x, "x is required for set_bounds");
         this.requireNumber(params.y, "y is required for set_bounds");
+        // The platform window backends apply a size only when both dimensions
+        // are present, so one alone would move the window and report success
+        // without resizing it.
+        if ((params.width === undefined) !== (params.height === undefined)) {
+          throw new Error(
+            "set_bounds needs width and height together to resize; give both or neither",
+          );
+        }
         return;
       case "get_application_windows":
-        if (!(params.appName ?? params.title ?? params.window)) {
-          throw new Error("appName is required for get_application_windows");
-        }
+        this.requireApplicationQuery(params);
         return;
       default:
         throw new Error(
@@ -2507,9 +2594,16 @@ export class ComputerUseService extends Service {
     }
   }
 
-  private async awaitApproval(
+  /**
+   * The approval gate every desktop effect goes through. Returns null when the
+   * command may run, or the reason it was blocked, rejected or cancelled.
+   * Public so the actions that drive the desktop without a service command
+   * (COMPUTER_USE_AGENT, CLIPBOARD) use the same gate.
+   */
+  async awaitApproval(
     command: string,
     parameters: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     if (this.approvalManager.shouldAutoApprove(command)) {
       return null;
@@ -2520,6 +2614,7 @@ export class ComputerUseService extends Service {
     const decision = await this.approvalManager.requestApproval(
       command,
       parameters,
+      signal,
     );
     if (decision.approved) {
       return null;
@@ -2784,6 +2879,18 @@ export class ComputerUseService extends Service {
       throw new Error(message);
     }
     return value;
+  }
+
+  /**
+   * App-name query for get_application_windows. `windowTitle` is the parameter
+   * the WINDOW action declares; normalizeWindowActionParams folds the `title`
+   * and `window` aliases into it.
+   */
+  private requireApplicationQuery(params: WindowActionParams): string {
+    return this.requireIdentifier(
+      params.appName ?? params.windowTitle,
+      "windowTitle is required for get_application_windows",
+    );
   }
 
   private requireWindowTarget(params: WindowActionParams): string {

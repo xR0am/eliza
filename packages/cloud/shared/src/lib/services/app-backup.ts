@@ -11,6 +11,7 @@
  * active deployment's hash so the user can redeploy; the bytes are not embedded.
  */
 
+import { appFrontendDeploymentsRepository } from "../../db/repositories/app-frontend-deployments";
 import type { App } from "../../db/repositories/apps";
 import { logger } from "../utils/logger";
 import { parseAppMonetizationNumber } from "./app-credit-math";
@@ -50,7 +51,8 @@ export interface AppBackup {
 export class AppBackupService {
   /** Build a secret-free config snapshot of an app. */
   async exportApp(app: App): Promise<AppBackup> {
-    const contentHash: string | null = null;
+    const activeDeployment = await appFrontendDeploymentsRepository.getActive(app.id);
+    const contentHash = activeDeployment?.content_hash ?? null;
 
     return {
       version: APP_BACKUP_VERSION,
@@ -108,6 +110,16 @@ export class AppBackupService {
     if (backup.version !== APP_BACKUP_VERSION) {
       throw new Error(`Unsupported backup version: ${backup.version}`);
     }
+    const inferenceMarkupPercentage = parseAppMonetizationNumber(
+      "inference_markup_percentage",
+      backup.monetization.inference_markup_percentage,
+      { min: 0, max: 1000 },
+    );
+    const purchaseSharePercentage = parseAppMonetizationNumber(
+      "purchase_share_percentage",
+      backup.monetization.purchase_share_percentage,
+      { min: 0, max: 100 },
+    );
     const warnings: string[] = [];
     const created = await appsService.create({
       name: overrideName?.trim() || `${backup.app.name} (restored)`,
@@ -134,20 +146,23 @@ export class AppBackupService {
     // never from a client-supplied backup blob (#11834).
     if (
       backup.monetization.enabled ||
-      backup.monetization.inference_markup_percentage > 0 ||
-      backup.monetization.purchase_share_percentage > 0
+      inferenceMarkupPercentage > 0 ||
+      purchaseSharePercentage > 0
     ) {
       try {
         await appCreditsService.updateMonetizationSettings(created.app.id, {
           monetizationEnabled: false,
-          inferenceMarkupPercentage: backup.monetization.inference_markup_percentage,
-          purchaseSharePercentage: backup.monetization.purchase_share_percentage,
+          inferenceMarkupPercentage,
+          purchaseSharePercentage,
         });
       } catch (error) {
         logger.warn("[AppBackup] failed to reapply monetization on restore", {
           appId: created.app.id,
           error: error instanceof Error ? error.message : String(error),
         });
+        warnings.push(
+          "Monetization pricing could not be restored. Update it manually before submitting the app for review.",
+        );
       }
       if (backup.monetization.enabled) {
         warnings.push(

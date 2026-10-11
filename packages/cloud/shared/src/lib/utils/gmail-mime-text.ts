@@ -1,7 +1,14 @@
 // Pure helpers for Gmail API message payloads (users.messages.get format=full). No network,
 // no HTML rendering: links are returned as inert data for clients to review before opening.
 
-import { MAX_GMAIL_MIME_NODES } from "@elizaos/plugin-google-workspace/gmail-mime-parts";
+import {
+  decodeGmailPartData,
+  gmailPartCharset,
+  MAX_GMAIL_MIME_NODES,
+  WINDOWS_1252_HIGH,
+} from "@elizaos/plugin-google-workspace/gmail-mime-parts";
+
+export { decodeGmailPartData, gmailPartCharset };
 
 export interface GmailPayloadPart {
   mimeType?: string;
@@ -16,81 +23,32 @@ export interface GmailMessageLink {
   text: string;
 }
 
-// Windows-1252 bytes 0x80-0x9f (ISO-8859-1 maps them to C1 controls). Undefined bytes stay as-is.
-const WINDOWS_1252_HIGH = [
-  0x20ac, 0x81, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039,
-  0x0152, 0x8d, 0x017d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc,
-  0x2122, 0x0161, 0x203a, 0x0153, 0x9d, 0x017e, 0x0178,
-];
-const LATIN1_LABELS = new Set([
-  "iso-8859-1",
-  "iso8859-1",
-  "iso_8859-1",
-  "latin1",
-  "latin-1",
-  "l1",
-  "us-ascii",
-  "ascii",
-  "windows-1252",
-  "cp1252",
-  "x-cp1252",
-  "cp819",
-  "ibm819",
-]);
-function decodeWindows1252(bytes: Uint8Array): string {
-  let out = "";
-  for (const byte of bytes)
-    out += String.fromCharCode(
-      byte >= 0x80 && byte <= 0x9f ? WINDOWS_1252_HIGH[byte - 0x80] : byte,
-    );
-  return out;
-}
-
-/** The `charset` parameter of a part's Content-Type header, lower-cased, or null. */
-export function gmailPartCharset(part: GmailPayloadPart | null | undefined): string | null {
-  const header = part?.headers?.find((row) => row?.name?.toLowerCase() === "content-type")?.value;
-  if (typeof header !== "string") return null;
-  const match = /;\s*charset\s*=\s*(?:"([^"]{1,64})"|([^\s;"]{1,64}))/i.exec(header);
-  const label = (match?.[1] ?? match?.[2])?.trim().toLowerCase();
-  return label || null;
-}
-
-/**
- * Decodes base64url part data with its declared charset. ISO-8859-1, US-ASCII and Windows-1252
- * decode as Windows-1252 (the WHATWG mapping, available even where TextDecoder lacks legacy
- * encodings); other labels use TextDecoder when the runtime supports them. Unknown labels and
- * undeclared charsets fall back to UTF-8.
- */
-export function decodeGmailPartData(
-  data: string,
-  charset: string | null = null,
-  strict = false,
-): string {
-  const bytes = Buffer.from(data, "base64url");
-  if (
-    strict &&
-    (!/^[A-Za-z0-9_-]*={0,2}$/.test(data) ||
-      bytes.toString("base64url") !== data.replace(/=+$/, ""))
-  )
-    throw new Error("Draft part encoding is invalid");
-  const label = charset?.toLowerCase() ?? "utf-8";
-  if (LATIN1_LABELS.has(label)) return decodeWindows1252(bytes);
-  if (label !== "utf-8" && label !== "utf8") {
-    try {
-      return new TextDecoder(label, { fatal: strict }).decode(bytes);
-    } catch {
-      if (strict) throw new Error("Draft charset cannot be decoded losslessly");
-      // Unsupported or invalid label: UTF-8 below.
-    }
-  }
-  return new TextDecoder("utf-8", { fatal: strict }).decode(bytes);
-}
-
 /** Decodes one part's inline body with its own declared charset. */
 export function decodeGmailPart(part: GmailPayloadPart, strict = false): string {
   return typeof part.body?.data === "string"
     ? decodeGmailPartData(part.body.data, gmailPartCharset(part), strict)
     : "";
+}
+
+/**
+ * The decoded body of the first part with exactly `mimeType` in the subtree,
+ * searching every multipart container before the caller moves on to the next
+ * mime type. A container's own nested result must not preempt the caller's
+ * preference order: a text/html part inside an early container is not the
+ * text/plain body a later sibling part carries.
+ */
+function findGmailBodyByMime(payload: GmailPayloadPart, mimeType: string, depth: number): string {
+  if (depth > 20) throw new Error("Gmail MIME nesting exceeds the supported depth");
+  if (!Array.isArray(payload.parts)) return "";
+  for (const part of payload.parts) {
+    if (part?.mimeType === mimeType && typeof part.body?.data === "string")
+      return decodeGmailPart(part);
+    if (part?.mimeType?.startsWith("multipart/")) {
+      const nested = findGmailBodyByMime(part, mimeType, depth + 1);
+      if (nested) return nested;
+    }
+  }
+  return "";
 }
 
 /**
@@ -106,14 +64,8 @@ export function extractGmailBodyText(
   if (typeof payload.body?.data === "string") return decodeGmailPart(payload);
   if (!Array.isArray(payload.parts)) return "";
   for (const mimeType of ["text/plain", "text/html"]) {
-    for (const part of payload.parts) {
-      if (part?.mimeType === mimeType && typeof part.body?.data === "string")
-        return decodeGmailPart(part);
-      if (part?.mimeType?.startsWith("multipart/")) {
-        const nested = extractGmailBodyText(part, depth + 1);
-        if (nested) return nested;
-      }
-    }
+    const found = findGmailBodyByMime(payload, mimeType, depth);
+    if (found) return found;
   }
   for (const part of payload.parts) {
     const nested = extractGmailBodyText(part, depth + 1);
@@ -146,13 +98,22 @@ const entities: Record<string, string> = {
 function decodeEntities(value: string): string {
   return value.replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z0-9]{2,8});/gi, (match, name: string) => {
     const lower = name.toLowerCase();
-    if (lower.startsWith("#x")) {
-      const code = Number.parseInt(lower.slice(2), 16);
-      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
-    }
-    if (lower.startsWith("#")) {
-      const code = Number.parseInt(lower.slice(1), 10);
-      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    if (lower.startsWith("#x") || lower.startsWith("#")) {
+      const code = Number.parseInt(
+        lower.startsWith("#x") ? lower.slice(2) : lower.slice(1),
+        lower.startsWith("#x") ? 16 : 10,
+      );
+      if (!(code > 0 && code <= 0x10ffff)) return match;
+      // A lone surrogate is not a scalar value; leave the reference as written.
+      if (code >= 0xd800 && code <= 0xdfff) return match;
+      if (code === 0xa0) return " ";
+      // HTML maps &#128;-&#159; through windows-1252 (WHATWG numeric character
+      // reference table); the unassigned slots stay as written.
+      if (code >= 0x80 && code <= 0x9f) {
+        const mapped = WINDOWS_1252_HIGH[code - 0x80];
+        return mapped === code ? match : String.fromCodePoint(mapped);
+      }
+      return String.fromCodePoint(code);
     }
     return entities[lower] ?? match;
   });

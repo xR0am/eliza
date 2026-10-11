@@ -14,6 +14,7 @@ import {
   normalizeTriggerIntervalMs,
   parseCronExpression,
   parseScheduledAtIso,
+  resolveScheduledAtIsoInTimeZone,
   resolveTriggerTiming,
   type TriggerTiming,
 } from "@elizaos/core";
@@ -35,6 +36,7 @@ export {
   normalizeTriggerIntervalMs,
   parseCronExpression,
   parseScheduledAtIso,
+  resolveScheduledAtIsoInTimeZone,
   resolveTriggerTiming,
   type TriggerTiming,
 };
@@ -361,6 +363,15 @@ export function normalizeTriggerDraft(params: {
 
   if (!cronExpression || !parseCronExpression(cronExpression)) {
     return { error: "cronExpression must be a valid 5-field cron expression" };
+  }
+  // The cron scheduler evaluates a zone it cannot resolve on UTC, so a
+  // supplied zone must be one Intl accepts. An absent zone means UTC.
+  if (timezone !== undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(0);
+    } catch {
+      return { error: "timezone must be a valid IANA time zone" };
+    }
   }
 
   return {

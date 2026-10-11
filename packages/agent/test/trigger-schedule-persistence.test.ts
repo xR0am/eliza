@@ -229,11 +229,55 @@ it("does not label disabled trigger creation as a retryable schedule rejection",
   expect(result?.effectReceipts).toBeUndefined();
   expect(await fixture.runtime.getTasks({ tags: ["trigger"] })).toEqual(before);
 });
+it("refuses trigger creation when ELIZA_TRIGGERS_ENABLED is FALSE in any case, like the trigger routes", async () => {
+  const before = await fixture.runtime.getTasks({ tags: ["trigger"] });
+  const runtime = Object.create(fixture.runtime);
+  runtime.getSetting = (key: string) =>
+    key === "ELIZA_TRIGGERS_ENABLED" ? null : fixture.runtime.getSetting(key);
+  const previous = process.env.ELIZA_TRIGGERS_ENABLED;
+  process.env.ELIZA_TRIGGERS_ENABLED = " FALSE";
+  try {
+    expect(triggersFeatureEnabled(runtime)).toBe(false);
+    const result = await triggerAction.handler(
+      runtime,
+      {
+        entityId: fixture.runtime.agentId,
+        agentId: fixture.runtime.agentId,
+        roomId: randomUUID() as UUID,
+        content: { text: "Remind me in 2 minutes." },
+      } as Memory,
+      undefined,
+      {
+        parameters: {
+          action: "create",
+          instructions: "Remind the user.",
+          delayMinutes: 2,
+        },
+      },
+    );
+    expect(result).toMatchObject({ success: false, error: "TRIGGERS_OFF" });
+    expect(await fixture.runtime.getTasks({ tags: ["trigger"] })).toEqual(
+      before,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.ELIZA_TRIGGERS_ENABLED;
+    else process.env.ELIZA_TRIGGERS_ENABLED = previous;
+  }
+});
 it.each([
   {
     triggerType: "interval",
+    intervalMs: 7_200_000,
     expectedType: "interval",
-    expectedInterval: 43_200_000,
+    expectedInterval: 7_200_000,
+  },
+  {
+    // The planner echoes the first fire as a delay beside the interval.
+    triggerType: "interval",
+    intervalMs: 7_200_000,
+    delayMinutes: 120,
+    expectedType: "interval",
+    expectedInterval: 7_200_000,
   },
   { delayMinutes: 2, expectedType: "once" },
   { intervalMs: 300_000, expectedType: "interval", expectedInterval: 300_000 },
@@ -276,6 +320,183 @@ it.each([
   },
 );
 
+it.each<{ label: string; schedule: JsonObject }>([
+  {
+    label: "triggerType=interval alone when intervalMs is absent",
+    schedule: { triggerType: "interval" },
+  },
+  {
+    label: "triggerType=interval over a cron when intervalMs is absent",
+    schedule: { triggerType: "interval", cronExpression: "0 9 * * *" },
+  },
+  {
+    label: "intervalMs with a delay and no triggerType",
+    schedule: { intervalMs: 7_200_000, delayMinutes: 120 },
+  },
+  {
+    label: "intervalMs with scheduledAtIso and no triggerType",
+    schedule: { intervalMs: 7_200_000, scheduledAtIso: "2099-01-01T09:00:00Z" },
+  },
+])(
+  "refuses a trigger create with $label and writes no trigger task",
+  async ({ schedule }) => {
+    const before = await fixture.runtime.getTasks({ tags: ["trigger"] });
+    const result = await triggerAction.handler(
+      fixture.runtime,
+      {
+        entityId: fixture.runtime.agentId,
+        agentId: fixture.runtime.agentId,
+        roomId: randomUUID() as UUID,
+        content: { text: "Remind me every 2 hours to stretch." },
+      } as Memory,
+      undefined,
+      {
+        parameters: { action: "create", instructions: "stretch", ...schedule },
+      },
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "MISSING_SCHEDULE",
+      data: { acceptance: "rejected", executionStatus: "not_started" },
+    });
+    expect(result?.effectReceipts).toBeUndefined();
+    expect(await fixture.runtime.getTasks({ tags: ["trigger"] })).toEqual(
+      before,
+    );
+  },
+);
+
+it("updates a trigger by the triggerId create returned and refuses fields it cannot apply", async () => {
+  const message = {
+    entityId: fixture.runtime.agentId,
+    agentId: fixture.runtime.agentId,
+    roomId: randomUUID() as UUID,
+    content: { text: "Remind me every morning to water the orchid." },
+  } as Memory;
+  const created = await triggerAction.handler(
+    fixture.runtime,
+    message,
+    undefined,
+    {
+      parameters: {
+        action: "create",
+        displayName: "Water the orchid",
+        instructions: "Remind the user to water the orchid.",
+        cronExpression: "0 9 * * *",
+      },
+    },
+  );
+  if (!created?.success) throw new Error(created?.text ?? "create failed");
+  const { taskId, triggerId } = created.data as {
+    taskId: UUID;
+    triggerId: UUID;
+  };
+  try {
+    // list is the only read; update can only be reached with an id it returns.
+    const listed = await triggerAction.handler(
+      fixture.runtime,
+      message,
+      undefined,
+      { parameters: { action: "list" } },
+    );
+    expect(
+      (listed?.data as { entries: unknown[] } | undefined)?.entries,
+    ).toContainEqual({ taskId, triggerId, displayName: "Water the orchid" });
+    const update = (parameters: Record<string, unknown>) =>
+      triggerAction.handler(fixture.runtime, message, undefined, {
+        parameters: { action: "update", taskId: triggerId, ...parameters },
+      });
+    for (const [parameters, error] of [
+      [{ scheduledAtIso: "2099-01-01T17:00:00Z" }, "INVALID_UPDATE"],
+      [{ delayMinutes: 10 }, "INVALID_UPDATE"],
+      [{ triggerType: "once" }, "INVALID_UPDATE"],
+      [{ enabled: false }, "INVALID_UPDATE"],
+      [{}, "NO_UPDATE_FIELDS"],
+    ] as const) {
+      const refused = await update(parameters);
+      expect(refused, JSON.stringify(parameters)).toMatchObject({
+        success: false,
+        error,
+      });
+      expect(refused?.effectReceipts).toBeUndefined();
+    }
+    const unchanged = await fixture.runtime.getTask(taskId);
+    expect(unchanged && readTriggerConfig(unchanged)).toMatchObject({
+      triggerType: "cron",
+      cronExpression: "0 9 * * *",
+      displayName: "Water the orchid",
+      enabled: true,
+    });
+
+    const moved = await update({ cronExpression: "0 17 * * *" });
+    expect(moved, moved?.text).toMatchObject({
+      success: true,
+      data: { taskId, triggerId, cronExpression: "0 17 * * *" },
+    });
+    const saved = await fixture.runtime.getTask(taskId);
+    expect(saved && readTriggerConfig(saved)?.cronExpression).toBe(
+      "0 17 * * *",
+    );
+  } finally {
+    await fixture.runtime.deleteTask(taskId);
+  }
+});
+
+it("reads a once time with no offset in the user's zone on create and update", async () => {
+  // Asia/Kolkata is UTC+05:30 all year, so the expected instant does not
+  // depend on the zone of the host that runs this test.
+  const message = {
+    entityId: fixture.runtime.agentId,
+    agentId: fixture.runtime.agentId,
+    roomId: randomUUID() as UUID,
+    content: {
+      text: "Remind me to call mom.",
+      metadata: { uiTimeZone: "Asia/Kolkata" },
+    },
+  } as Memory;
+  const created = await triggerAction.handler(
+    fixture.runtime,
+    message,
+    undefined,
+    {
+      parameters: {
+        action: "create",
+        instructions: "Remind the user to call mom.",
+        scheduledAtIso: "2099-01-15T09:00:00",
+      },
+    },
+  );
+  if (!created?.success) throw new Error(created?.text ?? "create failed");
+  const { taskId } = created.data as { taskId: UUID };
+  try {
+    const stored = await fixture.runtime.getTask(taskId);
+    expect(stored && readTriggerConfig(stored)).toMatchObject({
+      triggerType: "once",
+      scheduledAtIso: "2099-01-15T03:30:00.000Z",
+      nextRunAtMs: Date.parse("2099-01-15T03:30:00.000Z"),
+    });
+    const update = (scheduledAtIso: string) =>
+      triggerAction.handler(fixture.runtime, message, undefined, {
+        parameters: { action: "update", taskId, scheduledAtIso },
+      });
+    const moved = await update("2099-01-16T18:15");
+    expect(moved, moved?.text).toMatchObject({ success: true });
+    const afterLocal = await fixture.runtime.getTask(taskId);
+    expect(afterLocal && readTriggerConfig(afterLocal)?.scheduledAtIso).toBe(
+      "2099-01-16T12:45:00.000Z",
+    );
+    // An explicit offset is an instant already and is stored as given.
+    const pinned = await update("2099-01-17T09:00:00-08:00");
+    expect(pinned, pinned?.text).toMatchObject({ success: true });
+    const afterPinned = await fixture.runtime.getTask(taskId);
+    expect(afterPinned && readTriggerConfig(afterPinned)).toMatchObject({
+      scheduledAtIso: "2099-01-17T09:00:00-08:00",
+      nextRunAtMs: Date.parse("2099-01-17T17:00:00.000Z"),
+    });
+  } finally {
+    await fixture.runtime.deleteTask(taskId);
+  }
+});
 it("persists the timezone through pause and re-enable and schedules in that zone", async () => {
   const triggerId = randomUUID() as UUID;
   const normalized = normalizeTriggerDraft({
@@ -300,6 +521,15 @@ it("persists the timezone through pause and re-enable and schedules in that zone
   const trigger = buildTriggerConfig({ draft: normalized.draft, triggerId });
   const metadata = buildTriggerMetadata({ trigger, nowMs: Date.now() });
   expect(metadata).not.toBeNull();
+  // A zone Intl rejects would be scheduled on UTC, so the draft is refused.
+  for (const timezone of ["Pacific Time", "America/LosAngeles", ""]) {
+    expect(
+      normalizeTriggerDraft({
+        input: { ...normalized.draft, timezone },
+        fallback: normalized.draft,
+      }),
+    ).toEqual({ error: "timezone must be a valid IANA time zone" });
+  }
   const taskId = await fixture.runtime.createTask({
     name: "trigger",
     agentId: fixture.runtime.agentId,

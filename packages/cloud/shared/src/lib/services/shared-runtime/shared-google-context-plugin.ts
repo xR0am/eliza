@@ -1,7 +1,10 @@
 /** First-party private reads; owner scope is bound by the hosting boundary, never tool args. */
 import { type Action, type ActionResult, ElizaError, type Plugin } from "@elizaos/core";
 import { AgentGoogleConnectorError } from "../agent-google-connector";
-import type { createSharedGoogleReadPort } from "./shared-google-read-port";
+import {
+  type createSharedGoogleReadPort,
+  SHARED_GOOGLE_CALENDAR_BOUND_PATTERN,
+} from "./shared-google-read-port";
 
 export { isSharedPrivateGoogleContextRequest as isSharedGoogleContextRequest } from "./shared-realtime-grounding";
 export const GOOGLE_CONTEXT_ACTION = "GOOGLE_CONTEXT";
@@ -37,17 +40,19 @@ export function createSharedGoogleContextPlugin(
       },
       {
         name: "timeMin",
-        description: "Calendar window start ISO timestamp.",
-        schema: { type: "string" },
+        description:
+          "Calendar window start. ISO timestamp with an explicit UTC offset or Z, for example 2026-10-12T00:00:00-07:00. timeZone does not shift this value.",
+        schema: { type: "string", pattern: SHARED_GOOGLE_CALENDAR_BOUND_PATTERN },
       },
       {
         name: "timeMax",
-        description: "Calendar window end ISO timestamp, after the requested start.",
-        schema: { type: "string" },
+        description:
+          "Calendar window end, after the requested start. ISO timestamp with an explicit UTC offset or Z.",
+        schema: { type: "string", pattern: SHARED_GOOGLE_CALENDAR_BOUND_PATTERN },
       },
       {
         name: "timeZone",
-        description: "Optional owner-requested IANA timezone. Defaults to UTC when omitted.",
+        description: "Owner IANA timezone. Required for calendar; the read is rejected without it.",
         schema: { type: "string" },
       },
     ],
@@ -115,7 +120,15 @@ export function createSharedGoogleContextPlugin(
           /^Google Calendar feed exceeded \d+ events; narrow the requested time range\.$/u.test(
             error.message,
           );
-        const code = calendarLimit ? "GOOGLE_CONTEXT_LIMIT_EXCEEDED" : "GOOGLE_CONTEXT_UNAVAILABLE";
+        const invalidRequest =
+          error instanceof ElizaError &&
+          (error.code === "SHARED_GOOGLE_INVALID_INPUT" ||
+            error.code === "SHARED_GOOGLE_CALENDAR_WINDOW_REQUIRED");
+        const code = calendarLimit
+          ? "GOOGLE_CONTEXT_LIMIT_EXCEEDED"
+          : invalidRequest
+            ? "GOOGLE_CONTEXT_INVALID_REQUEST"
+            : "GOOGLE_CONTEXT_UNAVAILABLE";
         _runtime.reportError(
           "SharedGoogleContext",
           new ElizaError("Google personal context operation failed", { code }),
@@ -125,7 +138,9 @@ export function createSharedGoogleContextPlugin(
           success: false,
           text: calendarLimit
             ? "Google Calendar context exceeded the event limit. No partial result was returned. Request a narrower time range."
-            : "Google personal context could not be read. Check the selected account's connection and consent, or retry the request. No successful read is claimed.",
+            : invalidRequest
+              ? "The Google request was rejected before any read. gmail_search needs query. gmail_message needs messageId. calendar needs timeMin, timeMax (ISO timestamps with an explicit UTC offset or Z, end after start) and the owner's IANA timeZone."
+              : "Google personal context could not be read. Check the selected account's connection and consent, or retry the request. No successful read is claimed.",
           data: {
             actionName: GOOGLE_CONTEXT_ACTION,
             operation,

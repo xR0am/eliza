@@ -321,6 +321,12 @@ export function vaultKeyForProviderApiKey(normalizedProvider: string): string {
   return `providers.${normalizedProvider}.api-key`;
 }
 
+const VAULT_CREDENTIAL_PROVIDER_IDS: ReadonlySet<string> = new Set<string>([
+  ...FIRST_RUN_PROVIDER_CATALOG.map((provider) => provider.id),
+  "gemini",
+  "zai",
+]);
+
 export async function removeResetCredentialsFromVault(
   vault: Vault,
 ): Promise<void> {
@@ -329,12 +335,7 @@ export async function removeResetCredentialsFromVault(
     "ELIZAOS_CLOUD_BASE_URL",
     "ELIZAOS_CLOUD_ENABLED",
   ]);
-  const providerIds = new Set<string>([
-    ...FIRST_RUN_PROVIDER_CATALOG.map((provider) => provider.id),
-    "gemini",
-    "zai",
-  ]);
-  for (const providerId of providerIds) {
+  for (const providerId of VAULT_CREDENTIAL_PROVIDER_IDS) {
     keys.add(vaultKeyForProviderApiKey(providerId));
     for (const envKey of getFirstRunProviderSignalEnvKeys(providerId)) {
       keys.add(envKey);
@@ -343,6 +344,36 @@ export async function removeResetCredentialsFromVault(
   for (const provider of FIRST_RUN_PROVIDER_CATALOG) {
     if (provider.envKey) keys.add(provider.envKey);
   }
+  await removeVaultCredentialKeys(vault, keys, {
+    message: "Failed to remove reset credentials from the vault",
+    code: "VAULT_RESET_CREDENTIALS_FAILED",
+  });
+}
+
+export async function removeClearedCredentialsFromVault(
+  vault: Vault,
+  envKeys: Iterable<string>,
+): Promise<void> {
+  const keys = new Set<string>();
+  for (const envKey of envKeys) {
+    keys.add(envKey);
+    for (const providerId of VAULT_CREDENTIAL_PROVIDER_IDS) {
+      if (getFirstRunProviderSignalEnvKeys(providerId).includes(envKey)) {
+        keys.add(vaultKeyForProviderApiKey(providerId));
+      }
+    }
+  }
+  await removeVaultCredentialKeys(vault, keys, {
+    message: "Failed to remove cleared credentials from the vault",
+    code: "VAULT_CLEARED_CREDENTIALS_FAILED",
+  });
+}
+
+async function removeVaultCredentialKeys(
+  vault: Vault,
+  keys: Iterable<string>,
+  failure: { message: string; code: string },
+): Promise<void> {
   const failedKeys: string[] = [];
   let firstFailure: unknown;
   for (const key of keys) {
@@ -358,8 +389,8 @@ export async function removeResetCredentialsFromVault(
     }
   }
   if (failedKeys.length > 0) {
-    throw new ElizaError("Failed to remove reset credentials from the vault", {
-      code: "VAULT_RESET_CREDENTIALS_FAILED",
+    throw new ElizaError(failure.message, {
+      code: failure.code,
       context: { keys: failedKeys },
       cause: firstFailure,
     });

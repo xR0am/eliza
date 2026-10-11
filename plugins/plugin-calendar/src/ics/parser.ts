@@ -124,7 +124,14 @@ function unquoteParameter(value: string): string {
     trimmed.startsWith('"') && trimmed.endsWith('"')
       ? trimmed.slice(1, -1)
       : trimmed;
-  return unquoted.replaceAll("\\,", ",").replaceAll('\\"', '"');
+  // Decode RFC 6868 escapes once so an escaped caret stays literal.
+  return unquoted
+    .replaceAll("\\,", ",")
+    .replaceAll('\\"', '"')
+    .replace(/\^([\^n'])/g, (_match, character: string) => {
+      if (character === "n") return "\n";
+      return character === "'" ? '"' : "^";
+    });
 }
 
 function parseContentLine(line: string): IcsContentLine {
@@ -620,6 +627,49 @@ function recurrenceLines(component: IcsComponent): string[] {
     }
   }
   return lines;
+}
+
+/**
+ * Exceptions named by the EXDATE lines of a stored recurrence line set. A
+ * DATE-TIME value is in `instants`, parsed like DTSTART (TZID, floating values
+ * in `timezone`). A DATE value is only in `dates`, as the UTC midnight of its
+ * day: RFC 5545 lets EXDATE be a DATE, and on a timed series it names a day,
+ * not the instant of that UTC midnight.
+ * An EXDATE value that does not parse is counted, so the caller can report it.
+ */
+export function readIcsExceptionDates(
+  recurrence: readonly string[],
+  timezone: string | null,
+): { instants: Set<number>; dates: Set<number>; invalidValueCount: number } {
+  const instants = new Set<number>();
+  const dates = new Set<number>();
+  let invalidValueCount = 0;
+  for (const line of recurrence) {
+    if (!/^EXDATE[:;]/i.test(line.trim())) continue;
+    let property: IcsContentLine;
+    try {
+      property = parseContentLine(line);
+    } catch {
+      // error-policy:J3 A malformed untrusted EXDATE line is counted; the
+      // caller reports it and marks the feed partial.
+      invalidValueCount += 1;
+      continue;
+    }
+    for (const value of splitOutsideQuotes(property.value, ",")) {
+      try {
+        const parsed = parseDateProperty(
+          { ...property, value: value.trim() },
+          timezone,
+          "EXDATE",
+        );
+        (parsed.isDate ? dates : instants).add(Date.parse(parsed.instant));
+      } catch {
+        // error-policy:J3 Same as above, for one value of a valid line.
+        invalidValueCount += 1;
+      }
+    }
+  }
+  return { instants, dates, invalidValueCount };
 }
 
 function parseEvent(

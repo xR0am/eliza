@@ -2700,7 +2700,7 @@ async function ensureOutboundRoom(
   target: TargetInfo,
   label: string,
   kind: MessageTargetKind | undefined,
-): Promise<{ roomId: UUID; worldId: UUID }> {
+): Promise<{ roomId: UUID; worldId: UUID | undefined }> {
   const serverPart = target.serverId ?? "default";
   const targetPart =
     target.roomId ??
@@ -2716,6 +2716,11 @@ async function ensureOutboundRoom(
     : (stringToUuid(
         `${runtime.agentId}:${source}:message-room:${serverPart}:${targetPart}`,
       ) as UUID);
+  const existingRoom = await runtime.getRoom(roomId);
+  if (existingRoom) {
+    await runtime.ensureParticipantInRoom(runtime.agentId, roomId);
+    return { roomId, worldId: existingRoom.worldId };
+  }
   await runtime.ensureWorldExists({
     id: worldId,
     name: `${source}${target.serverId ? ` ${target.serverId}` : ""}`,
@@ -5719,7 +5724,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "source",
     description:
-      "Connector source: discord, slack, whatsapp, telegram, x, imessage, matrix, line, google-chat, feishu, instagram, wechat, gmail.",
+      "Connector source: discord, slack, whatsapp, telegram, x, imessage, matrix, line, google-chat, feishu, instagram, wechat, gmail. " +
+      `Inbox and draft ops (triage, list_inbox, search_inbox, draft_reply, draft_followup, respond, send_draft, manage, read_message) accept only: ${ALL_MESSAGE_SOURCES.join(", ")}.`,
     required: false,
     subactions: [
       "send",
@@ -5752,9 +5758,10 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "worldId",
     description:
-      "For op=list_rooms, an exact world UUID returned by list_worlds. Omit it to inspect the current room's world.",
+      "For op=list_rooms, an exact world UUID returned by list_worlds. Omit it to inspect the current room's world. " +
+      "For op=draft_followup and op=send_draft, the account or server scope of a new draft: the worldId shown on inbox messages (for gmail, the Google account id). Omit it for the default account.",
     required: false,
-    subactions: ["list_rooms"],
+    subactions: ["list_rooms", "draft_followup", "send_draft"],
     schema: { type: "string" },
   },
   {
@@ -5781,7 +5788,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "sources",
-    description: "Inbox sources for triage, list_inbox, search_inbox.",
+    description: `Inbox sources for triage, list_inbox, search_inbox. One or more of: ${ALL_MESSAGE_SOURCES.join(", ")}. triage and list_inbox reject a source that has no connected adapter able to list messages.`,
     required: false,
     subactions: [
       "triage",
@@ -5791,20 +5798,10 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
       "respond",
       "manage",
     ],
-    schema: { type: "array", items: { type: "string" } },
-  },
-  {
-    name: "folder",
-    description: "Inbox folder hint for triage/list/search/draft/respond.",
-    required: false,
-    subactions: [
-      "triage",
-      "list_inbox",
-      "search_inbox",
-      "draft_reply",
-      "respond",
-    ],
-    schema: { type: "string" },
+    schema: {
+      type: "array",
+      items: { type: "string", enum: [...ALL_MESSAGE_SOURCES] },
+    },
   },
   {
     name: "target",
@@ -5873,7 +5870,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "channelId",
-    description: "Platform channel ID.",
+    description:
+      "Platform channel ID. A new discord draft (draft_followup, send_draft) requires it.",
     required: false,
     subactions: [
       "read_channel",
@@ -5885,6 +5883,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
       "delete",
       "pin",
       "draft_followup",
+      "send_draft",
       "manage_server",
     ],
     schema: { type: "string" },
@@ -6131,7 +6130,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "sender",
-    description: "Sender identifier for inbox search or reply lookup.",
+    description:
+      "Sender for inbox search or reply lookup: a name, an email address, or the `from` value an inbox op returned.",
     required: false,
     subactions: ["search_inbox", "draft_reply", "respond", "manage"],
     schema: { type: "string" },
@@ -6188,7 +6188,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "sendAt",
-    description: "Scheduled send time for op=schedule_draft_send.",
+    description:
+      "Send time for op=schedule_draft_send, as an ISO 8601 timestamp (2026-10-12T09:00:00Z) or epoch milliseconds.",
     required: false,
     subactions: ["schedule_draft_send"],
     schema: { type: "string" },
@@ -6285,7 +6286,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "manageOperation",
     description:
-      "op=manage operation: archive, trash, spam, mark_read, label_add, label_remove, tag_add, tag_remove, mute_thread, unsubscribe.",
+      "op=manage operation: archive, trash, spam, mark_read, label_add, label_remove, tag_add, tag_remove, unsubscribe.",
     required: false,
     subactions: ["manage"],
     schema: { type: "string", enum: [...MANAGE_OPERATION_KINDS] },
@@ -6303,6 +6304,22 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
     required: false,
     subactions: ["manage"],
     schema: { type: "string" },
+  },
+  {
+    name: "tags",
+    description:
+      "For op=search_inbox: every hit must carry all of these tags, as the connector reports them in data.messages[].tags (Gmail label names).",
+    required: false,
+    subactions: ["search_inbox"],
+    schema: { type: "array", items: { type: "string" } },
+  },
+  {
+    name: "read",
+    description:
+      "For op=manage mark_read: false marks the message unread. Defaults to true.",
+    required: false,
+    subactions: ["manage"],
+    schema: { type: "boolean" },
   },
   {
     name: "attachments",
@@ -6341,7 +6358,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "limit",
-    description: "Max items.",
+    description: "Max items (at least 1).",
     required: false,
     subactions: [
       "read_channel",
@@ -6354,7 +6371,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
       "list_worlds",
       "list_rooms",
     ],
-    schema: { type: "number" },
+    schema: { type: "number", minimum: 1 },
   },
   {
     name: "range",
@@ -6379,7 +6396,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "channelIds",
-    description: "Channel/conversation scopes for inbox ops.",
+    description:
+      "Channel, conversation, label or folder ids that scope inbox ops.",
     required: false,
     subactions: ["triage", "list_inbox", "search_inbox"],
     schema: { type: "array", items: { type: "string" } },
@@ -6393,7 +6411,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "since",
-    description: "Start date for op=search_inbox.",
+    description:
+      "Start of the op=search_inbox window: ISO 8601 date/timestamp or epoch milliseconds.",
     required: false,
     subactions: ["search_inbox"],
     schema: { type: "string" },
@@ -6401,7 +6420,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "until",
     description:
-      "End date/timestamp for read_channel range=dates or search_inbox.",
+      "End date/timestamp for read_channel range=dates or search_inbox. For search_inbox: ISO 8601 date/timestamp or epoch milliseconds.",
     required: false,
     subactions: ["read_channel", "search_inbox"],
     schema: { type: "string" },

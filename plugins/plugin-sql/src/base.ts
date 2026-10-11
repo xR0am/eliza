@@ -3418,7 +3418,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
 
     return this.withEntityContext(entityId ?? null, async (tx) => {
       const conditions = [eq(memoryTable.type, tableName)];
-      if (tableName === "document_fragments") {
+      if (
+        tableName === "document_fragments" &&
+        params.metadata?.fragmentRole !== "source-segment"
+      ) {
         conditions.push(
           sql`COALESCE(${memoryTable.metadata}->>'fragmentRole', 'embedding-chunk') <> 'source-segment'`
         );
@@ -4082,7 +4085,13 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    * @param {string} params.type - The type of the event to log.
    * @returns {Promise<void>} A Promise that resolves when the event is logged.
    */
-  async log(params: { body: LogBody; entityId: UUID; roomId: UUID; type: string }): Promise<void> {
+  async log(params: {
+    body: LogBody;
+    entityId: UUID;
+    roomId: UUID;
+    type: string;
+    createdAt?: Date;
+  }): Promise<void> {
     return this.withDatabase(async () => {
       try {
         // Sanitize JSON body to prevent Unicode escape sequence errors
@@ -4100,6 +4109,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
             entityId: params.entityId,
             roomId: params.roomId,
             type: params.type,
+            ...(params.createdAt ? { createdAt: params.createdAt } : {}),
           });
         });
       } catch (error) {
@@ -7921,6 +7931,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       entityId: UUID;
       roomId: UUID;
       type: string;
+      createdAt?: Date;
     }>
   ): Promise<void> {
     for (const param of params) {

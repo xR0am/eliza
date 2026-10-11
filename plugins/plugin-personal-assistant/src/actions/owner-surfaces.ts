@@ -20,9 +20,15 @@ import { FOLLOW_UP_CAPABLE_ACTION_TAG } from "@elizaos/core";
 import { hasLifeOpsAccess } from "../lifeops/access.js";
 import { isOwnerReminderNonCommandContext } from "../lifeops/reminders/direct-routing.js";
 import { runBookTravelHandler } from "./book-travel.js";
-import { enqueueSignatureRequest } from "./document.js";
+import {
+  enqueueSignatureRequest,
+  unschedulableDeadlineText,
+} from "./document.js";
 import { createOwnerHealthAction, runHealthHandler } from "./health.js";
-import { runSchedulingNegotiationHandler } from "./lib/scheduling-handler.js";
+import {
+  runSchedulingNegotiationHandler,
+  SCHEDULING_SUBACTIONS,
+} from "./lib/scheduling-handler.js";
 import { TASK_CREATE_PLAN_PARAMETER } from "./lib/task-create-plan-parameter.js";
 import {
   OWNER_OPERATION_CONTEXTS,
@@ -170,26 +176,18 @@ function makeOwnerLifeAction(args: {
         name: "intent",
         description: "Free-form owner request.",
         required: false,
-        // Planners naturally phrase a change as `when`/`time`/`reschedule`;
-        // funnel those into the free-form intent instead of rejecting the
-        // whole call with "Unexpected argument" (observed live: an
-        // OWNER_REMINDERS update with `reschedule:"today 18:00"` burned a
-        // planner round on arg errors, #16935).
-        aliases: ["request", "reschedule", "when", "time"],
         schema: { type: "string" as const },
       },
       {
         name: "title",
         description: "Item title when known.",
         required: false,
-        aliases: ["name", "subject"],
         schema: { type: "string" as const },
       },
       {
         name: "target",
         description: `Supply the existing item ID or exact title for update/${allowedActions.includes("cancel") ? "cancel/" : ""}delete/complete/skip/snooze or a single-item review. Copy the title named in the current request; do not omit it for snooze or guess an unnamed item. For create or review of all items, omit target or use an empty string; do not send the literal string null.`,
         required: false,
-        aliases: ["query", "item", "task", "reminder", "id", "which"],
         schema: { type: "string" as const },
       },
       {
@@ -197,7 +195,6 @@ function makeOwnerLifeAction(args: {
         subactions: ["snooze"],
         description: "Snooze minutes when action=snooze.",
         required: false,
-        aliases: ["snoozeMinutes", "durationMinutes"],
         schema: { type: "number" as const },
       },
       {
@@ -213,7 +210,7 @@ function makeOwnerLifeAction(args: {
         name: "confirmed",
         subactions: ["create"],
         description:
-          'create-only: set true ONLY when the owner is confirming a save the assistant previously previewed ("yes, save that") — it saves immediately instead of previewing. Never set on the first request.',
+          "create-only: does not authorize a save. A previewed item is saved only when the owner's own current message confirms it; this flag alone leaves the item as a preview.",
         required: false,
         schema: { type: "boolean" as const },
       },
@@ -678,15 +675,35 @@ async function enqueueDocumentSignatureApproval(args: {
   const text = getMessageText(args.message);
   const documentName =
     readStringParam(args.options, "documentName") ??
-    readStringParam(args.options, "document_name") ??
     (/nda/i.test(text) ? "NDA" : "Document for signature");
   const signatureUrl =
     readStringParam(args.options, "signatureUrl") ??
-    readStringParam(args.options, "signature_url") ??
     firstUrl(text) ??
     undefined;
-  const deadline =
-    readStringParam(args.options, "deadline") ?? defaultSignatureDeadline(text);
+  const requestedDeadline = readStringParam(args.options, "deadline");
+  // The deadline becomes the watcher's `once` trigger. The scheduler refuses an
+  // unparseable one only after the approval row is queued, so refuse it here,
+  // before any write.
+  const deadlineRefusal = requestedDeadline
+    ? unschedulableDeadlineText(requestedDeadline)
+    : null;
+  if (deadlineRefusal) {
+    await args.callback?.({
+      text: deadlineRefusal,
+      source: "action",
+      action: "PERSONAL_ASSISTANT",
+    });
+    return {
+      success: false,
+      text: deadlineRefusal,
+      data: {
+        actionName: "PERSONAL_ASSISTANT",
+        action: "sign_document",
+        error: "INVALID_DEADLINE",
+      },
+    };
+  }
+  const deadline = requestedDeadline ?? defaultSignatureDeadline(text);
   // The OWNER_DOCUMENTS signature path creates the DocumentRequest that
   // RESOLVE_REQUEST dispatches on approval; an approval row without it could
   // only fail with DOCUMENT_REQUEST_NOT_FOUND once the owner approved. This
@@ -757,6 +774,139 @@ export const personalAssistantAction: Action = {
         type: "string" as const,
         enum: [...PERSONAL_ASSISTANT_ACTIONS],
       },
+    },
+    // The fields below are the ones the scheduling and sign_document handlers
+    // read. Undeclared, the tool-argument validator rejected them, so only the
+    // field-less scheduling operations (start, list_active) were reachable.
+    {
+      // Named apart from the `subaction` key: the promoted virtual
+      // PERSONAL_ASSISTANT_SCHEDULING writes its own pin ("scheduling") there.
+      name: "schedulingOp",
+      subactions: ["scheduling"],
+      description:
+        "Scheduling-negotiation operation: start a negotiation, propose a time, respond to a proposal, finalize, cancel, list_active negotiations, or list_proposals of one negotiation.",
+      required: false,
+      schema: {
+        type: "string" as const,
+        enum: [...SCHEDULING_SUBACTIONS],
+      },
+    },
+    {
+      name: "intent",
+      subactions: ["scheduling"],
+      description: "Free-form owner scheduling request.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "negotiationId",
+      subactions: ["scheduling"],
+      description:
+        "Existing negotiation ID. Needed for propose, finalize, cancel, and list_proposals.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "proposalId",
+      subactions: ["scheduling"],
+      description: "Existing proposal ID. Needed for respond and finalize.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "subject",
+      subactions: ["scheduling"],
+      description: "What the meeting is about, for start.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "startAt",
+      subactions: ["scheduling"],
+      description:
+        "Proposed start time (ISO-8601), for propose. Without a UTC offset it is a local time in the negotiation's timezone.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "endAt",
+      subactions: ["scheduling"],
+      description:
+        "Proposed end time (ISO-8601), for propose. Without a UTC offset it is a local time in the negotiation's timezone.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "durationMinutes",
+      subactions: ["scheduling"],
+      description: "Meeting length in minutes, for start.",
+      required: false,
+      schema: { type: "number" as const },
+    },
+    {
+      name: "response",
+      subactions: ["scheduling"],
+      description: "New proposal status, for respond.",
+      required: false,
+      schema: {
+        type: "string" as const,
+        enum: ["accepted", "declined", "expired"],
+      },
+    },
+    {
+      name: "relationshipId",
+      subactions: ["scheduling"],
+      description: "Relationship ID of the counterparty, for start.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "timezone",
+      subactions: ["scheduling"],
+      description:
+        "IANA time zone of the negotiation, for start. An unknown zone name is refused.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "proposedBy",
+      subactions: ["scheduling"],
+      description: "Who proposed the time, for propose.",
+      required: false,
+      schema: {
+        type: "string" as const,
+        enum: ["agent", "owner", "counterparty"],
+      },
+    },
+    {
+      name: "reason",
+      subactions: ["scheduling", "sign_document"],
+      description:
+        "Reason for a scheduling cancel, or the reason shown on the signature approval request.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "documentName",
+      subactions: ["sign_document"],
+      description: "Title of the document to sign.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "signatureUrl",
+      subactions: ["sign_document"],
+      description: "Signing link for the document.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "deadline",
+      subactions: ["sign_document"],
+      description:
+        "Signature deadline as an ISO-8601 timestamp, e.g. 2026-11-06T17:00:00Z. A relative phrase such as 'next Friday' fails with INVALID_DEADLINE.",
+      required: false,
+      schema: { type: "string" as const },
     },
   ],
   handler: async (runtime, message, state, options, callback) => {

@@ -46,11 +46,34 @@ test("website input normalizes to the same exact origin as native code", () => {
     "https://xn--bcher-kva.example",
   );
   assert.equal(normalizeWebsite("example.com."), "https://example.com");
+  assert.equal(
+    normalizeWebsite("example.com:8443"),
+    "https://example.com:8443",
+  );
+  assert.equal(normalizeWebsite("Example.COM:443"), "https://example.com");
+  assert.equal(
+    normalizeWebsite("sub.example.com:8080/login?next=1"),
+    "https://sub.example.com:8080",
+  );
+  assert.equal(normalizeWebsite("localhost:3000"), "https://localhost:3000");
+  assert.equal(
+    normalizeWebsite("example.com.:8443"),
+    "https://example.com:8443",
+  );
   for (const bad of [
     "",
     "http://example.com",
     "https://user:pw@example.com",
     "javascript:alert(1)",
+    "javascript:1+alert(1)",
+    "tel:123456",
+    "tel:123",
+    "javascript:123",
+    "javascript:80/",
+    "http:8080",
+    "data:1",
+    "example.com:99999",
+    "example.com:demo",
     "file:///etc/passwd",
     "https://exa_mple.com",
     "ftp://example.com",

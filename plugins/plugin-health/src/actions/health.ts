@@ -40,7 +40,12 @@ import type {
   HealthDailySummary,
   HealthDataPoint,
 } from "../health-bridge/health-bridge.js";
-import { getLocalDateKey, getZonedDateParts } from "../util/time.js";
+import {
+  addDaysToLocalDate,
+  buildUtcDateFromLocalParts,
+  getLocalDateKey,
+  getZonedDateParts,
+} from "../util/time.js";
 import { HEALTH_PLAN_INSTRUCTIONS } from "./optimized-prompt-instructions.js";
 
 export { HEALTH_PLAN_INSTRUCTIONS } from "./optimized-prompt-instructions.js";
@@ -80,6 +85,8 @@ export interface HealthActionService {
   }>;
   getHealthSummary(request?: {
     days?: number;
+    startDate?: string;
+    endDate?: string;
   }): Promise<LifeOpsHealthSummaryResponse>;
   /** Walks `days` local calendar days ending on today in `window.timeZone`. */
   getHealthTrend(
@@ -146,6 +153,30 @@ function getParams(
 
 function localTodayKey(timeZone: string): string {
   return getLocalDateKey(getZonedDateParts(new Date(), timeZone));
+}
+
+/**
+ * Bounds of the owner's local calendar day `date` (YYYY-MM-DD) as instants.
+ * Returns null when the string is not a real calendar date (e.g. 2026-02-31).
+ */
+function localDayBounds(
+  date: string,
+  timeZone: string,
+): { startAt: string; endAt: string } | null {
+  const [year, month, day] = date.split("-").map(Number);
+  const start = { year, month, day };
+  if (getLocalDateKey(addDaysToLocalDate(start, 0)) !== date) return null;
+  const midnight = { hour: 0, minute: 0, second: 0 };
+  return {
+    startAt: buildUtcDateFromLocalParts(timeZone, {
+      ...start,
+      ...midnight,
+    }).toISOString(),
+    endAt: buildUtcDateFromLocalParts(timeZone, {
+      ...addDaysToLocalDate(start, 1),
+      ...midnight,
+    }).toISOString(),
+  };
 }
 
 function normalizeHealthSubaction(value: unknown): Subaction | null {
@@ -283,7 +314,8 @@ async function resolveHealthPlanWithLlm(args: {
 
 /**
  * Heart rate is a rate, so readings are averaged; every other metric is a
- * count or amount and is summed.
+ * count or amount and is summed. Callers pass at least one point: no samples
+ * means no aggregate, not a zero.
  */
 function aggregateMetricPoints(
   metric: string,
@@ -291,10 +323,7 @@ function aggregateMetricPoints(
 ): { label: "average" | "total"; value: number } {
   const total = points.reduce((acc, point) => acc + point.value, 0);
   if (metric === "heart_rate") {
-    return {
-      label: "average",
-      value: points.length > 0 ? total / points.length : 0,
-    };
+    return { label: "average", value: total / points.length };
   }
   return { label: "total", value: total };
 }
@@ -304,16 +333,23 @@ function formatSummary(summary: {
   steps: number;
   activeMinutes: number;
   sleepHours: number;
+  sleepUnavailable?: boolean;
   heartRateAvg?: number;
   calories?: number;
   distanceMeters?: number;
   source: string;
 }): string {
+  // A `sleepUnavailable` day carries `sleepHours: 0` only because the sleep
+  // sub-fetch failed; rendering the zero would fabricate a real-looking
+  // reading the bridge contract explicitly forbids (see HealthDailySummary).
+  const sleepLine = summary.sleepUnavailable
+    ? "- Sleep: unavailable (source error; sleep unknown for this day)"
+    : `- Sleep: ${summary.sleepHours.toFixed(1)}h`;
   const parts: string[] = [
     `${summary.date} (${summary.source}):`,
     `- Steps: ${summary.steps.toLocaleString()}`,
     `- Active minutes: ${summary.activeMinutes}`,
-    `- Sleep: ${summary.sleepHours.toFixed(1)}h`,
+    sleepLine,
   ];
   if (summary.heartRateAvg !== undefined) {
     parts.push(`- Heart rate avg: ${summary.heartRateAvg.toFixed(0)} bpm`);
@@ -351,15 +387,19 @@ function formatConnectorDailySummary(
   return parts.join("\n");
 }
 
-function latestConnectorSummaryForDate(
+/**
+ * The connector summary for `date`. Only a request that named no date may
+ * read the latest synced day instead; an explicit date with no summary is
+ * "no data for that day", never another day's numbers.
+ */
+function connectorSummaryForDate(
   summary: LifeOpsHealthSummaryResponse,
   date: string,
+  explicitDate: boolean,
 ): LifeOpsHealthSummaryResponse["summaries"][number] | null {
-  return (
-    summary.summaries.find((candidate) => candidate.date === date) ??
-    summary.summaries[0] ??
-    null
-  );
+  const match = summary.summaries.find((candidate) => candidate.date === date);
+  if (match || explicitDate) return match ?? null;
+  return summary.summaries[0] ?? null;
 }
 
 export const HEALTH_SIMILES: readonly string[] = [
@@ -407,14 +447,19 @@ export const HEALTH_PARAMETERS: readonly ActionParameter[] = [
   },
   {
     name: "date",
-    description: "YYYY-MM-DD for single-day queries.",
-    descriptionCompressed: "YYYY-MM-DD single-day",
-    schema: { type: "string" as const },
+    description:
+      "YYYY-MM-DD local day for today and by_metric (by_metric then reads that day instead of the trailing days window). trend does not read it.",
+    descriptionCompressed: "YYYY-MM-DD single day: today|by_metric",
+    schema: {
+      type: "string" as const,
+      pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+    },
     examples: ["2026-05-10"],
   },
   {
     name: "days",
-    description: "Window size for trend and by_metric queries.",
+    description:
+      "Window size in days for trend and by_metric queries. Default: 7 for trend, 1 for by_metric. by_metric does not read it when date is set.",
     descriptionCompressed: "window days trend|by_metric",
     schema: { type: "number" as const, minimum: 1, maximum: 365 },
     examples: [1, 7, 30],
@@ -586,12 +631,45 @@ export function createHealthActionRunner(
       });
     }
 
+    const dayBounds =
+      subaction === "by_metric" && params.date
+        ? localDayBounds(params.date, timeZone)
+        : undefined;
+    if (dayBounds === null) {
+      return respond({
+        success: false,
+        scenario: "health_invalid_date",
+        fallback: `${params.date} is not a calendar date. Use YYYY-MM-DD.`,
+        data: { error: "INVALID_DATE" },
+      });
+    }
+
+    // by_metric reads one window on both the bridge and the connector path,
+    // and names it in the reply.
+    const byMetricDays =
+      params.days && params.days > 0
+        ? Math.floor(params.days)
+        : (plannedDays ?? 1);
+    const byMetricWindowLabel =
+      params.date ?? `last ${byMetricDays} day${byMetricDays === 1 ? "" : "s"}`;
+    // The reply model reads this context; a dated read must not also claim a
+    // trailing `days` window.
+    const byMetricWindowContext = params.date
+      ? { date: params.date }
+      : { days: byMetricDays };
+
     const connectorStatus = await service.getHealthConnectorStatus();
     let healthSummary: LifeOpsHealthSummaryResponse | null = null;
+    // A single-day read for a named date must fetch that day; the default
+    // trailing window ends today and would miss an older date.
+    const summaryRequest =
+      (subaction === "today" || subaction === "by_metric") && params.date
+        ? { startDate: params.date, endDate: params.date }
+        : subaction === "by_metric"
+          ? { days: byMetricDays }
+          : { days: plannedDays ?? params.days ?? 7 };
     try {
-      healthSummary = await service.getHealthSummary({
-        days: plannedDays ?? params.days ?? 7,
-      });
+      healthSummary = await service.getHealthSummary(summaryRequest);
     } catch (error) {
       // error-policy:J4 the connector summary is one input to the health
       // response; a load failure must not read as "no providers connected", so
@@ -599,7 +677,7 @@ export function createHealthActionRunner(
       // while the response still renders from the separate connectorStatus.
       runtime.reportError("Health.connectorSummary", error, {
         subaction,
-        days: plannedDays ?? params.days ?? 7,
+        ...summaryRequest,
       });
       runtime.logger.warn(
         {
@@ -685,18 +763,32 @@ export function createHealthActionRunner(
             (sample) => sample.metric === metric,
           );
           const firstPoint = points[0];
+          if (!firstPoint) {
+            return respond({
+              success: true,
+              scenario: "health_connector_by_metric",
+              fallback: params.date
+                ? `No ${metric} data recorded by connected health providers on ${params.date}.`
+                : `No ${metric} data recorded by connected health providers in the ${byMetricWindowLabel}.`,
+              context: { metric, ...byMetricWindowContext, sampleCount: 0 },
+              values: {
+                success: true,
+                healthConnectedProviders: connectedProviders,
+              },
+              data: { subaction, metric, points, healthSummary },
+            });
+          }
           const aggregate = aggregateMetricPoints(metric, points);
-          const fallback = firstPoint
-            ? `${metric}: ${aggregate.label} ${aggregate.value.toFixed(2)} ${firstPoint.unit} across ${points.length} sample${points.length === 1 ? "" : "s"}.`
-            : `No ${metric} data recorded by connected health providers.`;
+          const fallback = `${metric} — ${byMetricWindowLabel}: ${aggregate.label} ${aggregate.value.toFixed(2)} ${firstPoint.unit} across ${points.length} sample${points.length === 1 ? "" : "s"}.`;
           return respond({
             success: true,
             scenario: "health_connector_by_metric",
             fallback,
             context: {
               metric,
+              ...byMetricWindowContext,
               [aggregate.label]: aggregate.value,
-              unit: firstPoint?.unit,
+              unit: firstPoint.unit,
               sampleCount: points.length,
             },
             values: {
@@ -706,13 +798,16 @@ export function createHealthActionRunner(
             data: { subaction, metric, points, healthSummary },
           });
         }
-        const daily = latestConnectorSummaryForDate(
+        const daily = connectorSummaryForDate(
           healthSummary,
           params.date ?? localTodayKey(timeZone),
+          params.date !== undefined,
         );
         const fallback = daily
           ? `Health summary for ${formatConnectorDailySummary(daily)}`
-          : "Connected health providers have not synced daily summaries yet.";
+          : params.date
+            ? `Connected health providers have no daily summary for ${params.date}.`
+            : "Connected health providers have not synced daily summaries yet.";
         return respond({
           success: true,
           scenario: "health_connector_today",
@@ -773,44 +868,45 @@ export function createHealthActionRunner(
           data: { error: "MISSING_METRIC" },
         });
       }
-      const days =
-        params.days && params.days > 0
-          ? Math.floor(params.days)
-          : (plannedDays ?? 1);
-      const endAt = new Date().toISOString();
-      const startAt = new Date(
-        Date.now() - days * 24 * 60 * 60 * 1000,
-      ).toISOString();
+      // A named date reads that local calendar day; otherwise the trailing
+      // `days` window ending now.
+      const { startAt, endAt } = dayBounds ?? {
+        startAt: new Date(
+          Date.now() - byMetricDays * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+        endAt: new Date().toISOString(),
+      };
+      const windowLabel = byMetricWindowLabel;
+      const windowContext = byMetricWindowContext;
       const points = await service.getHealthDataPoints(
         { metric, startAt, endAt },
         { timeZone },
       );
-      const aggregate = aggregateMetricPoints(metric, points);
       const firstPoint = points[0];
       if (!firstPoint) {
-        const fallback = `No ${metric} data recorded in the last ${days} day${days === 1 ? "" : "s"}.`;
+        const fallback = params.date
+          ? `No ${metric} data recorded on ${params.date}.`
+          : `No ${metric} data recorded in the ${windowLabel}.`;
         return respond({
           success: true,
           scenario: "health_by_metric_empty",
           fallback,
-          context: { metric, days },
+          context: { metric, ...windowContext },
           values: { success: true, metric, pointCount: points.length },
           data: { subaction, metric, startAt, endAt, points },
         });
       }
-      const fallback =
-        points.length === 0
-          ? `No ${metric} data recorded in the last ${days} day${days === 1 ? "" : "s"}.`
-          : `${metric} — last ${days} day${days === 1 ? "" : "s"}: ${aggregate.label} ${aggregate.value.toFixed(
-              2,
-            )} ${firstPoint.unit} across ${points.length} sample${points.length === 1 ? "" : "s"}.`;
+      const aggregate = aggregateMetricPoints(metric, points);
+      const fallback = `${metric} — ${windowLabel}: ${aggregate.label} ${aggregate.value.toFixed(
+        2,
+      )} ${firstPoint.unit} across ${points.length} sample${points.length === 1 ? "" : "s"}.`;
       return respond({
         success: true,
         scenario: "health_by_metric",
         fallback,
         context: {
           metric,
-          days,
+          ...windowContext,
           [aggregate.label]: aggregate.value,
           unit: firstPoint.unit,
           sampleCount: points.length,
@@ -832,12 +928,14 @@ export function createHealthActionRunner(
         steps: summary.steps,
         activeMinutes: summary.activeMinutes,
         sleepHours: summary.sleepHours,
+        ...(summary.sleepUnavailable ? { sleepUnavailable: true } : {}),
       },
       values: {
         success: true,
         steps: summary.steps,
         activeMinutes: summary.activeMinutes,
         sleepHours: summary.sleepHours,
+        ...(summary.sleepUnavailable ? { sleepUnavailable: true } : {}),
       },
       data: { subaction: "today", date, summary },
     });

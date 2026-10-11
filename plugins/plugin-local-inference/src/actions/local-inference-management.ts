@@ -9,6 +9,7 @@ import type {
 import type {
 	LocalInferenceManagementInput,
 	LocalInferenceManagementOp,
+	LocalInferenceManagementResult,
 } from "../local-inference-routes.js";
 
 const OP_ALIASES: Record<string, LocalInferenceManagementOp> = {
@@ -65,12 +66,16 @@ function paramsFromOptions(options?: HandlerOptions): Record<string, unknown> {
 	return isRecord(options?.parameters) ? options.parameters : {};
 }
 
-function fail(error: string, text: string): ActionResult {
+function fail(
+	error: string,
+	text: string,
+	data: Record<string, unknown> = {},
+): ActionResult {
 	return {
 		success: false,
 		text,
 		values: { success: false, error },
-		data: { actionName: "LOCAL_INFERENCE", error },
+		data: { actionName: "LOCAL_INFERENCE", ...data, error },
 	};
 }
 
@@ -105,6 +110,77 @@ export function parseLocalInferenceManagementInput(
 			autoUpdateOnMetered: booleanParam(params, "autoUpdateOnMetered"),
 		},
 	};
+}
+
+/** Reply text that states the resulting value, so a clear is not reported as an update. */
+function describeMutation(mutation: LocalInferenceManagementResult): string {
+	switch (mutation.op) {
+		case "pin_voice_model":
+			return `Voice model ${mutation.id} is now ${mutation.pinned ? "pinned" : "unpinned"}.`;
+		case "set_preferred_provider":
+			return mutation.provider
+				? `Preferred provider for ${mutation.slot} is now ${mutation.provider}.`
+				: `Preferred provider for ${mutation.slot} was cleared.`;
+		case "set_assignment":
+			return mutation.modelId
+				? `Local model assignment for ${mutation.slot} is now ${mutation.modelId}.`
+				: `Local model assignment for ${mutation.slot} was cleared.`;
+		case "uninstall_model":
+			return `Removed local model ${mutation.modelId}.`;
+		case "cancel_download":
+			return mutation.modelId
+				? `Cancelled the download of ${mutation.modelId}.`
+				: "Cancelled the active downloads.";
+		case "verify_model":
+			return describeVerifyState(mutation.modelId, mutation.state);
+		default:
+			return `Local inference ${mutation.op} updated.`;
+	}
+}
+
+function describeVerifyState(
+	modelId: string,
+	state: Extract<
+		LocalInferenceManagementResult,
+		{ op: "verify_model" }
+	>["state"],
+): string {
+	switch (state) {
+		case "ok":
+			return `Model ${modelId} verified: the file matches its recorded hash.`;
+		case "unknown":
+			return `Model ${modelId} has no recorded hash to compare against, so the file could not be verified.`;
+		case "mismatch":
+			return `Model ${modelId} failed verification: the file does not match its recorded hash.`;
+		case "missing":
+			return `Model ${modelId} failed verification: the file is missing.`;
+		case "truncated":
+			return `Model ${modelId} failed verification: the file is truncated or not a GGUF file.`;
+	}
+}
+
+/**
+ * A mutation the route layer completed without doing what was asked. The
+ * reply must say so instead of reporting an update.
+ */
+function describeNoOp(
+	mutation: LocalInferenceManagementResult,
+): { error: string; text: string } | null {
+	if (mutation.op === "uninstall_model" && !mutation.removed) {
+		return {
+			error: "LOCAL_INFERENCE_NOT_REMOVED",
+			text: `Model ${mutation.modelId} was not removed: it is not installed, or it is an external model Eliza does not own.`,
+		};
+	}
+	if (mutation.op === "cancel_download" && !mutation.cancelled) {
+		return {
+			error: "LOCAL_INFERENCE_NO_DOWNLOAD",
+			text: mutation.modelId
+				? `No download in progress for ${mutation.modelId}.`
+				: "No download in progress.",
+		};
+	}
+	return null;
 }
 
 export const localInferenceManagementAction: Action = {
@@ -148,14 +224,14 @@ export const localInferenceManagementAction: Action = {
 		{
 			name: "modelId",
 			description:
-				"Curated local model id for download, activation, uninstall, verify, or assignment.",
+				"Curated local model id for download, activation, uninstall, verify, or assignment. For set_assignment, omit or pass empty to clear the slot's assignment.",
 			required: false,
 			schema: { type: "string" as const },
 		},
 		{
 			name: "voiceModelId",
 			description:
-				"Voice model id for update or pin operations, such as wakeword, vad, asr, kokoro, or speaker-encoder.",
+				"Voice model id, required for trigger_voice_model_update and pin_voice_model. pin_voice_model accepts ids such as wakeword, vad, asr, kokoro, or speaker-encoder. trigger_voice_model_update accepts only wakeword; the other voice models ship inside the Eliza-1 bundle and cannot be updated on their own.",
 			required: false,
 			schema: { type: "string" as const },
 		},
@@ -169,13 +245,14 @@ export const localInferenceManagementAction: Action = {
 		{
 			name: "provider",
 			description:
-				"Preferred provider for a slot, for example eliza-local-inference, capacitor-llama, or elizacloud.",
+				"Preferred provider for a slot, for example eliza-local-inference, capacitor-llama, or elizacloud. For set_preferred_provider, omit or pass empty to clear the slot's preferred provider.",
 			required: false,
 			schema: { type: "string" as const },
 		},
 		{
 			name: "pinned",
-			description: "Whether a voice model should be pinned from auto-updates.",
+			description:
+				"Required for pin_voice_model: true pins the voice model from auto-updates, false removes the pin.",
 			required: false,
 			schema: { type: "boolean" as const },
 		},
@@ -224,14 +301,30 @@ export const localInferenceManagementAction: Action = {
 			await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
 			return result;
 		}
+		// The route layer names this argument `id`; the planner only knows it as
+		// `voiceModelId`, so report the missing argument under the declared name.
+		// The route layer also reads `modelId` as the id, so that call still passes.
+		if (
+			(input.op === "trigger_voice_model_update" ||
+				input.op === "pin_voice_model") &&
+			!(input.voiceModelId ?? input.modelId)?.trim()
+		) {
+			const result = fail(
+				"LOCAL_INFERENCE_INVALID",
+				`${input.op} requires voiceModelId.`,
+			);
+			await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
+			return result;
+		}
 		try {
 			const { applyLocalInferenceManagementMutation } = await import(
 				"../local-inference-routes.js"
 			);
 			const mutation = await applyLocalInferenceManagementMutation(input);
-			const result = ok(`Local inference ${mutation.op} updated.`, {
-				...mutation,
-			});
+			const noOp = describeNoOp(mutation);
+			const result = noOp
+				? fail(noOp.error, noOp.text, { ...mutation })
+				: ok(describeMutation(mutation), { ...mutation });
 			await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
 			return result;
 		} catch (error) {

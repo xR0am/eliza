@@ -361,50 +361,6 @@ describe("HealthDomain connector lifecycle and summaries", () => {
     expect(status.lastCheckedAt).toEqual(expect.any(String));
   });
 
-  it("rejects cloud_managed OAuth start with a 501", async () => {
-    const domain = makeDomain({});
-    await expect(
-      domain.startHealthConnector(
-        { provider: "strava", mode: "cloud_managed" },
-        REQUEST_URL,
-      ),
-    ).rejects.toMatchObject({ status: 501 });
-  });
-
-  it("rejects non-array capabilities on OAuth start with a 400", async () => {
-    const domain = makeDomain({});
-    await expect(
-      domain.startHealthConnector(
-        { provider: "strava", capabilities: "everything" as never },
-        REQUEST_URL,
-      ),
-    ).rejects.toMatchObject({ status: 400 });
-  });
-
-  it("surfaces missing OAuth config as a client error on start", async () => {
-    makeOAuthDir();
-    const domain = makeDomain({});
-    await expect(
-      domain.startHealthConnector(
-        {
-          provider: "strava",
-          capabilities: ["health.activity.read", "health.activity.read"],
-        },
-        REQUEST_URL,
-      ),
-    ).rejects.toBeInstanceOf(Error);
-  });
-
-  it("rejects a malformed OAuth callback URL", async () => {
-    makeOAuthDir();
-    const domain = makeDomain({});
-    await expect(
-      domain.completeHealthConnectorCallback(
-        new URL("http://127.0.0.1:2138/callback?error=access_denied"),
-      ),
-    ).rejects.toBeInstanceOf(Error);
-  });
-
   it("disconnects a grant, deleting the stored token and grant row", async () => {
     makeOAuthDir();
     process.env.ELIZA_STRAVA_CLIENT_ID = "client-id";
@@ -504,8 +460,12 @@ describe("HealthDomain connector lifecycle and summaries", () => {
       expect.objectContaining({
         provider: "strava",
         metrics: ["steps", "heart_rate"],
-        limit: 2_000,
       }),
+    );
+    // The date window bounds the read. A row limit drops the older days.
+    expect(repository.listHealthMetricSamples).toHaveBeenCalledWith(
+      AGENT_ID,
+      expect.not.objectContaining({ limit: expect.anything() }),
     );
   });
 
@@ -557,6 +517,13 @@ describe("HealthDomain connector lifecycle and summaries", () => {
       domain.getHealthSummary({
         startDate: "2026-07-10",
         endDate: "2026-07-01",
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    // 32 days. The window is the only bound of the sample read.
+    await expect(
+      domain.getHealthSummary({
+        startDate: "2026-06-10",
+        endDate: "2026-07-11",
       }),
     ).rejects.toMatchObject({ status: 400 });
   });

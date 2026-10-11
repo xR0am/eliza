@@ -255,7 +255,10 @@ function calendarEventForAvailability(
     timeZone: event.timezone,
     isAllDay: event.isAllDay,
     status: event.status,
-    transparency: metadataString(event.metadata, "transparency"),
+    // A subscribed calendar (ICS) event keeps TRANSP under its own key.
+    transparency:
+      metadataString(event.metadata, "transparency") ??
+      metadataString(event.metadata, "icsTransparency"),
     kind: calendarAvailabilityKindFromMetadata(event.metadata) ?? "event",
     attendees: event.attendees.map(attendeeFromCalendarEvent),
   };
@@ -656,13 +659,10 @@ function resolveRange(args: {
   now: Date;
 }): ConflictRange | null {
   const raw = args.params.range;
-  if (typeof raw === "object" && raw && "start" in raw && "end" in raw) {
-    const range = raw as ConflictRange;
-    return typeof range.start === "string" &&
-      typeof range.end === "string" &&
-      validInstantRange(range)
-      ? range
-      : null;
+  if (typeof raw === "object" && raw) {
+    const { start, end } = raw as Partial<ConflictRange>;
+    if (typeof start !== "string" || typeof end !== "string") return null;
+    return validInstantRange({ start, end }) ? { start, end } : null;
   }
 
   if (!raw && args.subaction === "scan_event_proposal" && args.proposal) {
@@ -842,7 +842,15 @@ export function createConflictDetectAction(
           // a sibling `type` would contradict the string branch.
           anyOf: [
             { type: "string" as const, enum: ["today", "week"] },
-            { type: "object" as const, additionalProperties: true },
+            {
+              type: "object" as const,
+              properties: {
+                start: { type: "string" as const },
+                end: { type: "string" as const },
+              },
+              required: ["start", "end"],
+              additionalProperties: false,
+            },
           ],
         },
       },
@@ -860,8 +868,15 @@ export function createConflictDetectAction(
       {
         name: "policy",
         description:
-          "Optional deterministic policy overrides for tentative and all-day blockers.",
-        schema: { type: "object" as const, additionalProperties: true },
+          "Optional blocker overrides: tentative and allDay each take block (default) or ignore.",
+        schema: {
+          type: "object" as const,
+          properties: {
+            tentative: { type: "string" as const, enum: ["block", "ignore"] },
+            allDay: { type: "string" as const, enum: ["block", "ignore"] },
+          },
+          additionalProperties: false,
+        },
       },
     ],
     examples,

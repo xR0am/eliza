@@ -188,8 +188,6 @@ export type InboxFetcher = (args: {
 
 export type InboxFetchers = Record<InboxPlatform, InboxFetcher>;
 
-const noopFetcher: InboxFetcher = async () => [];
-
 const PLATFORM_TO_MESSAGE_SOURCE: Partial<
   Record<InboxPlatform, MessageSource>
 > = {
@@ -235,7 +233,13 @@ function canonicalSince(value: unknown): string | undefined {
 
 function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
   const source = PLATFORM_TO_MESSAGE_SOURCE[platform];
-  if (!source) return noopFetcher;
+  if (!source) {
+    // No triage source exists for this platform (slack). It was never
+    // checked, so it must land in `degraded`, not read as an empty feed.
+    return async () => {
+      throw new Error(`no inbox source registered for ${platform}`);
+    };
+  }
   return async ({ runtime, since, limit, query }) => {
     if (typeof runtime.getService !== "function") return [];
     try {
@@ -278,7 +282,7 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
 
 const defaultFetchers: InboxFetchers = {
   gmail: createDefaultPlatformFetcher("gmail"),
-  slack: noopFetcher,
+  slack: createDefaultPlatformFetcher("slack"),
   discord: createDefaultPlatformFetcher("discord"),
   telegram: createDefaultPlatformFetcher("telegram"),
   imessage: createDefaultPlatformFetcher("imessage"),
@@ -809,9 +813,19 @@ export async function executeInboxQueueOperation(args: {
       //    `classification` narrows the queue returned below; it must not skip
       //    the LLM classifier for a fresh triage request.
       const since = canonicalSince(args.params.since);
+      // An empty resolved list means every named platform was unknown. Fetching
+      // nothing would report the old queue as a completed triage.
+      const platforms = resolvePlatforms(args.params.platforms);
+      if (platforms.length === 0) {
+        return {
+          success: false,
+          text: "No supported platforms were specified.",
+          data: { subaction: "triage", error: "NO_PLATFORMS" },
+        };
+      }
       const { merged, degraded, capped } = await fetchInboxItems({
         runtime: args.runtime,
-        platforms: resolvePlatforms(args.params.platforms),
+        platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
       });
@@ -1016,9 +1030,9 @@ export const inboxAction: Action & {
     "surface:internal",
   ],
   description:
-    "Inbox: Gmail, Slack, Discord, Telegram, iMessage, WhatsApp. Merge recency feed and operate the persisted triage queue. Subactions: list, search, summarize, triage (AI-classify new messages into urgent / needs_reply / notify / info / ignore, then return the prioritized queue), reply, snooze, archive, approve.",
+    "Inbox: Gmail, Discord, Telegram, iMessage, WhatsApp. Merge recency feed and operate the persisted triage queue. Subactions: list, search, summarize, triage (AI-classify new messages into urgent / needs_reply / notify / info / ignore, then return the prioritized queue), reply, snooze, archive, approve.",
   descriptionCompressed:
-    "INBOX list|search|summarize|triage(classify urgent/needs_reply/noise)|reply|snooze|archive|approve gmail|slack|discord|telegram|imessage|whatsapp",
+    "INBOX list|search|summarize|triage(classify urgent/needs_reply/noise)|reply|snooze|archive|approve gmail|discord|telegram|imessage|whatsapp",
   routingHint:
     'cross-channel inbox ("show inbox", "all messages", "search every channel", "summarize inboxes") -> INBOX; "triage my inbox" / "what needs my attention" -> INBOX triage; per-channel -> MESSAGE',
   contexts: ["inbox", "messaging", "cross-channel"],
@@ -1036,7 +1050,10 @@ export const inboxAction: Action & {
       name: "platforms",
       description:
         "Optional platform filter: gmail | slack | discord | telegram | imessage | whatsapp. Default all.",
-      schema: { type: "array" as const, items: { type: "string" as const } },
+      schema: {
+        type: "array" as const,
+        items: { type: "string" as const, enum: [...PLATFORMS] },
+      },
     },
     {
       name: "since",
@@ -1045,7 +1062,8 @@ export const inboxAction: Action & {
     },
     {
       name: "limit",
-      description: "Limit per platform. Default 50.",
+      description:
+        "Optional limit per platform. No limit is applied when omitted.",
       schema: { type: "number" as const },
     },
     {

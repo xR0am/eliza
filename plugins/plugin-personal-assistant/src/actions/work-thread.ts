@@ -13,7 +13,11 @@ import type {
   Memory,
 } from "@elizaos/core";
 import { getActionReplyOwner, Semaphore } from "@elizaos/core";
-import type { ScheduledTaskTrigger } from "@elizaos/plugin-scheduling";
+import {
+  type ScheduledTask,
+  type ScheduledTaskTrigger,
+  ScheduledTaskValidationError,
+} from "@elizaos/plugin-scheduling";
 import { hasLifeOpsAccess } from "../lifeops/access.js";
 import { getScheduledTaskRunner } from "../lifeops/scheduled-task/service.js";
 import { OptimisticLockError, withOptimisticRetry } from "../lifeops/sql.js";
@@ -226,11 +230,18 @@ function hasCurrentMutableRef(
   );
 }
 
-function isCurrentChannelMutableSourceRef(
+// A source ref is accepted only for the current channel, and only as a
+// mutable ref. Each refusal names the field the planner must change.
+function sourceRefRefusal(
   ref: ThreadSourceRef,
   roomId: string | null,
-): boolean {
-  return !!roomId && ref.roomId === roomId && ref.canMutate !== false;
+):
+  | "SOURCE_REF_NOT_CURRENT_CHANNEL"
+  | "SOURCE_REF_READ_ONLY_NOT_SUPPORTED"
+  | null {
+  if (!roomId || ref.roomId !== roomId) return "SOURCE_REF_NOT_CURRENT_CHANNEL";
+  if (ref.canMutate === false) return "SOURCE_REF_READ_ONLY_NOT_SUPPORTED";
+  return null;
 }
 
 function operationType(value: unknown): ThreadOperationType | null {
@@ -376,7 +387,7 @@ export const workThreadAction: Action & {
               type: "object" as const,
               additionalProperties: true,
               description:
-                "attach_source: authorized channel reference. Omit on create to use the actual current channel; never invent grants.",
+                "create or attach_source: omit to use the current channel. Only the current channel is accepted: roomId must equal the room of this message. A reference to another channel fails with SOURCE_REF_NOT_CURRENT_CHANNEL. canMutate false fails with SOURCE_REF_READ_ONLY_NOT_SUPPORTED.",
               properties: {
                 connector: { type: "string" as const },
                 channelName: { type: "string" as const },
@@ -384,11 +395,10 @@ export const workThreadAction: Action & {
                 roomId: { type: "string" as const },
                 externalThreadId: { type: "string" as const },
                 accountId: { type: "string" as const },
-                grantId: { type: "string" as const },
                 canRead: { type: "boolean" as const },
                 canMutate: { type: "boolean" as const },
               },
-              required: ["connector"],
+              required: ["connector", "roomId"],
             },
             trigger: {
               type: "object" as const,
@@ -445,15 +455,11 @@ export const workThreadAction: Action & {
             }
             if (type === "create") {
               const initialSourceRef = operation.sourceRef ?? sourceRef;
-              if (
-                operation.sourceRef &&
-                !isCurrentChannelMutableSourceRef(operation.sourceRef, roomId)
-              ) {
-                results.push({
-                  success: false,
-                  type,
-                  error: "SOURCE_REF_NOT_CURRENT_CHANNEL",
-                });
+              const sourceRefError = operation.sourceRef
+                ? sourceRefRefusal(operation.sourceRef, roomId)
+                : null;
+              if (sourceRefError) {
+                results.push({ success: false, type, error: sourceRefError });
                 continue;
               }
               const activeThreads = await store.list({
@@ -690,12 +696,13 @@ export const workThreadAction: Action & {
 
             if (type === "attach_source") {
               const ref = operation.sourceRef ?? sourceRef;
-              if (!isCurrentChannelMutableSourceRef(ref, roomId)) {
+              const sourceRefError = sourceRefRefusal(ref, roomId);
+              if (sourceRefError) {
                 results.push({
                   success: false,
                   type,
                   workThreadId,
-                  error: "SOURCE_REF_NOT_CURRENT_CHANNEL",
+                  error: sourceRefError,
                 });
                 continue;
               }
@@ -732,29 +739,47 @@ export const workThreadAction: Action & {
               const runner = getScheduledTaskRunner(runtime, {
                 agentId: runtime.agentId,
               });
-              const task = await runner.schedule({
-                kind: "followup",
-                promptInstructions: instruction,
-                trigger: operation.trigger,
-                priority: "medium",
-                respectsGlobalPause: true,
-                source: "user_chat",
-                createdBy: runtime.agentId,
-                ownerVisible: true,
-                subject: { kind: "thread", id: workThreadId },
-                ...(roomId
-                  ? {
-                      output: {
-                        destination: "channel",
-                        target: `in_app:${roomId}`,
-                      },
-                    }
-                  : {}),
-                metadata: {
+              let task: ScheduledTask;
+              try {
+                task = await runner.schedule({
+                  kind: "followup",
+                  promptInstructions: instruction,
+                  trigger: operation.trigger,
+                  priority: "medium",
+                  respectsGlobalPause: true,
+                  source: "user_chat",
+                  createdBy: runtime.agentId,
+                  ownerVisible: true,
+                  subject: { kind: "thread", id: workThreadId },
+                  ...(roomId
+                    ? {
+                        output: {
+                          destination: "channel",
+                          target: `in_app:${roomId}`,
+                        },
+                      }
+                    : {}),
+                  metadata: {
+                    workThreadId,
+                    ...(roomId ? { pendingPromptRoomId: roomId } : {}),
+                  },
+                });
+              } catch (err) {
+                // A rejected trigger fails this operation only; earlier
+                // operations in the batch are already stored and reported.
+                if (!(err instanceof ScheduledTaskValidationError)) {
+                  throw err;
+                }
+                results.push({
+                  success: false,
+                  type,
                   workThreadId,
-                  ...(roomId ? { pendingPromptRoomId: roomId } : {}),
-                },
-              });
+                  error: "INVALID_TRIGGER",
+                  message: err.message,
+                  issues: err.issues,
+                });
+                continue;
+              }
               await store.update(workThreadId, {
                 currentScheduledTaskId: task.taskId,
                 eventType: "followup_scheduled",

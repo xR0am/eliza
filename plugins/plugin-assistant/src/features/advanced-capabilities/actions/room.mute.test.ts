@@ -6,18 +6,22 @@
  * reads, closing the loop from action write to message drop.
  */
 
-import type {
-  HandlerOptions,
-  IAgentRuntime,
-  Memory,
-  Room,
-  State,
-  UUID,
-  World,
+import {
+  type HandlerOptions,
+  type IAgentRuntime,
+  type Memory,
+  type Room,
+  type State,
+  type UUID,
+  validateToolArgs,
+  type World,
 } from "@elizaos/core";
 import { describe, expect, it } from "vitest";
-import { resolveEffectiveMuteState } from "../../../services/message/mute-state.ts";
-import { roomOpAction } from "./room.ts";
+import {
+  resolveEffectiveMuteState,
+  worldMuteActive,
+} from "../../../services/message/mute-state.ts";
+import { followRoomAction, roomOpAction } from "./room.ts";
 
 const AGENT_ID = "00000000-0000-0000-0000-0000000000a1" as UUID;
 const USER_ID = "00000000-0000-0000-0000-0000000000c1" as UUID;
@@ -64,6 +68,7 @@ function makeRuntime(seed?: {
       states.set(`${roomId}:${entityId}`, state);
     },
     getRoom: async (roomId: UUID) => rooms.get(roomId) ?? null,
+    getRoomsForParticipant: async () => [...rooms.keys()] as UUID[],
     updateRoom: async (room: Room) => {
       rooms.set(room.id, room);
     },
@@ -323,26 +328,134 @@ describe("ROOM action — scope=server (guild-wide mute)", () => {
     );
   });
 
-  it("validate gates on world mute state for scope=server", async () => {
+  it("validate leaves a planner call to the handler, which names the failed precondition", async () => {
     const { runtime } = makeRuntime({
       rooms: [room(ROOM_ID)],
       worlds: [world({ metadata: { agentMuteState: "MUTED" } })],
     });
-    expect(
-      await roomOpAction.validate(
+    for (const [parameters, error] of [
+      [{ action: "mute", scope: "server" }, "ROOM_MUTE_PRECONDITION_FAILED"],
+      [{ action: "unmute" }, "ROOM_UNMUTE_PRECONDITION_FAILED"],
+      [{ action: "unfollow" }, "ROOM_UNFOLLOW_PRECONDITION_FAILED"],
+      [
+        { action: "mute", platform: "discord", chatName: "crypto signals" },
+        "ROOM_NOT_FOUND",
+      ],
+    ] as const) {
+      expect(validateToolArgs(roomOpAction, parameters).errors).toEqual([]);
+      expect(
+        await roomOpAction.validate(
+          runtime,
+          msg("room op"),
+          state,
+          opts(parameters),
+        ),
+      ).toBe(true);
+      const result = await roomOpAction.handler(
         runtime,
-        msg("mute the server"),
+        msg("room op"),
         state,
-        opts({ action: "mute", scope: "server" }),
-      ),
+        opts(parameters),
+      );
+      expect(result?.success).toBe(false);
+      expect(result?.values?.error).toBe(error);
+    }
+  });
+
+  it("a child action is offered only when the current room state allows the operation", async () => {
+    const { runtime } = makeRuntime({
+      rooms: [room(ROOM_ID)],
+      worlds: [world()],
+    });
+    expect(await followRoomAction.validate(runtime, msg("hi"), state)).toBe(
+      true,
+    );
+    const followed = makeRuntime({
+      states: { [`${ROOM_ID}:${AGENT_ID}`]: "FOLLOWED" },
+      rooms: [room(ROOM_ID)],
+      worlds: [world()],
+    });
+    expect(
+      await followRoomAction.validate(followed.runtime, msg("hi"), state),
     ).toBe(false);
-    expect(
-      await roomOpAction.validate(
-        runtime,
-        msg("unmute the server"),
+  });
+});
+
+describe("ROOM action — declared parameters match the handler", () => {
+  it("refuses chatName without platform instead of muting the current room", async () => {
+    const ctx = makeRuntime({ rooms: [room(ROOM_ID)], worlds: [world()] });
+    for (const parameters of [
+      { action: "mute", chatName: "crypto signals" },
+      { action: "mute", chatName: "crypto signals", scope: "server" },
+    ]) {
+      expect(validateToolArgs(roomOpAction, parameters).errors).toEqual([]);
+      const result = await roomOpAction.handler(
+        ctx.runtime,
+        msg("mute the crypto signals channel"),
         state,
-        opts({ action: "unmute", scope: "server" }),
-      ),
-    ).toBe(true);
+        opts(parameters),
+      );
+      expect(result?.success).toBe(false);
+      expect(result?.values?.error).toBe("ROOM_PLATFORM_REQUIRED");
+    }
+    expect(ctx.states.get(`${ROOM_ID}:${AGENT_ID}`)).toBeUndefined();
+    expect(worldMuteActive(ctx.worlds.get(WORLD_ID) ?? null)).toBe(false);
+  });
+
+  it("names the room selected by roomId, not the room the message arrived in", async () => {
+    const ctx = makeRuntime({
+      rooms: [room(ROOM_ID), room(SIBLING_ROOM_ID)],
+      worlds: [world()],
+    });
+    const result = await roomOpAction.handler(
+      ctx.runtime,
+      msg("mute that other channel"),
+      { ...state, data: { room: room(ROOM_ID) } } as State,
+      // roomId selects the room by itself, so a chatName sent with it is not
+      // refused for a missing platform.
+      opts({ action: "mute", roomId: SIBLING_ROOM_ID, chatName: "room-d2" }),
+    );
+    expect(result?.success).toBe(true);
+    expect(ctx.states.get(`${SIBLING_ROOM_ID}:${AGENT_ID}`)).toBe("MUTED");
+    expect(result?.text).toBe("Room muted: room-d2");
+  });
+
+  it("reports a roomId that names no room before the model gate runs", async () => {
+    const ctx = makeRuntime({ rooms: [room(ROOM_ID)], worlds: [world()] });
+    let modelCalls = 0;
+    ctx.runtime.useModel = (async () => {
+      modelCalls += 1;
+      return "yes";
+    }) as IAgentRuntime["useModel"];
+    const parameters = { action: "mute", roomId: SIBLING_ROOM_ID };
+    expect(validateToolArgs(roomOpAction, parameters).errors).toEqual([]);
+    const result = await roomOpAction.handler(
+      ctx.runtime,
+      msg("mute that other channel"),
+      { ...state, data: { room: room(ROOM_ID) } } as State,
+      opts(parameters),
+    );
+    expect(result?.success).toBe(false);
+    expect(result?.values?.error).toBe("ROOM_NOT_FOUND");
+    expect(modelCalls).toBe(0);
+    expect(ctx.memories).toEqual([]);
+  });
+
+  it("a child action does not declare or obey the parent's action discriminator", async () => {
+    expect(followRoomAction.parameters?.map((p) => p.name)).not.toContain(
+      "action",
+    );
+    expect(validateToolArgs(followRoomAction, { action: "mute" }).valid).toBe(
+      false,
+    );
+    const ctx = makeRuntime({ rooms: [room(ROOM_ID)], worlds: [world()] });
+    const result = await followRoomAction.handler(
+      ctx.runtime,
+      msg("follow this channel"),
+      state,
+      opts({ action: "mute" }),
+    );
+    expect(result?.success).toBe(true);
+    expect(ctx.states.get(`${ROOM_ID}:${AGENT_ID}`)).toBe("FOLLOWED");
   });
 });

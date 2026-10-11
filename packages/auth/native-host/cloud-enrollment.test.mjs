@@ -936,6 +936,66 @@ test("cancellation during security token account verification cannot restore aut
   assert.equal(f.writes.length, 0);
 });
 
+const phoneNumber = "+15551234567";
+function smsEnrollmentFixture(firstEnroll) {
+  let enrolls = 0;
+  const f = billingFixture({
+    fetch: (path) => {
+      if (path === "/auth/mfa/totp/status" || path === "/auth/mfa/sms/status")
+        return Response.json({ ok: true, enabled: false });
+      if (path === "/auth/mfa/sms/enroll") {
+        enrolls++;
+        return enrolls === 1
+          ? firstEnroll()
+          : Response.json({
+              ok: true,
+              phone: `***${phoneNumber.slice(-4)}`,
+              expiresAt: future(),
+            });
+      }
+    },
+  });
+  return Object.assign(f, { enrolls: () => enrolls });
+}
+
+test("SMS enrollment refused for a stale sign-in asks for identity and starts no cooldown", async () => {
+  const f = smsEnrollmentFixture(() =>
+    Response.json(
+      {
+        ok: false,
+        error: "Recent sign-in, MFA, or passkey re-authentication is required",
+      },
+      { status: 403 },
+    ),
+  );
+  await billingVerify(f, await billingStart(f));
+  await assert.rejects(
+    f.auth.handle("account-security-enroll-start", { phone: phoneNumber }),
+    { status: 428, code: "account_verification_required" },
+  );
+  const step = await f.auth.handle("account-security-enroll-start", {
+    phone: phoneNumber,
+  });
+  assert.equal(step.status, "code");
+  assert.equal(f.enrolls(), 2);
+});
+
+test("SMS enrollment keeps the resend cooldown after an ambiguous failure", async () => {
+  const f = smsEnrollmentFixture(() =>
+    Response.json({ ok: false }, { status: 500 }),
+  );
+  await billingVerify(f, await billingStart(f));
+  await assert.rejects(
+    f.auth.handle("account-security-enroll-start", { phone: phoneNumber }),
+    { status: 502 },
+  );
+  await assert.rejects(
+    f.auth.handle("account-security-enroll-start", { phone: phoneNumber }),
+    { status: 429, code: "account_code_cooldown" },
+  );
+  assert.equal(f.enrolls(), 1);
+});
+
 for (const method of ["email", "phone"]) {
   test(`account reauthentication requests personal authority for ${method}`, async () => {
     const f = billingFixture();
@@ -976,6 +1036,69 @@ for (const claims of [
       { code: "billing_account_mismatch" },
     );
     assert.equal(await f.auth.billingAuthority(), null);
+  });
+}
+
+const AUTH_USER = "22222222-2222-4222-8222-222222222222";
+const authUserToken = (userId = AUTH_USER) =>
+  [
+    "header",
+    Buffer.from(
+      JSON.stringify({
+        exp: Math.floor(Date.now() / 1000) + 900,
+        userId,
+        tenantId: `personal-${userId}`,
+      }),
+    ).toString("base64url"),
+    "signature",
+  ].join(".");
+/** A Cloud whose own user id differs from the Auth user it names in `steward_user_id`. */
+const separateIdFixture = (steward_user_id, token) =>
+  billingFixture({
+    token,
+    fetch: (path) =>
+      path === "/api/v1/user"
+        ? Response.json({ success: true, ...ACCOUNT, steward_user_id })
+        : undefined,
+  });
+
+test("account verification matches the personal session to the Auth user Cloud names", async () => {
+  const f = separateIdFixture(AUTH_USER, authUserToken());
+  assert.equal(
+    (await billingVerify(f, await billingStart(f, { purpose: "account" })))
+      .status,
+    "authorized",
+  );
+  assert.ok(await f.auth.billingAuthority());
+});
+
+test("account verification rejects a session for another Auth user even when it carries the Cloud user id", async () => {
+  const f = separateIdFixture(AUTH_USER, sessionToken());
+  await assert.rejects(
+    billingVerify(f, await billingStart(f, { purpose: "account" })),
+    { code: "billing_account_mismatch" },
+  );
+  assert.equal(await f.auth.billingAuthority(), null);
+});
+
+for (const steward_user_id of ["", null, 7]) {
+  test(`account verification never matches an unusable Auth user id ${JSON.stringify(steward_user_id)}`, async () => {
+    const other = separateIdFixture(steward_user_id, authUserToken());
+    await assert.rejects(
+      billingVerify(other, await billingStart(other, { purpose: "account" })),
+      { code: "billing_account_mismatch" },
+    );
+    // Without a usable Auth user id the Cloud user id is the only comparison left.
+    const same = separateIdFixture(steward_user_id, sessionToken());
+    assert.equal(
+      (
+        await billingVerify(
+          same,
+          await billingStart(same, { purpose: "account" }),
+        )
+      ).status,
+      "authorized",
+    );
   });
 }
 

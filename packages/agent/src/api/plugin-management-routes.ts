@@ -24,6 +24,8 @@ import {
   CORE_PLUGINS,
   OPTIONAL_CORE_PLUGINS,
 } from "../runtime/core-plugins.ts";
+import { getAgentHostBridge } from "../runtime/host-bridge.ts";
+import { removeClearedCredentialsFromVault } from "../runtime/operations/vault-bridge.ts";
 import {
   aggregateSecrets,
   isBlockedEnvKey,
@@ -109,6 +111,24 @@ function clearCredentialSources(config: ElizaConfig, key: string) {
     for (const [field, envKey] of Object.entries(fields))
       if (envKey === key) delete (settings as Record<string, unknown>)[field];
   }
+}
+
+// Boot copies saved config env into process.env, and providers fall back to
+// it, so a cleared key must leave the process too (as PUT /api/config does).
+function clearProcessEnv(values: Record<string, string>) {
+  for (const [key, value] of Object.entries(values))
+    if (!value.trim()) delete process.env[key];
+}
+
+async function clearVaultCredentials(values: Record<string, string>) {
+  const cleared = Object.entries(values)
+    .filter(([, value]) => !value.trim())
+    .map(([key]) => key);
+  if (cleared.length > 0)
+    await removeClearedCredentialsFromVault(
+      getAgentHostBridge().sharedVault(),
+      cleared,
+    );
 }
 
 function toggle(
@@ -223,6 +243,8 @@ async function persistMutation(
   // Persistence failure must leave the live configuration untouched and fail the request.
   saveElizaConfig(nextConfig);
   ctx.state.config = nextConfig;
+  clearProcessEnv(values);
+  await clearVaultCredentials(values);
   for (const param of plugin.parameters) {
     if (
       enabled === false ||
@@ -414,6 +436,8 @@ async function dispatchPluginManagementRoutes(
       }
       saveElizaConfig(next);
       ctx.state.config = next;
+      clearProcessEnv(values);
+      await clearVaultCredentials(values);
       for (const [key, value] of Object.entries(values))
         ctx.state.runtime?.setSetting(
           key,

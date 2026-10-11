@@ -1387,6 +1387,12 @@ export function createScheduledTaskRunner(
     return (await scheduleWithResult(input)).task;
   }
 
+  function scheduleWithResult(
+    input: Omit<ScheduledTask, "taskId" | "state">,
+  ): Promise<ScheduledTaskScheduleResult> {
+    return scheduleInput(input, true);
+  }
+
   async function creationCommit(
     task: ScheduledTask,
   ): Promise<ScheduledTaskLogEntry> {
@@ -1449,8 +1455,13 @@ export function createScheduledTaskRunner(
     return { task, commit: await creationCommit(task), replayed: true };
   }
 
-  async function scheduleWithResult(
+  /**
+   * `callerInput` is false for an inline pipeline child: its trigger was
+   * validated with the parent, or stored before cron triggers were checked.
+   */
+  async function scheduleInput(
     input: Omit<ScheduledTask, "taskId" | "state">,
+    callerInput: boolean,
   ): Promise<ScheduledTaskScheduleResult> {
     if (input.idempotencyKey) {
       const existing = await deps.store.findByIdempotencyKey(
@@ -1459,7 +1470,10 @@ export function createScheduledTaskRunner(
       if (existing) return replaySchedule(existing);
     }
 
-    const validationIssues = validateScheduledTaskInput(input, deps);
+    const validationIssues = validateScheduledTaskInput(input, deps, {
+      newTrigger: callerInput,
+      newPipeline: callerInput,
+    });
     if (validationIssues.length > 0) {
       throw new ScheduledTaskValidationError(validationIssues);
     }
@@ -1649,10 +1663,21 @@ export function createScheduledTaskRunner(
     detail?: Record<string, unknown>;
   }
 
-  function mutateSnooze(
+  async function snoozeBaseMs(task: ScheduledTask): Promise<number> {
+    const nowMs = now().getTime();
+    if (task.state.status !== "scheduled") return nowMs;
+    const pendingFireAtIso = await resolveNextFireAt(task);
+    const pendingFireMs =
+      pendingFireAtIso === null ? Number.NaN : Date.parse(pendingFireAtIso);
+    return Number.isFinite(pendingFireMs) && pendingFireMs > nowMs
+      ? pendingFireMs
+      : nowMs;
+  }
+
+  async function mutateSnooze(
     task: ScheduledTask,
     payload: { minutes?: number; untilIso?: string } | undefined,
-  ): LifecycleMutation {
+  ): Promise<LifecycleMutation> {
     const minutes = payload?.minutes;
     const untilIso = payload?.untilIso;
     let newFireAtIso: string;
@@ -1662,7 +1687,10 @@ export function createScheduledTaskRunner(
       if (minutes <= 0) {
         throw new Error("snooze: provide minutes or untilIso");
       }
-      const newFireMs = projectMinuteOffsetMs(now().getTime(), minutes);
+      const newFireMs = projectMinuteOffsetMs(
+        await snoozeBaseMs(task),
+        minutes,
+      );
       if (newFireMs === null) {
         throw new ElizaError(
           "snooze: minutes must be finite and project to a representable Date",
@@ -1722,7 +1750,7 @@ export function createScheduledTaskRunner(
     task: ScheduledTask,
     payload: { minutes?: number; untilIso?: string } | undefined,
   ): Promise<ScheduledTask> {
-    const mutation = mutateSnooze(task, payload);
+    const mutation = await mutateSnooze(task, payload);
     await persist(mutation.task);
     await logger.log(mutation.task.taskId, mutation.transition, {
       reason: mutation.reason,
@@ -1817,7 +1845,10 @@ export function createScheduledTaskRunner(
     const edited = structuredClone(task);
     Object.assign(edited, payload);
     const { taskId: _taskId, state: _state, ...input } = edited;
-    const validationIssues = validateScheduledTaskInput(input, deps);
+    const validationIssues = validateScheduledTaskInput(input, deps, {
+      newTrigger: Object.hasOwn(payload, "trigger"),
+      newPipeline: Object.hasOwn(payload, "pipeline"),
+    });
     if (validationIssues.length > 0) {
       throw new ScheduledTaskValidationError(validationIssues);
     }
@@ -1831,6 +1862,16 @@ export function createScheduledTaskRunner(
           );
         }
       }
+    }
+    if (
+      stableStringify(edited.trigger) !== stableStringify(task.trigger) &&
+      edited.state.status === "scheduled" &&
+      edited.state.firedAt !== undefined
+    ) {
+      const { firedAt: _staleOverride, ...state } = edited.state;
+      edited.state = state;
+      const nextFireAtIso = await resolveNextFireAt(edited);
+      if (nextFireAtIso !== null) edited.state.firedAt = nextFireAtIso;
     }
     const mutation = mutationSnapshots.get(task);
     if (mutation) mutationSnapshots.set(edited, mutation);
@@ -1876,11 +1917,11 @@ export function createScheduledTaskRunner(
     return task;
   }
 
-  function lifecycleMutation(
+  async function lifecycleMutation(
     task: ScheduledTask,
     verb: ScheduledTaskReceiptVerb,
     payload: unknown,
-  ): LifecycleMutation {
+  ): Promise<LifecycleMutation> {
     switch (verb) {
       case "snooze":
         return mutateSnooze(
@@ -1996,7 +2037,7 @@ export function createScheduledTaskRunner(
           task: structuredClone(existingTask),
           transition: transitionForReceiptVerb(verb),
         }
-      : lifecycleMutation(structuredClone(existingTask), verb, payload);
+      : await lifecycleMutation(structuredClone(existingTask), verb, payload);
     if (!replayCandidate) {
       writeApplyReceiptMarker(
         mutation.task,
@@ -2250,7 +2291,7 @@ export function createScheduledTaskRunner(
           index,
         ].join(":");
       }
-      const fresh = await schedule(childInput);
+      const fresh = (await scheduleInput(childInput, false)).task;
       fresh.state.pipelineParentId = parent.taskId;
       await persist(fresh);
       created.push(fresh);
@@ -2526,6 +2567,19 @@ export function createScheduledTaskRunner(
     // Gate check.
     const gateOutcome = await evaluateGates(task);
     if (gateOutcome.decision.kind === "deny") {
+      // A denied occurrence of a recurring task is used up: dueness counts
+      // the next occurrence from `firedAt`, so leaving it unchanged re-skips
+      // the same occurrence every tick and fires at the first tick after the
+      // gate opens. Record the occurrence instant, not the (possibly late)
+      // tick, so the schedule keeps its phase.
+      if (isRecurringTrigger(task.trigger)) {
+        const denied = await isScheduledTaskDue(task, {
+          now: now(),
+          ownerFacts: await deps.ownerFacts(),
+          anchors: deps.anchors,
+        });
+        task.state.firedAt = denied.occurrenceAtIso ?? now().toISOString();
+      }
       task.state.status = "skipped";
       task.state.lastDecisionLog = `${gateOutcome.gateKind ?? "gate"}: ${gateOutcome.decision.reason}`;
       if (!(await persist(task))) return { kind: "raced", taskId };

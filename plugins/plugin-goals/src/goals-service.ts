@@ -49,6 +49,33 @@ import {
   requireRecord,
 } from "./goal-normalize.ts";
 
+/**
+ * A `times_per_day` slot's `key` is its identity: the check-in mapper turns it
+ * into the task's `slot-${key}` idempotency key, so two slots sharing a key
+ * collapse into one task and the second declared time never gets a check-in.
+ * Reject the repeat at the write boundary instead of losing it silently.
+ */
+function rejectDuplicateSlotKeys(cadence: Record<string, unknown>): void {
+  if (cadence.kind !== "times_per_day" || !Array.isArray(cadence.slots)) {
+    return;
+  }
+  const seen = new Set<string>();
+  for (const slot of cadence.slots) {
+    const key =
+      slot && typeof slot === "object" && !Array.isArray(slot)
+        ? (slot as Record<string, unknown>).key
+        : undefined;
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (seen.has(key)) {
+      fail(
+        400,
+        `goal cadence times_per_day slots must have unique keys; duplicate key ${JSON.stringify(key)}`,
+      );
+    }
+    seen.add(key);
+  }
+}
+
 const GOAL_SIMILARITY_STOP_WORDS = new Set([
   "and",
   "the",
@@ -63,13 +90,20 @@ const GOAL_SIMILARITY_STOP_WORDS = new Set([
   "goals",
 ]);
 
+// One Han, kana or Hangul character carries a syllable or word, so it counts
+// twice toward the length floor: 매일 and 毎朝 pass, a lone 犬 does not.
+const CJK_SCRIPT_CHAR =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+
 function tokenizeGoalText(text: string | null | undefined): string[] {
   const raw = typeof text === "string" ? text : "";
   return raw
     .toLowerCase()
-    .split(/[^a-z0-9]+/u)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(
-      (token) => token.length >= 3 && !GOAL_SIMILARITY_STOP_WORDS.has(token),
+      (token) =>
+        token.length + (token.match(CJK_SCRIPT_CHAR)?.length ?? 0) >= 3 &&
+        !GOAL_SIMILARITY_STOP_WORDS.has(token),
     );
 }
 
@@ -327,6 +361,7 @@ export class GoalsService {
         if (cadence && typeof cadence.kind !== "string") {
           fail(400, "goal cadence must include a 'kind' field when provided");
         }
+        if (cadence) rejectDuplicateSlotKeys(cadence);
         return cadence ?? null;
       })(),
       supportStrategy: (() => {
@@ -394,10 +429,15 @@ export class GoalsService {
         request.description !== undefined
           ? (normalizeOptionalString(request.description) ?? "")
           : current.goal.description,
-      cadence:
-        request.cadence !== undefined
-          ? (normalizeNullableRecord(request.cadence, "cadence") ?? null)
-          : current.goal.cadence,
+      cadence: (() => {
+        if (request.cadence === undefined) return current.goal.cadence;
+        const cadence = normalizeNullableRecord(request.cadence, "cadence");
+        if (cadence && typeof cadence.kind !== "string") {
+          fail(400, "goal cadence must include a 'kind' field when provided");
+        }
+        if (cadence) rejectDuplicateSlotKeys(cadence);
+        return cadence ?? null;
+      })(),
       supportStrategy:
         request.supportStrategy !== undefined
           ? requireRecord(request.supportStrategy, "supportStrategy")

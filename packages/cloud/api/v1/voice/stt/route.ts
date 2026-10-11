@@ -88,6 +88,9 @@ const SUPPORTED_MIME_TYPES = [
   "audio/mpeg",
   "audio/mp4",
   "audio/m4a",
+  // Chromium and Safari report .m4a files (voice memos) as audio/x-m4a;
+  // the signature allowlist below already accepts that detected type.
+  "audio/x-m4a",
   "audio/wav",
   // Windows clients (and Bun's multipart layer) commonly declare WAV as the
   // legacy x- form; the magic-number allowlist below already accepts it.
@@ -562,7 +565,10 @@ async function __hono_POST(c: AppContext) {
       );
     }
 
-    if (!ALLOWED_AUDIO_SIGNATURES.has(fileTypeResult.mime)) {
+    // file-type adds codec parameters for some containers (Ogg/Opus from
+    // Telegram, Discord and Firefox is `audio/ogg; codecs=opus`).
+    const detectedMimeType = fileTypeResult.mime.split(";")[0].trim();
+    if (!ALLOWED_AUDIO_SIGNATURES.has(detectedMimeType)) {
       logger.warn("[Voice STT API] Audio file signature mismatch", {
         actualMimeType: fileTypeResult.mime,
         claimedMimeType: baseMimeType,
@@ -575,8 +581,8 @@ async function __hono_POST(c: AppContext) {
       );
     }
 
-    let finalMimeType = fileTypeResult.mime;
-    if (fileTypeResult.mime === "video/webm") {
+    let finalMimeType = detectedMimeType;
+    if (detectedMimeType === "video/webm") {
       logger.info(
         "[Voice STT API] Converting video/webm container to audio/webm (Safari/macOS audio recording)",
       );

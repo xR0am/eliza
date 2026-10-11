@@ -6,8 +6,9 @@
  */
 
 import type { IAgentRuntime } from "@elizaos/core";
-import { CONTEXT_ROUTING_STATE_KEY } from "@elizaos/core";
+import { CONTEXT_ROUTING_STATE_KEY, validateToolArgs } from "@elizaos/core";
 import { beforeEach, describe, expect, it } from "vitest";
+import { messageAction } from "../../../advanced-capabilities/actions/message.ts";
 import { listInboxAction } from "../actions/listInbox.ts";
 import { BaseMessageAdapter } from "../adapters/base.ts";
 import {
@@ -49,6 +50,10 @@ class FixedListAdapter extends BaseMessageAdapter {
     return true;
   }
 
+  override capabilities() {
+    return { ...super.capabilities(), list: true };
+  }
+
   protected override async listMessagesImpl(
     _runtime: IAgentRuntime,
     opts: Parameters<BaseMessageAdapter["listMessages"]>[1],
@@ -88,23 +93,18 @@ describe("listInboxAction", () => {
         snippet: "discord miss",
         receivedAtMs: 2_000,
       }),
-      messageRef({
-        id: "whatsapp-1",
-        source: "whatsapp",
-        externalId: "whatsapp-external-1",
-        snippet: "WhatsApp hit",
-      }),
     ]);
+    await registerAdapter(new FixedListAdapter([]));
 
     const result = await listInboxAction.handler(
       createFakeRuntime(),
       messageRef({ id: "turn", source: "gmail" }) as never,
       undefined,
-      { parameters: { sources: ["gmail", "whatsapp"] } } as never,
+      { parameters: { sources: ["gmail"] } } as never,
     );
 
     expect(result.success).toBe(true);
-    expect(result.data).toMatchObject({ total: 2, returned: 2 });
+    expect(result.data).toMatchObject({ total: 1, returned: 1 });
     const messages = result.data?.messages;
     expect(messages).toBeDefined();
     if (!messages) {
@@ -112,7 +112,98 @@ describe("listInboxAction", () => {
     }
     expect(
       (messages as Array<{ id: string }>).map((message) => message.id),
-    ).toEqual(["gmail-1", "whatsapp-1"]);
+    ).toEqual(["gmail-1"]);
+  });
+
+  it("rejects a requested source that has no adapter able to list", async () => {
+    // A cached ref must not stand in for a source that was never read.
+    getDefaultMessageRefStore().saveMessages([
+      messageRef({ id: "gmail-1", externalId: "gmail-external-1" }),
+    ]);
+    const adapter = new FixedListAdapter([]);
+    await registerAdapter(adapter);
+
+    const result = await listInboxAction.handler(
+      createFakeRuntime(),
+      messageRef({ id: "turn" }) as never,
+      undefined,
+      { parameters: { sources: ["gmail", "whatsapp"] } } as never,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.text).toBe(
+      "Cannot read the inbox for: whatsapp (no inbox adapter is connected). Sources that can be read: gmail.",
+    );
+    expect(result.data?.messages).toBeUndefined();
+    expect(adapter.seenOptions).toEqual([]);
+  });
+
+  it("asks the adapter for a channel scope instead of filtering cached refs", async () => {
+    // A Gmail ref carries one channelId but the message is in every label in
+    // its tags. Filtering the cache by channelId would drop "both-labels".
+    const refs = [
+      messageRef({
+        id: "both-labels",
+        externalId: "both-labels-external",
+        worldId: "work@example.com",
+        channelId: "INBOX",
+        tags: ["INBOX", "Label_7"],
+        receivedAtMs: 3_000,
+      }),
+      messageRef({
+        id: "label-only",
+        externalId: "label-only-external",
+        worldId: "work@example.com",
+        channelId: "Label_7",
+        tags: ["Label_7"],
+        receivedAtMs: 2_000,
+      }),
+    ];
+    getDefaultMessageRefStore().saveMessages(refs);
+    const adapter = new FixedListAdapter(refs);
+    await registerAdapter(adapter);
+
+    const result = await listInboxAction.handler(
+      createFakeRuntime(),
+      messageRef({ id: "turn" }) as never,
+      undefined,
+      {
+        parameters: {
+          worldIds: ["work@example.com"],
+          channelIds: ["Label_7"],
+        },
+      } as never,
+    );
+
+    expect(adapter.seenOptions).toHaveLength(1);
+    expect(adapter.seenOptions[0]).toMatchObject({
+      worldIds: ["work@example.com"],
+      channelIds: ["Label_7"],
+    });
+    expect(
+      (result.data as { messages: Array<{ id: string }> }).messages.map(
+        (m) => m.id,
+      ),
+    ).toEqual(["both-labels", "label-only"]);
+  });
+
+  it("rejects an unsupported source instead of listing every source", async () => {
+    getDefaultMessageRefStore().saveMessages([
+      messageRef({ id: "gmail-1", externalId: "gmail-external-1" }),
+    ]);
+
+    const result = await listInboxAction.handler(
+      createFakeRuntime(),
+      messageRef({ id: "turn" }) as never,
+      undefined,
+      { parameters: { sources: ["slack"] } } as never,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.text).toBe(
+      'source "slack" is not a supported message source; use one of: gmail, discord, telegram, twitter, imessage, whatsapp, calendly, browser_bridge',
+    );
+    expect(result.data?.messages).toBeUndefined();
   });
 
   it("validates messaging contexts and rejects unrelated contexts", async () => {
@@ -215,6 +306,44 @@ describe("listInboxAction", () => {
     });
   });
 
+  it("does not report an empty inbox when the limit trims every unread message", async () => {
+    getDefaultMessageRefStore().saveMessages([
+      messageRef({ id: "unread-1", receivedAtMs: 2_000 }),
+      messageRef({ id: "unread-2", receivedAtMs: 1_000 }),
+    ]);
+
+    const result = await listInboxAction.handler(
+      createFakeRuntime(),
+      messageRef({ id: "turn" }) as never,
+      undefined,
+      { parameters: { limit: 0 } } as never,
+    );
+
+    expect(result.text).toBe(
+      "2 unread message(s) across 1 platform(s); details in data.messages.",
+    );
+    expect(result.data).toMatchObject({ total: 2, returned: 0 });
+  });
+
+  it("rejects a limit below 1 and the removed folder hint at the MESSAGE schema", () => {
+    expect(
+      validateToolArgs(messageAction, { action: "list_inbox", limit: 0 })
+        .errors,
+    ).toEqual(["Argument 'limit' value 0 is below minimum 1"]);
+    expect(
+      validateToolArgs(messageAction, { action: "list_inbox", limit: 5 }).valid,
+    ).toBe(true);
+    for (const action of ["triage", "list_inbox", "search_inbox"]) {
+      expect(
+        validateToolArgs(messageAction, { action, folder: "Promotions" }).valid,
+      ).toBe(false);
+      expect(
+        validateToolArgs(messageAction, { action, channelIds: ["Promotions"] })
+          .valid,
+      ).toBe(true);
+    }
+  });
+
   it("pulls and scores live adapter messages when the cache is empty", async () => {
     const adapter = new FixedListAdapter([
       messageRef({
@@ -230,7 +359,13 @@ describe("listInboxAction", () => {
       messageRef({ id: "turn" }) as never,
       undefined,
       {
-        parameters: { sources: ["gmail"], sinceMs: 6_000, limit: 10 },
+        parameters: {
+          sources: ["gmail"],
+          sinceMs: 6_000,
+          limit: 10,
+          worldIds: ["work@example.com"],
+          channelIds: ["INBOX"],
+        },
       } as never,
     );
 
@@ -238,6 +373,8 @@ describe("listInboxAction", () => {
     expect(adapter.seenOptions[0]).toMatchObject({
       sinceMs: 6_000,
       limit: 10,
+      worldIds: ["work@example.com"],
+      channelIds: ["INBOX"],
     });
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({

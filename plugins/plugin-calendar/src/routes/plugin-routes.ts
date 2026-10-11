@@ -19,7 +19,10 @@ import {
   isGoogleCalendarWebhookEnabled,
 } from "../google-watch/index.js";
 import { CalendarServiceError } from "../internal/errors.js";
-import { CalendarLocalTimeError } from "../internal/time.js";
+import {
+  CalendarLocalTimeError,
+  calendarLocalTimeClarification,
+} from "../internal/time.js";
 import {
   type CalendarRouteRateLimitKey,
   type CalendarRouteService,
@@ -319,8 +322,6 @@ function isCalendarOwnerMutationGateway(
       "function" &&
     typeof (value as CalendarOwnerMutationGateway)
       .resolveLinkedCalendarConflict === "function" &&
-    "rebindLinkedCalendar" in value &&
-    typeof value.rebindLinkedCalendar === "function" &&
     typeof (value as CalendarOwnerMutationGateway).disconnectLinkedCalendar ===
       "function" &&
     typeof (value as CalendarOwnerMutationGateway)
@@ -527,8 +528,7 @@ async function runCalendarRoute(
         {
           error: error.message,
           code: error.code,
-          requiresInput: true,
-          timeClarification: error.context,
+          ...calendarLocalTimeClarification(error),
         },
         error.status,
       );
@@ -643,11 +643,6 @@ export function calendarRouteHandler(): LegacyRouteHandler {
             linkId,
             request,
           );
-        },
-        async rebindLinkedCalendar(requestUrl, linkId, request) {
-          const gateway =
-            await requireCalendarOwnerMutationGateway(agentRuntime);
-          return gateway.rebindLinkedCalendar(requestUrl, linkId, request);
         },
         async disconnectLinkedCalendar(requestUrl, linkId, request) {
           const gateway =

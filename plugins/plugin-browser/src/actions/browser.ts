@@ -748,6 +748,7 @@ async function executeBrowserWaitForUrl(
       subaction: tabId ? "navigate" : "open",
       url: startUrl,
       id: tabId,
+      show: tabId ? undefined : true,
     };
     try {
       const opened = browserService
@@ -894,8 +895,12 @@ export const browserAction: Action = {
       return executeBrowserWaitForUrl(runtime, params, messageText, callback);
     }
 
+    // A wait treats url as a condition ("tab URL contains"), so a URL quoted
+    // in the user's message must not turn a timed delay into a URL wait.
     const url =
-      params?.url?.trim() || extractFirstUrl(messageText) || undefined;
+      params?.url?.trim() ||
+      (subaction === "wait" ? undefined : extractFirstUrl(messageText)) ||
+      undefined;
 
     // `clear` arrives as fill; blank the value so the workspace replaces the
     // control's contents instead of appending. Drag carries its drop target
@@ -1297,14 +1302,15 @@ export const browserAction: Action = {
     {
       name: "script",
       subactions: ["wait"],
-      description: "Script for eval",
+      description:
+        "For action=wait: JavaScript condition expression polled in the page. Rejected unless the desktop browser workspace runs with ELIZA_BROWSER_WORKSPACE_ALLOW_USER_SCRIPT=1; prefer selector, text, or url conditions.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "watchMode",
       description:
-        "User watching hint; prefer realistic-* click/fill, visible cursor, pointer events.",
+        "Only when action is omitted: a selector infers realistic_click (realistic_fill with text) instead of click/type. Ignored with an explicit action; for a watched session pass action=realistic_click, realistic_fill, realistic_type or realistic_press.",
       required: false,
       schema: { type: "boolean" as const },
     },
@@ -1335,8 +1341,9 @@ export const browserAction: Action = {
     },
     {
       name: "replace",
-      subactions: ["fill", "clear", "type", "realistic_fill", "realistic_type"],
-      description: "For realistic-fill: replace existing input, not append.",
+      subactions: ["realistic_type"],
+      description:
+        "realistic_type only: replace the existing value instead of appending. fill and realistic_fill always replace; type always appends.",
       required: false,
       schema: { type: "boolean" as const },
     },

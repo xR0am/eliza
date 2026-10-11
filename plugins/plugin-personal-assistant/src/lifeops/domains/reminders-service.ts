@@ -251,9 +251,13 @@ import {
   lifeOpsErrorMessage,
   normalizeEnumValue,
   normalizeOptionalString,
+  normalizePhoneNumber,
   requireNonEmptyString,
 } from "../service-normalize.js";
-import type { ReminderActivityProfileSnapshot } from "../service-types.js";
+import {
+  LifeOpsServiceError,
+  type ReminderActivityProfileSnapshot,
+} from "../service-types.js";
 import { getActivitySignalBus } from "../signals/bus.js";
 import { publishDerivedHealthSignals } from "../signals/health-signal-publisher.js";
 import {
@@ -698,17 +702,6 @@ function normalizeOptionalRecord(
 }
 
 const LIFEOPS_PRIVACY_CLASSES = ["public", "private", "shared"] as const;
-
-function normalizePhoneNumber(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    fail(400, `${field} must be a non-empty phone number string`);
-  }
-  const cleaned = value.replace(/[\s\-().]/g, "");
-  if (!/^\+?\d{7,15}$/.test(cleaned)) {
-    fail(400, `${field} is not a valid phone number`);
-  }
-  return cleaned.startsWith("+") ? cleaned : `+${cleaned}`;
-}
 
 function normalizePrivacyClass(
   value: unknown,
@@ -1416,7 +1409,13 @@ export class RemindersDomain {
           }),
         )
         .filter((line): line is string => typeof line === "string");
-    } catch {
+    } catch (error) {
+      // error-policy:J4 the conversation only styles the reminder body; the
+      // reminder still fires without it. Report the failed message read.
+      this.ctx.runtime.reportError(
+        "lifeops:reminders:recent-conversation",
+        error,
+      );
       return [];
     }
   }
@@ -1488,7 +1487,10 @@ export class RemindersDomain {
       return parseReminderOwnerResponseSemanticClassification(
         parsed ? normalizeSemanticClassifierModelRecord(parsed) : null,
       );
-    } catch {
+    } catch (error) {
+      // error-policy:J4 no verdict keeps the review retryable (the caller
+      // reads null as no_semantic_verdict). Report the model failure.
+      this.ctx.runtime.reportError("lifeops:reminders:classify-reply", error);
       return null;
     }
   }
@@ -1719,7 +1721,14 @@ export class RemindersDomain {
             ) {
               return { ...noResponse, reason: "foreground_request_pending" };
             }
-          } catch {
+          } catch (error) {
+            // error-policy:J4 an unreadable request stays unknown evidence and
+            // the review retries. Report the failed refresh.
+            this.ctx.runtime.reportError(
+              "lifeops:reminders:foreground-request-refresh",
+              error,
+              { attemptId: args.attempt.id },
+            );
             return {
               ...noResponse,
               reason: "foreground_request_refresh_unknown",
@@ -1853,8 +1862,16 @@ export class RemindersDomain {
           semanticReason: null,
         }
       );
-    } catch {
-      return noResponse;
+    } catch (error) {
+      // error-policy:J4 a failed plan, message or review-state read is not
+      // owner silence. Return unknown evidence so the caller retries instead
+      // of escalating to the next channel, and report the fault.
+      this.ctx.runtime.reportError(
+        "lifeops:reminders:review-owner-response",
+        error,
+        { attemptId: args.attempt.id },
+      );
+      return { ...noResponse, reason: "review_evidence_unavailable" };
     }
   }
 
@@ -1910,7 +1927,12 @@ export class RemindersDomain {
           ? normalizeGeneratedReminderBody(response)
           : null;
       return text ?? fallback;
-    } catch {
+    } catch (error) {
+      // error-policy:J4 the template body still delivers the reminder.
+      // Report the model failure that replaced the generated body.
+      this.ctx.runtime.reportError("lifeops:reminders:render-body", error, {
+        channel: args.channel,
+      });
       return fallback;
     }
   }
@@ -1974,7 +1996,13 @@ export class RemindersDomain {
           ? normalizeGeneratedWorkflowBody(response)
           : null;
       return text ?? fallback;
-    } catch {
+    } catch (error) {
+      // error-policy:J4 the template body still delivers the workflow update.
+      // Report the model failure that replaced the generated body.
+      this.ctx.runtime.reportError(
+        "lifeops:reminders:render-workflow-body",
+        error,
+      );
       return fallback;
     }
   }
@@ -3361,7 +3389,10 @@ export class RemindersDomain {
   }): Promise<Record<string, unknown>> {
     try {
       const [activityProfile, policies] = await Promise.all([
-        this.readReminderActivityProfileSnapshot({ now: args.now }),
+        this.readReminderActivityProfileSnapshot({
+          now: args.now,
+          timezone: await resolveOwnerTimeZone(this.ctx.runtime, args.now),
+        }),
         this.ctx.repository.listChannelPolicies(this.ctx.agentId()),
       ]);
       const candidates = await this.resolveOwnerContactRouteCandidates({
@@ -3836,6 +3867,24 @@ export class RemindersDomain {
             );
             return;
           }
+        }
+        if (
+          error instanceof LifeOpsServiceError &&
+          error.code === "LIFEOPS_SNOOZE_PAST_QUOTA_DAY"
+        ) {
+          // The owner asked for a snooze this occurrence cannot take. Record
+          // the reply as unresolved so the review asks for a new time; a throw
+          // here would abort the reminder tick on every run until day end.
+          await this.markReminderReviewObservedResponse({
+            attempt: args.attempt,
+            decision: "needs_clarification",
+            respondedAt: args.respondedAt,
+            responseText: args.responseText,
+            reason: "snooze_past_daily_count_day_end",
+            classifierSource: args.classifierSource,
+            semanticReason: args.semanticReason,
+          });
+          return;
         }
         throw error;
       }
@@ -4432,6 +4481,7 @@ export class RemindersDomain {
         (responseReview.reason === "no_semantic_verdict" ||
           responseReview.reason === "foreground_request_pending" ||
           responseReview.reason === "foreground_request_refresh_unknown" ||
+          responseReview.reason === "review_evidence_unavailable" ||
           responseReview.reason === "definition_inactive")
       ) {
         // Unknown evidence stays retryable. Inactive definitions already closed
@@ -5034,6 +5084,12 @@ export class RemindersDomain {
                 outcome = "blocked_connector";
                 deliveryMetadata.error = result.error ?? "sms delivery failed";
                 deliveryMetadata.status = result.status;
+                if (result.sids?.length) {
+                  // Twilio accepted the earlier parts of a long body. A second
+                  // dispatch would send those parts to the recipient again.
+                  deliveryMetadata.reason = "runtime_send_acceptance_unknown";
+                  deliveryMetadata.providerMessageIds = result.sids;
+                }
               } else {
                 deliveryMetadata.sid = result.sid ?? null;
                 deliveryMetadata.status = result.status;
@@ -5571,8 +5627,10 @@ export class RemindersDomain {
       createdAt: new Date().toISOString(),
     });
 
+    const refreshedAt = new Date(occurredAt);
     const refreshed = await this.refreshEffectiveScheduleState({
-      now: new Date(occurredAt),
+      timezone: await resolveOwnerTimeZone(this.ctx.runtime, refreshedAt),
+      now: refreshedAt,
     });
     return {
       accepted: true,
@@ -5744,6 +5802,38 @@ export class RemindersDomain {
       },
     });
 
+    // Delivery selects the oldest primary policy, so a number captured earlier
+    // (another number, or the same one under a previous key) must stop being
+    // primary or it keeps receiving reminders under its old permissions. This
+    // runs after the new policies are stored so a rejected request changes
+    // nothing.
+    for (const policy of await this.ctx.repository.listChannelPolicies(
+      this.ctx.agentId(),
+    )) {
+      if (
+        (policy.channelType !== "sms" && policy.channelType !== "voice") ||
+        policy.channelRef === phoneNumber ||
+        policy.metadata.isPrimary !== true
+      ) {
+        continue;
+      }
+      await this.ctx.repository.upsertChannelPolicy({
+        ...policy,
+        metadata: { ...policy.metadata, isPrimary: false },
+        updatedAt: new Date().toISOString(),
+      });
+      await this.ctx.recordChannelPolicyAudit(
+        policy.id,
+        "channel policy replaced as primary",
+        { request },
+        {
+          channelType: policy.channelType,
+          channelRef: policy.channelRef,
+          replacedBy: phoneNumber,
+        },
+      );
+    }
+
     // Register SMS/voice in the escalation channel list when the user
     // consents so the escalation service can reach them without manual
     // setup.
@@ -5901,7 +5991,7 @@ export class RemindersDomain {
         .filter(
           (attempt) =>
             isDeliveredReminderOutcome(attempt.outcome) ||
-            (attempt.channel === "in_app" &&
+            ((attempt.channel === "in_app" || attempt.channel === "sms") &&
               attempt.outcome === "blocked_connector" &&
               attempt.deliveryMetadata.reason ===
                 "runtime_send_acceptance_unknown"),
@@ -6336,10 +6426,15 @@ export class RemindersDomain {
       "circadian_state",
       circadianFallback,
       async () => {
+        // Same owner-zone anchor as the reminder pass (#13509): the sleep
+        // cycle check-ins read `currentSchedule.timezone`.
+        const timezone = await resolveOwnerTimeZone(this.ctx.runtime, now);
         const previousSchedule = await this.readEffectiveScheduleState({
+          timezone,
           now,
         });
         const refreshedSchedule = await this.refreshEffectiveScheduleState({
+          timezone,
           now,
         });
         if (refreshedSchedule !== null) {

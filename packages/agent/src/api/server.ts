@@ -5,7 +5,7 @@ import "./waifu-chat-role-resolver.ts";
  *
  * Exposes HTTP endpoints that the UI frontend expects, backed by the
  * elizaOS AgentRuntime. Default port: 2138. In dev mode, the Vite UI
- * dev server proxies /api and /ws here (see eliza/packages/app/scripts/dev-ui.ts).
+ * dev server proxies /api and /ws here (see packages/app/scripts/dev-ui.ts).
  */
 import fs from "node:fs";
 import http from "node:http";
@@ -341,6 +341,7 @@ import {
   handleRemoteCapabilityRoutes,
   handleSandboxRouteGroup,
   handleSubscriptionRoutes,
+  handleTrajectoryManagementRoutes,
   handleUpdateRoutes,
   handleViewsRoutes,
   handleWorkbenchRoutes,
@@ -597,7 +598,6 @@ async function getX402Plugin(): Promise<X402PluginModule | null> {
 // real specifier rather than the short key. See optional-plugin-fallback.ts.
 const optionalPluginSpecifiers = {
   capacitor: "@elizaos/plugin-native-inference/host-bridge",
-  computerUse: "@elizaos/plugin-computeruse",
   cloud: "@elizaos/plugin-elizacloud",
   imessage: "@elizaos/plugin-imessage",
   mcp: "@elizaos/plugin-mcp",
@@ -605,7 +605,6 @@ const optionalPluginSpecifiers = {
 } as const;
 const optionalPluginImports = {
   capacitor: () => importOptionalPlugin(optionalPluginSpecifiers.capacitor),
-  computerUse: () => importOptionalPlugin(optionalPluginSpecifiers.computerUse),
   cloud: () => importOptionalPlugin(optionalPluginSpecifiers.cloud),
   imessage: () => importOptionalPlugin(optionalPluginSpecifiers.imessage),
   mcp: () => importOptionalPlugin(optionalPluginSpecifiers.mcp),
@@ -972,6 +971,7 @@ interface RequestContext {
   onRestart:
     | ((options?: RuntimeRestartOptions) => Promise<AgentRuntime | null>)
     | null;
+  onStop: ((runtime: AgentRuntime) => Promise<void>) | null;
   onRuntimeSwapped?: () => void;
   onRuntimeActivated?: (
     previousRuntime: AgentRuntime | null,
@@ -1078,6 +1078,9 @@ async function applyRuntimeRestart(
     options = { ...options, disposeCurrentBeforeBuild: true };
   }
   if (!ctx?.onRestart) {
+    return false;
+  }
+  if (state.runtimeStopPromise) {
     return false;
   }
   if (state.agentState === "restarting") {
@@ -1796,6 +1799,7 @@ async function handleRequestForViewClient(
       pathname.startsWith("/api/tts/local-inference") ||
       pathname.startsWith("/api/asr/local-inference") ||
       pathname.startsWith("/api/voice/audio-frames") ||
+      pathname === "/api/voice/native-pcm-turn" ||
       pathname === "/api/voice/playback-frames" ||
       pathname === "/api/voice/aec-capture") &&
     (await (async () => {
@@ -1849,17 +1853,6 @@ async function handleRequestForViewClient(
     })
   ) {
     return;
-  }
-  if (!isMobilePlatform() && pathname.startsWith("/api/computer-use/")) {
-    const { handleComputerUseRoutes } = await getOptionalPluginApi<{
-      handleComputerUseRoutes: (
-        req: http.IncomingMessage,
-        res: http.ServerResponse,
-        pathname: string,
-        method: string,
-      ) => Promise<boolean>;
-    }>("computerUse");
-    if (await handleComputerUseRoutes(req, res, pathname, method)) return;
   }
   if (method === "POST" && pathname === "/api/provider/switch") {
     if (
@@ -2013,6 +2006,7 @@ async function handleRequestForViewClient(
       // (fresh-install deferred boot / stopped host) instead of fake-flipping
       // the reported state to "running" with nothing behind it.
       onRestart: ctx?.onRestart ?? undefined,
+      onStop: ctx?.onStop ?? undefined,
       onRuntimeSwapped: ctx?.onRuntimeSwapped,
       onRuntimeActivated: ctx?.onRuntimeActivated,
     })
@@ -2096,7 +2090,6 @@ async function handleRequestForViewClient(
       removeStateDir: (resolvedState) => {
         fs.rmSync(resolvedState, { recursive: true, force: true });
       },
-      logWarn: (message) => logger.warn(message),
     })
   ) {
     return;
@@ -3153,6 +3146,19 @@ async function handleRequestForViewClient(
   ) {
     return;
   }
+  // ── Trajectory management routes (config, export, delete) ───────────────
+  // The owner gate above already covers every /api/trajectories method.
+  if (
+    await handleTrajectoryManagementRoutes({
+      req,
+      res,
+      method,
+      pathname,
+      runtime: state.runtime,
+    })
+  ) {
+    return;
+  }
   // ── Trajectory read routes (owned by core TrajectoriesService) ──────────
   // Serves GET /api/trajectories[/:id|/stats] from the core TrajectoriesService
   // so the realtime trajectory viewer works from the core service on every
@@ -3274,6 +3280,8 @@ export async function startApiServer(opts?: {
    * If omitted the endpoint returns 501 (not supported in this mode).
    */
   onRestart?: (options?: RuntimeRestartOptions) => Promise<AgentRuntime | null>;
+  /** Fully disposes a live runtime before the lifecycle route reports stopped. */
+  onStop?: (runtime: AgentRuntime) => Promise<void>;
   /** A replacement shares the exact physical store and cannot overlap its predecessor. */
   restartRequiresRuntimeDisposal?: boolean;
   /** Runs after the server atomically publishes the replacement runtime. */
@@ -3548,6 +3556,7 @@ export async function startApiServer(opts?: {
   };
   // Store the restart callback on the state so the route handler can access it.
   const onRestart = opts?.onRestart ?? null;
+  const onStop = opts?.onStop ?? null;
   const restartRequiresRuntimeDisposal =
     opts?.restartRequiresRuntimeDisposal === true;
   const onRuntimeActivated = opts?.onRuntimeActivated;
@@ -3560,6 +3569,7 @@ export async function startApiServer(opts?: {
     hostRuntimeMode:
       hostConfig === undefined ? undefined : resolveRuntimeMode(hostConfig),
     onRestart,
+    onStop,
     restartRequiresRuntimeDisposal,
     onRuntimeActivated,
     onRuntimeSwapped: () => {
@@ -3875,7 +3885,11 @@ export async function startApiServer(opts?: {
           if (!active) return;
           const setup = service as ConnectorSetupServiceInstance;
           setup.setBroadcastWs(broadcastWs);
-          unsubscribe.push(() => setup.setBroadcastWs(null));
+          setup.setLiveConfig(() => state.config);
+          unsubscribe.push(() => {
+            setup.setBroadcastWs(null);
+            setup.setLiveConfig(null);
+          });
         })
         .catch((error) => runtime.reportError("api.connectorBroadcast", error));
     }

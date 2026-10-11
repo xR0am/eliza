@@ -250,6 +250,83 @@ describe("searchMessagesAction", () => {
     });
   });
 
+  it("matches a sender given as the from identifier an inbox op returned", async () => {
+    getDefaultTriageService().register(
+      new SearchAdapter("discord", [
+        messageRef("discord", "from-alice", {
+          from: { identifier: "111222333444555666", displayName: "Alice" },
+        }),
+        messageRef("discord", "from-bob", {
+          from: { identifier: "999888777666555444", displayName: "Bob" },
+        }),
+      ]),
+    );
+    const ids = async (sender: string) => {
+      const messages = (await runSearch({ sender })).data?.messages;
+      if (!messages) throw new Error("Expected search messages");
+      return (messages as Array<{ id: string }>).map(({ id }) => id);
+    };
+
+    expect(await ids("111222333444555666")).toEqual(["from-alice"]);
+    expect(await ids("alice")).toEqual(["from-alice"]);
+    expect(await ids("111222")).toEqual([]);
+  });
+
+  it("rejects an unsupported source instead of searching every source", async () => {
+    const gmail = new SearchAdapter("gmail", []);
+    getDefaultTriageService().register(gmail);
+
+    const result = await runSearch({ sources: ["email"], content: "invoice" });
+
+    expect(result.success).toBe(false);
+    expect(result.text).toBe(
+      'source "email" is not a supported message source; use one of: gmail, discord, telegram, twitter, imessage, whatsapp, calendly, browser_bridge',
+    );
+    expect(gmail.seenLimits).toEqual([]);
+  });
+
+  it.each([
+    ["since", "last week"],
+    ["until", "tomorrow"],
+  ])(
+    "rejects an unreadable %s instead of searching the whole history",
+    async (field, value) => {
+      const gmail = new SearchAdapter("gmail", []);
+      getDefaultTriageService().register(gmail);
+
+      const result = await runSearch({ content: "invoice", [field]: value });
+
+      expect(result.success).toBe(false);
+      expect(result.text).toBe(
+        `${field} must be an ISO 8601 date or epoch milliseconds`,
+      );
+      expect(gmail.seenLimits).toEqual([]);
+    },
+  );
+
+  it("reads a four-digit until as a year and a long digit run as epoch ms", async () => {
+    getDefaultTriageService().register(
+      new SearchAdapter("gmail", [
+        messageRef("gmail", "before-window", {
+          receivedAtMs: 1_699_999_999_999,
+        }),
+        messageRef("gmail", "in-window", {
+          receivedAtMs: Date.parse("2024-06-01T00:00:00Z"),
+        }),
+        messageRef("gmail", "after-window", {
+          receivedAtMs: Date.parse("2025-06-01T00:00:00Z"),
+        }),
+      ]),
+    );
+
+    const result = await runSearch({ since: "1700000000000", until: "2025" });
+
+    expect(result.data).toMatchObject({
+      count: 1,
+      messages: [{ id: "in-window" }],
+    });
+  });
+
   it("propagates an all-failed connector search", async () => {
     getDefaultTriageService().register(
       new SearchAdapter("gmail", [], true, new Error("gmail unavailable")),

@@ -123,6 +123,8 @@ const port = resolveDesktopApiPort(process.env);
 const hadUserApiTokenInEnv = !!resolveApiToken(process.env);
 /** The currently active runtime — swapped on restart. */
 let currentRuntime: AgentRuntime | null = null;
+/** Teardown started by an API stop or restart; signal shutdown waits for it. */
+let pendingRuntimeTeardown: Promise<unknown> | null = null;
 /** The API server's `updateRuntime` handle (set after startup). */
 let apiUpdateRuntime: ((rt: AgentRuntime) => void) | null = null;
 /** API server startup diagnostics updater (set after startup). */
@@ -350,8 +352,17 @@ async function createRuntime(): Promise<AgentRuntime> {
   const runtimeModule = await loadElizaRuntimeModule();
   const { shutdownRuntime, startEliza } = runtimeModule;
   if (currentRuntime) {
-    await shutdownRuntime(currentRuntime, "dev-server createRuntime");
+    // Relinquish ownership before teardown so a signal during a restart waits
+    // for this teardown instead of closing the same adapter again.
+    const runtimeToStop = currentRuntime;
     currentRuntime = null;
+    const teardown = shutdownRuntime(runtimeToStop, "dev-server createRuntime");
+    pendingRuntimeTeardown = teardown;
+    try {
+      await teardown;
+    } finally {
+      if (pendingRuntimeTeardown === teardown) pendingRuntimeTeardown = null;
+    }
   }
   const result = await startEliza({ headless: true });
   if (!result) {
@@ -464,6 +475,14 @@ async function shutdown(): Promise<void> {
   }, 10000);
   forceExitTimer.unref();
   logger.info(`${getLogPrefix()} Dev server shutting down…`);
+  // A teardown started by an API stop or restart owns its runtime; wait for it (bounded
+  // by the forced-exit timer above) so the adapter closes before exit.
+  if (pendingRuntimeTeardown)
+    await pendingRuntimeTeardown.catch(() => undefined);
+  // A restart in flight boots a replacement after its teardown; wait for the
+  // whole restart so the replacement is stopped below instead of opening
+  // resources after shutdown.
+  if (restartPromise) await restartPromise.catch(() => undefined);
   if (currentRuntime) {
     try {
       // currentRuntime is only ever set inside createRuntime(), which has
@@ -500,6 +519,26 @@ async function main() {
   } = await startApiServer({
     port,
     initialAgentState: "starting",
+    onStop: async (runtimeToStop) => {
+      const { shutdownRuntime } = await loadElizaRuntimeModule();
+      // Relinquish host ownership before teardown so signal shutdown cannot
+      // race a second close of the same adapter.
+      if (currentRuntime === runtimeToStop) {
+        currentRuntime = null;
+      }
+      const stop = shutdownRuntime(runtimeToStop, "dev-server API stop", {
+        requireQuiescence: true,
+      });
+      pendingRuntimeTeardown = stop;
+      try {
+        await stop;
+      } finally {
+        if (pendingRuntimeTeardown === stop) pendingRuntimeTeardown = null;
+        if (currentRuntime === runtimeToStop) {
+          currentRuntime = null;
+        }
+      }
+    },
     onRestart: async () => {
       await handleRestart("api");
       return currentRuntime;

@@ -81,13 +81,12 @@ export const setFollowupThresholdAction: Action = {
           ? Number(rawThreshold)
           : Number.NaN;
 
-    if (!Number.isFinite(thresholdDays) || thresholdDays <= 0) {
+    if (!Number.isInteger(thresholdDays) || thresholdDays < 1) {
       return {
         success: false,
         text: "SET_FOLLOWUP_THRESHOLD requires a positive integer thresholdDays.",
       };
     }
-    const thresholdInt = Math.floor(thresholdDays);
 
     const service = getRelationshipsServiceLike(runtime);
     if (!service) {
@@ -171,23 +170,23 @@ export const setFollowupThresholdAction: Action = {
 
     const nextFields: Record<string, string | number> = {
       ...(resolvedContact.customFields as Record<string, string | number>),
-      followupThresholdDays: thresholdInt,
+      followupThresholdDays: thresholdDays,
     };
     await service.updateContact(resolvedContact.entityId, {
       customFields: nextFields,
     });
 
     logger.info(
-      `[SET_FOLLOWUP_THRESHOLD] Set ${resolvedDisplayName} (${resolvedContact.entityId}) threshold to ${thresholdInt} days`,
+      `[SET_FOLLOWUP_THRESHOLD] Set ${resolvedDisplayName} (${resolvedContact.entityId}) threshold to ${thresholdDays} days`,
     );
 
     return {
       success: true,
-      text: `Set follow-up threshold for ${resolvedDisplayName} to ${thresholdInt} days.`,
+      text: `Set follow-up threshold for ${resolvedDisplayName} to ${thresholdDays} days.`,
       data: {
         entityId: String(resolvedContact.entityId),
         displayName: resolvedDisplayName,
-        thresholdDays: thresholdInt,
+        thresholdDays: thresholdDays,
       },
     };
   },
@@ -208,9 +207,9 @@ export const setFollowupThresholdAction: Action = {
     {
       name: "thresholdDays",
       description:
-        "Number of days after last contact before this contact is considered overdue.",
+        "Whole number of days (1 or more) after last contact before this contact is considered overdue.",
       required: true,
-      schema: { type: "number" as const },
+      schema: { type: "integer" as const, minimum: 1 },
     },
   ],
   examples: [

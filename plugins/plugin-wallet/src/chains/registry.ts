@@ -1,8 +1,8 @@
 /**
  * `registerDefaultWalletChainHandlers` builds and registers the default
  * `WalletChainHandler`s on the `WalletBackendService`: one EVM handler per
- * configured chain (transfer/swap/bridge, delegating swap to `SwapAction`
- * and bridge to `routeEvmBridge`), a Solana handler (native SOL transfer
+ * configured chain (transfer/swap/bridge/gov, delegating swap to `SwapAction`,
+ * bridge to `routeEvmBridge` and gov to `routeEvmGovernance`), a Solana handler (native SOL transfer
  * plus SPL transfer/swap via Jupiter, built by hand rather than through a
  * shared SDK), and a pump.fun handler that requests a serialized buy
  * transaction from PumpPortal's trade-local API, signs it through the
@@ -41,13 +41,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
-import {
-  type Address,
-  type Chain,
-  encodeFunctionData,
-  parseAbi,
-  parseUnits,
-} from "viem";
+import { type Address, type Chain, encodeFunctionData, parseAbi } from "viem";
 import * as viemChains from "viem/chains";
 import type { WalletBackendService } from "../services/wallet-backend-service.js";
 import type {
@@ -56,6 +50,7 @@ import type {
   WalletRouterExecution,
   WalletRouterParams,
   WalletRouterSimulation,
+  WalletSignerMetadata,
 } from "../types/wallet-router.js";
 import type { SolanaSigner } from "../wallet/backend.js";
 import { buildSendTxParams } from "./evm/actions/helpers";
@@ -63,6 +58,8 @@ import { SwapAction } from "./evm/actions/swap";
 import { TransferAction } from "./evm/actions/transfer";
 import { routeEvmBridge } from "./evm/bridge-router";
 import { DEFAULT_CHAINS, NATIVE_TOKEN_ADDRESS } from "./evm/constants";
+import { parseEvmBaseUnits } from "./evm/exact-units";
+import { routeEvmGovernance } from "./evm/gov-router";
 import { initWalletProvider } from "./evm/providers/wallet";
 import type { SupportedChain, Transaction } from "./evm/types";
 import BigNumber from "./solana/bn";
@@ -133,12 +130,10 @@ function configuredEvmChains(runtime: IAgentRuntime): Array<{
 }
 
 function evmAliases(key: string, chain: Chain): string[] {
-  const aliases = new Set<string>([
-    key,
-    chain.name,
-    String(chain.id),
-    chain.nativeCurrency.symbol,
-  ]);
+  const aliases = new Set<string>([key, chain.name, String(chain.id)]);
+  if (chain.nativeCurrency.symbol !== "ETH") {
+    aliases.add(chain.nativeCurrency.symbol);
+  }
   if (key === "mainnet") {
     aliases.add("ethereum");
     aliases.add("eth");
@@ -150,14 +145,83 @@ function isEvmAddress(value: string): value is Address {
   return /^0x[a-fA-F0-9]{40}$/.test(value);
 }
 
-function isNativeEvmToken(value: string | undefined, chain: Chain): boolean {
+/**
+ * Preflight counterpart to the recipient format checks the transfer
+ * executors run (`executeEvmTransfer` rejects a non-EVM recipient,
+ * `executeSolanaTransfer` constructs a `PublicKey` from it). Those checks
+ * run after the financial confirmation gate, so a malformed recipient the
+ * planner produced was confirmed by the user before it failed. Validate
+ * the format here so the refusal lands before the confirmation prompt,
+ * mirroring the governance preflight in `validateWalletGovParams`.
+ */
+export function validateWalletTransferParams(
+  params: WalletRouterParams,
+  signerKind: WalletSignerMetadata["kind"],
+): string | null {
+  if (!params.recipient) {
+    return "recipient is required for transfer.";
+  }
+  if (signerKind === "evm" && !isEvmAddress(params.recipient)) {
+    return "recipient must be a valid EVM address.";
+  }
+  if (signerKind === "solana") {
+    try {
+      new PublicKey(params.recipient);
+    } catch {
+      return "recipient must be a valid Solana base58 address.";
+    }
+  }
+  return null;
+}
+
+function isNativeEvmToken(
+  value: string | undefined,
+  nativeSymbol: string | undefined,
+): boolean {
   if (!value) return true;
   const normalized = value.toLowerCase();
   return (
     normalized === "native" ||
-    normalized === chain.nativeCurrency.symbol.toLowerCase() ||
+    normalized === nativeSymbol?.toLowerCase() ||
     normalized === NATIVE_TOKEN_ADDRESS.toLowerCase()
   );
+}
+
+/**
+ * Preflight counterpart to the token checks the transfer and swap executors
+ * run. `resolveEvmTokenAddress` takes the native token or a contract address,
+ * and resolves a symbol only through a registered token data service.
+ * `resolveSolanaMint` takes SOL or a mint address and resolves no symbol.
+ * Those checks run after the financial confirmation gate, so a symbol the
+ * planner produced ("USDC") was confirmed by the user before it failed.
+ */
+export function validateWalletTokenParams(
+  params: WalletRouterParams,
+  handler: Pick<WalletChainHandler, "name" | "signer" | "tokens">,
+  hasTokenDataService: boolean,
+): string | null {
+  const nativeSymbol = handler.tokens.find((token) => token.native)?.symbol;
+  for (const name of ["fromToken", "toToken"] as const) {
+    const token = params[name];
+    if (!token || (name === "toToken" && params.subaction !== "swap")) {
+      continue;
+    }
+    if (
+      handler.signer.kind === "solana" &&
+      !isSolanaMintAddress(resolveSolanaMint(token))
+    ) {
+      return `${name} "${token}" must be SOL or a Solana token mint address. Token symbols are not resolved on Solana.`;
+    }
+    if (
+      handler.signer.kind === "evm" &&
+      !hasTokenDataService &&
+      !isNativeEvmToken(token, nativeSymbol) &&
+      !isEvmAddress(token)
+    ) {
+      return `${name} "${token}" must be the native token or a token contract address on ${handler.name}. No token data service is registered to resolve a symbol.`;
+    }
+  }
+  return null;
 }
 
 async function resolveTokenViaService(
@@ -185,7 +249,7 @@ async function resolveEvmTokenAddress(
   chain: Chain,
   context: WalletRouterContext,
 ): Promise<Address> {
-  if (isNativeEvmToken(token, chain)) {
+  if (isNativeEvmToken(token, chain.nativeCurrency.symbol)) {
     return NATIVE_TOKEN_ADDRESS;
   }
   if (token && isEvmAddress(token)) {
@@ -289,7 +353,7 @@ async function executeEvmTransfer(
   const data = encodeFunctionData({
     abi: transferAbi,
     functionName: "transfer",
-    args: [recipient, parseUnits(params.amount ?? "", decimals)],
+    args: [recipient, parseEvmBaseUnits(params.amount ?? "", decimals)],
   });
 
   const hash = await walletClient.sendTransaction(
@@ -373,7 +437,7 @@ function createEvmHandler(key: string, chain: Chain): WalletChainHandler {
     chain: key,
     name: chain.name,
     aliases,
-    supportedActions: ["transfer", "swap", "bridge"],
+    supportedActions: ["transfer", "swap", "bridge", "gov"],
     tokens: [
       {
         symbol: chain.nativeCurrency.symbol,
@@ -390,7 +454,7 @@ function createEvmHandler(key: string, chain: Chain): WalletChainHandler {
     },
     dryRun: {
       supported: true,
-      supportedActions: ["transfer", "swap", "bridge"],
+      supportedActions: ["transfer", "swap", "bridge", "gov"],
       description:
         "Prepare mode and dry-run return route metadata without signing.",
     },
@@ -403,6 +467,9 @@ function createEvmHandler(key: string, chain: Chain): WalletChainHandler {
       }
       if (params.subaction === "bridge") {
         return routeEvmBridge(params, context, key, chain);
+      }
+      if (params.subaction === "gov") {
+        return routeEvmGovernance(params, context, key, chain);
       }
       throw new Error(`${chain.name} does not support ${params.subaction}.`);
     },
@@ -617,6 +684,26 @@ function validatePumpFunBuyParams(params: WalletRouterParams): {
     throw new Error("amount must be a positive SOL amount.");
   }
   return { mint, amountSol };
+}
+
+/**
+ * Preflight counterpart to `validatePumpFunBuyParams`, which runs inside
+ * `executePumpFunBuy` and `simulatePumpFunBuy` — after the financial
+ * confirmation gate. A malformed mint the planner produced (a token symbol,
+ * an EVM address, a non-canonical base58 string) was therefore confirmed by
+ * the user before it failed. Run the same checks here so the refusal lands
+ * before the confirmation prompt, mirroring the governance preflight in
+ * `validateWalletGovParams`.
+ */
+export function validateWalletPumpFunBuyParams(
+  params: WalletRouterParams,
+): string | null {
+  try {
+    validatePumpFunBuyParams(params);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 interface PumpFunTradeLocalSettings {

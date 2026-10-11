@@ -129,6 +129,12 @@ export interface IMessageSendOptions {
   mediaUrls?: string[];
   /** Max bytes for media */
   maxBytes?: number;
+  /**
+   * Stable Blooio idempotency key prefix for a send that can be repeated, such
+   * as a reply to a redelivered webhook. Each text chunk appends its index.
+   * Omit for a one-off send; a random key is used.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -292,8 +298,10 @@ export function formatPhoneNumber(phone: string): string {
   // Remove formatting
   let cleaned = phone.replace(/[\s\-().]/g, "");
 
-  // Add + prefix if missing for international
-  if (cleaned.length > 10 && !cleaned.startsWith("+")) {
+  // Add + prefix if missing for international. A number with a leading 0 is a
+  // national number (trunk prefix) or a 00 dial-out code; no E.164 number
+  // starts with "+0", so leave it as the user wrote it.
+  if (cleaned.length > 10 && !cleaned.startsWith("+") && !cleaned.startsWith("0")) {
     cleaned = `+${cleaned}`;
   }
 

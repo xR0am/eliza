@@ -43,7 +43,10 @@ import {
   isCanonicalJsonArray,
   type Log,
   logger,
+  MESSAGE_CONTENT_SEGMENT_TABLE,
   type Memory,
+  type MessageContentSegmentMetadata,
+  messageContentSegmentId,
   type Relationship,
   type Room,
   readCanonicalArrayLength,
@@ -912,6 +915,16 @@ async function extractAgentData(
       tableName,
       includeEmbedding: false,
     });
+    if (tableName === "document_fragments") {
+      memories.push(
+        ...(await db.getMemories({
+          agentId,
+          tableName,
+          metadata: { fragmentRole: "source-segment" },
+          includeEmbedding: false,
+        })),
+      );
+    }
     for (const mem of memories) {
       if (mem.id && !memoryIdSet.has(mem.id)) {
         memoryIdSet.add(mem.id);
@@ -1020,7 +1033,9 @@ function createIdRemapper(
 // ---------------------------------------------------------------------------
 
 /** Rehydrates database timestamps only after the JSON manifest has been verified. */
-function restoreGraphCreatedAt<T extends Entity | Room | World>(row: T): T {
+function restoreGraphCreatedAt<T extends Entity | Room | World | Log>(
+  row: T,
+): T {
   if (!("createdAt" in row) || row.createdAt === undefined) return row;
   const value = row.createdAt;
   if (typeof value !== "string" && typeof value !== "number") {
@@ -1278,6 +1293,9 @@ async function restoreAgentDataInScope(
             ),
           }
         : {}),
+      ...(tableName === MESSAGE_CONTENT_SEGMENT_TABLE
+        ? withMessageSegmentOwner(mem, remap)
+        : {}),
       // Embeddings are excluded — they will be regenerated
       embedding: undefined,
     };
@@ -1342,7 +1360,8 @@ async function restoreAgentDataInScope(
 
   // 10. Create logs
   let logsImported = 0;
-  for (const logEntry of payload.logs) {
+  for (const exportedLog of payload.logs) {
+    const logEntry = restoreGraphCreatedAt(exportedLog);
     await db.createLogs([
       {
         body: logEntry.body,
@@ -1353,6 +1372,7 @@ async function restoreAgentDataInScope(
           ? (remap(logEntry.roomId) as UUID)
           : (newAgentId as UUID),
         type: logEntry.type,
+        createdAt: logEntry.createdAt,
       },
     ]);
     logsImported++;
@@ -1388,6 +1408,24 @@ function withFragmentDocumentId<T extends NonNullable<Memory["metadata"]>>(
   documentId: UUID,
 ): T & { documentId: UUID } {
   return { ...metadata, documentId };
+}
+
+function withMessageSegmentOwner(
+  segment: Memory,
+  remap: (oldId: string) => string,
+): Pick<Memory, "id" | "metadata"> {
+  const metadata = segment.metadata as unknown as MessageContentSegmentMetadata;
+  const messageId = remap(metadata.messageId) as UUID;
+  return {
+    id: messageContentSegmentId({
+      messageId,
+      kind: metadata.sourceKind,
+      revision: metadata.sourceRevision,
+      ordinal: metadata.ordinal,
+      attachmentHash: metadata.attachmentIdHash,
+    }),
+    metadata: { ...metadata, messageId } as unknown as Memory["metadata"],
+  };
 }
 
 /**

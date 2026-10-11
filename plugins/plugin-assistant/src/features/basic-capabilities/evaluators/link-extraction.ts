@@ -29,6 +29,8 @@ import {
 import { v4 } from "uuid";
 import { EvaluatorPriority } from "../../../services/evaluator-priorities.ts";
 import { extractUrls } from "../../../utils/extract-urls.ts";
+import { decodeBasicHtmlEntities } from "../../../utils/html-entities.ts";
+import { decodeHttpText } from "../../../utils/http-text.ts";
 
 const EVALUATOR_NAME = "linkExtraction";
 const EVALUATOR_SOURCE = "link_extraction_evaluator";
@@ -79,13 +81,13 @@ function hasUrl(message: Memory): boolean {
 function extractTitle(html: string): string {
   const title = extractTitleElement(html);
   if (title) {
-    return decodeHtmlEntities(title).replace(/\s+/g, " ").trim();
+    return decodeBasicHtmlEntities(title).replace(/\s+/g, " ").trim();
   }
   // HTML attributes are unordered. Requiring property before content drops
   // <meta content="Hello World" property="og:title"> and stores an empty title.
   const ogTitle = extractOpenGraphTitle(html);
   if (ogTitle) {
-    return decodeHtmlEntities(ogTitle).trim();
+    return decodeBasicHtmlEntities(ogTitle).trim();
   }
   return "";
 }
@@ -149,22 +151,6 @@ function extractOpenGraphTitle(html: string): string {
     if (property?.toLowerCase() === "og:title" && content) return content;
   }
   return "";
-}
-
-function decodeHtmlEntities(value: string): string {
-  const namedEntities: Record<string, string> = {
-    amp: "&",
-    apos: "'",
-    gt: ">",
-    lt: "<",
-    nbsp: " ",
-    quot: '"',
-    "#39": "'",
-  };
-  return value.replace(
-    /&(amp|apos|lt|gt|quot|#39|nbsp);/gi,
-    (entity, name: string) => namedEntities[name.toLowerCase()] ?? entity,
-  );
 }
 
 function stripTags(html: string): string {
@@ -236,7 +222,10 @@ async function fetchLinkPreview(
     if (!/text\/html|application\/xhtml/i.test(contentType)) {
       return null;
     }
-    const html = await response.text();
+    const html = decodeHttpText(
+      new Uint8Array(await response.arrayBuffer()),
+      contentType,
+    );
     const title = extractTitle(html);
     const bodyChunk = stripTags(html);
     return { title, bodyChunk };

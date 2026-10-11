@@ -351,18 +351,6 @@ declare module "./client-base.js" {
       solanaPrivateKey: string;
       solanaAddress: string;
     }>;
-    getWalletOsStoreStatus(): Promise<{
-      backend: string;
-      available: boolean;
-      readEnabled: boolean;
-      vaultId: string;
-    }>;
-    postWalletOsStoreAction(action: "migrate" | "delete"): Promise<{
-      ok: boolean;
-      migrated?: string[];
-      failed?: string[];
-      error?: string;
-    }>;
     getAuthStatus(): Promise<{
       required: boolean;
       authenticated?: boolean;
@@ -927,9 +915,6 @@ declare module "./client-base.js" {
       sessionId: string,
       name?: string,
     ): Promise<CodingAgentScratchWorkspace | null>;
-    spawnShellSession(workdir?: string): Promise<{
-      sessionId: string;
-    }>;
     /**
      * Spawn an interactive PTY session (a real CLI in the web terminal) via
      * `@elizaos/plugin-pty`'s `POST /api/pty/sessions`. Default `kind`
@@ -1457,20 +1442,6 @@ ElizaClient.prototype.getFirstRunStatus = async function (this: ElizaClient) {
 };
 ElizaClient.prototype.getWalletKeys = async function (this: ElizaClient) {
   return this.fetch("/api/wallet/keys");
-};
-ElizaClient.prototype.getWalletOsStoreStatus = async function (
-  this: ElizaClient,
-) {
-  return this.fetch("/api/wallet/os-store");
-};
-ElizaClient.prototype.postWalletOsStoreAction = async function (
-  this: ElizaClient,
-  action,
-) {
-  return this.fetch("/api/wallet/os-store", {
-    method: "POST",
-    body: JSON.stringify({ action }),
-  });
 };
 ElizaClient.prototype.getAuthStatus = async function (this: ElizaClient) {
   // Prefer typed Electrobun RPC. Throws AgentNotReadyError when the
@@ -3741,21 +3712,6 @@ ElizaClient.prototype.promoteCodingAgentScratchWorkspace = async function (
     // failed" signal in this contract; never fake a workspace record.
     return null;
   }
-};
-ElizaClient.prototype.spawnShellSession = async function (
-  this: ElizaClient,
-  workdir?: string,
-) {
-  const res = await this.fetch<{
-    sessionId: string;
-  }>("/api/coding-agents/spawn", {
-    method: "POST",
-    body: JSON.stringify({
-      agentType: "shell",
-      ...(workdir ? { workdir } : {}),
-    }),
-  });
-  return { sessionId: res.sessionId };
 };
 ElizaClient.prototype.spawnPtySession = async function (
   this: ElizaClient,

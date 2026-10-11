@@ -4,7 +4,12 @@
  * idempotent resource shutdown without owning process signals or exit policy.
  */
 import process from "node:process";
-import { type AgentRuntime, formatError, logger } from "@elizaos/core";
+import {
+  type AgentRuntime,
+  formatError,
+  logger,
+  type RuntimeStopOptions,
+} from "@elizaos/core";
 import {
   readAliasedEnv,
   resolveApiExposePort,
@@ -36,7 +41,11 @@ export interface StartServerOnlyHostOptions {
   bootRuntime: (
     onPostReadyPhase: (phase: PostReadyPhase) => void,
   ) => Promise<AgentRuntime | undefined>;
-  stopRuntime: (runtime: AgentRuntime, reason: string) => Promise<unknown>;
+  stopRuntime: (
+    runtime: AgentRuntime,
+    reason: string,
+    options?: RuntimeStopOptions,
+  ) => Promise<unknown>;
   stopWithoutRuntime: () => void;
 }
 export async function startServerOnlyHost({
@@ -47,6 +56,8 @@ export async function startServerOnlyHost({
 }: StartServerOnlyHostOptions): Promise<AgentRuntime | undefined> {
   bootLap("startEliza:serverOnly entry");
   let currentRuntime: AgentRuntime | undefined;
+  /** API stop or restart (teardown and replacement boot) in flight; close() waits for it. */
+  let pendingRuntimeTeardown: Promise<unknown> | undefined;
   let runtimePublished = false;
   let postReadyPhase: "pending" | "complete" | "failed" = "pending";
   const startup = new AppStartupStateMachine();
@@ -164,6 +175,31 @@ export async function startServerOnlyHost({
       initialAgentState: deferRuntimeBootUntilOnboarding
         ? "not_started"
         : "starting",
+      onStop: async (runtimeToStop) => {
+        if (currentRuntime !== runtimeToStop) {
+          throw new Error("Server-only runtime ownership changed before stop");
+        }
+        // Relinquish host ownership before teardown so signal shutdown cannot
+        // race a second close of the same adapter.
+        currentRuntime = undefined;
+        runtimePublished = false;
+        postReadyPhase = "pending";
+        const stop = stopRuntime(runtimeToStop, "server-only API stop", {
+          requireQuiescence: true,
+        });
+        pendingRuntimeTeardown = stop;
+        try {
+          await stop;
+        } finally {
+          if (pendingRuntimeTeardown === stop)
+            pendingRuntimeTeardown = undefined;
+          if (currentRuntime === runtimeToStop) {
+            currentRuntime = undefined;
+            runtimePublished = false;
+            postReadyPhase = "pending";
+          }
+        }
+      },
       onRestart: async () => {
         // Before the deferred first boot has succeeded, a restart request
         // IS the boot request — funnel it into the single-flight trigger so
@@ -173,27 +209,45 @@ export async function startServerOnlyHost({
           await triggerDeferredRuntimeBoot("agent start requested via API");
           return currentRuntime ?? null;
         }
-        if (currentRuntime) {
-          await stopRuntime(currentRuntime, "server-only restart");
-        }
-        runtimePublished = false;
-        postReadyPhase = "pending";
-        publishStartup("runtime-starting");
+        // close() owns the whole restart — the old runtime's teardown and the
+        // replacement boot — so a signal cannot finish shutdown while the
+        // replacement is still opening resources.
+        const restart = (async (): Promise<AgentRuntime | null> => {
+          if (currentRuntime) {
+            // Relinquish ownership before teardown, as the API stop does, so
+            // close() waits for it instead of closing the same adapter again.
+            const runtimeToStop = currentRuntime;
+            currentRuntime = undefined;
+            runtimePublished = false;
+            await stopRuntime(runtimeToStop, "server-only restart");
+          }
+          runtimePublished = false;
+          postReadyPhase = "pending";
+          publishStartup("runtime-starting");
+          try {
+            currentRuntime = await bootServerOnlyRuntime();
+          } catch (error) {
+            // error-policy:J1 restart orchestration boundary — publish a failed
+            // lifecycle state before propagating the boot failure to the route.
+            publishStartup("failed");
+            throw error;
+          }
+          if (!currentRuntime) {
+            publishStartup("failed");
+            return null;
+          }
+          runtimePublished = true;
+          publishPostReadyPhase(postReadyPhase);
+          return currentRuntime ?? null;
+        })();
+        pendingRuntimeTeardown = restart;
         try {
-          currentRuntime = await bootServerOnlyRuntime();
-        } catch (error) {
-          // error-policy:J1 restart orchestration boundary — publish a failed
-          // lifecycle state before propagating the boot failure to the route.
-          publishStartup("failed");
-          throw error;
+          return await restart;
+        } finally {
+          if (pendingRuntimeTeardown === restart) {
+            pendingRuntimeTeardown = undefined;
+          }
         }
-        if (!currentRuntime) {
-          publishStartup("failed");
-          return null;
-        }
-        runtimePublished = true;
-        publishPostReadyPhase(postReadyPhase);
-        return currentRuntime ?? null;
       },
     });
     actualApiPort = startedApiServer.port;
@@ -313,6 +367,11 @@ export async function startServerOnlyHost({
         );
       }
     }
+    // A teardown started by an API stop or restart owns its runtime; wait for it so the
+    // process does not exit before the adapter closes (the process boundary
+    // keeps its own forced-exit timer).
+    if (pendingRuntimeTeardown)
+      await pendingRuntimeTeardown.catch(() => undefined);
     if (currentRuntime) {
       await stopRuntime(currentRuntime, "server-only shutdown");
     } else {

@@ -23,6 +23,9 @@ import {
 
 const HEALTH_CONNECTOR_TIMEOUT_MS = 15_000;
 const HEALTH_CONNECTOR_SYNC_TIMEOUT_MS = 60_000;
+// Strava filters activities by UTC timestamps, but callers select owner-local
+// calendar days. Cover every UTC offset and the API's exclusive time bounds.
+const STRAVA_LOCAL_DATE_QUERY_PADDING_SECONDS = 14 * 60 * 60 + 1;
 
 export class HealthConnectorApiError extends Error {
   constructor(
@@ -303,12 +306,12 @@ function compactSamples(
 }
 
 async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
-  const after = Math.floor(
-    Date.parse(`${args.startDate}T00:00:00.000Z`) / 1_000,
-  );
-  const before = Math.floor(
-    Date.parse(`${args.endDate}T23:59:59.999Z`) / 1_000,
-  );
+  const after =
+    Math.floor(Date.parse(`${args.startDate}T00:00:00.000Z`) / 1_000) -
+    STRAVA_LOCAL_DATE_QUERY_PADDING_SECONDS;
+  const before =
+    Math.floor(Date.parse(`${args.endDate}T23:59:59.999Z`) / 1_000) +
+    STRAVA_LOCAL_DATE_QUERY_PADDING_SECONDS;
   const [athlete, activitiesJson] = await Promise.all([
     fetchHealthJson({ token: args.token, path: "/athlete" }),
     fetchHealthValue({
@@ -324,6 +327,15 @@ async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
     const id = getText(activity, "id");
     const startAt = normalizeIso(getText(activity, "start_date"));
     if (!id || !startAt) {
+      continue;
+    }
+    // start_date is UTC; start_date_local is the athlete's wall clock (Strava
+    // writes it with a literal "Z"), so its date is the owner's day.
+    const localDate =
+      /^\d{4}-\d{2}-\d{2}/.exec(
+        getText(activity, "start_date_local") ?? "",
+      )?.[0] ?? localDateFromIso(startAt);
+    if (localDate < args.startDate || localDate > args.endDate) {
       continue;
     }
     const elapsedSeconds = getNumber(activity, "elapsed_time");
@@ -375,6 +387,7 @@ async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           startAt,
           endAt,
           sourceExternalId: `${id}:distance_meters`,
+          localDate,
         }),
         sample({
           token: args.token,
@@ -385,6 +398,7 @@ async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           startAt,
           endAt,
           sourceExternalId: `${id}:active_minutes`,
+          localDate,
         }),
         sample({
           token: args.token,
@@ -395,6 +409,7 @@ async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           startAt,
           endAt,
           sourceExternalId: `${id}:calories`,
+          localDate,
         }),
         sample({
           token: args.token,
@@ -405,6 +420,7 @@ async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           startAt,
           endAt,
           sourceExternalId: `${id}:heart_rate`,
+          localDate,
         }),
       ]),
     );
@@ -418,40 +434,12 @@ async function syncStrava(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
   };
 }
 
-// Fitbit reports distance/weight in the unit system tied to the account's
-// locale, surfaced on the profile as `distanceUnit` / `weightUnit` with the
-// values `en_US` (US: miles, pounds), `en_GB` (UK: miles, stone), or `METRIC`
-// (km, kg). Because we send no `Accept-Language` override, the wire values are
-// exactly those profile-configured units, so the profile is the source of
-// truth for how to read them. See
+// Fitbit selects the response unit system from the `Accept-Language` request
+// header, not from the profile. We send no such header, so distance is in
+// kilometers and weight is in kilograms for every account. The profile's
+// `distanceUnit` / `weightUnit` only show what the owner sees in the Fitbit
+// app. See
 // https://dev.fitbit.com/build/reference/web-api/developer-guide/application-design/#Localization
-const METERS_PER_MILE = 1_609.344;
-const KG_PER_POUND = 0.45359237;
-const KG_PER_STONE = 6.35029318;
-
-function fitbitUsesImperialDistance(distanceUnit: string | null): boolean {
-  return distanceUnit === "en_US" || distanceUnit === "en_GB";
-}
-
-function fitbitDistanceMeters(
-  distance: number,
-  distanceUnit: string | null,
-): number {
-  return fitbitUsesImperialDistance(distanceUnit)
-    ? distance * METERS_PER_MILE
-    : distance * 1_000;
-}
-
-function fitbitWeightKg(weight: number, weightUnit: string | null): number {
-  if (weightUnit === "en_US") {
-    return weight * KG_PER_POUND;
-  }
-  if (weightUnit === "en_GB") {
-    return weight * KG_PER_STONE;
-  }
-  return weight;
-}
-
 const FITBIT_WALL_TIME =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
 
@@ -522,10 +510,6 @@ async function syncFitbit(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
     path: "/1/user/-/profile.json",
   });
   const profileUser = getRecord(identityJson, "user");
-  const distanceUnit = profileUser
-    ? getText(profileUser, "distanceUnit")
-    : null;
-  const weightUnit = profileUser ? getText(profileUser, "weightUnit") : null;
   const timeZone = resolveFitbitTimeZone(profileUser, args.token.agentId);
   const samples: LifeOpsHealthMetricSample[] = [];
   const sleepEpisodes: LifeOpsHealthSleepEpisode[] = [];
@@ -600,14 +584,10 @@ async function syncFitbit(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           token: args.token,
           grantId: args.grantId,
           metric: "distance_meters",
-          value:
-            totalDistance > 0
-              ? fitbitDistanceMeters(totalDistance, distanceUnit)
-              : null,
+          value: totalDistance > 0 ? totalDistance * 1_000 : null,
           unit: "m",
           startAt: dayAt,
           sourceExternalId: `${date}:fitbit:distance_meters`,
-          metadata: { providerUnit: distanceUnit },
         }),
       ]),
     );
@@ -710,25 +690,21 @@ async function syncFitbit(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
         `${getText(log, "date") ?? date}T${getText(log, "time") ?? "12:00:00"}`,
         timeZone,
       );
-      const rawWeight = getNumber(log, "weight");
       samples.push(
         ...compactSamples([
           sample({
             token: args.token,
             grantId: args.grantId,
             metric: "weight_kg",
-            value:
-              rawWeight !== null ? fitbitWeightKg(rawWeight, weightUnit) : null,
+            value: getNumber(log, "weight"),
             unit: "kg",
             startAt: loggedAt,
+            // The log's own date is the profile-zone day; loggedAt is UTC.
+            localDate: getText(log, "date") ?? date,
             sourceExternalId:
               getText(log, "logId") ?? `${date}:fitbit:weight_kg`,
-            // providerUnit is the unit label Fitbit attached to THIS weight log;
-            // the value is converted to kg using the account locale (weightUnit).
-            metadata: {
-              providerUnit: getText(log, "weightUnit"),
-              providerLocaleUnit: weightUnit,
-            },
+            // providerUnit is the unit label Fitbit attached to THIS weight log.
+            metadata: { providerUnit: getText(log, "weightUnit") },
           }),
         ]),
       );
@@ -828,6 +804,7 @@ async function syncOura(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
     personal,
     dailyActivity,
     dailyReadiness,
+    dailySleep,
     sleep,
     heartRate,
     workoutsRaw,
@@ -845,6 +822,12 @@ async function syncOura(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
     fetchOuraCollection({
       token: args.token,
       path: "/v2/usercollection/daily_readiness",
+      query: { start_date: args.startDate, end_date: args.endDate },
+      deadlineAt,
+    }),
+    fetchOuraCollection({
+      token: args.token,
+      path: "/v2/usercollection/daily_sleep",
       query: { start_date: args.startDate, end_date: args.endDate },
       deadlineAt,
     }),
@@ -925,6 +908,29 @@ async function syncOura(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
       ]),
     );
   }
+  // Oura puts the sleep score on the daily_sleep document of the day. The
+  // sleep (period) document has no score field.
+  const sleepScoreByDay = new Map<string, number>();
+  for (const day of dailySleep) {
+    const date = getText(day, "day");
+    const score = getNumber(day, "score");
+    if (date && score !== null) {
+      sleepScoreByDay.set(date, score);
+    }
+    samples.push(
+      ...compactSamples([
+        sample({
+          token: args.token,
+          grantId: args.grantId,
+          metric: "sleep_score",
+          value: score,
+          unit: "score",
+          startAt: date ? `${date}T12:00:00.000Z` : null,
+          sourceExternalId: `${getText(day, "id") ?? date}:sleep_score`,
+        }),
+      ]),
+    );
+  }
   for (const entry of sleep) {
     const id = getText(entry, "id");
     const startAt = normalizeIso(getText(entry, "bedtime_start"));
@@ -933,7 +939,6 @@ async function syncOura(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
       continue;
     }
     const date = getText(entry, "day") ?? localDateFromIso(startAt);
-    const sleepScore = getNumber(entry, "score");
     samples.push(
       ...compactSamples([
         sample({
@@ -949,17 +954,6 @@ async function syncOura(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           endAt,
           localDate: date,
           sourceExternalId: `${id}:sleep_hours`,
-        }),
-        sample({
-          token: args.token,
-          grantId: args.grantId,
-          metric: "sleep_score",
-          value: sleepScore,
-          unit: "score",
-          startAt,
-          endAt,
-          localDate: date,
-          sourceExternalId: `${id}:sleep_score`,
         }),
       ]),
     );
@@ -989,7 +983,11 @@ async function syncOura(args: SyncArgs): Promise<HealthConnectorSyncPayload> {
           Math.trunc(getNumber(entry, "deep_sleep_duration") ?? 0) || null,
         remSleepSeconds:
           Math.trunc(getNumber(entry, "rem_sleep_duration") ?? 0) || null,
-        sleepScore,
+        // The daily score rates the main sleep period of that day.
+        sleepScore:
+          getText(entry, "type") === "long_sleep"
+            ? (sleepScoreByDay.get(date) ?? null)
+            : null,
         readinessScore: null,
         averageHeartRate: getNumber(entry, "average_heart_rate"),
         lowestHeartRate: getNumber(entry, "lowest_heart_rate"),
@@ -1098,7 +1096,7 @@ async function syncWithings(
       action: "getmeas",
       startdate: startUnix,
       enddate: endUnix,
-      meastype: "1,9,10,11,54,71,73",
+      meastype: "1,9,10,11,54,71",
     }),
   ]);
   const samples: LifeOpsHealthMetricSample[] = [];
@@ -1107,6 +1105,9 @@ async function syncWithings(
   const activityBody = getRecord(activityJson, "body") ?? {};
   for (const entry of getArray(activityBody, "activities")) {
     const date = getText(entry, "date");
+    // getactivity `active` is a duration in seconds (Withings OpenAPI:
+    // "Sum of intense and moderate activity durations (in seconds)").
+    const activeSeconds = getNumber(entry, "active");
     const startAt = date ? `${date}T12:00:00.000Z` : null;
     const id = date ?? "activity";
     samples.push(
@@ -1124,7 +1125,7 @@ async function syncWithings(
           token: args.token,
           grantId: args.grantId,
           metric: "active_minutes",
-          value: getNumber(entry, "active"),
+          value: activeSeconds === null ? null : activeSeconds / 60,
           unit: "min",
           startAt,
           sourceExternalId: `${id}:withings:active_minutes`,
@@ -1219,9 +1220,11 @@ async function syncWithings(
         efficiency: null,
         latencySeconds: getNumber(data, "durationtosleep"),
         awakeSeconds: getNumber(data, "wakeupduration"),
-        lightSleepSeconds: getNumber(data, "lightduration"),
-        deepSleepSeconds: getNumber(data, "deepduration"),
-        remSleepSeconds: getNumber(data, "remduration"),
+        // getsummary names the stage durations `*sleepduration` (Withings
+        // OpenAPI: "lightsleepduration: Duration in state light sleep").
+        lightSleepSeconds: getNumber(data, "lightsleepduration"),
+        deepSleepSeconds: getNumber(data, "deepsleepduration"),
+        remSleepSeconds: getNumber(data, "remsleepduration"),
         sleepScore: null,
         readinessScore: null,
         averageHeartRate: getNumber(data, "hr_average"),
@@ -1307,12 +1310,6 @@ function mapWithingsMeasure(
         metric: "body_temperature_celsius",
         value: normalizedValue,
         unit: "C",
-      };
-    case 73:
-      return {
-        metric: "heart_rate_variability",
-        value: normalizedValue,
-        unit: "ms",
       };
     default:
       return null;

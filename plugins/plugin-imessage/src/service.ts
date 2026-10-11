@@ -430,6 +430,15 @@ function normalizeConnectorLimit(limit: number | undefined): number | undefined 
   return limit;
 }
 
+/** Orders memories newest-first; ties break on id for a stable order. */
+function compareNewestFirst(left: Memory, right: Memory): number {
+  const rightCreated =
+    typeof right.createdAt === "number" && Number.isFinite(right.createdAt) ? right.createdAt : 0;
+  const leftCreated =
+    typeof left.createdAt === "number" && Number.isFinite(left.createdAt) ? left.createdAt : 0;
+  return rightCreated - leftCreated || (left.id ?? "").localeCompare(right.id ?? "");
+}
+
 function filterMemoriesByQuery(memories: Memory[], query: string, limit?: number): Memory[] {
   const normalized = query.trim().toLowerCase();
   const matches = normalized
@@ -751,6 +760,13 @@ export class IMessageService extends Service implements IIMessageService {
 
     service.connected = true;
     logger.info("iMessage service started");
+    if (!service.isAutoReplyEnabled()) {
+      logger.warn(
+        lifeOpsPassiveConnectorsEnabled(runtime)
+          ? "[imessage] Connected but will NOT reply or send pairing codes: passive-connectors mode is ON. Inbound messages are stored only. Set ELIZA_LIFEOPS_PASSIVE_CONNECTORS=false and IMESSAGE_AUTO_REPLY=true to allow replies."
+          : "[imessage] Connected but will NOT reply or send pairing codes: IMESSAGE_AUTO_REPLY is not true. Inbound messages are stored only. Set IMESSAGE_AUTO_REPLY=true to allow replies."
+      );
+    }
 
     // Emit connection ready event
     runtime.emitEvent(IMessageEventTypes.CONNECTION_READY, {
@@ -949,17 +965,7 @@ export class IMessageService extends Service implements IIMessageService {
             (createUniqueUuid(context.runtime, `imessage-read:${chatId ?? "recent"}`) as UUID);
           return platformMessages
             .map((message) => publicIMessageToMemory(context.runtime, message, roomId, accountId))
-            .sort((left, right) => {
-              const rightCreated =
-                typeof right.createdAt === "number" && Number.isFinite(right.createdAt)
-                  ? right.createdAt
-                  : 0;
-              const leftCreated =
-                typeof left.createdAt === "number" && Number.isFinite(left.createdAt)
-                  ? left.createdAt
-                  : 0;
-              return rightCreated - leftCreated || (left.id ?? "").localeCompare(right.id ?? "");
-            });
+            .sort(compareNewestFirst);
         }
         if (target?.roomId) {
           return context.runtime.getMemories({
@@ -988,11 +994,16 @@ export class IMessageService extends Service implements IIMessageService {
         const roomId =
           target?.roomId ??
           (createUniqueUuid(context.runtime, `imessage-read:${chatId ?? "recent"}`) as UUID);
+        // chat.db reads come back oldest-first; sort newest-first so `limit`
+        // keeps the most recent matches, like fetchMessages and the
+        // stored-memory fallback below.
         const memories =
           platformMessages.length > 0
-            ? platformMessages.map((message) =>
-                publicIMessageToMemory(context.runtime, message, roomId, accountId)
-              )
+            ? platformMessages
+                .map((message) =>
+                  publicIMessageToMemory(context.runtime, message, roomId, accountId)
+                )
+                .sort(compareNewestFirst)
             : target?.roomId
               ? await context.runtime.getMemories({
                   tableName: "messages",
@@ -1226,8 +1237,12 @@ export class IMessageService extends Service implements IIMessageService {
     const messageIds: string[] = [];
     const localEffectIds: string[] = [];
     try {
-      for (const chunk of chunks) {
-        const result = await this.sendSingleMessage(target, chunk);
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        const result = await this.sendSingleMessage(
+          target,
+          chunk,
+          options?.idempotencyKey ? `${options.idempotencyKey}-${chunkIndex}` : undefined
+        );
         if (result.messageId) messageIds.push(result.messageId);
         if (!result.success) {
           return { ...result, messageIds, localEffectIds };
@@ -1571,7 +1586,20 @@ export class IMessageService extends Service implements IIMessageService {
         : await this.checkDmAccess(inbound.sender);
       if (!access.allowed) {
         if (access.pairingReplyMessage && this.isAutoReplyEnabled()) {
-          await this.sendSingleMessage(inbound.sender, access.pairingReplyMessage);
+          const pairingResult = await this.sendSingleMessage(
+            inbound.sender,
+            access.pairingReplyMessage
+          );
+          if (!pairingResult.success) {
+            this.runtime.reportError(
+              "imessage.pairingReply",
+              new ElizaError("iMessage pairing reply delivery failed", {
+                code: "IMESSAGE_PAIRING_REPLY_DELIVERY_FAILED",
+                context: { receiptDigest, detail: pairingResult.error },
+              }),
+              { receiptDigest }
+            );
+          }
         }
         return "ignored";
       }
@@ -1932,14 +1960,18 @@ export class IMessageService extends Service implements IIMessageService {
     // unrelated TCC prompt merely by enabling inbound messages.
   }
 
-  private async sendSingleMessage(to: string, text: string): Promise<IMessageSendResult> {
+  private async sendSingleMessage(
+    to: string,
+    text: string,
+    idempotencyKey?: string
+  ): Promise<IMessageSendResult> {
     if (this.settings?.transport === "blooio") {
       return await sendBlooioMessage({
         apiKey: this.settings.blooioApiKey as string,
         from: this.settings.blooioChannelId ?? (this.settings.blooioFromNumber as string),
         to,
         text,
-        idempotencyKey: `imessage-${crypto.randomUUID()}`,
+        idempotencyKey: idempotencyKey ?? `imessage-${crypto.randomUUID()}`,
       });
     }
     // Outbound delivery stays on Apple's local Messages automation surface.
@@ -2513,22 +2545,61 @@ export class IMessageService extends Service implements IIMessageService {
     // DMs we target the sender's handle directly.
     const replyTarget = row.chatType === "group" ? `chat_id:${row.chatId}` : row.handle;
 
+    // A failed reply fails the Blooio webhook, and Blooio redelivers it. The
+    // key is derived from the inbound message so a reply that Blooio already
+    // accepted is not sent again when the turn is repeated.
+    let replyCount = 0;
+
     const callback: HandlerCallback = async (content) => {
       if (!this.runtime) {
         return [];
       }
+      const replyIdempotencyKey = `imessage-reply-${row.guid}-${replyCount++}`;
       const replyText = renderIMessageInteractionText(
         content,
         resolveInteractionAppBaseUrl(this.runtime)
       ).trim();
-      if (!replyText) {
+      const replyAttachments = content.attachments ?? [];
+      // Blooio has no media send. Retrying cannot deliver the attachment, and a
+      // thrown error would make Blooio redeliver the webhook and repeat the
+      // turn, so the refusal is reported and the reply text is still sent.
+      const mediaRefused = this.settings?.transport === "blooio" && replyAttachments.length > 0;
+      if (mediaRefused) {
+        this.runtime.reportError(
+          "imessage.replyDelivery",
+          new ElizaError("Blooio transport cannot send reply attachments", {
+            code: "IMESSAGE_REPLY_ATTACHMENT_UNSUPPORTED",
+            context: { accountId, rowId: row.rowId, attachmentCount: replyAttachments.length },
+          }),
+          { rowId: row.rowId }
+        );
+      }
+      const mediaUrls = mediaRefused ? [] : replyAttachments.map((attachment) => attachment.url);
+      if (!replyText && mediaUrls.length === 0) {
         return [];
       }
 
-      const sendResult = await this.sendSingleMessage(replyTarget, replyText);
+      // Same send path as the connector send handler: it chunks long text and
+      // delivers attachments.
+      const sendResult = await this.sendMessage(replyTarget, replyText, {
+        mediaUrls,
+        accountId,
+        idempotencyKey: replyIdempotencyKey,
+      });
+      // A failed send is thrown so the turn that asked for the reply sees the
+      // failure instead of an empty success.
       if (!sendResult.success) {
-        logger.error(`[imessage] Reply send failed for ROWID=${row.rowId}: ${sendResult.error}`);
-        return [];
+        const error = new ElizaError("iMessage reply delivery failed", {
+          code: "IMESSAGE_REPLY_DELIVERY_FAILED",
+          context: {
+            accountId,
+            rowId: row.rowId,
+            detail: sendResult.error,
+            acceptedMessageIds: sendResult.messageIds ?? [],
+          },
+        });
+        this.runtime.reportError("imessage.replyDelivery", error, { rowId: row.rowId });
+        throw error;
       }
 
       const responseMemory: Memory = {
@@ -2538,6 +2609,8 @@ export class IMessageService extends Service implements IIMessageService {
         roomId,
         content: {
           ...content,
+          // Record only what was delivered.
+          ...(mediaRefused ? { attachments: [] } : {}),
           text: replyText,
           source: "imessage",
           channelType,

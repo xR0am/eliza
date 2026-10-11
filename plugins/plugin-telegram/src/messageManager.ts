@@ -37,7 +37,6 @@ import {
   ServiceType,
   summarizeOutboundAttachmentUrl,
   toWellFormedUnicode,
-  truncateWellFormed,
   type UUID,
 } from "@elizaos/core";
 import { lifeOpsPassiveConnectorsEnabled } from "@elizaos/host/protocol";
@@ -67,6 +66,7 @@ import {
   cleanText,
   convertMarkdownToTelegram,
   convertToTelegramButtons,
+  truncateTelegramGraphemes,
 } from "./utils";
 
 /**
@@ -435,6 +435,8 @@ export class MessageManager {
   public bot: Telegraf<Context>;
   protected runtime: IAgentRuntime;
   protected accountId: string;
+  /** Rooms with an agent turn in flight, with the count of turns per room. */
+  private activeTurnRooms = new Map<UUID, number>();
 
   /**
    * Constructor for creating a new instance of a BotAgent.
@@ -454,6 +456,38 @@ export class MessageManager {
 
   private scopedTelegramKey(key: string): string {
     return this.accountId === "default" ? key : `${this.accountId}:${key}`;
+  }
+
+  /**
+   * Runs one agent turn and records its room while the turn is in flight, so
+   * the service can abort the turns this connector started.
+   */
+  private async trackAgentTurn(
+    roomId: UUID,
+    turn: () => Promise<unknown>,
+  ): Promise<void> {
+    this.activeTurnRooms.set(
+      roomId,
+      (this.activeTurnRooms.get(roomId) ?? 0) + 1,
+    );
+    try {
+      await turn();
+    } finally {
+      const remaining = (this.activeTurnRooms.get(roomId) ?? 1) - 1;
+      if (remaining > 0) this.activeTurnRooms.set(roomId, remaining);
+      else this.activeTurnRooms.delete(roomId);
+    }
+  }
+
+  /**
+   * Aborts every agent turn this manager has in flight. A turn that waits for
+   * a Telegram update (an Approve/Deny tap) cannot finish once polling has
+   * stopped, so service shutdown aborts it before draining.
+   */
+  public abortActiveTurns(reason: string): void {
+    for (const roomId of Array.from(this.activeTurnRooms.keys())) {
+      this.runtime.turnControllers.abortTurn(roomId, reason);
+    }
   }
 
   private telegramMessageMemoryKey(
@@ -839,6 +873,8 @@ export class MessageManager {
         // Use structured data directly instead of regex parsing
         const title = documentInfo.title;
         const fullText = documentInfo.fullText;
+        const isImage = contentTypeForMime(document.mime_type) === "image";
+        const imageInfo = isImage ? await this.processImage(message) : null;
 
         // Add document content to processedContent so agent can access it
         if (fullText) {
@@ -856,8 +892,10 @@ export class MessageManager {
             ? "PDF"
             : "Document",
           contentType: contentTypeForMime(document.mime_type),
-          description: documentInfo.formattedDescription,
-          text: fullText,
+          description: isImage
+            ? imageInfo?.description
+            : documentInfo.formattedDescription,
+          text: isImage ? imageInfo?.description : fullText,
         });
         logger.debug(
           {
@@ -1511,7 +1549,7 @@ export class MessageManager {
         chunk =
           newlineIndex > 0
             ? remaining.slice(0, newlineIndex)
-            : truncateWellFormed(remaining, MAX_MESSAGE_LENGTH);
+            : truncateTelegramGraphemes(remaining, MAX_MESSAGE_LENGTH);
       }
       if (chunk.length === 0) {
         throw new Error("Unable to split Telegram message without data loss");
@@ -1890,10 +1928,9 @@ export class MessageManager {
         // bytes and enrich here, at the same point of the turn core's
         // processAttachments would have fetched the old token-bearing URLs.
         await this.enrichFileRefAttachments(cleanedAttachments);
-        await this.runtime.messageService.handleMessage(
-          this.runtime,
-          memory,
-          callback,
+        const messageService = this.runtime.messageService;
+        await this.trackAgentTurn(roomId, () =>
+          messageService.handleMessage(this.runtime, memory, callback),
         );
         await this.markTelegramMessageDeliveryState(
           telegramChatId,
@@ -2139,11 +2176,10 @@ export class MessageManager {
       threadId: threadIdNum,
     });
 
-    if (this.runtime.messageService) {
-      await this.runtime.messageService.handleMessage(
-        this.runtime,
-        memory,
-        callback,
+    const messageService = this.runtime.messageService;
+    if (messageService) {
+      await this.trackAgentTurn(roomId, () =>
+        messageService.handleMessage(this.runtime, memory, callback),
       );
     }
   }

@@ -471,11 +471,11 @@ export const searchKnowledgeAction: Action = {
     "LOOKUP_KNOWLEDGE",
   ],
   description:
-    "Search the multimedia knowledge hub (documents, transcripts, ingested attachments) by free text plus optional facets (roomId, sender/addedBy, mediaFormat, tags, scope). Returns matching items with their titles, media formats, and ids for follow-up ATTACH_TO_CHAT / SEND_MEDIA_TO. Scope-walled: owner-private items never surface to non-owner callers.",
+    "Search the multimedia knowledge hub (documents, transcripts, ingested attachments) by free text plus optional facets (roomId, addedBy, mediaFormat, tags, scope). Returns matching items with their titles, media formats, and ids for follow-up ATTACH_TO_CHAT / SEND_MEDIA_TO. Scope-walled: owner-private items never surface to non-owner callers.",
   descriptionCompressed:
     "semantic + facet search over the knowledge hub; returns items (scope-walled)",
   routingHint:
-    "search stored knowledge/documents/transcripts/attachments (by text or by room/sender/media-format/tag) -> SEARCH_KNOWLEDGE; to put a found item INTO this chat -> ATTACH_TO_CHAT; to DM/send it to a contact/room -> SEND_MEDIA_TO",
+    "search stored knowledge/documents/transcripts/attachments (by text or by room/sender/media-format/tag) -> SEARCH_KNOWLEDGE; to put a found item INTO this chat -> ATTACH_TO_CHAT; to send it into another room/DM by its room UUID -> SEND_MEDIA_TO",
   validate: async () => true,
   handler: async (
     runtime: IAgentRuntime,
@@ -601,7 +601,7 @@ export const searchKnowledgeAction: Action = {
     },
     {
       name: "tags",
-      description: "Optional tag list (array or comma-separated)",
+      description: "Optional tag list, one string per tag",
       required: false,
       schema: { type: "array" as const, items: { type: "string" as const } },
     },
@@ -610,13 +610,21 @@ export const searchKnowledgeAction: Action = {
       description:
         "Optional scope facet: global | owner-private | user-private | agent-private",
       required: false,
-      schema: { type: "string" as const },
+      // Enumerated so a value the handler cannot apply is refused by argument
+      // validation instead of being dropped and the search run unfiltered.
+      schema: {
+        type: "string" as const,
+        enum: ["global", "owner-private", "user-private", "agent-private"],
+      },
     },
     {
       name: "searchMode",
       description: "Optional retrieval mode: hybrid | vector | keyword",
       required: false,
-      schema: { type: "string" as const },
+      schema: {
+        type: "string" as const,
+        enum: ["hybrid", "vector", "keyword"],
+      },
     },
   ],
 };
@@ -747,7 +755,7 @@ export const sendMediaToAction: Action = {
   descriptionCompressed:
     "send a stored knowledge item's media to a room/DM (scope-walled)",
   routingHint:
-    "send/DM/share a stored knowledge item to a contact or room -> SEND_MEDIA_TO; to attach it to the CURRENT chat instead -> ATTACH_TO_CHAT",
+    "send/share a stored knowledge item into another room/DM, named by its room UUID (a contact name is not a target) -> SEND_MEDIA_TO; to attach it to the CURRENT chat instead -> ATTACH_TO_CHAT",
   validate: async () => true,
   handler: async (
     runtime: IAgentRuntime,
@@ -794,12 +802,16 @@ export const sendMediaToAction: Action = {
     }
 
     const targetRoom = await runtime.getRoom(targetRoomId);
-    // Classify via the canonical surface classifier (includes THREAD) and fail
-    // CLOSED for an unresolvable room: an unknown room is treated as public so a
-    // missing room record can never be the reason a private item is sent out.
-    const targetIsPublic = targetRoom
-      ? roomIsPublicSurface(targetRoom.type)
-      : true;
+    // A room that does not resolve has no connector to send through. Refuse it
+    // here, for every scope, so the reply names the room and not the send wall.
+    if (!targetRoom) {
+      return fail(
+        `Room "${targetRoomId}" was not found; nothing was sent. roomId must be the UUID of an existing room or DM, not a contact or room name.`,
+        "SEND_ROOM_NOT_FOUND",
+      );
+    }
+    // Classify via the canonical surface classifier (includes THREAD).
+    const targetIsPublic = roomIsPublicSurface(targetRoom.type);
     const wall = canSendDocumentToPublic(item.memory, targetIsPublic);
     if (!wall.ok) {
       logger.warn(
@@ -819,12 +831,12 @@ export const sendMediaToAction: Action = {
     };
     const dispatch = await dispatchToRoom(
       runtime,
-      targetRoom?.source ?? "",
+      targetRoom.source ?? "",
       {
-        source: targetRoom?.source ?? "",
+        source: targetRoom.source ?? "",
         roomId: targetRoomId,
-        ...(targetRoom?.channelId ? { channelId: targetRoom.channelId } : {}),
-        ...(targetRoom?.serverId ? { serverId: targetRoom.serverId } : {}),
+        ...(targetRoom.channelId ? { channelId: targetRoom.channelId } : {}),
+        ...(targetRoom.serverId ? { serverId: targetRoom.serverId } : {}),
       },
       content,
     );

@@ -19,6 +19,7 @@ import { getRuntimeRouteHostContext } from "@elizaos/host/protocol";
 import { handleCloudBillingRoute } from "./routes/cloud-billing-routes";
 import { handleCloudRoute } from "./routes/cloud-routes";
 import { handleCloudStatusRoutes } from "./routes/cloud-status-routes";
+import { ELIZA_CLOUD_STT_MAX_JSON_BODY_BYTES } from "./lib/server-cloud-tts";
 import { handleCloudSttRoute } from "./lib/server-cloud-tts";
 import { handleCloudTtsPreviewRoute } from "./lib/server-cloud-tts";
 import { handleXRelayRoute } from "./routes/x-relay-routes";
@@ -181,6 +182,7 @@ const cloudRoutes: Route[] = [
         type: "POST",
         path: "/api/asr/cloud",
         rawPath: true,
+        maxBodyBytes: ELIZA_CLOUD_STT_MAX_JSON_BODY_BYTES,
         modes: ["local", "cloud", "remote"],
         modeReason: "cloud STT proxy — no cloud account in local-only",
         handler: cloudSttHandler,
@@ -221,36 +223,6 @@ const cloudRoutes: Route[] = [
     {
         type: "GET",
         path: "/api/cloud/login/status",
-        rawPath: true,
-        handler: cloudRouteHandler,
-    },
-    {
-        type: "GET",
-        path: "/api/cloud/agents",
-        rawPath: true,
-        handler: cloudRouteHandler,
-    },
-    {
-        type: "POST",
-        path: "/api/cloud/agents",
-        rawPath: true,
-        handler: cloudRouteHandler,
-    },
-    {
-        type: "POST",
-        path: "/api/cloud/agents/:agentId/provision",
-        rawPath: true,
-        handler: cloudRouteHandler,
-    },
-    {
-        type: "POST",
-        path: "/api/cloud/agents/:agentId/connect",
-        rawPath: true,
-        handler: cloudRouteHandler,
-    },
-    {
-        type: "POST",
-        path: "/api/cloud/agents/:agentId/shutdown",
         rawPath: true,
         handler: cloudRouteHandler,
     },

@@ -7,6 +7,7 @@
 
 import {
   calculateTwilioSmsBilling,
+  classifyTwilioSmsCostConfig,
   resolveTwilioSmsCostPerSegment,
 } from "@elizaos/cloud-shared/billing";
 import {
@@ -66,14 +67,11 @@ function resolveTwilioVerificationUrl(c: AppContext): string {
 
 function resolveSmsCostPerSegment(env: AppContext["env"]): number {
   const raw = env.TWILIO_SMS_COST_PER_SEGMENT_USD;
-  if (raw) {
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      logger.warn(
-        "[TwilioWebhook] Invalid TWILIO_SMS_COST_PER_SEGMENT_USD; using default",
-        { configured: true },
-      );
-    }
+  if (classifyTwilioSmsCostConfig(raw).status === "invalid") {
+    logger.warn(
+      "[TwilioWebhook] Invalid TWILIO_SMS_COST_PER_SEGMENT_USD; using default",
+      { configured: true },
+    );
   }
   return resolveTwilioSmsCostPerSegment(raw);
 }
@@ -287,7 +285,7 @@ async function handleIncomingMessage(
           provider: "twilio",
           input_tokens: 0,
           output_tokens: 0,
-          input_cost: String(billing.rawCost),
+          input_cost: String(billing.billedCost),
           output_cost: String(0),
           markup: String(billing.markup),
           request_id: event.MessageSid,

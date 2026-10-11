@@ -54,6 +54,7 @@ import {
   readTriggerConfig,
   TRIGGER_TASK_NAME,
   TRIGGER_TASK_TAGS,
+  triggersFeatureEnabled,
 } from "../triggers/runtime.ts";
 import {
   buildTriggerMetadata,
@@ -62,6 +63,7 @@ import {
   normalizeTriggerIntervalMs,
   parseCronExpression,
   parseScheduledAtIso,
+  resolveScheduledAtIsoInTimeZone,
 } from "../triggers/scheduling.ts";
 import type { TriggerTaskMetadata } from "../triggers/types.ts";
 
@@ -263,6 +265,24 @@ function okCommitted(
   };
 }
 
+function missingSchedule(text: string): ActionResult {
+  return {
+    ...failed("create", text, "MISSING_SCHEDULE", {
+      acceptance: "rejected",
+      executionStatus: "not_started",
+    }),
+    // No write has started: corrected schedule parameters can safely retry.
+    // Keep this validation rejection in the trace without giving it authority
+    // over a later committed creation with those corrected parameters.
+    failureProvenance: {
+      kind: "handler_error",
+      boundary: "handler",
+      code: "MISSING_SCHEDULE",
+      retryable: true,
+    },
+  };
+}
+
 function deriveTriggerType(p: TriggerParameters): TriggerType {
   const t = p.triggerType?.trim().toLowerCase();
   if (t === "interval" || t === "once" || t === "cron") return t;
@@ -360,13 +380,6 @@ function displayLabel(name: string): string {
   return stripped.length > 0 ? stripped : name;
 }
 
-function triggersDisabled(runtime: IAgentRuntime): boolean {
-  const setting = runtime.getSetting("ELIZA_TRIGGERS_ENABLED");
-  if (setting === false || setting === "false" || setting === "0") return true;
-  const env = process.env.ELIZA_TRIGGERS_ENABLED;
-  return env === "0" || env === "false";
-}
-
 async function loadTriggerTask(
   runtime: IAgentRuntime,
   taskId: UUID,
@@ -377,8 +390,25 @@ async function loadTriggerTask(
   return trigger ? { task, trigger } : null;
 }
 
+async function loadTriggerByTriggerId(
+  runtime: IAgentRuntime,
+  triggerId: string,
+): Promise<{ task: Task; trigger: TriggerConfig } | null> {
+  const tasks = await runtime.getTasks({
+    tags: [...TRIGGER_TASK_TAGS],
+    agentIds: [runtime.agentId],
+  });
+  for (const task of tasks) {
+    const trigger = readTriggerConfig(task);
+    if (trigger && task.id && String(trigger.triggerId) === triggerId) {
+      return { task, trigger };
+    }
+  }
+  return null;
+}
+
 /**
- * Resolve which trigger an update/delete/run/toggle refers to. Accepts a task
+ * Resolve which trigger a delete/run/toggle refers to. Accepts a task
  * UUID, the triggerId, or — the way a person actually refers to one — a name
  * fragment matched against displayName/instructions. Users never see task
  * UUIDs, so demanding one made every "delete the X reminder" turn fail.
@@ -549,7 +579,7 @@ async function opCreate(
   message: Memory,
   params: TriggerParameters,
 ): Promise<ActionResult> {
-  if (triggersDisabled(runtime)) {
+  if (!triggersFeatureEnabled(runtime)) {
     return failed("create", "Triggers are disabled.", "TRIGGERS_OFF");
   }
   // A workflow trigger dispatches a workflow autonomously, so it needs the
@@ -586,27 +616,21 @@ async function opCreate(
     !readString(params.scheduledAtIso) &&
     !readString(params.cronExpression)
   ) {
-    return {
-      ...failed(
-        "create",
-        "Provide an explicit schedule before creating a trigger.",
-        "MISSING_SCHEDULE",
-        { acceptance: "rejected", executionStatus: "not_started" },
-      ),
-      // No write has started: corrected schedule parameters can safely retry.
-      // Keep this validation rejection in the trace without giving it authority
-      // over a later committed creation with those corrected parameters.
-      failureProvenance: {
-        kind: "handler_error",
-        boundary: "handler",
-        code: "MISSING_SCHEDULE",
-        retryable: true,
-      },
-    };
+    return missingSchedule(
+      "Provide an explicit schedule before creating a trigger.",
+    );
   }
 
   const cronExpression = readString(params.cronExpression);
-  const explicitScheduledAtIso = readString(params.scheduledAtIso);
+  // The planner works from CURRENT_TIME in the user's zone, so a timestamp it
+  // sends without an offset is that zone's wall clock — the same zone the cron
+  // path stores — not the host process zone `Date.parse` would assume.
+  const messageTimeZone = resolveMessageTimeZone(runtime, message);
+  const rawScheduledAtIso = readString(params.scheduledAtIso);
+  const explicitScheduledAtIso =
+    rawScheduledAtIso === undefined
+      ? undefined
+      : resolveScheduledAtIsoInTimeZone(rawScheduledAtIso, messageTimeZone);
   const wantsCron =
     explicitType === "cron" ||
     (cronExpression !== undefined &&
@@ -620,8 +644,14 @@ async function opCreate(
   // cannot block a valid recurring create.
   const hasDelayInput =
     params.delaySeconds !== undefined || params.delayMinutes !== undefined;
+  const parsedIntervalMs = parsePositiveInt(params.intervalMs);
+  // An explicit triggerType=interval with a usable intervalMs is a typed
+  // statement like a cron: the delay beside it is the planner's echo of the
+  // first fire, not a second schedule.
+  const wantsInterval =
+    explicitType === "interval" && parsedIntervalMs !== undefined;
   const parsedDelayMs =
-    wantsCron || explicitScheduledAtIso !== undefined
+    wantsCron || wantsInterval || explicitScheduledAtIso !== undefined
       ? undefined
       : readRelativeDelayMs(params);
   const delayGiven =
@@ -652,9 +682,9 @@ async function opCreate(
       ? new Date(Date.now() + delayMs).toISOString()
       : undefined;
   const scheduledAtIso = explicitScheduledAtIso ?? scheduledFromDelay;
-  // A relative delay is one-shot by definition; a contradictory explicit
-  // triggerType (e.g. "interval") must not silently drop it. Cron resolved
-  // above, so a delay can no longer demote a recurring schedule to one-shot.
+  // A relative delay that survived to here is one-shot by definition. Cron and
+  // an explicit interval with a usable intervalMs resolved above and discarded
+  // it, so a delay can no longer demote a recurring schedule to one-shot.
   const triggerType: TriggerType = wantsCron
     ? "cron"
     : delayMs !== undefined
@@ -668,8 +698,26 @@ async function opCreate(
       ? "next_autonomy_cycle"
       : "inject_now";
   const creatorId = String(message.entityId);
-  const messageTimeZone = resolveMessageTimeZone(runtime, message);
-  const parsedIntervalMs = parsePositiveInt(params.intervalMs);
+  // A repeat period sent with a one-off time and no triggerType names two
+  // schedules. Writing the one-off dropped the period and turned "every 2
+  // hours" into one committed reminder.
+  if (
+    triggerType === "once" &&
+    explicitType !== "once" &&
+    parsedIntervalMs !== undefined
+  ) {
+    return missingSchedule(
+      "intervalMs (repeating) was sent with a one-off delay or scheduledAtIso. Nothing was created. Send intervalMs alone for a repeating trigger, or the delay or scheduledAtIso alone for a one-off.",
+    );
+  }
+  // triggerType=interval names the schedule kind, not the cadence. Writing the
+  // 12-hour default here turned "every 2 hours" with the number omitted into a
+  // committed 12-hour reminder; once and cron already refuse a missing value.
+  if (triggerType === "interval" && params.intervalMs === undefined) {
+    return missingSchedule(
+      "Interval trigger requires intervalMs (the repeat period in milliseconds).",
+    );
+  }
   if (
     triggerType === "interval" &&
     params.intervalMs !== undefined &&
@@ -910,11 +958,21 @@ async function opUpdate(
   // delete and a create that applied, and the turn was forced through a
   // "do not claim success" compose pass).
   const taskId = readUuid(params.taskId);
-  if (!taskId)
-    return failed("update", "taskId is required.", "MISSING_TASK_ID", {
-      readOnlyOperation: true,
-    });
-  const loaded = await loadTriggerTask(runtime, taskId);
+  if (!taskId) {
+    const rawId = readString(params.taskId);
+    return failed(
+      "update",
+      rawId
+        ? `update needs the trigger task UUID or triggerId in taskId; got "${rawId}".`
+        : "taskId is required.",
+      "MISSING_TASK_ID",
+      { readOnlyOperation: true },
+    );
+  }
+  // create returns both ids and the schema accepts either one here.
+  const loaded =
+    (await loadTriggerTask(runtime, taskId)) ??
+    (await loadTriggerByTriggerId(runtime, taskId));
   if (!loaded)
     return failed(
       "update",
@@ -929,15 +987,89 @@ async function opUpdate(
     });
   const messageTimeZone = resolveMessageTimeZone(runtime, message);
 
+  // update patches the stored schedule in place. A field it cannot apply used
+  // to be dropped, and the unchanged trigger came back with an applied receipt.
+  const unusable: string[] = [];
+  if (params.delaySeconds !== undefined || params.delayMinutes !== undefined) {
+    unusable.push(
+      "delaySeconds/delayMinutes are for create; pass scheduledAtIso to move a once trigger",
+    );
+  }
+  const requestedType = readString(params.triggerType)?.toLowerCase();
+  if (requestedType !== undefined && requestedType !== trigger.triggerType) {
+    unusable.push(
+      `triggerType cannot change (stored: ${trigger.triggerType}); delete the trigger and create a new one`,
+    );
+  }
+  if (
+    params.enabled !== undefined &&
+    readBool(params.enabled, trigger.enabled) !== trigger.enabled
+  ) {
+    unusable.push("enabled is changed with action=toggle");
+  }
+  const scheduleFields = [
+    ["intervalMs", "interval"],
+    ["scheduledAtIso", "once"],
+    ["cronExpression", "cron"],
+  ] as const;
+  for (const [field, type] of scheduleFields) {
+    const supplied =
+      field === "intervalMs"
+        ? params.intervalMs !== undefined
+        : readString(params[field]) !== undefined;
+    if (supplied && trigger.triggerType !== type) {
+      unusable.push(
+        `${field} applies to a ${type} trigger; this trigger is ${trigger.triggerType}`,
+      );
+    }
+  }
+  if (
+    params.intervalMs !== undefined &&
+    parsePositiveInt(params.intervalMs) === undefined
+  ) {
+    unusable.push("intervalMs must be a positive integer");
+  }
+  if (unusable.length > 0) {
+    return failed(
+      "update",
+      `Nothing was changed. ${unusable.join(". ")}.`,
+      "INVALID_UPDATE",
+      { readOnlyOperation: true, taskId: String(task.id) },
+    );
+  }
+
   const next: TriggerConfig = { ...trigger };
   const displayName = readString(params.displayName);
   const instructions = readString(params.instructions);
   const intervalMs = parsePositiveInt(params.intervalMs);
-  const scheduledAtIso = readString(params.scheduledAtIso);
+  const rawScheduledAtIso = readString(params.scheduledAtIso);
+  // Same rule as create: no offset means the user's wall clock.
+  const scheduledAtIso =
+    rawScheduledAtIso === undefined
+      ? undefined
+      : resolveScheduledAtIsoInTimeZone(rawScheduledAtIso, messageTimeZone);
   const cronExpression = readString(params.cronExpression);
   const maxRuns = parsePositiveInt(params.maxRuns);
   const wakeModeRaw = params.wakeMode?.trim().toLowerCase();
   let dedupeIdentityChanged = false;
+
+  if (
+    displayName === undefined &&
+    instructions === undefined &&
+    intervalMs === undefined &&
+    scheduledAtIso === undefined &&
+    cronExpression === undefined &&
+    maxRuns === undefined &&
+    wakeModeRaw !== "inject_now" &&
+    wakeModeRaw !== "next_autonomy_cycle"
+  ) {
+    return failed(
+      "update",
+      "Nothing was changed. Pass displayName, instructions, wakeMode, maxRuns, or the schedule field for this trigger type.",
+      "NO_UPDATE_FIELDS",
+      { readOnlyOperation: true, taskId: String(task.id) },
+    );
+  }
 
   if (displayName) next.displayName = displayName;
   if (instructions) {
@@ -1095,6 +1227,10 @@ async function opList(
   });
   const messageTimeZone = resolveMessageTimeZone(runtime, message);
   const lines: string[] = [];
+  // update takes only an id, and no other read returns one. The ids travel in
+  // the result data (model-facing), not in the user-facing lines.
+  const entries: { taskId: string; triggerId: string; displayName: string }[] =
+    [];
   // Rows tagged as triggers whose metadata will not parse are dropped here.
   // Silently dropping them turned "what reminders do I have" into a flat "none
   // are set" for a user whose reminder rows failed the parse, so the count of
@@ -1110,6 +1246,11 @@ async function opList(
     // it unmarked answers "when does my next reminder fire" with something
     // that never will, so the paused state travels with the line.
     const paused = trigger.enabled === false ? " (paused)" : "";
+    entries.push({
+      taskId: String(task.id),
+      triggerId: trigger.triggerId,
+      displayName: trigger.displayName,
+    });
     lines.push(
       `- "${displayLabel(trigger.displayName)}" — ${describeSchedule(
         trigger,
@@ -1135,7 +1276,7 @@ async function opList(
   return ok(
     "list",
     `${lines.length} scheduled item${lines.length === 1 ? "" : "s"}${skippedNote}:\n${lines.join("\n")}`,
-    { count: lines.length, unreadable },
+    { count: lines.length, unreadable, entries },
   );
 }
 
@@ -1295,7 +1436,7 @@ export const triggerAction: Action = {
     {
       name: "taskId",
       description:
-        "Trigger task UUID (or triggerId) for update / delete / run / toggle. delete/run/toggle also resolve by displayName fragment when omitted.",
+        "Trigger task UUID (or triggerId) for update / delete / run / toggle. delete/run/toggle also resolve by displayName fragment when omitted; update needs the id, which action=list returns for each trigger in its result data (entries[].taskId).",
       required: false,
       aliases: ["triggerId", "id"],
       schema: { type: "string" as const },
@@ -1352,13 +1493,15 @@ export const triggerAction: Action = {
     },
     {
       name: "intervalMs",
-      description: "Interval frequency in ms.",
+      description:
+        "Interval frequency in ms. Required when the trigger is an interval trigger; there is no default period.",
       required: false,
       schema: { type: "number" as const, minimum: 0 },
     },
     {
       name: "scheduledAtIso",
-      description: "ISO timestamp for once-triggers.",
+      description:
+        "ISO timestamp for once-triggers. A value with no Z or UTC offset (2026-10-13T09:00:00) is read as the user's local time; a value with one is used as given.",
       required: false,
       aliases: ["scheduledFor", "when", "at", "datetime"],
       schema: { type: "string" as const },
