@@ -979,8 +979,8 @@ export const googleAdsProvider: AdProvider = {
         AND segments.date BETWEEN '${startDate.toISOString().split("T")[0]}' AND '${endDate.toISOString().split("T")[0]}'
     `;
 
-    const response = await googleAdsRequest<{
-      results: Array<{
+    const response = await googleAdsRequest<
+      GoogleAdsSearchStreamResponse<{
         campaign: { id: string };
         metrics: {
           impressions: string;
@@ -988,13 +988,13 @@ export const googleAdsProvider: AdProvider = {
           costMicros: string;
           conversions: string;
         };
-      }>;
-    }>("/googleAds:searchStream", credentials.accessToken, accountId, {
+      }>
+    >("/googleAds:searchStream", credentials.accessToken, accountId, {
       method: "POST",
       body: JSON.stringify({ query }),
     });
 
-    const result = response.results?.[0];
+    const result = firstGoogleAdsSearchResult(response);
     if (!result) {
       return {
         success: true,
@@ -1006,7 +1006,7 @@ export const googleAdsProvider: AdProvider = {
       spend: parseInt(result.metrics.costMicros || "0") / 1_000_000,
       impressions: parseInt(result.metrics.impressions || "0"),
       clicks: parseInt(result.metrics.clicks || "0"),
-      conversions: parseInt(result.metrics.conversions || "0"),
+      conversions: Number.parseFloat(result.metrics.conversions || "0"),
     };
 
     return { success: true, metrics };
