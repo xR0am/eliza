@@ -12,6 +12,7 @@ import { gmailThreadSourceLink } from "./gmail-source-link.js";
 
 import { Buffer } from "node:buffer";
 import { ElizaError, stripHtmlRawTextElements } from "@elizaos/core";
+import { decodeBasicHtmlEntities } from "@elizaos/plugin-assistant/html-entities";
 import type { gmail_v1 } from "googleapis";
 import type { GoogleApiClientFactory } from "./client-factory.js";
 import {
@@ -1040,7 +1041,7 @@ function mapRichMessage(
     return null;
   }
   const headers = message.payload?.headers ?? [];
-  const subject = decodeHtmlEntities(headerValue(headers, "Subject") || "") || "(no subject)";
+  const subject = decodeBasicHtmlEntities(headerValue(headers, "Subject") || "") || "(no subject)";
   const fromMailbox = parseEmailAddresses(headerValue(headers, "From"))[0] ?? null;
   const replyTo = headerValue(headers, "Reply-To");
   const replyToMailbox = parseEmailAddresses(replyTo)[0] ?? null;
@@ -1674,35 +1675,9 @@ function formatAddressValue(address: GoogleEmailAddress): string {
 }
 
 function normalizeSnippet(value: string | null | undefined): string {
-  return decodeHtmlEntities(value ?? "")
+  return decodeBasicHtmlEntities(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function decodeHtmlEntities(value: string): string {
-  const namedEntities: Record<string, string> = {
-    amp: "&",
-    apos: "'",
-    gt: ">",
-    lt: "<",
-    nbsp: " ",
-    quot: '"',
-  };
-  return value.replace(
-    /&(nbsp|amp|apos|lt|gt|quot|#x[0-9a-f]+|#\d+);/gi,
-    (entity, name: string) => {
-      const key = name.toLowerCase();
-      const named = namedEntities[key];
-      if (named !== undefined) return named;
-      // Gmail HTML writes apostrophes as &#x27; and other characters as numeric references.
-      const hex = /^#x([0-9a-f]+)$/.exec(key);
-      const code = Number.parseInt(hex ? hex[1] : key.slice(1), hex ? 16 : 10);
-      if (!Number.isInteger(code) || code <= 0 || code > 0x10ffff) return entity;
-      if (code >= 0xd800 && code <= 0xdfff) return entity;
-      if (code === 0xa0) return " ";
-      return String.fromCodePoint(code);
-    }
-  );
 }
 
 function internalDateToIso(value: string | null | undefined): string {
@@ -1902,7 +1877,7 @@ function extractGoogleGmailBodyByMime(
 }
 
 function htmlToPlainText(value: string): string {
-  return decodeHtmlEntities(
+  return decodeBasicHtmlEntities(
     stripHtmlRawTextElements(value)
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<\/(?:p|div|section|article|li|tr|table|h[1-6])>/gi, "\n")
