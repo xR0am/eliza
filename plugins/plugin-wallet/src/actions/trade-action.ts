@@ -276,11 +276,28 @@ function failureText<T>(envelope: Extract<TradeEnvelope<T>, { ok: false }>) {
   return envelope.detail;
 }
 
+// Every planner-chosen order term the pending key binds must be in the text
+// the user answers: leverage 2 and leverage 20 are different orders, and a
+// prompt that omits the term has the user approving a value they never saw.
 function orderPreview(order: SubmitOrderRequest): string {
   if (order.venue === "hyperliquid") {
-    return `Submit Hyperliquid ${order.side} ${order.size} ${order.coin}${order.limitPx === undefined ? "" : ` at ${order.limitPx}`} under governed session ${order.sessionId}? Reply yes to submit or no to cancel.`;
+    const terms = [
+      order.limitPx === undefined ? "" : ` at ${order.limitPx}`,
+      order.leverage === undefined ? "" : ` with ${order.leverage}x leverage`,
+      order.reduceOnly === undefined
+        ? ""
+        : ` reduce-only ${order.reduceOnly ? "yes" : "no"}`,
+      order.tif === undefined ? "" : ` time-in-force ${order.tif}`,
+    ].join("");
+    return `Submit Hyperliquid ${order.side} ${order.size} ${order.coin}${terms} under governed session ${order.sessionId}? Reply yes to submit or no to cancel.`;
   }
-  return `Submit Polymarket ${order.side} ${order.amount} token ${order.tokenId} at ${order.price} under governed session ${order.sessionId}? Reply yes to submit or no to cancel.`;
+  const terms = [
+    order.tickSize === undefined ? "" : ` tick size ${order.tickSize}`,
+    order.negRisk === undefined
+      ? ""
+      : ` negative-risk ${order.negRisk ? "yes" : "no"}`,
+  ].join("");
+  return `Submit Polymarket ${order.side} ${order.amount} token ${order.tokenId} at ${order.price}${terms} under governed session ${order.sessionId}? Reply yes to submit or no to cancel.`;
 }
 
 async function inspectAccount(
