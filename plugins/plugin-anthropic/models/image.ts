@@ -16,8 +16,14 @@ import { resolveAnthropicMaxOutputTokens } from "./text";
 const DEFAULT_IMAGE_DESCRIPTION_PROMPT =
   "Analyze this image and respond with:\nTitle: <short title>\nDescription: <detailed description>";
 
+// A title line counts only at the start of the reply, where the prompt asks
+// for it. An unanchored search lets a mid-description mention of "title:"
+// (a poster, sign, or book in the image) hijack the title and cut that text
+// out of the description; the OpenAI image parser anchors for this reason.
+const LEADING_TITLE_RE = /^\s*title[:\s]+(.+?)(?:\n|$)/i;
+
 function parseTitle(content: string): string {
-  const titleMatch = content.match(/title[:\s]+(.+?)(?:\n|$)/i);
+  const titleMatch = content.match(LEADING_TITLE_RE);
   if (titleMatch?.[1]) {
     return titleMatch[1].trim();
   }
@@ -31,7 +37,7 @@ function parseTitle(content: string): string {
 }
 
 function parseDescription(content: string): string {
-  const withoutTitle = content.replace(/title[:\s]+(.+?)(?:\n|$)/i, "").trim();
+  const withoutTitle = content.replace(LEADING_TITLE_RE, "").trim();
   const withoutDescriptionLabel = withoutTitle.replace(/^description[:\s]+/i, "").trim();
   return withoutDescriptionLabel.length > 0 ? withoutDescriptionLabel : content.trim();
 }
