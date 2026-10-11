@@ -84,6 +84,7 @@ import {
   persistInferenceTimingSummary,
   shouldSkipResponseMemoryPersistence,
 } from "@elizaos/plugin-assistant";
+import { agentIdentityName } from "../runtime/build-character-config.ts";
 import type { AgentHttpRequestAuthorization } from "../runtime/host-bridge.ts";
 import {
   type CapturedModelUsage,
@@ -139,13 +140,11 @@ import {
   resolveAppUserName,
   validateChatImages,
 } from "./server-helpers.ts";
-
 import {
   isAuthorized,
   isServerTokenAuthorized,
 } from "./server-helpers-auth.ts";
 import { readUiLanguageHeader } from "./server-helpers-config.ts";
-
 import { listViews } from "./views-registry.ts";
 import { updateWorldMetadataWithRetry } from "./world-metadata-retry.ts";
 
@@ -3566,7 +3565,8 @@ export function resolveChatAdminEntityId(state: ChatRouteState): UUID {
 export async function ensureCompatChatConnection(
   state: ChatRouteState,
   runtime: AgentRuntime,
-  agentName: string,
+  /** agentIdentityName(runtime.character): stays the same after a rename. */
+  identityName: string,
   channelIdPrefix: string,
   roomKey: string,
   principal: TrustedApiPrincipal,
@@ -3580,16 +3580,16 @@ export async function ensureCompatChatConnection(
   const userId = ownerPrincipal
     ? ensureAdminEntityIdForChat(state)
     : (stringToUuid(
-        `${agentName}:${channelIdPrefix}:external:${principal.principalId}`,
+        `${identityName}:${channelIdPrefix}:external:${principal.principalId}`,
       ) as UUID);
   const principalScopedRoomKey = ownerPrincipal
     ? roomKey
     : `${principal.kind}:${principal.principalId}:${roomKey}`;
   const roomId = stringToUuid(
-    `${agentName}-${channelIdPrefix}-room-${principalScopedRoomKey}`,
+    `${identityName}-${channelIdPrefix}-room-${principalScopedRoomKey}`,
   ) as UUID;
-  const worldId = stringToUuid(`${agentName}-web-chat-world`) as UUID;
-  const messageServerId = stringToUuid(`${agentName}-web-server`) as UUID;
+  const worldId = stringToUuid(`${identityName}-web-chat-world`) as UUID;
+  const messageServerId = stringToUuid(`${identityName}-web-server`) as UUID;
   await runtime.ensureConnection({
     entityId: userId,
     roomId,
@@ -3903,7 +3903,7 @@ export async function handleChatRoutes(
         {
           const runtime = state.runtime;
           if (!runtime) throw new Error("Agent is not running");
-          const agentName = runtime.character.name ?? "Eliza";
+          const agentName = agentIdentityName(runtime.character) ?? "Eliza";
           const { userId, roomId } = await ensureCompatChatConnection(
             state,
             runtime,
@@ -4051,7 +4051,7 @@ export async function handleChatRoutes(
           return true;
         }
         const runtime = state.runtime;
-        const agentName = runtime.character.name ?? "Eliza";
+        const agentName = agentIdentityName(runtime.character) ?? "Eliza";
         const { userId, roomId } = await ensureCompatChatConnection(
           state,
           runtime,
@@ -4297,7 +4297,7 @@ export async function handleChatRoutes(
         {
           const runtime = state.runtime;
           if (!runtime) throw new Error("Agent is not running");
-          const agentName = runtime.character.name ?? "Eliza";
+          const agentName = agentIdentityName(runtime.character) ?? "Eliza";
           const { userId, roomId } = await ensureCompatChatConnection(
             state,
             runtime,
@@ -4436,7 +4436,7 @@ export async function handleChatRoutes(
           return true;
         }
         const runtime = state.runtime;
-        const agentName = runtime.character.name ?? "Eliza";
+        const agentName = agentIdentityName(runtime.character) ?? "Eliza";
         const { userId, roomId } = await ensureCompatChatConnection(
           state,
           runtime,
@@ -4577,7 +4577,7 @@ export async function handleChatRoutes(
     }
     try {
       const runtime = state.runtime;
-      const agentName = runtime.character.name ?? "Eliza";
+      const agentName = agentIdentityName(runtime.character) ?? "Eliza";
       const messagePrincipal: TrustedApiPrincipal =
         trustedApiPrincipal.kind === "service_gateway"
           ? {

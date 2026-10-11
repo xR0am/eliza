@@ -100,7 +100,17 @@ function normalizeDateValue(value: unknown): string | null {
   return null;
 }
 
+// The web-chat world id is derived from the agent's identity name, which
+// stays the same after a rename (settings.identityName, set by the agent host;
+// core character validation moves it to settings.extra.identityName).
 function resolveAgentName(runtime: AgentRuntime): string {
+  const settings = runtime.character.settings;
+  const extra = settings?.extra as Record<string, unknown> | undefined;
+  for (const identityName of [settings?.identityName, extra?.identityName]) {
+    if (typeof identityName === 'string' && identityName.trim()) {
+      return identityName.trim();
+    }
+  }
   return runtime.character.name?.trim() || 'Eliza';
 }
 

@@ -2,13 +2,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AgentRuntime } from "@elizaos/core";
+import { AgentRuntime, parseAndValidateCharacter } from "@elizaos/core";
 import { SQLiteDatabaseAdapter } from "@elizaos/testing/runtime";
 import { expect, it, vi } from "vitest";
 import { handleCharacterRoutes } from "../src/api/character-routes.ts";
 import { loadElizaConfig, saveElizaConfig } from "../src/config/config.ts";
 import { CharacterSchema } from "../src/config/zod-schema.ts";
-import { buildCharacterFromConfig } from "../src/runtime/build-character-config.ts";
+import {
+  agentIdentityName,
+  buildCharacterFromConfig,
+} from "../src/runtime/build-character-config.ts";
 
 it("keeps a character-editor rename and username after the config is rebuilt on restart", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "character-rename-"));
@@ -65,6 +68,68 @@ it("keeps a character-editor rename and username after the config is rebuilt on 
       name: "Nova",
       username: "nova",
     });
+    // The rename keeps the agent id and the name the chat ids came from.
+    expect(loadElizaConfig().agents?.list?.[0]?.identityName).toBe("Eliza");
+    expect(new AgentRuntime({ character: rebuilt }).agentId).toBe(
+      runtime.agentId,
+    );
+    // A backup restore validates the character, which moves unknown settings
+    // keys into settings.extra; the identity name must survive that.
+    const restored = parseAndValidateCharacter(JSON.stringify(rebuilt));
+    expect(restored.success).toBe(true);
+    expect(agentIdentityName(restored.data ?? {})).toBe("Eliza");
+    expect(restored.data?.id).toBe(runtime.agentId);
+
+    // A second rename does not move the identity name.
+    await handleCharacterRoutes({
+      req: {} as http.IncomingMessage,
+      res: {} as http.ServerResponse,
+      method: "PUT",
+      pathname: "/api/character",
+      state,
+      readJsonBody: async <T extends object>() =>
+        ({ name: "Orion" }) as unknown as T,
+      json: () => {},
+      error: (_res, message) => {
+        throw new Error(message);
+      },
+      pickRandomNames: () => [],
+      saveConfig: saveElizaConfig,
+      validateCharacter: (body) => CharacterSchema.safeParse(body),
+    });
+    expect(loadElizaConfig().agents?.list?.[0]?.identityName).toBe("Eliza");
+
+    // A restored agent runs on the validated character, and its config can
+    // have no identityName yet. A rename must still save the identity name.
+    runtime.character.settings = restored.data?.settings;
+    saveElizaConfig({
+      agents: { list: [{ id: "main", default: true, name: "Orion" }] },
+    });
+    await handleCharacterRoutes({
+      req: {} as http.IncomingMessage,
+      res: {} as http.ServerResponse,
+      method: "PUT",
+      pathname: "/api/character",
+      state: { ...state, config: loadElizaConfig() },
+      readJsonBody: async <T extends object>() =>
+        ({ name: "Vega" }) as unknown as T,
+      json: () => {},
+      error: (_res, message) => {
+        throw new Error(message);
+      },
+      pickRandomNames: () => [],
+      saveConfig: saveElizaConfig,
+      validateCharacter: (body) => CharacterSchema.safeParse(body),
+    });
+    expect(loadElizaConfig().agents?.list?.[0]).toMatchObject({
+      name: "Vega",
+      identityName: "Eliza",
+    });
+    expect(
+      new AgentRuntime({
+        character: buildCharacterFromConfig(loadElizaConfig()),
+      }).agentId,
+    ).toBe(runtime.agentId);
   } finally {
     await runtime.close();
     vi.unstubAllEnvs();
