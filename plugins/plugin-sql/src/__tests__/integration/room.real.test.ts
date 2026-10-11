@@ -2,11 +2,11 @@
  * Room-store CRUD tests against a real PGlite (or Postgres, if `POSTGRES_URL`
  * is set) adapter via `createIsolatedTestDatabase` — no mocks.
  */
-import { type AgentRuntime, ChannelType, type Room, type UUID } from "@elizaos/core";
+import { type AgentRuntime, ChannelType, type Room, type UUID } from "@elizaos/core"`nimport { eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgDatabaseAdapter } from "../../pg/adapter";
-import type { PgliteDatabaseAdapter } from "../../pglite/adapter";
+import type { PgliteDatabaseAdapter } from "../../pglite/adapter"`nimport { roomTable } from "../../schema/room";
 import { roomTable } from "../../schema/room";
 import { createIsolatedTestDatabase } from "../test-helpers";
 
@@ -185,11 +185,17 @@ describe("Room Integration Tests", () => {
       });
 
       const retrieved = await adapter.getRoomsByIds([roomId]);
+      const stored = await adapter
+        .getDatabase()
+        .select({ serverId: roomTable.serverId })
+        .from(roomTable)
+        .where(eq(roomTable.id, roomId));
 
       expect(retrieved).toHaveLength(1);
       expect(retrieved[0]?.serverId).toBe(serverId);
       expect(retrieved[0]?.messageServerId).toBe(messageServerId);
       expect(retrieved[0]?.metadata).toMatchObject({ accountId: "work", serverId });
+      expect(stored[0]?.serverId).toBe(serverId);
     });
   });
 });
