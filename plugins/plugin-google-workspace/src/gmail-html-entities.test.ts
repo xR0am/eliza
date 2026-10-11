@@ -52,4 +52,40 @@ describe("Gmail numeric HTML entities", () => {
       snippet: "a b 'c' \u2019",
     });
   });
+
+  it("maps C1 numeric references through windows-1252, as HTML requires", async () => {
+    const client = new GoogleGmailClient(
+      stubFactory({
+        id: "msg-c1",
+        threadId: "thr-c1",
+        labelIds: ["INBOX", "UNREAD"],
+        internalDate: "1728450000000",
+        snippet: "price &#128;100 &#150; deal",
+        payload: {
+          headers: [
+            {
+              name: "Subject",
+              value: "A&#128; B&#150; C&#159; D&#129; E&#0;",
+            },
+            { name: "From", value: "Sender <sender@example.com>" },
+            { name: "To", value: "me@example.com" },
+          ],
+        },
+      })
+    );
+
+    const summary = await client.getGmailMessage({
+      accountId: "acct-test",
+      messageId: "msg-c1",
+      selfEmail: "me@example.com",
+    });
+
+    // &#128; is the euro sign and &#150; an en dash under the WHATWG
+    // windows-1252 table, not the invisible C1 controls U+0080/U+0096.
+    // &#129; is an unassigned slot and &#0; is out of range: both stay as written.
+    expect(summary).toMatchObject({
+      subject: "A\u20ac B\u2013 C\u0178 D&#129; E&#0;",
+      snippet: "price \u20ac100 \u2013 deal",
+    });
+  });
 });
