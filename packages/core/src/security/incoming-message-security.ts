@@ -59,7 +59,7 @@ export type IncomingMessageSecurityMetadata = {
 
 /**
  * The message `source` the autonomy service stamps on its own self-prompts
- * (packages/core/src/features/autonomy/service.ts). It is the only legitimate
+ * (plugins/plugin-assistant/src/features/autonomy/service.ts). It is the only legitimate
  * producer of the `isAutonomous` marker; keep the two in sync.
  */
 const AUTONOMY_INTERNAL_SOURCE = "autonomy-service";
