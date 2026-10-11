@@ -747,7 +747,21 @@ export function formatValue(
     return "****";
   }
   const handler = getTypeHandler(control.type, controlType);
-  if (handler?.format) return handler.format(value);
+  // The builtin boolean and select formats are bypassed: the boolean one
+  // returns a stored string literal as given and the select one returns
+  // the raw value, while the switch below owns the display contract for
+  // both types (the shared boolean literals, and the option label in
+  // place of the value). This mirrors the builtin bypass in parseValue.
+  if (
+    handler?.format &&
+    !(
+      handler === controlType &&
+      controlType.builtin &&
+      (control.type === "boolean" || control.type === "select")
+    )
+  ) {
+    return handler.format(value);
+  }
   switch (control.type) {
     case "number":
       // Use locale formatting for numbers
