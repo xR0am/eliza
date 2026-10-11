@@ -229,7 +229,7 @@ export function renderDelegationContractsProviderText(
 function normalize(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[^a-z0-9%.$]+/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}0-9%.$]+/gu, " ")
     .trim();
 }
 
