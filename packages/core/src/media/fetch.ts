@@ -49,7 +49,7 @@ export type FetchMediaOptions = {
 	maxBytes?: number;
 	maxRedirects?: number;
 	timeoutMs?: number;
-	/** Caller abort signal ? composed with the timeout deadline via AbortSignal.any. */
+	/** Caller abort signal — composed with the timeout deadline via AbortSignal.any. */
 	signal?: AbortSignal;
 	/** Require the declared response MIME type to start with this prefix. */
 	requiredContentTypePrefix?: string;
@@ -139,7 +139,7 @@ export async function readErrorBodySnippet(
 			return wellFormed;
 		}
 		const budget = Math.max(0, maxChars - 1);
-		return `${truncateWellFormed(wellFormed, budget).trimEnd()}��`;
+		return `${truncateWellFormed(wellFormed, budget).trimEnd()}…`;
 	} catch {
 		// error-policy:J7 The HTTP status remains authoritative when its optional
 		// diagnostic body snippet cannot be read.
@@ -351,7 +351,7 @@ export async function fetchRemoteMedia(
 /**
  * Reads a response body under a hard byte cap, cancelling the stream as soon
  * as the running total exceeds maxBytes instead of materializing the payload
- * first ? so a missing or lying Content-Length can never force an unbounded
+ * first — so a missing or lying Content-Length can never force an unbounded
  * allocation. Shared by the remote media fetcher above and the trusted local
  * attachment byte-fetches (ingest enrichment and on-demand transcription).
  * Falls back to a post-read check only when the response exposes no stream.
