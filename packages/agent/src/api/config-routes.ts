@@ -33,7 +33,10 @@ import {
   agentIdentityName,
   buildCharacterFromConfig,
 } from "../runtime/build-character-config.ts";
-import { reconcileDirectTextModelSettings } from "../runtime/runtime-settings.ts";
+import {
+  reconcileConfigEnvSettings,
+  reconcileDirectTextModelSettings,
+} from "../runtime/runtime-settings.ts";
 import {
   hasBlockedObjectKeyDeep,
   MAX_BLOCKED_OBJECT_DEPTH,
@@ -322,6 +325,7 @@ async function applyReloadedConfig(params: {
         saveElizaConfig(state);
       }
     }
+    reconcileConfigEnvSettings(runtime, previous, next);
     reconcileDirectTextModelSettings(runtime, previous, next);
   }
 }
@@ -784,6 +788,7 @@ export async function handleConfigRoutes(
       }
     }
     if (runtime) {
+      reconcileConfigEnvSettings(runtime, previousConfig, config);
       reconcileDirectTextModelSettings(runtime, previousConfig, config);
     }
     json(res, redactConfigSecrets(asConfigRecord(config)));
