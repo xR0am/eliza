@@ -10,7 +10,7 @@
 
 import type { IAgentRuntime } from "@elizaos/core";
 import { ElizaError, ModelType, Service, ServiceType } from "@elizaos/core";
-import { getDocumentProxy, getResolvedPDFJS, renderPageAsImage } from "unpdf";
+import { extractText, getDocumentProxy, getResolvedPDFJS, renderPageAsImage } from "unpdf";
 import type {
   PdfCompleteDocument,
   PdfCompleteExtractionOptions,
@@ -390,19 +390,15 @@ export class PdfService extends Service {
   async convertPdfToText(pdfBuffer: Buffer | Uint8Array): Promise<string> {
     const uint8Array = validatePdfInput(pdfBuffer);
     const pdf = await getDocumentProxy(uint8Array);
-    const numPages = requirePdfPageCount(pdf.numPages);
-
-    const textPages: string[] = [];
-
-    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const pageText = collectTextStrings(textContent.items).join(" ");
-      textPages.push(pageText);
+    try {
+      requirePdfPageCount(pdf.numPages);
+      // PDF text items are font runs, not words. Reuse the parser's spacing
+      // and line-break handling instead of inserting a space between runs.
+      const { text } = await extractText(pdf, { mergePages: true });
+      return this.cleanUpContent(text);
+    } finally {
+      await pdf.loadingTask.destroy();
     }
-
-    const rawText = textPages.join("\n");
-    return this.cleanUpContent(rawText);
   }
 
   async convertPdfToPositionedText(
