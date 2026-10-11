@@ -27,7 +27,7 @@ export type ChoiceWidgetProps = {
   /** Scope hint from the marker, e.g. "app-create" or "plugin-create". */
   scope: string;
   options: ChoiceOption[];
-  onChoose: (value: string) => void;
+  onChoose: (value: string) => void | Promise<boolean>;
   /** When true, offer an "Other…" affordance so the user can type their own answer. */
   allowCustom?: boolean;
 };
@@ -70,13 +70,20 @@ export const ChoiceWidget = memo(function ChoiceWidget({
   const [customText, setCustomText] = useState("");
   const locked = selected !== null || dismissed;
 
+  const choose = useCallback(
+    async (option: ChoiceOption) => {
+      setSelected(option);
+      if ((await onChoose(option.value)) === false) setSelected(null);
+    },
+    [onChoose],
+  );
+
   const handleChoose = useCallback(
     (option: ChoiceOption) => {
       if (locked) return;
-      setSelected(option);
-      onChoose(option.value);
+      void choose(option);
     },
-    [onChoose, locked],
+    [choose, locked],
   );
 
   // Local-only dismissal (the ✕ in the header): collapses the prompt without
@@ -91,10 +98,8 @@ export const ChoiceWidget = memo(function ChoiceWidget({
   const submitCustom = useCallback(() => {
     const value = customText.trim();
     if (!value || locked) return;
-    const option = { value, label: value };
-    setSelected(option);
-    onChoose(value);
-  }, [customText, onChoose, locked]);
+    void choose({ value, label: value });
+  }, [customText, choose, locked]);
 
   if (options.length === 0 && !allowCustom) return null;
 

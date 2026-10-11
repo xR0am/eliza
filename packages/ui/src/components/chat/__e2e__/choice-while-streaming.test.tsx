@@ -38,7 +38,7 @@ type StreamResult = Awaited<
 >;
 
 let sendChatText: (text: string) => Promise<void>;
-let sendActionMessage: (text: string) => Promise<void>;
+let sendActionMessage: (text: string) => Promise<boolean>;
 let stopChat: () => void;
 
 function Harness() {
@@ -165,7 +165,7 @@ it("delivers a choice picked while the previous reply is still streaming", async
 it("sends an action once when it is activated twice during a stream", async () => {
   const { sentTexts, finishFirstTurn } = await startStreamingTurn();
 
-  let actions!: Promise<void[]>;
+  let actions!: Promise<boolean[]>;
   act(() => {
     actions = Promise.all([
       sendActionMessage("[action:refresh]"),
@@ -175,7 +175,7 @@ it("sends an action once when it is activated twice during a stream", async () =
 
   await finishFirstTurn();
   await act(async () => {
-    await actions;
+    expect(await actions).toEqual([true, true]);
   });
 
   expect(sentTexts).toEqual(["deploy my app", "[action:refresh]"]);
@@ -184,7 +184,7 @@ it("sends an action once when it is activated twice during a stream", async () =
 it("does not send a waiting action after Stop", async () => {
   const { sentTexts, finishFirstTurn } = await startStreamingTurn();
 
-  let action!: Promise<void>;
+  let action!: Promise<boolean>;
   act(() => {
     action = sendActionMessage("production");
   });
@@ -192,9 +192,29 @@ it("does not send a waiting action after Stop", async () => {
 
   await finishFirstTurn();
   await act(async () => {
-    await action;
+    expect(await action).toBe(false);
   });
 
+  expect(sentTexts).toEqual(["deploy my app"]);
+});
+
+it("unlocks the choice row when Stop cancels the waiting pick", async () => {
+  const { sentTexts, finishFirstTurn } = await startStreamingTurn();
+
+  fireEvent.click(screen.getByRole("button", { name: "Production" }));
+  expect(screen.getByRole("status").textContent).toBe("Selected: Production");
+
+  act(() => stopChat());
+
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "Staging" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false),
+  );
+  expect(screen.queryByRole("status")).toBeNull();
+
+  await finishFirstTurn();
   expect(sentTexts).toEqual(["deploy my app"]);
 });
 
@@ -207,7 +227,7 @@ it("holds a waiting action until the cloud handoff ends", async () => {
       }),
     );
 
-  let action!: Promise<void>;
+  let action!: Promise<boolean>;
   act(() => {
     action = sendActionMessage("production");
     dispatchPhase("migrating");

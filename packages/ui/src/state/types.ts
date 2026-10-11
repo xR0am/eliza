@@ -705,7 +705,7 @@ export interface AppActions {
   sendActionMessage: (
     text: string,
     options?: { metadata?: Record<string, unknown> },
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   /** Send a chat message with optional metadata (e.g. task creation intent). */
   sendChatText: (
     rawInput: string,
