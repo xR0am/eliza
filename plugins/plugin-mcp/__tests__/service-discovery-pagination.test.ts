@@ -329,6 +329,40 @@ describe("MCP binary resource persistence", () => {
   );
 });
 
+describe("MCP operation without an explicit action", () => {
+  it("calls the selected tool when the request text reads like a resource read", async () => {
+    const peer = fileURLToPath(new URL("./fixtures/audio-result-server.mjs", import.meta.url));
+    const { runtime } = await start("binary", "", peer);
+    runtime.registerModel(
+      ModelType.TEXT_SMALL,
+      async () => "Fixture media response",
+      "mcp-fixture",
+      1000
+    );
+    const message: Memory = {
+      id: stringToUuid("mcp-op-from-selection"),
+      agentId: runtime.agentId,
+      entityId: runtime.agentId,
+      roomId: stringToUuid("mcp-op-from-selection-room"),
+      content: { text: "Read the fixture media file" },
+    };
+    const result = await mcpAction.handler(
+      runtime,
+      message,
+      undefined,
+      { parameters: { serverName: "pages", toolName: "sample", arguments: {} } },
+      async () => []
+    );
+    expect(result).toMatchObject({ success: true });
+    const tools = await runtime.getMemories({
+      roomId: message.roomId,
+      tableName: "tools",
+      count: 10,
+    });
+    expect(tools).toHaveLength(1);
+  });
+});
+
 describe("MCP resource selection through model feedback", () => {
   it.each(["fixture:///2", "fixture:///unlisted-linked-result"])(
     "repairs a missing server selection and reads %s through real stdio",
