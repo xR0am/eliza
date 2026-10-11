@@ -158,9 +158,9 @@ async function resolveHandle(handle: string, accessJwt: string): Promise<string 
   }
 }
 
-// Follows https://docs.bsky.app/docs/advanced-guides/post-richtext: mentions and
-// tags start at the beginning of the text or after whitespace, and a mention
-// facet needs the DID the handle resolves to.
+// Mentions follow https://docs.bsky.app/docs/advanced-guides/post-richtext: they
+// start at the beginning of the text, after whitespace or after "(", and a
+// mention facet needs the DID the handle resolves to.
 async function detectFacets(text: string, accessJwt: string): Promise<BskyFacet[]> {
   const facets: BskyFacet[] = [];
   const encoder = new TextEncoder();
@@ -168,10 +168,12 @@ async function detectFacets(text: string, accessJwt: string): Promise<BskyFacet[
 
   // Detect URLs
   const urlRegex = /https?:\/\/[^\s]+/g;
+  const linkRanges: Array<{ byteStart: number; byteEnd: number }> = [];
   let match;
   while ((match = urlRegex.exec(text)) !== null) {
     const byteStart = byteOffset(match.index);
     const byteEnd = byteStart + encoder.encode(match[0]).length;
+    linkRanges.push({ byteStart, byteEnd });
     facets.push({
       index: { byteStart, byteEnd },
       features: [{ $type: "app.bsky.richtext.facet#link", uri: match[0] }],
@@ -203,14 +205,17 @@ async function detectFacets(text: string, accessJwt: string): Promise<BskyFacet[
     });
   }
 
-  // Detect hashtags
-  const hashtagRegex = /(^|\s)#([a-zA-Z0-9_]+)/g;
+  // Detect hashtags; a "#fragment" inside a link is part of the link, not a tag.
+  const hashtagRegex = /#([a-zA-Z0-9_]+)/g;
   while ((match = hashtagRegex.exec(text)) !== null) {
-    const byteStart = byteOffset(match.index + match[1].length);
-    const byteEnd = byteStart + encoder.encode(`#${match[2]}`).length;
+    const byteStart = byteOffset(match.index);
+    const byteEnd = byteStart + encoder.encode(match[0]).length;
+    if (linkRanges.some((link) => byteStart < link.byteEnd && link.byteStart < byteEnd)) {
+      continue;
+    }
     facets.push({
       index: { byteStart, byteEnd },
-      features: [{ $type: "app.bsky.richtext.facet#tag", tag: match[2] }],
+      features: [{ $type: "app.bsky.richtext.facet#tag", tag: match[1] }],
     });
   }
 

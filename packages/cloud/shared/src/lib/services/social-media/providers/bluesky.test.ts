@@ -150,4 +150,18 @@ describe("blueskyProvider.createPost facets", () => {
       expect(overlaps).toBe(false);
     }
   }, 20_000);
+
+  test("a hashtag after punctuation is still a tag", async () => {
+    const text = "Launch (#alpha) one,#two";
+    const result = await blueskyProvider.createPost(credentials, { text });
+
+    expect(result.success).toBe(true);
+    const tags = lastFacets().filter((f) => f.features[0]?.$type === "app.bsky.richtext.facet#tag");
+    expect(tags.map((f) => f.features[0].tag)).toEqual(["alpha", "two"]);
+    const bytes = new TextEncoder().encode(text);
+    const decoder = new TextDecoder();
+    expect(
+      tags.map((f) => decoder.decode(bytes.slice(f.index.byteStart, f.index.byteEnd))),
+    ).toEqual(["#alpha", "#two"]);
+  }, 20_000);
 });
