@@ -615,7 +615,7 @@ async function startIosBridgeBackend(): Promise<IosBridgeBackend> {
     runtime,
     dispatchRoute,
     cloudInferenceRejection,
-    conversations: new Map(),
+    conversations: await restoreIosConversations(runtime),
     close: async () => {
       // error-policy:J6 best-effort teardown — the backend is shutting down; a
       // failed unload cannot be acted on and must not block close.
@@ -2089,6 +2089,58 @@ function parseRequestBody(
     ? (raw as Record<string, unknown>)
     : {};
 }
+const IOS_CONVERSATION_WORLD_ID = stringToUuid("ios-local-world") as UUID;
+/** The `channelId` prefix that marks a room as an iOS bridge conversation. */
+const IOS_CONVERSATION_CHANNEL_PREFIX = "ios-conv-";
+/**
+ * Rebuild the conversation list from the stored rooms. The list lives in
+ * memory, so without this a restarted app shows no chats although the rooms
+ * and messages are on disk. A room carries the conversation id in its
+ * `channelId` and the title in its name. The room is written with the first
+ * message, so a restored conversation has stored turns; the turns give the
+ * timestamps, as in the agent server's restore.
+ */
+export async function restoreIosConversations(
+  runtime: IAgentRuntime,
+): Promise<Map<string, IosConversation>> {
+  const conversations = new Map<string, IosConversation>();
+  const rooms = await runtime.getRoomsByWorlds([IOS_CONVERSATION_WORLD_ID]);
+  for (const room of rooms) {
+    if (!room.channelId?.startsWith(IOS_CONVERSATION_CHANNEL_PREFIX)) continue;
+    if (!room.name) {
+      throw new ElizaError("A stored iOS conversation room has no title", {
+        code: "IOS_CONVERSATION_ROOM_UNTITLED",
+        context: { roomId: room.id, channelId: room.channelId },
+      });
+    }
+    // Only the two end rows are needed, so the start does not load every
+    // stored turn (and its embedding) of every conversation.
+    const [oldest] = await runtime.getMemories({
+      roomId: room.id,
+      tableName: "messages",
+      orderDirection: "asc",
+      limit: 1,
+      includeEmbedding: false,
+    });
+    if (!oldest) continue;
+    const [newest] = await runtime.getMemories({
+      roomId: room.id,
+      tableName: "messages",
+      orderDirection: "desc",
+      limit: 1,
+      includeEmbedding: false,
+    });
+    const id = room.channelId.slice(IOS_CONVERSATION_CHANNEL_PREFIX.length);
+    conversations.set(id, {
+      id,
+      title: room.name,
+      roomId: room.id,
+      createdAt: new Date(memoryCreatedAt(oldest)).toISOString(),
+      updatedAt: new Date(memoryCreatedAt(newest)).toISOString(),
+    });
+  }
+  return conversations;
+}
 function createIosConversation(
   backend: IosBridgeBackend,
   input: Record<string, unknown> = {},
@@ -2107,7 +2159,7 @@ function createIosConversation(
       typeof input.title === "string" && input.title.trim()
         ? input.title.trim()
         : "New Chat",
-    roomId: stringToUuid(`ios-conv-${id}`) as UUID,
+    roomId: stringToUuid(`${IOS_CONVERSATION_CHANNEL_PREFIX}${id}`) as UUID,
     createdAt: now,
     updatedAt: now,
     ...(metadata ? { metadata } : {}),
@@ -3941,10 +3993,11 @@ async function ensureConversationConnection(
     await runtime.ensureConnection({
       entityId: userId,
       roomId: conversation.roomId,
-      worldId: stringToUuid("ios-local-world") as UUID,
+      roomName: conversation.title,
+      worldId: IOS_CONVERSATION_WORLD_ID,
       userName: "User",
       source: "ios-local",
-      channelId: "ios-local-chat",
+      channelId: `${IOS_CONVERSATION_CHANNEL_PREFIX}${conversation.id}`,
       type: ChannelType.DM,
       messageServerId: stringToUuid("ios-local-server") as UUID,
       metadata: { ownership: { ownerId: userId } },
