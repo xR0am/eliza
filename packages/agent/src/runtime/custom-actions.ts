@@ -21,7 +21,6 @@ import {
   type HandlerOptions,
   type IAgentRuntime,
   isPrivateIpAddress,
-  logger,
   normalizeHostLike,
   toWellFormedUnicode,
 } from "@elizaos/core";
@@ -75,18 +74,7 @@ export function unregisterCustomActionLive(id: string): boolean {
 
 /** Register every enabled custom action saved in config. Called from plugin.init(). */
 export function registerSavedCustomActions(): void {
-  let defs: CustomActionDef[];
-  try {
-    defs = loadElizaConfig().customActions ?? [];
-  } catch (err) {
-    logger.warn(
-      `[custom-actions] Failed to load custom actions from config: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return;
-  }
-  for (const def of defs) {
+  for (const def of loadElizaConfig().customActions ?? []) {
     if (def.enabled) registerCustomActionLive(def);
   }
 }
