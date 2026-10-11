@@ -13,6 +13,7 @@ import { createTestVault, type TestVault } from "@elizaos/auth/testing";
 import type { AgentRuntime } from "@elizaos/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { _resetSharedVaultForTesting } from "../services/vault-mirror";
+import type { CompatRuntimeState } from "./compat-route-shared";
 import { handleSecretsInventoryRoute } from "./secrets-inventory-routes";
 
 const API_TOKEN = "inventory-route-test-token";
@@ -42,6 +43,11 @@ beforeEach(async () => {
   testVault = await createTestVault({ workDir: stateDir });
   _resetSharedVaultForTesting(testVault.vault);
   setAgentHostBridge({ ...savedBridge, sharedVault: () => testVault.vault });
+  const routeState: CompatRuntimeState = {
+    current: null,
+    pendingAgentName: null,
+    pendingRestartReasons: [],
+  };
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     void handleSecretsInventoryRoute(
@@ -49,7 +55,7 @@ beforeEach(async () => {
       res,
       url.pathname,
       req.method ?? "GET",
-      { current: null },
+      routeState,
     );
   });
   server.listen(0, "127.0.0.1");
