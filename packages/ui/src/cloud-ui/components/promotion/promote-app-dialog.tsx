@@ -171,6 +171,8 @@ export function PromoteAppDialog({
     channels: Record<string, { success: boolean; error?: string }>;
     totalCreditsUsed: number;
   } | null>(null);
+  // TikTok campaign creation takes no campaign-level bid controls.
+  const bidControlsSupported = config.advertising?.platform !== "tiktok";
   const getAdvertisingConfig = useCallback(
     (prev: PromotionConfig) =>
       prev.advertising ?? {
@@ -235,11 +237,24 @@ export function PromoteAppDialog({
 
   const handlePromote = useCallback(async () => {
     setIsLoading(true);
+    // TikTok campaigns take no campaign-level bid controls; the server rejects
+    // them, so leave the defaults out for a TikTok account.
+    const requestConfig =
+      config.advertising?.platform === "tiktok"
+        ? {
+            ...config,
+            advertising: {
+              ...config.advertising,
+              bidStrategy: undefined,
+              optimizationGoal: undefined,
+            },
+          }
+        : config;
     try {
       const response = await fetch(`/api/v1/apps/${app.id}/promote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
+        body: JSON.stringify(requestConfig),
       });
       const data = await response.json();
 
@@ -778,69 +793,77 @@ export function PromoteAppDialog({
                       </Select>
                     </div>
 
-                    <div>
-                      <Label className="text-txt text-sm">Bid Strategy</Label>
-                      <Select
-                        value={config.advertising?.bidStrategy || "cpm"}
-                        onValueChange={(value: CampaignBidStrategy) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            advertising: {
-                              ...getAdvertisingConfig(prev),
-                              bidStrategy: value,
-                            },
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="mt-1.5 bg-bg-elevated border-border text-txt rounded-sm">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-card border-border">
-                          {BID_STRATEGIES.map((strategy) => (
-                            <SelectItem
-                              key={strategy.id}
-                              value={strategy.id}
-                              className="text-txt"
-                            >
-                              {strategy.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    {bidControlsSupported && (
+                      <>
+                        <div>
+                          <Label className="text-txt text-sm">
+                            Bid Strategy
+                          </Label>
+                          <Select
+                            value={config.advertising?.bidStrategy || "cpm"}
+                            onValueChange={(value: CampaignBidStrategy) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                advertising: {
+                                  ...getAdvertisingConfig(prev),
+                                  bidStrategy: value,
+                                },
+                              }))
+                            }
+                          >
+                            <SelectTrigger className="mt-1.5 bg-bg-elevated border-border text-txt rounded-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-card border-border">
+                              {BID_STRATEGIES.map((strategy) => (
+                                <SelectItem
+                                  key={strategy.id}
+                                  value={strategy.id}
+                                  className="text-txt"
+                                >
+                                  {strategy.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
 
-                    <div>
-                      <Label className="text-txt text-sm">
-                        Optimization Goal
-                      </Label>
-                      <Select
-                        value={config.advertising?.optimizationGoal || "reach"}
-                        onValueChange={(value: CampaignOptimizationGoal) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            advertising: {
-                              ...getAdvertisingConfig(prev),
-                              optimizationGoal: value,
-                            },
-                          }))
-                        }
-                      >
-                        <SelectTrigger className="mt-1.5 bg-bg-elevated border-border text-txt rounded-sm">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-card border-border">
-                          {OPTIMIZATION_GOALS.map((goal) => (
-                            <SelectItem
-                              key={goal.id}
-                              value={goal.id}
-                              className="text-txt"
-                            >
-                              {goal.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                        <div>
+                          <Label className="text-txt text-sm">
+                            Optimization Goal
+                          </Label>
+                          <Select
+                            value={
+                              config.advertising?.optimizationGoal || "reach"
+                            }
+                            onValueChange={(value: CampaignOptimizationGoal) =>
+                              setConfig((prev) => ({
+                                ...prev,
+                                advertising: {
+                                  ...getAdvertisingConfig(prev),
+                                  optimizationGoal: value,
+                                },
+                              }))
+                            }
+                          >
+                            <SelectTrigger className="mt-1.5 bg-bg-elevated border-border text-txt rounded-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-card border-border">
+                              {OPTIMIZATION_GOALS.map((goal) => (
+                                <SelectItem
+                                  key={goal.id}
+                                  value={goal.id}
+                                  className="text-txt"
+                                >
+                                  {goal.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </>
+                    )}
 
                     <div>
                       <Label className="text-txt text-sm">Budget ($)</Label>
@@ -992,11 +1015,9 @@ export function PromoteAppDialog({
                       <CheckCircle className="size-4 text-status-success" />
                       <span className="text-txt">
                         Ad Campaign: ${config.advertising?.budget}{" "}
-                        {config.advertising?.budgetType},{" "}
-                        {(
-                          config.advertising?.bidStrategy || "cpm"
-                        ).toUpperCase()}{" "}
-                        for {config.advertising?.optimizationGoal || "reach"}
+                        {config.advertising?.budgetType}
+                        {bidControlsSupported &&
+                          `, ${(config.advertising?.bidStrategy || "cpm").toUpperCase()} for ${config.advertising?.optimizationGoal || "reach"}`}
                       </span>
                     </div>
                   )}
