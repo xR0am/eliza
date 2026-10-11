@@ -300,6 +300,34 @@ it("replaces a saved connector token so the next boot uses the new value", async
   }
 }, 120_000);
 
+it("keeps the type of a list or true/false connector field it replaces", async () => {
+  await server.close();
+  await writeFile(
+    path.join(directory, "eliza.json"),
+    JSON.stringify({
+      connectors: {
+        discord: { allowFrom: ["1"] },
+        imessage: { enabled: true },
+      },
+    }),
+  );
+  server = await startApiServer({ port: 0, skipDeferredStartupWork: true });
+  for (const [plugin, config] of [
+    ["discord", { DISCORD_ALLOW_FROM: "1, 2" }],
+    ["imessage", { IMESSAGE_ENABLED: "false" }],
+  ] as const) {
+    const response = await request(`/api/plugins/${plugin}`, "PUT", {
+      config,
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+  }
+  const saved = JSON.parse(
+    await readFile(path.join(directory, "eliza.json"), "utf8"),
+  );
+  expect(saved.connectors.discord.allowFrom).toEqual(["1", "2"]);
+  expect(saved.connectors.imessage.enabled).toBe(false);
+}, 120_000);
+
 it("applies saved secrets to a live plugin's cached configuration", async () => {
   await server.close();
   await writeFile(

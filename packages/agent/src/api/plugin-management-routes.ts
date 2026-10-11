@@ -101,8 +101,30 @@ function canonicalEntry(
   return entry;
 }
 
+/**
+ * The new value in the type the saved connector field has. Boot writes a list
+ * as comma-joined text and booleans and numbers as text, so this reverses
+ * that. Returns undefined when the text does not fit the saved type.
+ */
+function connectorFieldValue(saved: unknown, value: string): unknown {
+  if (Array.isArray(saved))
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  if (typeof saved === "boolean") {
+    const text = value.trim().toLowerCase();
+    return text === "true" ? true : text === "false" ? false : undefined;
+  }
+  if (typeof saved === "number") {
+    const number = Number(value.trim());
+    return value.trim() && Number.isFinite(number) ? number : undefined;
+  }
+  return value;
+}
+
 // Boot applies connector fields after config.env, so a saved connector field
-// for the key must hold the new value or be removed with it.
+// for the key must hold the new value (in its own type) or be removed.
 function writeCredentialSources(
   config: ElizaConfig,
   key: string,
@@ -125,8 +147,11 @@ function writeCredentialSources(
     const record = settings as Record<string, unknown>;
     for (const [field, envKey] of Object.entries(fields)) {
       if (envKey !== key || !Object.hasOwn(record, field)) continue;
-      if (cleared) delete record[field];
-      else record[field] = value;
+      const next = cleared
+        ? undefined
+        : connectorFieldValue(record[field], value);
+      if (next === undefined) delete record[field];
+      else record[field] = next;
     }
   }
 }
