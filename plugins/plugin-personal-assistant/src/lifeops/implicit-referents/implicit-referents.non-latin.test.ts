@@ -156,4 +156,30 @@ describe("resolveImplicitReferent non-Latin lexical matching", () => {
     );
     expect(other?.score).toBe(0);
   });
+  it("keeps Japanese voiced and unvoiced kana distinct", () => {
+    const result = resolveImplicitReferent({
+      ask: "ガス",
+      nowIso: NOW,
+      candidates: [
+        {
+          id: "unvoiced",
+          source: "recent_thread",
+          label: "カス",
+          summary: "カス",
+          confirmation: "unvoiced candidate",
+        },
+        {
+          id: "voiced",
+          source: "recent_thread",
+          label: "ガス",
+          summary: "ガス",
+          confirmation: "voiced candidate",
+        },
+      ],
+    });
+    expect(result.ranked[0]?.candidate.id).toBe("voiced");
+    expect(
+      result.ranked.find((entry) => entry.candidate.id === "unvoiced")?.score,
+    ).toBe(0);
+  });
 });

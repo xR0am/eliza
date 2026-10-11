@@ -90,11 +90,9 @@ function normalize(value: string): string {
     value
       .normalize("NFD")
       .toLowerCase()
-      // Fold accents: drop nonspacing marks (Latin accents, Greek tonos,
-      // kana dakuten) so an accented spelling meets its unaccented twin.
-      // Only Mn is dropped; spacing marks (Mc) are integral vowel signs in
-      // scripts such as Devanagari and stay part of the token.
-      .replace(/\p{Mn}+/gu, "")
+      // Fold Latin accents only. Marks in other scripts can distinguish
+      // words (for example Japanese dakuten), so retain those distinctions.
+      .replace(/(\p{Script=Latin})\p{Mn}+/gu, "$1")
       // Recompose so Hangul syllables and other canonical composites keep
       // the exact token shape the decomposed pass would otherwise change.
       .normalize("NFC")
