@@ -40,11 +40,12 @@ it("refuses invalid recurrence before writes and retains the stored timezone on 
       { parameters },
     );
   try {
-    for (const timing of [
+    const invalidTimings: Record<string, string | number>[] = [
       { everyMinutes: 1.5 },
       { cronExpression: "not a cron", timezone: "Asia/Tokyo" },
       { cronExpression: "0 9 30 2 *", timezone: "Asia/Tokyo" },
-    ]) {
+    ];
+    for (const timing of invalidTimings) {
       const result = await run({
         operation: "create",
         reminderText: "Take a walk",
