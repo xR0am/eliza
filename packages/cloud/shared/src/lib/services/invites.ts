@@ -18,6 +18,7 @@ import { isUntouchedSignupOpeningBalance } from "../signup-credits";
 import { generateInviteToken, hashInviteToken } from "../utils/invite-tokens";
 import { logger } from "../utils/logger";
 import { apiKeysService } from "./api-keys";
+import { charactersService } from "./characters";
 import { emailService } from "./email";
 import { managedDomainsService } from "./managed-domains";
 import { organizationsService } from "./organizations";
@@ -354,7 +355,7 @@ export class InvitesService {
         );
         return;
       }
-      await userCharactersRepository.reassignUserOrganization(
+      const movedCharacterIds = await userCharactersRepository.reassignUserOrganization(
         userId,
         previousOrganizationId,
         newOrganizationId,
@@ -366,6 +367,8 @@ export class InvitesService {
       );
       await this.assertOwnerCanVacateSoloOrganization(userId, previousOrganizationId);
       await organizationsService.delete(previousOrganizationId);
+      // After the durable re-home, so a cache failure cannot stop it.
+      await Promise.all(movedCharacterIds.map((id) => charactersService.invalidateCache(id)));
     } catch (error) {
       // error-policy:J6 the invite accept already moved the user; cleanup is
       // best-effort and must leave a warn breadcrumb for manual recovery.
