@@ -22,9 +22,15 @@ const USER_TEXT = "draft me an action row";
 const EDITED_TEXT = "draft me a polished action row";
 const OUT_DIR = testOutputPath("app", "10713-message-actions");
 
+const PHOTO_DATA =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XcAAAAASUVORK5CYII=";
+const PHOTO_URL = `/api/media/${"a".repeat(64)}.png`;
 type StreamCall = Record<string, unknown>;
 
-async function installMessageActionConversationRoutes(page: Page): Promise<{
+async function installMessageActionConversationRoutes(
+  page: Page,
+  failed = false,
+): Promise<{
   streamCalls: StreamCall[];
   truncateCalls: StreamCall[];
 }> {
@@ -41,6 +47,15 @@ async function installMessageActionConversationRoutes(page: Page): Promise<{
       id: "seed-user-action-row",
       role: "user" as const,
       text: USER_TEXT,
+      attachments: [
+        {
+          id: "photo",
+          url: PHOTO_URL,
+          title: "photo.png",
+          mimeType: "image/png",
+          contentType: "image",
+        },
+      ],
       source: "eliza",
       roomId: ROOM_ID,
       timestamp: now - 5_000,
@@ -49,11 +64,19 @@ async function installMessageActionConversationRoutes(page: Page): Promise<{
       id: "seed-assistant-action-row",
       role: "assistant" as const,
       text: ASSISTANT_TEXT,
+      ...(failed ? { failureKind: "provider_issue" } : {}),
       source: "eliza",
       roomId: ROOM_ID,
       timestamp: now - 2_000,
     },
   ];
+  await page.route(`**${PHOTO_URL}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      body: Buffer.from(PHOTO_DATA, "base64"),
+    }),
+  );
   const streamCalls: StreamCall[] = [];
   const truncateCalls: StreamCall[] = [];
 
@@ -337,11 +360,39 @@ for (const viewport of [
       { messageId: "seed-user-action-row", inclusive: true },
     ]);
     expect(JSON.stringify(streamCalls[0])).toContain(EDITED_TEXT);
+    expect(streamCalls[0].images).toEqual([
+      { data: PHOTO_DATA, mimeType: "image/png", name: "photo.png" },
+    ]);
+    await screenshot(page, `${viewport.name}-edited-photo`);
     expect(pageErrors, "no uncaught page errors").toEqual([]);
 
     await test.info().attach(`${viewport.name} console`, {
       body: consoleLines.join("\n") || "N/A - no console output",
       contentType: "text/plain",
     });
+  });
+  test(`chat overlay retries the complete photo turn on ${viewport.name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport.size);
+    await seedAppStorage(page, { "eliza:tutorial-autolaunched": "1" });
+    await installDefaultAppRoutes(page);
+    const { streamCalls, truncateCalls } =
+      await installMessageActionConversationRoutes(page, true);
+    await openAppPath(page, "/chat");
+    await openThread(page);
+    await screenshot(page, `${viewport.name}-failed-photo`);
+    const row = messageRowFor(page, ASSISTANT_TEXT);
+    await revealActionRow(row, ASSISTANT_TEXT, viewport.name);
+    await row.getByTestId("thread-line-retry").click();
+    await expect.poll(() => streamCalls.length, { timeout: 15_000 }).toBe(1);
+    expect(truncateCalls).toEqual([
+      { messageId: "seed-user-action-row", inclusive: true },
+    ]);
+    expect(streamCalls[0].images).toEqual([
+      { data: PHOTO_DATA, mimeType: "image/png", name: "photo.png" },
+    ]);
+    expect(JSON.stringify(streamCalls[0])).toContain(USER_TEXT);
+    await screenshot(page, `${viewport.name}-retried-photo`);
   });
 }

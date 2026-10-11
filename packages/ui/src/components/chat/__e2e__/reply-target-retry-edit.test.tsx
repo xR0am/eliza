@@ -483,3 +483,43 @@ it("does not replay stale attachments when the source message changes during the
   expect(client.truncateConversationMessages).not.toHaveBeenCalled();
   expect(sentImages).toEqual([]);
 });
+
+it("does not replay a turn that recovered while its attachment was loading", async () => {
+  const sentImages = mockServerImages();
+  let finishRead!: (response: Response) => void;
+  vi.spyOn(client, "rawRequest").mockImplementation(
+    () => new Promise<Response>((resolve) => { finishRead = resolve; }),
+  );
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+  await act(async () => {
+    const retry = chat.handleChatRetry("m-agent-photo");
+    harnessMessagesRef.current = [
+      PHOTO_HISTORY[0],
+      { ...PHOTO_HISTORY[1], text: "Recovered answer", failureKind: undefined },
+    ];
+    finishRead({ blob: async () => new Blob([PHOTO_BYTES], { type: "image/png" }) } as Response);
+    await retry;
+  });
+  expect(client.truncateConversationMessages).not.toHaveBeenCalled();
+  expect(sentImages).toEqual([]);
+});
+
+it("does not edit a turn whose attachments changed while loading", async () => {
+  const sentImages = mockServerImages();
+  let finishRead!: (response: Response) => void;
+  vi.spyOn(client, "rawRequest").mockImplementation(
+    () => new Promise<Response>((resolve) => { finishRead = resolve; }),
+  );
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+  await act(async () => {
+    const edit = chat.handleChatEdit("m-user-photo", "different question");
+    harnessMessagesRef.current = [
+      { ...PHOTO_HISTORY[0], attachments: [] },
+      PHOTO_HISTORY[1],
+    ];
+    finishRead({ blob: async () => new Blob([PHOTO_BYTES], { type: "image/png" }) } as Response);
+    expect(await edit).toBe(false);
+  });
+  expect(client.truncateConversationMessages).not.toHaveBeenCalled();
+  expect(sentImages).toEqual([]);
+});
