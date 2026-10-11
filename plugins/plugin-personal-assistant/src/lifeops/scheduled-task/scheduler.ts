@@ -534,16 +534,21 @@ export async function processDueScheduledTasks(
   //
   // The partial index `idx_life_scheduled_tasks_due` covers
   // `(agent_id, next_fire_at)` for every status except `dismissed`, so these
-  // queries touch O(# due rows + # event-driven rows with NULL) instead of
+  // queries touch due rows and event-driven rows with NULL instead of
   // every row owned by the agent. `next_fire_at IS NULL` rows are included
   // in the live slice so event / manual / after_task triggers (which
   // deliberately have no wall-clock fire time) still get a chance at
   // fire-time gates if they're invoked through another path. The
   // authoritative `isScheduledTaskDue` re-evaluates per task below.
+  // Owner-local cron also needs evaluation when its saved index is in the
+  // future: travel or an owner timezone change can move today's fire earlier.
+  // Fixed-zone cron keeps the indexed path; due evaluation and CAS still own
+  // occurrence admission and prevent repeat dispatch.
   const nowIso = request.now.toISOString();
   const liveCandidates = await repo.listScheduledTasks(request.agentId, {
     status: ["scheduled", "fired"],
     dueAtOrBeforeIso: nowIso,
+    reevaluateOwnerLocalCron: true,
   });
   // Indexed pass 1b: recurrence-refire candidates. A RECURRING task parked in
   // `acknowledged` or a terminal-but-refirable status (`completed` /
@@ -557,6 +562,7 @@ export async function processDueScheduledTasks(
     status: ["acknowledged", "completed", "skipped", "expired", "failed"],
     dueAtOrBeforeIso: nowIso,
     requireNextFireAt: true,
+    reevaluateOwnerLocalCron: true,
   });
   // Status sets are disjoint, so a plain concat cannot double-list a task.
   const dueCandidates = [...liveCandidates, ...refireCandidates];

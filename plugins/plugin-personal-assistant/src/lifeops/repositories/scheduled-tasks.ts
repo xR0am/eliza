@@ -244,6 +244,8 @@ export class ScheduledTaskRepository {
        * `('scheduled', 'fired')`.
        */
       dueAtOrBeforeIso?: string;
+      /** Owner-local cron times can change after indexing, including during travel. */
+      reevaluateOwnerLocalCron?: boolean;
       /**
        * Restrict to rows with `next_fire_at IS NOT NULL`. Used by tests
        * that want to validate the index slice without the NULL escape hatch.
@@ -283,8 +285,11 @@ export class ScheduledTaskRepository {
     }
     if (typeof filter?.dueAtOrBeforeIso === "string") {
       const at = sqlQuote(filter.dueAtOrBeforeIso);
+      const ownerLocalCron = filter.reevaluateOwnerLocalCron
+        ? " OR (trigger_json::jsonb ->> 'kind' = 'cron' AND trigger_json::jsonb ->> 'tz' = 'owner_local')"
+        : "";
       clauses.push(
-        `(next_fire_at IS NULL OR next_fire_at <= ${at}::timestamptz)`,
+        `(next_fire_at IS NULL OR next_fire_at <= ${at}::timestamptz${ownerLocalCron})`,
       );
     }
     if (filter?.requireNextFireAt === true) {
