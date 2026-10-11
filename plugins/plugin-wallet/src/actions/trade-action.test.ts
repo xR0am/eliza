@@ -244,6 +244,10 @@ describe("tradeRouterAction", () => {
 
     const pending = await run(runtime, "buy btc", hyperliquidOrder);
     expect(pending?.data?.requiresConfirmation).toBe(true);
+    // The prompt states every order term the pending key binds.
+    expect(pending?.userFacingText).toBe(
+      "Submit Hyperliquid buy 0.01 BTC at 61000 with 2x leverage time-in-force Ioc under governed session sess_hl_fixture? Reply yes to submit or no to cancel.",
+    );
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const cacheKey = `confirmation:00000000-0000-0000-0000-000000000002:${TRADE_CONFIRM_ACTION}:${tradeOrderPendingKey(hyperliquidOrder)}`;
     const pendingRecord = cache.get(cacheKey) as
