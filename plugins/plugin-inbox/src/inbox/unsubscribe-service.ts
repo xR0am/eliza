@@ -175,9 +175,18 @@ function parseMailtoUnsubscribe(value: string): {
   if (!recipient) {
     return null;
   }
-  const params = new URLSearchParams(queryPart);
-  const subject = params.get("subject");
-  const body = params.get("body");
+  // RFC 6068: "+" in a mailto URI is the character "+", and a header field
+  // name is case-insensitive. URLSearchParams reads "+" as a space, which
+  // damages an unsubscribe token, so each "+" is protected first.
+  const params = new URLSearchParams(queryPart.replaceAll("+", "%2B"));
+  const headerField = (name: string): string | null => {
+    for (const [fieldName, fieldValue] of params) {
+      if (fieldName.toLowerCase() === name) return fieldValue;
+    }
+    return null;
+  };
+  const subject = headerField("subject");
+  const body = headerField("body");
   return {
     recipient,
     subject: subject?.trim() ? subject : null,
