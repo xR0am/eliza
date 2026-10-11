@@ -100,16 +100,32 @@ function canonicalEntry(
   return entry;
 }
 
-function clearCredentialSources(config: ElizaConfig, key: string) {
-  if (config.env) {
+// Boot applies connector fields after config.env, so a saved connector field
+// for the key must hold the new value or be removed with it.
+function writeCredentialSources(
+  config: ElizaConfig,
+  key: string,
+  value: string,
+) {
+  const cleared = !value.trim();
+  config.env ??= {};
+  if (cleared) {
     delete config.env[key];
     if (config.env.vars) delete config.env.vars[key];
+  } else {
+    config.env[key] = value;
+    if (config.env.vars && Object.hasOwn(config.env.vars, key))
+      config.env.vars[key] = value;
   }
   for (const [connector, fields] of Object.entries(CONNECTOR_ENV_MAP)) {
     const settings = config.connectors?.[connector];
     if (!settings || typeof settings !== "object") continue;
-    for (const [field, envKey] of Object.entries(fields))
-      if (envKey === key) delete (settings as Record<string, unknown>)[field];
+    const record = settings as Record<string, unknown>;
+    for (const [field, envKey] of Object.entries(fields)) {
+      if (envKey !== key || !Object.hasOwn(record, field)) continue;
+      if (cleared) delete record[field];
+      else record[field] = value;
+    }
   }
 }
 
@@ -228,15 +244,9 @@ async function persistMutation(
   const previousConfig = ctx.state.config;
   const nextConfig = structuredClone(previousConfig);
   const entry = canonicalEntry(nextConfig, plugin);
-  nextConfig.env ??= {};
   for (const [key, value] of Object.entries(values)) {
-    if (value.trim()) {
-      entry.config[key] = value;
-      nextConfig.env[key] = value;
-    } else {
-      entry.config[key] = "";
-      clearCredentialSources(nextConfig, key);
-    }
+    entry.config[key] = value.trim() ? value : "";
+    writeCredentialSources(nextConfig, key, value);
   }
   const npmName = plugin.npmName ?? `@elizaos/plugin-${plugin.id}`;
   if (enabled !== undefined) toggle(nextConfig, plugin.id, npmName, enabled);
@@ -421,12 +431,10 @@ async function dispatchPluginManagementRoutes(
       }
       const previousConfig = ctx.state.config;
       const next = structuredClone(previousConfig);
-      next.env ??= {};
       next.plugins ??= {};
       next.plugins.entries ??= {};
       for (const [key, value] of Object.entries(values)) {
-        if (value.trim()) next.env[key] = value;
-        else clearCredentialSources(next, key);
+        writeCredentialSources(next, key, value);
         for (const plugin of plugins.filter((item) =>
           item.parameters.some((param) => param.key === key && param.sensitive),
         )) {
