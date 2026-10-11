@@ -68,10 +68,31 @@ test(
           const verified = await verifyToken(fresh);
           await assertTokenNotRevoked(verified);
           expect(verified?.iat).toBeGreaterThan(result.issuedBefore);
+          // Account unlink uses a one-second-ahead cutoff. The same signer must
+          // honor that fence without issuing a future-dated token.
+          const unlinkCutoff = await revocationStore.revokeUserTokens(
+            USER,
+            Math.floor(Date.now() / 1000) + 1,
+          );
+          await expect(assertTokenNotRevoked(verified)).rejects.toThrow(
+            "revoked",
+          );
+          const afterUnlink = await verifyToken(
+            await createSessionToken(
+              `0x${"1".repeat(40)}`,
+              `personal-${USER}`,
+              { userId: USER },
+            ),
+          );
+          await assertTokenNotRevoked(afterUnlink);
+          expect(afterUnlink.iat).toBeGreaterThan(unlinkCutoff);
+          expect(afterUnlink.iat).toBeLessThanOrEqual(
+            Math.floor(Date.now() / 1000),
+          );
           // Later statements are served: nothing is left queued behind the transaction.
           expect(
             await within(revocationStore.getUserRevokedBefore(USER), 15_000),
-          ).toBe(result.issuedBefore);
+          ).toBe(unlinkCutoff);
           // The line commits with the caller's transaction, and rolls back with it.
           const other = "22222222-2222-4222-8222-222222222222";
           await expect(

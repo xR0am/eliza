@@ -189,9 +189,11 @@ export async function createSessionToken(
     if (cutoff !== null && Math.floor(Date.now() / 1000) <= cutoff) {
       // JWT timestamps have second precision. A successful sign-in immediately
       // after enrollment must not mint another token at the revoked timestamp.
+      // Unlink deliberately places its cutoff one second ahead, so allow that
+      // existing fence as well, with a bounded wait of at most two seconds.
       // Never future-date it or weaken the inclusive revocation comparison.
       const delay = (cutoff + 1) * 1000 - Date.now();
-      if (delay > 1000) {
+      if (delay > 2000) {
         throw new ElizaError(
           "Session clock is behind the revocation timestamp",
           {
