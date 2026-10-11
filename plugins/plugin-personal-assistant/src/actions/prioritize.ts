@@ -2,7 +2,7 @@
  * `PRIORITIZE` umbrella action — LLM-ranked importance × urgency.
  *
  * Subactions:
- *   - `rank_todos`       — todo items in the owner's life domain
+ *   - `rank_todos`       — open tasks on the TODO action's list (TodosService), not OWNER_TODOS items
  *   - `rank_threads`     — open work threads (WORK_THREAD records), not inbox mail
  *   - `rank_decisions`   — pending approval queue decisions
  *   - `rank_commitments` — regret-audited commitment-ledger obligations (#14864)
@@ -73,9 +73,12 @@ const SUBACTION_TO_SUBJECT: Readonly<Record<Subaction, Subject>> = {
   rank_commitments: "commitments",
 };
 
-/** Owner-facing noun for each subject. `threads` are WORK_THREAD records. */
+/**
+ * Owner-facing noun for each subject. `threads` are WORK_THREAD records.
+ * `todos` are the TODO action's tasks, not OWNER_TODOS items.
+ */
 const SUBJECT_LABEL: Readonly<Record<Subject, string>> = {
-  todos: "todos",
+  todos: "TODO list tasks",
   threads: "work threads",
   decisions: "decisions",
   commitments: "commitments",
@@ -601,7 +604,7 @@ const examples: ActionExample[][] = [
     {
       name: "{{agentName}}",
       content: {
-        text: "Ranked your top todos by urgency × importance.",
+        text: "Ranked top 5 TODO list tasks by urgency × importance.",
         action: ACTION_NAME,
       },
     },
@@ -633,11 +636,11 @@ export const prioritizeAction: Action & {
     "surface:internal",
   ],
   description:
-    "Rank owner open todos, work threads (WORK_THREAD records, not inbox or message threads), pending decisions, or regret-audited commitments by urgency × importance. LLM pass. Subactions: rank_todos, rank_threads, rank_decisions, rank_commitments.",
+    "Rank owner open TODO list tasks (the TODO action list, not OWNER_TODOS items), work threads (WORK_THREAD records, not inbox or message threads), pending decisions, or regret-audited commitments by urgency × importance. LLM pass. Subactions: rank_todos, rank_threads, rank_decisions, rank_commitments.",
   descriptionCompressed:
-    "prioritize: rank_todos|rank_threads(work threads, not inbox)|rank_decisions|rank_commitments; topN ranking by urgency × importance",
+    "prioritize: rank_todos(TODO list, not OWNER_TODOS)|rank_threads(work threads, not inbox)|rank_decisions|rank_commitments; topN ranking by urgency × importance",
   routingHint:
-    'prioritization ("focus on", "rank today", "which work thread first", "what matters most", "what will I regret") -> PRIORITIZE; plain todo list -> OWNER_TODOS.list; email or message threads -> MESSAGE, rank_threads reads only WORK_THREAD records',
+    'prioritization ("focus on", "rank today", "which work thread first", "what matters most", "what will I regret") -> PRIORITIZE; plain todo list -> OWNER_TODOS.list; rank_todos reads only the TODO action task list, not OWNER_TODOS items; email or message threads -> MESSAGE, rank_threads reads only WORK_THREAD records',
   contexts: ["focus", "tasks", "approvals"],
   roleGate: { minRole: "OWNER" },
   suppressPostActionContinuation: true,
@@ -646,13 +649,13 @@ export const prioritizeAction: Action & {
     {
       name: "action",
       description:
-        "Prioritize op: rank_todos | rank_threads | rank_decisions | rank_commitments. rank_threads ranks work threads (WORK_THREAD records), not inbox or message threads.",
+        "Prioritize op: rank_todos | rank_threads | rank_decisions | rank_commitments. rank_todos ranks the TODO action task list, not OWNER_TODOS items. rank_threads ranks work threads (WORK_THREAD records), not inbox or message threads.",
       schema: { type: "string" as const, enum: [...SUBACTIONS] },
     },
     {
       name: "subject",
       description:
-        "Alt selector: todos | threads | decisions | commitments. Maps to subaction. threads = work threads.",
+        "Alt selector: todos | threads | decisions | commitments. Maps to subaction. todos = TODO action task list. threads = work threads.",
       schema: {
         type: "string" as const,
         enum: ["todos", "threads", "decisions", "commitments"],
