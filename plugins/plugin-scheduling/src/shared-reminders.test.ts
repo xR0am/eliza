@@ -71,7 +71,7 @@ it("refuses invalid recurrence before writes and retains the stored timezone on 
     expect(stored.trigger).toMatchObject({
       kind: "cron",
       expression: "0 10 * * *",
-      timezone: "Asia/Tokyo",
+      tz: "Asia/Tokyo",
     });
   } finally {
     await service.stop();
