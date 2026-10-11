@@ -92,10 +92,38 @@ function normalize(value: string): string {
     .trim();
 }
 
+const SPACELESS_SCRIPT =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+const CJK_SCRIPT =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+// Scripts such as Japanese and Chinese do not separate words with spaces,
+// so one normalized "token" can be a whole clause. Segment those tokens into
+// words; space-delimited scripts keep the normalized token as is.
+function segmentToken(token: string): string[] {
+  if (!SPACELESS_SCRIPT.test(token) || typeof Intl?.Segmenter !== "function") {
+    return [token];
+  }
+  try {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+    return [...segmenter.segment(token)]
+      .filter((part) => part.isWordLike)
+      .map((part) => part.segment);
+  } catch {
+    return [token];
+  }
+}
+
 function tokens(value: string): string[] {
   return normalize(value)
     .split(" ")
-    .filter((token) => token.length > 2 && !STOP_WORDS.has(token));
+    .flatMap(segmentToken)
+    .filter((token) => {
+      if (STOP_WORDS.has(token)) return false;
+      // CJK words are often two characters (for example a Chinese keyword
+      // or a Korean noun); keep those, and keep the longer floor elsewhere.
+      return CJK_SCRIPT.test(token) ? token.length >= 2 : token.length > 2;
+    });
 }
 
 function parseTime(value: string, label: string): number {

@@ -32,6 +32,62 @@ describe("resolveImplicitReferent non-Latin lexical matching", () => {
     expect(result.ranked[0]?.candidate.id).toBe("ko-trip");
   });
 
+  it("matches a spaceless Japanese ask against a Japanese candidate", () => {
+    const result = resolveImplicitReferent({
+      ask: "会議室予約日程確認して",
+      nowIso: NOW,
+      candidates: [
+        {
+          id: "ja-room",
+          source: "recent_thread",
+          label: "会議室予約日程",
+          summary: "会議室予約日程",
+          confirmation: "the meeting-room booking schedule",
+        },
+        {
+          id: "en-other",
+          source: "recent_thread",
+          label: "Quarterly budget review",
+          summary: "Quarterly budget review thread",
+          confirmation: "the quarterly budget review",
+        },
+      ],
+    });
+    const room = result.ranked.find((r) => r.candidate.id === "ja-room");
+    expect(room).toBeDefined();
+    expect(room?.score).toBeGreaterThan(0);
+    expect(room?.evidence.some((e) => e.startsWith("matched"))).toBe(true);
+    expect(result.ranked[0]?.candidate.id).toBe("ja-room");
+  });
+
+  it("keeps a two-character Chinese keyword instead of dropping it", () => {
+    const result = resolveImplicitReferent({
+      ask: "酒店",
+      nowIso: NOW,
+      candidates: [
+        {
+          id: "zh-hotel",
+          source: "recent_thread",
+          label: "酒店预订",
+          summary: "酒店预订确认",
+          confirmation: "the hotel booking",
+        },
+        {
+          id: "en-other",
+          source: "recent_thread",
+          label: "Quarterly budget review",
+          summary: "Quarterly budget review thread",
+          confirmation: "the quarterly budget review",
+        },
+      ],
+    });
+    const hotel = result.ranked.find((r) => r.candidate.id === "zh-hotel");
+    expect(hotel).toBeDefined();
+    expect(hotel?.score).toBeGreaterThan(0);
+    expect(hotel?.evidence).toContain('matched "酒店"');
+    expect(result.ranked[0]?.candidate.id).toBe("zh-hotel");
+  });
+
   it("keeps English matching and cross-language isolation unchanged", () => {
     const result = resolveImplicitReferent({
       ask: "what happened with the seoul trip hotel booking",
