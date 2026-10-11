@@ -132,9 +132,10 @@ export function collectConfigEnvVars(
   return entries;
 }
 
-export function collectConnectorEnvVars(
+/** The saved connector settings boot reads: `connectors`, else legacy `channels`. */
+export function resolveConnectorConfigs(
   cfg?: ElizaConfig,
-): Record<string, string> {
+): Record<string, unknown> | undefined {
   const rawConnectors =
     cfg?.connectors ?? (cfg as Record<string, unknown> | undefined)?.channels;
   if (
@@ -142,10 +143,16 @@ export function collectConnectorEnvVars(
     typeof rawConnectors !== "object" ||
     Array.isArray(rawConnectors)
   ) {
-    return {};
+    return undefined;
   }
+  return rawConnectors as Record<string, unknown>;
+}
 
-  const connectors = rawConnectors as Record<string, unknown>;
+export function collectConnectorEnvVars(
+  cfg?: ElizaConfig,
+): Record<string, string> {
+  const connectors = resolveConnectorConfigs(cfg);
+  if (!connectors) return {};
   const entries: Record<string, string> = {};
 
   for (const [connectorName, envMap] of Object.entries(CONNECTOR_ENV_MAP)) {
