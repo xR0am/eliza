@@ -15,9 +15,9 @@ describe("htmlToReadableText numeric entities", () => {
   });
 
   it("leaves the unassigned C1 slots and &#0; as written", () => {
-    expect(htmlToReadableText("<p>&#129; &#141; &#143; &#144; &#157; &#0;</p>")).toBe(
-      "&#129; &#141; &#143; &#144; &#157; &#0;",
-    );
+    expect(
+      htmlToReadableText("<p>&#129; &#141; &#143; &#144; &#157; &#0;</p>"),
+    ).toBe("&#129; &#141; &#143; &#144; &#157; &#0;");
   });
 
   it("keeps astral, surrogate, and ordinary references unchanged in behavior", () => {
