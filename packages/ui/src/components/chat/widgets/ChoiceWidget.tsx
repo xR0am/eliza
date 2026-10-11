@@ -66,6 +66,7 @@ export const ChoiceWidget = memo(function ChoiceWidget({
 }: ChoiceWidgetProps) {
   const [selected, setSelected] = useState<ChoiceOption | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const [choiceError, setChoiceError] = useState<string | null>(null);
   const [customMode, setCustomMode] = useState(false);
   const [customText, setCustomText] = useState("");
   const locked = selected !== null || dismissed;
@@ -73,7 +74,16 @@ export const ChoiceWidget = memo(function ChoiceWidget({
   const choose = useCallback(
     async (option: ChoiceOption) => {
       setSelected(option);
-      if ((await onChoose(option.value)) === false) setSelected(null);
+      setChoiceError(null);
+      try {
+        if ((await onChoose(option.value)) === false) setSelected(null);
+      } catch {
+        // The callback may have dispatched an effect before it rejected. Keep
+        // the choice locked until the host can establish its delivery outcome.
+        setChoiceError(
+          "Could not confirm this choice. Check the conversation before trying again.",
+        );
+      }
     },
     [onChoose],
   );
@@ -144,6 +154,11 @@ export const ChoiceWidget = memo(function ChoiceWidget({
             </span>
           </span>
         </Button>
+        {choiceError && (
+          <p role="alert" className="text-xs text-destructive">
+            {choiceError}
+          </p>
+        )}
       </div>
     );
   }
@@ -157,11 +172,13 @@ export const ChoiceWidget = memo(function ChoiceWidget({
               readable on every surface (chat-native de-slop, supersedes the
               #15144 pill-background fix by removing the pill). */}
           <span className="text-xs-tight font-medium text-muted">
-            {selected
-              ? "Selected"
-              : dismissed
-                ? "Dismissed"
-                : `${options.length} options`}
+            {choiceError
+              ? "Unconfirmed"
+              : selected
+                ? "Selected"
+                : dismissed
+                  ? "Dismissed"
+                  : `${options.length} options`}
           </span>
           {!firstRun && !locked && (
             <Button
@@ -184,7 +201,7 @@ export const ChoiceWidget = memo(function ChoiceWidget({
           <span role="status">Dismissed</span>
         ) : undefined
       }
-      complete={locked}
+      complete={locked && !choiceError}
       testId={`choice-shell-${id}`}
     >
       <fieldset
@@ -313,6 +330,11 @@ export const ChoiceWidget = memo(function ChoiceWidget({
           )
         ) : null}
       </fieldset>
+      {choiceError && (
+        <p role="alert" className="text-xs text-destructive">
+          {choiceError}
+        </p>
+      )}
     </ChatWidgetShell>
   );
 }, choicePropsEqual);

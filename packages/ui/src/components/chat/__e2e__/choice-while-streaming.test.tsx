@@ -243,3 +243,14 @@ it("holds a waiting action until the cloud handoff ends", async () => {
 
   expect(sentTexts).toEqual(["deploy my app", "production"]);
 });
+
+
+it("reports an uncertain choice failure without dispatching it again", async () => {
+  const choose = vi.fn(async () => { throw new Error("delivery outcome unavailable"); });
+  render(<ChoiceWidget id="uncertain" scope="app-create" options={[{ value: "deploy", label: "Deploy" }]} onChoose={choose} />);
+  fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Could not confirm this choice");
+  expect((screen.getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
+  expect(choose).toHaveBeenCalledTimes(1);
+});
