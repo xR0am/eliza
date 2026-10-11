@@ -530,6 +530,11 @@ describe("scheduled task production dispatcher", () => {
         return { ok: true, messageId: "msg_escalated" };
       }),
     );
+    registry.register({
+      ...sendCapableChannel(undefined),
+      kind: "discord",
+      describe: { label: "Discord" },
+    });
     registerChannelRegistry(runtime, registry);
 
     const gates = createTaskGateRegistry();
@@ -590,6 +595,36 @@ describe("scheduled task production dispatcher", () => {
       channelKey: "telegram",
       target: "123456789",
     });
+  });
+
+  it("sends a bare target containing a colon unchanged when its prefix is not a channel", async () => {
+    const runtime = makeDispatchRuntime();
+    const sent: unknown[] = [];
+    const registry = createChannelRegistry();
+    registry.register(
+      sendCapableChannel(async (payload) => {
+        sent.push(payload);
+        return { ok: true, messageId: "msg_colon_target" };
+      }),
+    );
+    registerChannelRegistry(runtime, registry);
+
+    await expect(
+      createProductionScheduledTaskDispatcher({ runtime }).dispatch({
+        taskId: "task_colon_target",
+        firedAtIso: "2026-05-10T12:00:00.000Z",
+        channelKey: "telegram",
+        promptInstructions: "owner reminder",
+        contextRequest: undefined,
+        output: { destination: "channel", target: "@owner:matrix.org" },
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      messageId: "msg_colon_target",
+      channelKey: "telegram",
+      target: "@owner:matrix.org",
+    });
+    expect(sent[0]).toMatchObject({ target: "@owner:matrix.org" });
   });
 
   it("fires a ScheduledTask through a fake channel sender", async () => {

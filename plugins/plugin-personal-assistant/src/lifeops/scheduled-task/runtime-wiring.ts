@@ -657,14 +657,18 @@ function isFamilyMonthlyDispatch(record: ScheduledTaskDispatchRecord): boolean {
 const TARGET_RESOLUTION_RETRY_MINUTES = 5;
 
 function targetNeedsOwnerResolution(
+  runtime: IAgentRuntime,
   channelKey: string,
   target: string | undefined,
 ): boolean {
   const normalized = normalizeChannelTarget(channelKey, target);
   if (!normalized || normalized === channelKey) return true;
-  const addressesOtherChannel =
-    normalized === target && normalized.includes(":");
-  return addressesOtherChannel;
+  if (normalized !== target) return false;
+  const [targetChannelKey] = normalized.split(":", 1);
+  return (
+    normalized.includes(":") &&
+    getChannelRegistry(runtime)?.get(targetChannelKey) != null
+  );
 }
 
 async function resolveOwnerChannelTarget(
@@ -720,7 +724,13 @@ async function resolveScheduledTaskChannelTarget(
   runtime: IAgentRuntime,
   record: ScheduledTaskDispatchRecord,
 ): Promise<string | null> {
-  if (!targetNeedsOwnerResolution(record.channelKey, record.output?.target)) {
+  if (
+    !targetNeedsOwnerResolution(
+      runtime,
+      record.channelKey,
+      record.output?.target,
+    )
+  ) {
     return (
       normalizeChannelTarget(record.channelKey, record.output?.target) ?? null
     );
