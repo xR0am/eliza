@@ -237,10 +237,12 @@ describe("Room Integration Tests", () => {
         messageServerId: world.messageServerId,
       });
 
+      const connectedWorld = await adapter.getWorld(testWorldId);
+      if (!connectedWorld) throw new Error("Connected world should exist");
       await adapter.updateWorld({
-        ...world,
+        ...connectedWorld,
         metadata: {
-          ...world.metadata,
+          ...connectedWorld.metadata,
           roles: { [requesterEntityId]: "ADMIN" },
           roleSources: { [requesterEntityId]: "manual" },
         },
