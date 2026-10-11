@@ -54,6 +54,10 @@ class RecordingListAdapter extends BaseMessageAdapter {
     return true;
   }
 
+  override capabilities() {
+    return { ...super.capabilities(), list: true };
+  }
+
   protected override listMessagesImpl(
     _runtime: IAgentRuntime,
     opts: ListOptions,
@@ -321,5 +325,32 @@ describe("triageMessagesAction", () => {
         options({ source: "discord" }),
       ),
     ).rejects.toThrow("discord unavailable");
+
+    // A requested source that cannot be listed is not an empty inbox.
+    class NoListAdapter extends BaseMessageAdapter {
+      readonly source: MessageSource = "telegram";
+      isAvailable(): boolean {
+        return true;
+      }
+    }
+    getDefaultTriageService().register(new NoListAdapter());
+    class DisconnectedAdapter extends RecordingListAdapter {
+      override isAvailable(): boolean {
+        return false;
+      }
+    }
+    getDefaultTriageService().register(new DisconnectedAdapter("twitter"));
+    const unread = await triageMessagesAction.handler(
+      createFakeRuntime(),
+      turn,
+      undefined,
+      options({ sources: ["whatsapp", "telegram", "twitter"] }),
+    );
+    expect(unread).toEqual({
+      success: false,
+      text: "Cannot read the inbox for: whatsapp (no inbox adapter is connected), telegram (its adapter cannot list messages), twitter (its connector is not connected). Sources that can be read: gmail, discord.",
+      error:
+        "Cannot read the inbox for: whatsapp (no inbox adapter is connected), telegram (its adapter cannot list messages), twitter (its connector is not connected). Sources that can be read: gmail, discord.",
+    });
   });
 });
