@@ -12,6 +12,7 @@ import {
 } from "../src/actions/plugin.ts";
 import { runtimeAction } from "../src/actions/runtime.ts";
 import { startApiServer } from "../src/api/server.ts";
+import { loadElizaConfig } from "../src/config/config.ts";
 
 let directory: string;
 let server: Awaited<ReturnType<typeof startApiServer>>;
@@ -271,6 +272,32 @@ it("normalizes npm-name configuration on enable and clears every persisted crede
       (entry: { key: string }) => entry.key === "OPENAI_API_KEY",
     ),
   ).toMatchObject({ isSet: false, maskedValue: null });
+}, 120_000);
+
+it("replaces a saved connector token so the next boot uses the new value", async () => {
+  const previous = `${secret}-connector`;
+  const replacement = `${secret}-rotated`;
+  for (const container of ["connectors", "channels"]) {
+    await server.close();
+    await writeFile(
+      path.join(directory, "eliza.json"),
+      JSON.stringify({ [container]: { discord: { token: previous } } }),
+    );
+    server = await startApiServer({ port: 0, skipDeferredStartupWork: true });
+    const response = await request("/api/plugins/discord", "PUT", {
+      config: { DISCORD_API_TOKEN: replacement },
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    const saved = JSON.parse(
+      await readFile(path.join(directory, "eliza.json"), "utf8"),
+    );
+    expect(saved[container].discord.token, container).toBe(replacement);
+    // Boot applies config.env first and connector fields last.
+    vi.stubEnv("DISCORD_API_TOKEN", undefined);
+    vi.stubEnv("DISCORD_BOT_TOKEN", undefined);
+    loadElizaConfig();
+    expect(process.env.DISCORD_API_TOKEN, container).toBe(replacement);
+  }
 }, 120_000);
 
 it("applies saved secrets to a live plugin's cached configuration", async () => {

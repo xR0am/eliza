@@ -15,6 +15,7 @@ import {
   CONNECTOR_ENV_MAP,
   collectConfigEnvVars,
   collectConnectorEnvVars,
+  resolveConnectorConfigs,
 } from "../config/env-vars.ts";
 import {
   applyAdvancedCapabilitiesConfig,
@@ -117,8 +118,9 @@ function writeCredentialSources(
     if (config.env.vars && Object.hasOwn(config.env.vars, key))
       config.env.vars[key] = value;
   }
+  const connectors = resolveConnectorConfigs(config);
   for (const [connector, fields] of Object.entries(CONNECTOR_ENV_MAP)) {
-    const settings = config.connectors?.[connector];
+    const settings = connectors?.[connector];
     if (!settings || typeof settings !== "object") continue;
     const record = settings as Record<string, unknown>;
     for (const [field, envKey] of Object.entries(fields)) {
