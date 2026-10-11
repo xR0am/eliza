@@ -293,11 +293,6 @@ const booleanType: ControlType = {
     return ["true", "yes", "1", "on"].includes(str);
   },
 
-  format: (value: JsonValue): string => {
-    if (value === true) return "Yes";
-    if (value === false) return "No";
-    return String(value ?? "");
-  },
 
   extractionPrompt: "a yes/no or true/false value",
 };
@@ -353,50 +348,6 @@ const selectType: ControlType = {
 
   parse: (value: string): string => value.trim(),
 
-  format: (value: JsonValue): string => String(value ?? ""),
-
-  // Note: extractionPrompt is typically customized per-field with option labels
-  extractionPrompt: "one of the available options",
-};
-
-/**
- * Date control type
- *
- * Handles date values in ISO format (YYYY-MM-DD).
- * LLM normalizes various date formats to ISO.
- *
- * WHY ISO format as canonical:
- * - Unambiguous (no 01/02 confusion between US/EU)
- * - Sortable as strings
- * - Standard for data exchange
- *
- * WHY flexible parsing:
- * - Users say "tomorrow", "next Monday", "12/25/2024"
- * - LLM should normalize to ISO
- * - We accept anything Date() can parse as fallback
- *
- * WHY locale display:
- * - Agent should speak in user's date format
- * - toLocaleDateString() adapts automatically
- */
-const dateType: ControlType = {
-  id: "date",
-  builtin: true,
-
-  validate: (value: JsonValue): ValidationResult => {
-    if (value === null || value === undefined || value === "") {
-      return { valid: true }; // Empty is valid; required check is separate
-    }
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
-      return { valid: false, error: "Must be in YYYY-MM-DD format" };
-    }
-    if (!parseCalendarDate(String(value))) {
-      return { valid: false, error: "Invalid date" };
-    }
-
-    return { valid: true };
-  },
 
   parse: (value: string): string => parseCalendarDate(value) ?? value.trim(),
 
