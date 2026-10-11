@@ -1531,7 +1531,13 @@ export async function shutdownRuntime(
   try {
     // Interactive/signal teardown asks for the capped fast path so Ctrl-C does
     // not block on a slow deferred service start or a long embedding drain.
-    await runtime.stop(options.fast ? options : undefined);
+    await runtime.stop(
+      options.fast ||
+        options.requireQuiescence ||
+        options.serviceStopTimeoutMs !== undefined
+        ? options
+        : undefined,
+    );
     logger.debug(`[eliza] ${context}: runtime services stopped`);
   } catch (err) {
     if (!firstError) firstError = err;
@@ -5771,12 +5777,27 @@ export async function startEliza(
     });
   }
   bootContext.enterPhase("attach-host");
+  let lifecycleRuntime: AgentRuntime | null = runtime;
+  // A teardown started by an API stop or restart owns its runtime; a signal
+  // shutdown waits for it (within the signal budget) before the process exits.
+  let pendingRuntimeTeardown: Promise<void> | null = null;
   const processLifecycle = createAgentProcessLifecycle({
-    disposeRuntime: (reason) =>
-      shutdownRuntime(runtime, reason, {
+    disposeRuntime: async (reason) => {
+      if (pendingRuntimeTeardown) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          pendingRuntimeTeardown.catch(() => undefined),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, SIGNAL_SERVICE_STOP_TIMEOUT_MS);
+          }),
+        ]);
+        clearTimeout(timer);
+      }
+      await shutdownRuntime(lifecycleRuntime, reason, {
         fast: true,
         serviceStopTimeoutMs: SIGNAL_SERVICE_STOP_TIMEOUT_MS,
-      }),
+      });
+    },
     disposeSandbox: sandboxManager
       ? async () => {
           await sandboxManager?.stop();
@@ -5928,13 +5949,50 @@ export async function startEliza(
       runtime,
       skipListen: skipApiListen,
       restartRequiresRuntimeDisposal: restoredGeneration !== undefined,
+      onStop: async (runtimeToStop) => {
+        // A later signal shutdown must not close this adapter a second time.
+        if (lifecycleRuntime === runtimeToStop) {
+          lifecycleRuntime = null;
+        }
+        const stop = shutdownRuntime(runtimeToStop, "API stop", {
+          requireQuiescence: true,
+        });
+        pendingRuntimeTeardown = stop;
+        try {
+          await stop;
+        } finally {
+          if (pendingRuntimeTeardown === stop) {
+            pendingRuntimeTeardown = null;
+          }
+          if (lifecycleRuntime === runtimeToStop) {
+            lifecycleRuntime = null;
+          }
+        }
+      },
       onRestart: async (restartOptions) => {
         logger.info("[eliza] Hot-reload: building replacement runtime...");
         try {
-          if (restartOptions?.disposeCurrentBeforeBuild || restoredGeneration) {
-            await shutdownRuntime(runtime, "pre-restore runtime disposal", {
-              fast: true,
-            });
+          if (
+            lifecycleRuntime === runtime &&
+            (restartOptions?.disposeCurrentBeforeBuild || restoredGeneration)
+          ) {
+            // Stop owns this runtime from this point. Clear the process
+            // lifecycle reference before teardown so an API stop followed by
+            // start, or a failed teardown, cannot close the adapter again.
+            lifecycleRuntime = null;
+            const teardown = shutdownRuntime(
+              runtime,
+              "pre-restore runtime disposal",
+              { fast: true },
+            );
+            pendingRuntimeTeardown = teardown;
+            try {
+              await teardown;
+            } finally {
+              if (pendingRuntimeTeardown === teardown) {
+                pendingRuntimeTeardown = null;
+              }
+            }
             disposedRuntimeBeforeReplacement = true;
           }
           const replacement = await buildInitializedRuntime({
@@ -5945,6 +6003,9 @@ export async function startEliza(
           logger.info("[eliza] Hot-reload: replacement runtime is ready");
           return replacement;
         } catch (err) {
+          // No activation follows a failed replacement build. Do not let this
+          // attempt suppress cleanup during a later, unrelated hot reload.
+          disposedRuntimeBeforeReplacement = false;
           // error-policy:J1 the API host receives an explicit failed replacement.
           runtime.reportError("eliza.hotReload.buildReplacement", err);
           logger.error(`[eliza] Hot-reload failed: ${formatError(err)}`);
@@ -5967,6 +6028,7 @@ export async function startEliza(
           );
         }
         runtime = activeRuntime;
+        lifecycleRuntime = activeRuntime;
         if (!previousRuntime || previousRuntime === activeRuntime) {
           return;
         }
