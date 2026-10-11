@@ -44,6 +44,7 @@ function stubBlueskyServer(input: RequestInfo | URL, init?: RequestInit): Promis
     if (handle === UNAVAILABLE_HANDLE) {
       return Promise.resolve(new Response("upstream unavailable", { status: 503 }));
     }
+    if (handle === "malformed.bsky.social") return Promise.resolve(json({ did: "alice" }));
     const did = KNOWN_HANDLES[handle];
     return Promise.resolve(
       did
@@ -97,6 +98,22 @@ afterEach(() => {
 });
 
 describe("blueskyProvider.createPost facets", () => {
+  test("a handle inside a URL is not resolved or emitted as an overlapping mention", async () => {
+    const text = "See https://example.com/(@alice.bsky.social)";
+    const result = await blueskyProvider.createPost(credentials, { text });
+    expect(result.success).toBe(true);
+    expect(resolvedHandles).toEqual([]);
+    expect(lastFacets()).toHaveLength(1);
+    expect(lastFacets()[0].features[0].uri).toBe("https://example.com/(@alice.bsky.social)");
+  });
+
+  test("a malformed successful lookup fails before publishing the post", async () => {
+    const result = await blueskyProvider.createPost(credentials, { text: "Hi @malformed.bsky.social" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("invalid DID");
+    expect(createRecordBodies).toHaveLength(0);
+  });
+
   test("an email address in the text does not become a mention and the post succeeds", async () => {
     const text = "Questions? Write to support@acme.com";
     const result = await blueskyProvider.createPost(credentials, { text });

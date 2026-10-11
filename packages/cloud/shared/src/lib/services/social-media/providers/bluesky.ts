@@ -155,7 +155,10 @@ async function resolveHandle(handle: string, accessJwt: string): Promise<string 
     throw new Error(`Bluesky handle lookup failed: ${response.status}`);
   }
   const { did } = (await response.json()) as { did?: unknown };
-  return typeof did === "string" && did.startsWith("did:") ? did : null;
+  if (typeof did !== "string" || !did.startsWith("did:")) {
+    throw new Error("Bluesky handle lookup returned an invalid DID");
+  }
+  return did;
 }
 
 // Mentions follow https://docs.bsky.app/docs/advanced-guides/post-richtext: they
@@ -188,6 +191,9 @@ async function detectFacets(text: string, accessJwt: string): Promise<BskyFacet[
     if (!handle.includes(".")) continue;
     const byteStart = byteOffset(match.index + match[1].length);
     const byteEnd = byteStart + encoder.encode(`@${handle}`).length;
+    if (linkRanges.some((link) => byteStart < link.byteEnd && link.byteStart < byteEnd)) {
+      continue;
+    }
     mentions.push({ handle, byteStart, byteEnd });
   }
   const handles = [...new Set(mentions.map((m) => m.handle))];
