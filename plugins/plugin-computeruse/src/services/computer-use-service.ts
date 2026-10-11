@@ -2322,6 +2322,14 @@ export class ComputerUseService extends Service {
         this.requireWindowTarget(params);
         this.requireNumber(params.x, "x is required for set_bounds");
         this.requireNumber(params.y, "y is required for set_bounds");
+        // The platform window backends apply a size only when both dimensions
+        // are present, so one alone would move the window and report success
+        // without resizing it.
+        if ((params.width === undefined) !== (params.height === undefined)) {
+          throw new Error(
+            "set_bounds needs width and height together to resize; give both or neither",
+          );
+        }
         return;
       case "get_application_windows":
         this.requireApplicationQuery(params);
