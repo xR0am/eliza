@@ -1422,8 +1422,25 @@ async function runCreate(
     if (createGuard) return createGuard;
   }
 
+  // Every non-lane path below starts all task parts at once. Refuse an
+  // ordering it cannot honor before any spawn. Without ACP nothing spawns and
+  // the legacy path owns the SERVICE_UNAVAILABLE refusal.
+  const createWithoutLanes = (): Promise<ActionResult> | ActionResult => {
+    const refusal = getAcpService(runtime)
+      ? unsupportedLaneOrdering(
+          params,
+          content,
+          taskParts(params, content, requestText(message)).length,
+        )
+      : undefined;
+    return (
+      refusal ??
+      runCreateLegacy(runtime, message, state, params, content, callback)
+    );
+  };
+
   if (!shouldUseLanePlanner(runtime)) {
-    return runCreateLegacy(runtime, message, state, params, content, callback);
+    return createWithoutLanes();
   }
 
   let plan: Awaited<ReturnType<LanePlannerService["plan"]>>;
@@ -1474,20 +1491,13 @@ async function runCreate(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return runCreateLegacy(runtime, message, state, params, content, callback);
+    return createWithoutLanes();
   }
 
   if (plan.lanes.length <= 1) {
     const lane = plan.lanes[0];
     if (!lane || lane.scopePaths.length === 0) {
-      return runCreateLegacy(
-        runtime,
-        message,
-        state,
-        params,
-        content,
-        callback,
-      );
+      return createWithoutLanes();
     }
   }
 
@@ -1701,6 +1711,29 @@ function readLaneDependencies(
     );
   }
   return deps;
+}
+
+/** The non-lane create path starts every task part at once. Return a refusal
+ * when the caller asked for a dependency edge or a parallel limit below the
+ * part count, since neither would be honored. */
+function unsupportedLaneOrdering(
+  params: Record<string, unknown>,
+  content: Record<string, unknown>,
+  partCount: number,
+): ActionResult | undefined {
+  const dependencies = readLaneDependencies(params, content);
+  const hasEdges =
+    dependencies !== undefined &&
+    Object.values(dependencies).some((edges) => edges.length > 0);
+  const maxParallel = readPositiveInteger(
+    params.maxParallel ?? content.maxParallel,
+  );
+  const overLimit = maxParallel !== undefined && maxParallel < partCount;
+  if (!hasEdges && !overLimit) return undefined;
+  return errorResult(
+    "LANE_PLANNER_UNAVAILABLE",
+    "action=create could not apply dependencies/maxParallel: the lane planner is disabled or could not plan this request, and without it every task part starts at once. Nothing was started. Call action=create without dependencies and maxParallel, or create the tasks one at a time in the required order.",
+  );
 }
 
 /** Parse numeric planner parameters only when they are explicit positive
@@ -3332,6 +3365,9 @@ async function runHistory(
     : (filterIdValue(params.threadId) ?? filterIdValue(params.taskId));
   const includeArchived =
     pickBoolean(params, content, "includeArchived") ?? false;
+  // The store drops archived tasks before the status filter runs, so a request
+  // for the archived status has to list them.
+  const listArchived = includeArchived || statuses.includes("archived");
   const windowFilters = buildWindowFilters(window);
   const taskService = runtime.getService?.(
     OrchestratorTaskService.serviceType,
@@ -3345,7 +3381,7 @@ async function runHistory(
         sessionId && !sessionTask
           ? []
           : await taskService.listTasks({
-              includeArchived,
+              includeArchived: listArchived,
               ...(search ? { search } : {}),
               ...(projectId ? { projectId } : {}),
             });
@@ -3356,7 +3392,7 @@ async function runHistory(
         return failureResult(
           "TASKS:history",
           "TASK_NOT_FOUND",
-          includeArchived
+          listArchived
             ? `Task ${taskId} not found.`
             : `Task ${taskId} not found among tasks that are not archived. Pass includeArchived=true to include archived tasks.`,
           { reason: "task_not_found", taskId },
@@ -5582,7 +5618,7 @@ export const tasksAction: Action & {
     {
       name: "dependencies",
       description:
-        'Lane dependency graph for gated action=create, shaped as {"lane-2":["lane-1"]}. References must use generated lane ids.',
+        'Lane dependency graph for gated action=create, shaped as {"lane-2":["lane-1"]}. References must use generated lane ids. Needs the lane planner: when it is disabled or cannot plan the request, create fails and starts nothing.',
       required: false,
       schema: {
         type: "object" as const,
@@ -5595,7 +5631,7 @@ export const tasksAction: Action & {
     {
       name: "maxParallel",
       description:
-        "Maximum concurrently launched lanes for gated action=create; ready backlog remains queued until dependencies and capacity allow launch.",
+        "Maximum concurrently launched lanes for gated action=create; ready backlog remains queued until dependencies and capacity allow launch. Needs the lane planner: when it is disabled or cannot plan the request, a limit below the number of task parts makes create fail and start nothing.",
       required: false,
       schema: { type: "integer" as const, minimum: 1 },
     },

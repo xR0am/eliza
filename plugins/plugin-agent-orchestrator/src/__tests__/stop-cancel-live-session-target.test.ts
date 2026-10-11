@@ -511,6 +511,108 @@ describe("TASKS history with a task id", () => {
   });
 });
 
+describe("TASKS history with the archived status", () => {
+  async function withArchivedTask(
+    body: (ctx: {
+      runtime: IAgentRuntime;
+      archivedId: string;
+    }) => Promise<void>,
+  ): Promise<void> {
+    let tasks: OrchestratorTaskService | undefined;
+    const runtime = runtimeWith(
+      () => undefined,
+      () => tasks,
+    );
+    const store = new OrchestratorTaskStore({ backend: "memory" });
+    tasks = new OrchestratorTaskService(runtime, { store });
+    const base = {
+      goal: "finish the build",
+      acceptanceCriteria: [],
+      roomId: "target-room",
+      worldId: "target-world",
+    };
+    const archived = await store.createTask({ ...base, title: "Shelved task" });
+    await store.createTask({ ...base, title: "Live task" });
+    await tasks.archiveTask(archived.task.id);
+    await body({ runtime, archivedId: archived.task.id });
+  }
+
+  for (const extra of [{}, { includeArchived: false }]) {
+    it(`statuses=[archived] with ${JSON.stringify(extra)} lists the archived task`, async () => {
+      await withArchivedTask(async (ctx) => {
+        const args = { action: "history", statuses: ["archived"], ...extra };
+        expect(validateToolArgs(tasksAction, args).errors).toEqual([]);
+
+        const result = await runTasks(ctx.runtime, args);
+
+        expect(result?.success).toBe(true);
+        expect(result?.text).toContain("Shelved task");
+        expect(result?.data).toMatchObject({
+          count: 1,
+          taskIds: [ctx.archivedId],
+        });
+      });
+    });
+  }
+
+  it("history without the archived status still hides archived tasks", async () => {
+    await withArchivedTask(async (ctx) => {
+      const result = await runTasks(ctx.runtime, { action: "history" });
+
+      expect(result?.success).toBe(true);
+      expect(result?.text).toContain("Live task");
+      expect(result?.text).not.toContain("Shelved task");
+    });
+  });
+});
+
+describe("TASKS create with lane ordering and no lane planner", () => {
+  async function createWith(extra: Record<string, unknown>) {
+    let service: AcpService | undefined;
+    const runtime = runtimeWith(() => service);
+    service = new AcpService(runtime);
+    await service.start();
+    try {
+      const parameters = {
+        action: "create",
+        agents:
+          "build the REST API in src/api | write integration tests against the API in test/api",
+        workdir,
+        ...extra,
+      };
+      expect(validateToolArgs(tasksAction, parameters).errors).toEqual([]);
+      const result = await tasksAction.handler(
+        runtime,
+        {
+          content: {
+            text: "Build the REST API in src/api, then write integration tests against it in test/api.",
+            source: "chat",
+          },
+        } as unknown as Memory,
+        undefined,
+        { parameters },
+        async () => [],
+      );
+      return { result, sessions: await service.listSessions() };
+    } finally {
+      await service.stop();
+    }
+  }
+
+  it.each([[{ dependencies: { "lane-2": ["lane-1"] } }], [{ maxParallel: 1 }]])(
+    "%o starts nothing and says why",
+    async (extra) => {
+      const { result, sessions } = await createWith(extra);
+
+      expect(result).toMatchObject({
+        success: false,
+        error: "LANE_PLANNER_UNAVAILABLE",
+      });
+      expect(sessions).toEqual([]);
+    },
+  );
+});
+
 describe("TASKS manage_issues bulk create on an external message", () => {
   it("creates one issue per user list item and none from the security envelope", async () => {
     let workspace: CodingWorkspaceService | undefined;
