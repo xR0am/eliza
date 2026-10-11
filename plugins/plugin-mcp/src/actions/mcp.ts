@@ -70,14 +70,14 @@ function inferOpFromText(text: string): McpOp | null {
   return null;
 }
 /**
- * A structured selection names its own operation: toolName/arguments belong to
- * call_tool and uri to read_resource. It outranks the request-text guess, which
- * would otherwise route a complete tool call to read_resource whenever the
- * user's wording mentions reading a file or doc.
+ * A structured selection names its own operation: toolName belongs to call_tool
+ * and uri to read_resource. It outranks the request-text guess, which would
+ * otherwise route a complete tool call to read_resource whenever the user's
+ * wording mentions reading a file or doc. `arguments` alone names no target, so
+ * it does not decide the operation.
  */
 function inferOpFromSelection(params: Record<string, unknown>): McpOp | null {
-  const toolName = typeof params.toolName === "string" && params.toolName.trim() !== "";
-  if (toolName || params.arguments !== undefined) return "call_tool";
+  if (typeof params.toolName === "string" && params.toolName.trim() !== "") return "call_tool";
   if (typeof params.uri === "string" && params.uri.trim() !== "") return "read_resource";
   return null;
 }
