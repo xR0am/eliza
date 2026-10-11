@@ -25,7 +25,11 @@ import { logger } from "@elizaos/core";
 import { rankScored } from "../triage-engine.ts";
 import { getDefaultTriageService } from "../triage-service.ts";
 import { ALL_MESSAGE_SOURCES } from "../types.ts";
-import { parseListInboxParams, validateMessageAction } from "./_shared.ts";
+import {
+  parseListInboxParams,
+  SUPPORTED_MESSAGE_SOURCES_TEXT,
+  validateMessageAction,
+} from "./_shared.ts";
 
 export const listInboxAction: Action = {
   name: "MESSAGE",
@@ -37,8 +41,7 @@ export const listInboxAction: Action = {
   parameters: [
     {
       name: "sources",
-      description:
-        "Optional message sources to include, such as email, slack, discord, imessage, whatsapp, telegram, or x.",
+      description: `Optional message sources to include. One or more of: ${SUPPORTED_MESSAGE_SOURCES_TEXT}.`,
       required: false,
       schema: {
         type: "array" as const,
@@ -90,14 +93,32 @@ export const listInboxAction: Action = {
   ): Promise<ActionResult> => {
     try {
       const params = parseListInboxParams(options);
+      if ("error" in params) {
+        logger.warn(`[ListInbox] ${params.error}`);
+        return {
+          success: false,
+          text: params.error,
+          error: params.error,
+          data: { actionName: "MESSAGE" },
+        };
+      }
       const service = getDefaultTriageService();
       const store = service.getStore();
 
-      const cached = store.listMessages();
+      // The adapters own account and channel scope (a Gmail message is in
+      // every label it carries, not only the one on its ref), so the cached
+      // refs answer only requests without that scope. A scoped request goes
+      // to the live pull below.
+      const scoped =
+        params.worldIds !== undefined || params.channelIds !== undefined;
       const requestedSources = params.sources;
-      let messages = requestedSources
-        ? cached.filter((m) => requestedSources.includes(m.source))
-        : cached;
+      let messages = scoped
+        ? []
+        : requestedSources
+          ? store
+              .listMessages()
+              .filter((m) => requestedSources.includes(m.source))
+          : store.listMessages();
 
       messages = rankScored(messages);
       const sinceMs = params.sinceMs;
@@ -106,11 +127,14 @@ export const listInboxAction: Action = {
       }
       let unread = messages.filter((m) => !m.isRead);
 
-      // A cold, all-read, or out-of-window cache needs exactly one live pull
+      // A scoped request, or a cold, all-read, or out-of-window cache, needs
+      // exactly one live pull
       // before it can establish that no unread messages match the request.
       if (unread.length === 0) {
         messages = await service.triage(runtime, {
           sources: params.sources,
+          worldIds: params.worldIds,
+          channelIds: params.channelIds,
           sinceMs: params.sinceMs,
           limit: params.limit,
           // The limit must apply after the read filter, or a newest page of
