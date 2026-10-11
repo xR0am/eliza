@@ -89,6 +89,7 @@ async function bskyApiRequest<T>(
   endpoint: string,
   accessJwt: string,
   options: RequestInit = {},
+  maxRetries = 3,
 ): Promise<T> {
   const { data } = await withRetry<T>(
     () =>
@@ -105,7 +106,7 @@ async function bskyApiRequest<T>(
       if (json.error) throw new Error(json.message || json.error);
       return json;
     },
-    { platform: "bluesky", maxRetries: 3 },
+    { platform: "bluesky", maxRetries },
   );
   return data;
 }
@@ -138,16 +139,38 @@ async function uploadBlob(
   return response.json();
 }
 
-function detectFacets(text: string): BskyFacet[] {
+async function resolveHandle(handle: string, accessJwt: string): Promise<string | null> {
+  try {
+    const { did } = await bskyApiRequest<{ did?: string }>(
+      `com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`,
+      accessJwt,
+      {},
+      0,
+    );
+    return typeof did === "string" && did.startsWith("did:") ? did : null;
+  } catch (error) {
+    // error-policy:J4 a mention link is advisory; an unresolved handle stays plain text
+    logger.warn("[Bluesky] Could not resolve mention handle", {
+      handle,
+      error: extractErrorMessage(error),
+    });
+    return null;
+  }
+}
+
+// Follows https://docs.bsky.app/docs/advanced-guides/post-richtext: mentions and
+// tags start at the beginning of the text or after whitespace, and a mention
+// facet needs the DID the handle resolves to.
+async function detectFacets(text: string, accessJwt: string): Promise<BskyFacet[]> {
   const facets: BskyFacet[] = [];
   const encoder = new TextEncoder();
-  const _textBytes = encoder.encode(text);
+  const byteOffset = (charIndex: number) => encoder.encode(text.slice(0, charIndex)).length;
 
   // Detect URLs
   const urlRegex = /https?:\/\/[^\s]+/g;
   let match;
   while ((match = urlRegex.exec(text)) !== null) {
-    const byteStart = encoder.encode(text.slice(0, match.index)).length;
+    const byteStart = byteOffset(match.index);
     const byteEnd = byteStart + encoder.encode(match[0]).length;
     facets.push({
       index: { byteStart, byteEnd },
@@ -156,24 +179,38 @@ function detectFacets(text: string): BskyFacet[] {
   }
 
   // Detect mentions
-  const mentionRegex = /@([a-zA-Z0-9._-]+)/g;
+  const mentionRegex = /(^|\s|\()(@)([a-zA-Z0-9.-]+)(\b)/g;
+  const mentions: Array<{ handle: string; byteStart: number; byteEnd: number }> = [];
   while ((match = mentionRegex.exec(text)) !== null) {
-    const byteStart = encoder.encode(text.slice(0, match.index)).length;
-    const byteEnd = byteStart + encoder.encode(match[0]).length;
+    const handle = match[3];
+    if (!handle.includes(".")) continue;
+    const byteStart = byteOffset(match.index + match[1].length);
+    const byteEnd = byteStart + encoder.encode(`@${handle}`).length;
+    mentions.push({ handle, byteStart, byteEnd });
+  }
+  const handles = [...new Set(mentions.map((m) => m.handle))];
+  const dids = new Map(
+    await Promise.all(
+      handles.map(async (handle) => [handle, await resolveHandle(handle, accessJwt)] as const),
+    ),
+  );
+  for (const { handle, byteStart, byteEnd } of mentions) {
+    const did = dids.get(handle);
+    if (!did) continue;
     facets.push({
       index: { byteStart, byteEnd },
-      features: [{ $type: "app.bsky.richtext.facet#mention", did: match[1] }],
+      features: [{ $type: "app.bsky.richtext.facet#mention", did }],
     });
   }
 
   // Detect hashtags
-  const hashtagRegex = /#([a-zA-Z0-9_]+)/g;
+  const hashtagRegex = /(^|\s)#([a-zA-Z0-9_]+)/g;
   while ((match = hashtagRegex.exec(text)) !== null) {
-    const byteStart = encoder.encode(text.slice(0, match.index)).length;
-    const byteEnd = byteStart + encoder.encode(match[0]).length;
+    const byteStart = byteOffset(match.index + match[1].length);
+    const byteEnd = byteStart + encoder.encode(`#${match[2]}`).length;
     facets.push({
       index: { byteStart, byteEnd },
-      features: [{ $type: "app.bsky.richtext.facet#tag", tag: match[1] }],
+      features: [{ $type: "app.bsky.richtext.facet#tag", tag: match[2] }],
     });
   }
 
@@ -259,7 +296,7 @@ export const blueskyProvider: SocialMediaProvider = {
       };
 
       // Add facets (links, mentions, hashtags)
-      const facets = detectFacets(content.text);
+      const facets = await detectFacets(content.text, session.accessJwt);
       if (facets.length > 0) {
         record.facets = facets;
       }
