@@ -23,7 +23,7 @@ it("refuses invalid recurrence before writes and retains the stored timezone on 
       platform: "telegram",
       project: "test",
       connectorAccountId: "owner",
-      chatId: "chat",
+      chatId: "123456",
     },
   });
   const run = (parameters: Record<string, unknown>) =>
