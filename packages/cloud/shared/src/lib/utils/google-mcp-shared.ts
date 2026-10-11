@@ -19,24 +19,21 @@ export async function googleFetchWithToken(
   url: string,
   options: RequestInit = {},
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GOOGLE_API_TIMEOUT_MS);
+  const deadline = AbortSignal.timeout(GOOGLE_API_TIMEOUT_MS);
 
   let response: Response;
   try {
     response = await fetch(url, {
       ...options,
       headers: { Authorization: `Bearer ${token}`, ...options.headers },
-      signal: controller.signal,
+      signal: deadline,
     });
   } catch (err) {
-    clearTimeout(timeoutId);
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError")) {
       throw new Error(`Google API request timed out after ${GOOGLE_API_TIMEOUT_MS / 1000}s`);
     }
     throw err;
   }
-  clearTimeout(timeoutId);
 
   if (!response.ok && response.status !== 204) {
     let errorDetail: string;
