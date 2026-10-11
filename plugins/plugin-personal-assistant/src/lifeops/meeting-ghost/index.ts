@@ -287,10 +287,10 @@ function speakerOf(segment: TranscriptSegment): string {
   return segment.speakerLabel ?? segment.speakerEntityId ?? "Unknown";
 }
 
-// Letters of space-separated scripts; Hangul/kana/Han may abut particles or
-// neighboring characters, so they never block a match.
+// Letters and digits of every script are word characters, except Hangul,
+// Han and kana, which may abut particles or neighboring characters.
 const SPACED_WORD_CHAR =
-  /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}]/u;
+  /(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{N}]/u;
 
 function includesWholePhrase(text: string, phrase: string): boolean {
   const first = phrase[0] ?? "";

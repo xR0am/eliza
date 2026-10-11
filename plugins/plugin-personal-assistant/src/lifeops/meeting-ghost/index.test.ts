@@ -149,6 +149,20 @@ describe("meeting ghost care-about matching", () => {
     ]);
   });
 
+  it("does not match a short Arabic care-about inside a longer word", () => {
+    const result = analyze(
+      [alice],
+      [
+        seg("Alice Park", 0, "المنزل جاهز"),
+        seg("Alice Park", 5000, "من فضلك راجع الميزانية"),
+      ],
+      ["من"],
+    );
+    expect(result.careHits.map((hit) => hit.text)).toEqual([
+      "من فضلك راجع الميزانية",
+    ]);
+  });
+
   it("matches a Korean two-character care-about followed by a particle", () => {
     const result = analyze(
       [minsu],
