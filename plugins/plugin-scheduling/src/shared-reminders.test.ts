@@ -67,8 +67,11 @@ it("refuses invalid recurrence before writes and retains the stored timezone on 
       cronExpression: "0 10 * * *",
     });
     expect(updated?.success, JSON.stringify(updated)).toBe(true);
-    const stored = (await runner.list())[0];
-    expect(stored.trigger).toMatchObject({
+    const replacement = updated?.data?.task as ScheduledTask;
+    const stored = (await runner.list()).find(
+      (entry) => entry.taskId === replacement.taskId,
+    );
+    expect(stored?.trigger).toMatchObject({
       kind: "cron",
       expression: "0 10 * * *",
       tz: "Asia/Tokyo",
