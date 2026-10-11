@@ -20,7 +20,10 @@
  *              FollowUp service (was SCHEDULE_FOLLOW_UP).
  */
 
-import { resolveCalendarTimeZone } from "@elizaos/contracts";
+import {
+  parseUnambiguousZonedDateTime,
+  resolveCalendarTimeZone,
+} from "@elizaos/contracts";
 import type {
   Action,
   ActionExample,
@@ -1586,7 +1589,34 @@ export function createContactActions(dependencies: ContactActionDependencies): {
         "followup",
       );
     }
-    const scheduledAt = new Date(scheduledAtRaw);
+    const { timeZone } = await resolveCalendarTimeZone(runtime, new Date());
+    // A date-time without an offset is the owner's wall-clock time, not the
+    // host's: `new Date()` would read it in the server's zone. Resolve the
+    // minute through the strict zoned parser, then retain optional seconds.
+    const localWallTime =
+      /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2})(?:\.(\d+))?)?$/.exec(
+        scheduledAtRaw,
+      );
+    // Only an ISO date-time that ends in a zone designator is read as an
+    // instant; a trailing "-2026" year is not an offset.
+    const hasExplicitOffset =
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(
+        scheduledAtRaw,
+      );
+    let scheduledAtMs = Number.NaN;
+    if (localWallTime) {
+      const minute = parseUnambiguousZonedDateTime(localWallTime[1], timeZone);
+      const seconds = Number(localWallTime[2] ?? "0");
+      const milliseconds = Number(
+        (localWallTime[3] ?? "").padEnd(3, "0").slice(0, 3),
+      );
+      if (minute !== null && seconds < 60) {
+        scheduledAtMs = minute + seconds * 1_000 + milliseconds;
+      }
+    } else if (hasExplicitOffset) {
+      scheduledAtMs = new Date(scheduledAtRaw).getTime();
+    }
+    const scheduledAt = new Date(scheduledAtMs);
     if (Number.isNaN(scheduledAt.getTime())) {
       return fail("Invalid scheduledAt.", "INVALID_SCHEDULED_AT", "followup");
     }
@@ -1633,7 +1663,6 @@ export function createContactActions(dependencies: ContactActionDependencies): {
     const priority: "high" | "medium" | "low" =
       priorityRaw === "high" || priorityRaw === "low" ? priorityRaw : "medium";
     const messageText = readString(params.message);
-    const { timeZone } = await resolveCalendarTimeZone(runtime, new Date());
 
     const task = await followUpService.scheduleFollowUp(
       entityId,
@@ -1895,7 +1924,8 @@ export function createContactActions(dependencies: ContactActionDependencies): {
       },
       {
         name: "scheduledAt",
-        description: "followup: ISO date/time for the follow-up.",
+        description:
+          "followup: ISO date/time for the follow-up. Without an offset it is the owner's local time.",
         required: false,
         schema: { type: "string" as const },
       },
