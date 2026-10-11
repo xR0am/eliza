@@ -98,9 +98,13 @@ function parseContentDispositionFileName(
 			return getBasename(encoded);
 		}
 	}
-	const match = /filename\s*=\s*([^;]+)/i.exec(header);
-	if (match?.[1]) {
-		return getBasename(stripQuotes(match[1].trim()));
+	const match = /filename\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^;]+))/i.exec(header);
+	if (match) {
+		const value =
+			match[1] === undefined
+				? stripQuotes(match[2].trim())
+				: match[1].replace(/\\(.)/g, "$1");
+		return getBasename(value);
 	}
 	return undefined;
 }
