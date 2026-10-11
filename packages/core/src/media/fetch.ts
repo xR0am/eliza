@@ -49,7 +49,7 @@ export type FetchMediaOptions = {
 	maxBytes?: number;
 	maxRedirects?: number;
 	timeoutMs?: number;
-	/** Caller abort signal — composed with the timeout deadline via AbortSignal.any. */
+	/** Caller abort signal ? composed with the timeout deadline via AbortSignal.any. */
 	signal?: AbortSignal;
 	/** Require the declared response MIME type to start with this prefix. */
 	requiredContentTypePrefix?: string;
@@ -91,7 +91,13 @@ function parseContentDispositionFileName(
 		const extValueMatch = /^([^']*)'([^']*)'([\s\S]*)$/.exec(cleaned);
 		const encoded = extValueMatch ? extValueMatch[3] : cleaned;
 		try {
-			return getBasename(decodeURIComponent(encoded));
+			const decoded =
+				extValueMatch?.[1].toLowerCase() === "iso-8859-1"
+					? encoded.replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
+							String.fromCharCode(Number.parseInt(hex, 16)),
+						)
+					: decodeURIComponent(encoded);
+			return getBasename(decoded);
 		} catch {
 			// error-policy:J3 Malformed RFC 5987 encoding is untrusted header
 			// input; retain only its basename as the sanitized invalid fallback.
@@ -133,7 +139,7 @@ export async function readErrorBodySnippet(
 			return wellFormed;
 		}
 		const budget = Math.max(0, maxChars - 1);
-		return `${truncateWellFormed(wellFormed, budget).trimEnd()}…`;
+		return `${truncateWellFormed(wellFormed, budget).trimEnd()}��`;
 	} catch {
 		// error-policy:J7 The HTTP status remains authoritative when its optional
 		// diagnostic body snippet cannot be read.
@@ -345,7 +351,7 @@ export async function fetchRemoteMedia(
 /**
  * Reads a response body under a hard byte cap, cancelling the stream as soon
  * as the running total exceeds maxBytes instead of materializing the payload
- * first — so a missing or lying Content-Length can never force an unbounded
+ * first ? so a missing or lying Content-Length can never force an unbounded
  * allocation. Shared by the remote media fetcher above and the trusted local
  * attachment byte-fetches (ingest enrichment and on-demand transcription).
  * Falls back to a post-read check only when the response exposes no stream.
