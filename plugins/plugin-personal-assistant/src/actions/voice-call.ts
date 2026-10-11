@@ -85,6 +85,37 @@ function normalizeLookup(value: string): string {
     .trim();
 }
 
+const UNSPACED_SCRIPT_RE =
+  /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u;
+
+/**
+ * Whether `inner` appears as a run of whole tokens in `outer`, or of token
+ * prefixes when `prefix` is set. Scripts written without spaces may carry
+ * attached particles ("田中さんに"), so their tokens match inside a longer token.
+ */
+function containsTokenRun(
+  outer: string[],
+  inner: string[],
+  prefix = false,
+): boolean {
+  if (inner.length === 0 || inner[0] === "") return false;
+  for (let start = 0; start + inner.length <= outer.length; start++) {
+    if (
+      inner.every((token, offset) => {
+        const candidate = outer[start + offset] ?? "";
+        return (
+          candidate === token ||
+          (prefix && candidate.startsWith(token)) ||
+          (UNSPACED_SCRIPT_RE.test(token) && candidate.includes(token))
+        );
+      })
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function messageText(message: Memory): string {
   return typeof message.content.text === "string" ? message.content.text : "";
 }
@@ -212,25 +243,31 @@ async function resolveExternalCallRecipient(args: {
     return { kind: "missing" };
   }
 
+  const haystackTokens = haystack.split(" ");
   const service = new LifeOpsService(args.runtime);
   const relationships = await service.listRelationships();
   const partialMatches = relationships.filter((relationship) => {
     if (typeof relationship.phone !== "string" || !relationship.phone) {
       return false;
     }
-    return [
+    const identifiers = [
       relationship.name,
       relationship.primaryHandle,
       relationship.email ?? "",
-      relationship.notes ?? "",
       ...relationship.tags,
-    ]
-      .map(normalizeLookup)
-      .some(
-        (value) =>
-          value.length > 0 &&
-          (haystack.includes(value) || value.includes(haystack)),
-      );
+    ].map((value) => normalizeLookup(value).split(" "));
+    // Free-text notes only match when the whole note was named, so a word in
+    // a note ("Alice's brother") never stands in for the contact.
+    const notes = normalizeLookup(relationship.notes ?? "").split(" ");
+    // A declared recipient may be the start of a name ("Bo" for "Bob"); the
+    // message text must name the contact in whole words.
+    return (
+      identifiers.some(
+        (tokens) =>
+          containsTokenRun(haystackTokens, tokens) ||
+          containsTokenRun(tokens, haystackTokens, Boolean(explicit)),
+      ) || containsTokenRun(haystackTokens, notes)
+    );
   });
   // A contact whose whole name was given wins over contacts that only contain
   // it ("Bob" over "Bob Jones"), so the short name stays callable.
