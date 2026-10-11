@@ -118,13 +118,6 @@
         "max": 600000,
         "sensitive": false
       },
-      "CODING_TOOLS_SHELL_BG_BUDGET_MS": {
-        "type": "number",
-        "description": "Foreground budget. Shell invocations exceeding this auto-background and return a task_id (matches Claude's 15s ASSISTANT_BLOCKING_BUDGET_MS).",
-        "required": false,
-        "default": 15000,
-        "sensitive": false
-      },
       "CODING_TOOLS_MAX_FILE_SIZE_BYTES": {
         "type": "number",
         "description": "Optional selected-content byte budget for FILE reads. Requests exceeding it fail explicitly; no output is silently clipped.",
