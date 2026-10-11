@@ -10,7 +10,7 @@
  */
 
 const NOT_AVAILABLE =
-  "ssh2 is not available on Cloudflare Workers — proxy to the Node sidecar (cloud/INFRA.md).";
+  "ssh2 is not available on Cloudflare Workers — Docker node SSH operations run on the Node sidecar (packages/cloud/shared/src/lib/services/docker-ssh.ts).";
 
 export class Client {
   constructor() {
