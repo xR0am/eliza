@@ -1341,8 +1341,9 @@ export const browserAction: Action = {
     },
     {
       name: "replace",
-      subactions: ["fill", "clear", "type", "realistic_fill", "realistic_type"],
-      description: "For realistic-fill: replace existing input, not append.",
+      subactions: ["realistic_type"],
+      description:
+        "realistic_type only: replace the existing value instead of appending. fill and realistic_fill always replace; type always appends.",
       required: false,
       schema: { type: "boolean" as const },
     },
