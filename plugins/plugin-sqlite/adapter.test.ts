@@ -470,6 +470,69 @@ describe("durable SQLite agent adapter", () => {
     expect(inRoom.get(bareEntityId)?.components).toEqual([]);
   });
 
+  it("does not store a components copy when an entity read is written back", async () => {
+    const adapter = await open();
+    const componentId = id();
+    const upsertedId = id();
+    await adapter.createAgents([{ id: agentId, name: "Write-back agent" }]);
+    await adapter.createEntities([
+      { id: entityId, agentId, names: ["Contact"] },
+      { id: upsertedId, agentId, names: ["Upserted contact"] },
+    ]);
+    await adapter.createComponents([
+      {
+        id: componentId,
+        entityId,
+        agentId,
+        roomId,
+        worldId: id(),
+        sourceEntityId: agentId,
+        type: "contact_info",
+        createdAt: 1,
+        data: { handle: "@contact" },
+      },
+      {
+        id: id(),
+        entityId: upsertedId,
+        agentId,
+        roomId,
+        worldId: id(),
+        sourceEntityId: agentId,
+        type: "contact_info",
+        createdAt: 1,
+        data: { handle: "@upserted" },
+      },
+    ]);
+
+    const [read, readForUpsert] = await adapter.getEntitiesByIds([
+      entityId,
+      upsertedId,
+    ]);
+    expect(read.components).toHaveLength(1);
+    expect(readForUpsert.components).toHaveLength(1);
+    await adapter.updateEntities([{ ...read, names: ["Contact", "Renamed"] }]);
+    await adapter.upsertEntities([readForUpsert]);
+
+    const storage = await adapter.getConnection();
+    const stored = await storage.get<Record<string, unknown>>(
+      "entities",
+      entityId,
+    );
+    expect(stored?.names).toEqual(["Contact", "Renamed"]);
+    expect(stored).not.toHaveProperty("components");
+    expect(
+      await storage.get<Record<string, unknown>>("entities", upsertedId),
+    ).not.toHaveProperty("components");
+
+    await adapter.deleteComponents([componentId]);
+    const [byName] = await adapter.getEntitiesByNames({
+      names: ["Renamed"],
+      agentId,
+    });
+    expect(byName.id).toBe(entityId);
+    expect(byName.components).toBeUndefined();
+  });
+
   it("reopens runtime records, full content and semantic search without an in-memory singleton", async () => {
     const adapter = await open();
     const worldId = id();

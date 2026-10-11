@@ -649,7 +649,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const entity of entities) {
       const id = (entity.id ?? randomUUID()) as UUID;
-      await this.storage.set(COLLECTIONS.ENTITIES, id, { ...entity, id });
+      // Components live in their own collection, never in the entity row.
+      const { components: _components, ...row } = entity;
+      await this.storage.set(COLLECTIONS.ENTITIES, id, { ...row, id });
       ids.push(id);
     }
     return ids;
@@ -662,10 +664,11 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         COLLECTIONS.ENTITIES,
         entity.id,
       );
-      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, {
+      const { components: _components, ...row } = {
         ...(existing ?? {}),
         ...entity,
-      });
+      };
+      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, row);
     }
   }
 
@@ -702,10 +705,8 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         entity.id,
       );
       if (!existing) continue;
-      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, {
-        ...existing,
-        ...entity,
-      });
+      const { components: _components, ...row } = { ...existing, ...entity };
+      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, row);
     }
   }
 
