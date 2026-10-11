@@ -291,7 +291,6 @@ function Harness(): React.JSX.Element {
       <MockAppProvider
         value={{
           handleChatRetry,
-          conversationMessages,
           activeConversationId: "conv-1",
         }}
       >
