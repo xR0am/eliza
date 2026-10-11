@@ -108,7 +108,9 @@ describe("blueskyProvider.createPost facets", () => {
   });
 
   test("a malformed successful lookup fails before publishing the post", async () => {
-    const result = await blueskyProvider.createPost(credentials, { text: "Hi @malformed.bsky.social" });
+    const result = await blueskyProvider.createPost(credentials, {
+      text: "Hi @malformed.bsky.social",
+    });
     expect(result.success).toBe(false);
     expect(result.error).toContain("invalid DID");
     expect(createRecordBodies).toHaveLength(0);
