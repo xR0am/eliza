@@ -20,7 +20,14 @@ import {
 const LOGS_OPS = ["search", "delete"] as const;
 type LogsOp = (typeof LOGS_OPS)[number];
 
-const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
+const LOG_LEVELS = [
+  "trace",
+  "debug",
+  "info",
+  "warn",
+  "error",
+  "fatal",
+] as const;
 type LogLevel = (typeof LOG_LEVELS)[number];
 /** Parameters that narrow a search. The clear route accepts none of them. */
 const LOGS_SEARCH_FILTERS = [
@@ -169,7 +176,13 @@ async function searchLogs(params: LogsParams): Promise<ActionResult> {
   // filtered buffer in both the preview and structured payload.
   const shown = limit === undefined ? entries : entries.slice(-limit);
   const filterNote = describeLogFilters(params, tagFilter, sinceMs);
-  const windowNote = `Searched the complete current in-memory log buffer. Filters applied: ${filterNote}.`;
+  // source is an exact match, so a miss usually means a wrong module name.
+  // Name the sources the buffer holds instead of implying nothing was logged.
+  const sourceNote =
+    shown.length === 0 && params.source
+      ? ` Sources in the buffer: ${data.sources.length > 0 ? data.sources.join(", ") : "none"}.`
+      : "";
+  const windowNote = `Searched the complete current in-memory log buffer. Filters applied: ${filterNote}.${sourceNote}`;
   const header =
     shown.length === 0
       ? `No log entries match. ${windowNote}`
@@ -316,21 +329,21 @@ export const logsAction: Action = {
     {
       name: "source",
       description:
-        "[search] Optional source filter (e.g. agent, server, plugins).",
+        "[search] Exact name of the emitting module: the log line's [bracket] prefix or its src field (e.g. eliza-api, runtime, web-fetch). Lines with neither have source 'agent'. For broad groups such as agent, server or plugins use tags.",
       required: false,
       schema: { type: "string" as const },
     },
     {
       name: "level",
       description:
-        "[search] Filter by exact log level. One of trace/debug/info/warn/error.",
+        "[search] Filter by exact log level. One of trace/debug/info/warn/error/fatal. level=error does not include fatal.",
       required: false,
       schema: { type: "string" as const, enum: [...LOG_LEVELS] },
     },
     {
       name: "tags",
       description:
-        "[search] Optional tag filter list. Server applies the first; remaining are intersected client-side.",
+        "[search] Optional tag filter list; an entry must carry every tag. Tags hold the broad groups (e.g. agent, server, plugins) and each entry's source.",
       required: false,
       schema: { type: "array" as const, items: { type: "string" as const } },
     },
@@ -353,12 +366,12 @@ export const logsAction: Action = {
     [
       {
         name: "{{name1}}",
-        content: { text: "Show me the last 20 error logs from the agent." },
+        content: { text: "Show me the last 20 error logs." },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "Showing recent agent error log entries...",
+          text: "Showing recent error log entries...",
           action: "LOGS",
         },
       },
