@@ -99,19 +99,20 @@ const CJK_SCRIPT =
 
 // Scripts such as Japanese and Chinese do not separate words with spaces,
 // so one normalized "token" can be a whole clause. Segment those tokens into
-// words; space-delimited scripts keep the normalized token as is.
+// words; space-delimited scripts keep the normalized token as is. The pinned
+// runtimes (Bun 1.4.2, Node 24.15.0) both provide Intl.Segmenter, so the
+// segmenter is created once at module scope with a fixed locale; a missing
+// or failing segmenter must surface as an error, not silently restore the
+// unsegmented matching this code fixes.
+const wordSegmenter = new Intl.Segmenter("en", { granularity: "word" });
+
 function segmentToken(token: string): string[] {
-  if (!SPACELESS_SCRIPT.test(token) || typeof Intl?.Segmenter !== "function") {
+  if (!SPACELESS_SCRIPT.test(token)) {
     return [token];
   }
-  try {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: "word" });
-    return [...segmenter.segment(token)]
-      .filter((part) => part.isWordLike)
-      .map((part) => part.segment);
-  } catch {
-    return [token];
-  }
+  return [...wordSegmenter.segment(token)]
+    .filter((part) => part.isWordLike)
+    .map((part) => part.segment);
 }
 
 function tokens(value: string): string[] {
