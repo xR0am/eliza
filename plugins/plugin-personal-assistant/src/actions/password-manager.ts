@@ -123,6 +123,9 @@ function failure(error: string, extra?: Record<string, unknown>): ActionResult {
     MISSING_QUERY:
       "Which login should I look up? Tell me the service (e.g. GitHub, AWS).",
     MISSING_ITEM_ID: "I need the password manager item id to copy a field.",
+    CANCELLED: "Cancelled. Nothing was copied.",
+    PASSWORD_MANAGER_FAILED:
+      "The password manager request failed. Unlock your password manager and check the item id with search or list, then try again.",
     CONFIRMATION_REQUIRED:
       "Copying a credential needs your confirmation. Reply yes to confirm or no to cancel.",
     UNKNOWN_SUBACTION:
@@ -218,15 +221,22 @@ export async function runPasswordManagerHandler(
         pendingKey: `inject:${itemId}:${field}`,
         prompt,
       });
-      if (decision.status !== "confirmed") {
-        return failure(
-          decision.status === "pending" ? "CONFIRMATION_REQUIRED" : "CANCELLED",
-          {
+      if (decision.status === "pending") {
+        return {
+          ...failure("CONFIRMATION_REQUIRED", {
             itemId,
             field,
-            awaitingUserInput: decision.status === "pending",
-          },
-        );
+            awaitingUserInput: true,
+          }),
+          text: `${prompt} Reply yes to confirm or no to cancel.`,
+        };
+      }
+      if (decision.status !== "confirmed") {
+        return failure("CANCELLED", {
+          itemId,
+          field,
+          awaitingUserInput: false,
+        });
       }
       const result = await injectCredentialToClipboard(itemId, field, config);
       logger.info(
@@ -266,8 +276,6 @@ export async function runPasswordManagerHandler(
   } catch {
     // error-policy:J1 Password-manager subprocess errors may contain secret output.
     logger.warn({ action: ACTION_NAME }, `[${ACTION_NAME}] handler failed`);
-    return failure("PASSWORD_MANAGER_FAILED", {
-      error: "Open and unlock your password manager, then try again.",
-    });
+    return failure("PASSWORD_MANAGER_FAILED");
   }
 }
