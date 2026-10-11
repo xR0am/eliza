@@ -5,6 +5,7 @@
  */
 
 import { requireUserWithOrg } from "@elizaos/cloud-shared/auth";
+import { ApiError } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import {
   RateLimitPresets,
   rateLimit,
@@ -37,7 +38,13 @@ app.post("/", async (c) => {
       user = await requireUserWithOrg(c);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return c.json({ error: message }, 401, NO_CACHE_HEADERS);
+      // requireUserWithOrg rejects with typed ApiErrors: 401 only when no
+      // caller is authenticated, 403 for an inactive user, an inactive
+      // organization, or an account without an organization. Keep that
+      // status instead of reporting every rejection as 401, like the other
+      // requireUserWithOrg routes do through failureResponse.
+      const status = error instanceof ApiError ? error.status : 401;
+      return c.json({ error: message }, status as 401 | 403, NO_CACHE_HEADERS);
     }
 
     let body: unknown;
