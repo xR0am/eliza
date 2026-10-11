@@ -122,7 +122,7 @@ const MONTH_MAX_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
  * every tick. When both day fields are restricted core fires on either one, so
  * the day-of-week field alone makes the schedule reachable.
  */
-function cronHasCalendarDate(
+export function cronHasCalendarDate(
   schedule: NonNullable<ReturnType<typeof parseCronExpression>>,
 ): boolean {
   if (schedule.dayOfMonthRestricted && schedule.dayOfWeekRestricted) {
