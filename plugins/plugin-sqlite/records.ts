@@ -670,19 +670,28 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   }
 
   async getEntitiesByIds(entityIds: UUID[]): Promise<Entity[]> {
+    const entities = await this.loadEntityRows(entityIds);
+    await this.attachComponents(entities);
+    return entities;
+  }
+
+  private async loadEntityRows(entityIds: UUID[]): Promise<Entity[]> {
     const entities: Entity[] = [];
     for (const id of entityIds) {
       const entity = await this.storage.get<Entity>(COLLECTIONS.ENTITIES, id);
       if (entity) entities.push(entity);
     }
-    // plugin-sql left-joins components here; [] when the entity has none.
+    return entities;
+  }
+
+  /** plugin-sql left-joins components; [] when the entity has none. */
+  private async attachComponents(entities: Entity[]): Promise<void> {
     const components = await this.getComponentsForEntities(
       entities.flatMap((entity) => (entity.id ? [entity.id] : [])),
     );
     for (const entity of entities) {
       entity.components = components.filter((c) => c.entityId === entity.id);
     }
-    return entities;
   }
 
   async updateEntities(entities: Entity[]): Promise<void> {
@@ -751,8 +760,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       const entityIds = [
         ...new Set(participants.map((p) => p.entityId)),
       ] as UUID[];
-      const entities = await this.getEntitiesByIds(entityIds);
-      if (!includeComponents) {
+      const entities = await this.loadEntityRows(entityIds);
+      if (includeComponents) {
+        await this.attachComponents(entities);
+      } else {
         for (const entity of entities) entity.components = undefined;
       }
       result.push({ roomId, entities });

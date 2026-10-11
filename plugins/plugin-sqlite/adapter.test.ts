@@ -451,6 +451,7 @@ describe("durable SQLite agent adapter", () => {
     });
     expect(byId.get(bareEntityId)?.components).toEqual([]);
 
+    const componentReads = vi.spyOn(adapter, "getComponentsForEntities");
     const [withoutComponents] = await adapter.getEntitiesForRooms(
       [roomId],
       false,
@@ -458,6 +459,9 @@ describe("durable SQLite agent adapter", () => {
     for (const entity of withoutComponents.entities) {
       expect(entity.components).toBeUndefined();
     }
+    // A room read that opts out of components must not read them.
+    expect(componentReads).not.toHaveBeenCalled();
+    componentReads.mockRestore();
     const [withComponents] = await adapter.getEntitiesForRooms([roomId], true);
     const inRoom = new Map(withComponents.entities.map((e) => [e.id, e]));
     expect(inRoom.get(entityId)?.components?.map((c) => c.id)).toEqual([
