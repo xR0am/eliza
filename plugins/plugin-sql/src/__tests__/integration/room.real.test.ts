@@ -3,13 +3,12 @@
  * is set) adapter via `createIsolatedTestDatabase` — no mocks.
  */
 import { type AgentRuntime, ChannelType, type Room, type UUID } from "@elizaos/core"
-import { eq } from "drizzle-orm";
+import { eq } from "drizzle-orm"
 import { v4 as uuidv4 } from "uuid";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PgDatabaseAdapter } from "../../pg/adapter";
 import type { PgliteDatabaseAdapter } from "../../pglite/adapter"
-import { roomTable } from "../../schema/room";
-import { roomTable } from "../../schema/room";
+import { roomTable } from "../../schema/room"
 import { createIsolatedTestDatabase } from "../test-helpers";
 
 describe("Room Integration Tests", () => {
