@@ -62,9 +62,9 @@ describe("mammoth stub", () => {
   );
 
   test("images proxy rejects any property access", () => {
-    expect(() => mammothImages.any).toThrow(ASSISTANT_PLUGIN_POINTER);
-    expect(() => mammothImages.any).not.toThrow(REMOVED_INFRA_DOC);
-    expect(() => mammothImages.any).not.toThrow(
+    expect(() => Reflect.get(mammothImages, "any")).toThrow(ASSISTANT_PLUGIN_POINTER);
+    expect(() => Reflect.get(mammothImages, "any")).not.toThrow(REMOVED_INFRA_DOC);
+    expect(() => Reflect.get(mammothImages, "any")).not.toThrow(
       INACCURATE_AGENT_SERVER_POINTER,
     );
   });
@@ -94,9 +94,9 @@ describe("ssh2 stub", () => {
   });
 
   test("utils proxy rejects any property access", () => {
-    expect(() => ssh2Utils.connect).toThrow(DOCKER_SSH_POINTER);
-    expect(() => ssh2Utils.connect).not.toThrow(REMOVED_INFRA_DOC);
-    expect(() => ssh2Utils.connect).not.toThrow(
+    expect(() => Reflect.get(ssh2Utils, "connect")).toThrow(DOCKER_SSH_POINTER);
+    expect(() => Reflect.get(ssh2Utils, "connect")).not.toThrow(REMOVED_INFRA_DOC);
+    expect(() => Reflect.get(ssh2Utils, "connect")).not.toThrow(
       INACCURATE_AGENT_SERVER_POINTER,
     );
   });
