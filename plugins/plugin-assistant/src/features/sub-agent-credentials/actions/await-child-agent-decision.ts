@@ -46,6 +46,8 @@ function getBus(runtime: IAgentRuntime): SubAgentChildDecisionBus | null {
 
 export const awaitChildAgentDecisionAction: Action = {
   name: "AWAIT_CHILD_AGENT_DECISION",
+  roleGate: { minRole: "OWNER" },
+  contexts: ["code", "agent_internal"],
   description:
     "Wait for the named child coding agent to emit a decision line on its DECISION channel.",
   descriptionCompressed:
