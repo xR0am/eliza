@@ -7782,6 +7782,7 @@
   "cloud.appDomains.sslProvisioningAuto": "SSL certificate is being provisioned automatically",
   "cloud.appDomains.configureDnsToComplete": "Configure your DNS records to complete setup",
   "cloud.appDomains.failedToAdd": "Failed to add domain",
+  "cloud.appDomains.failedToLoad": "Could not load domains",
   "cloud.appDomains.domainRemoved": "Domain removed successfully",
   "cloud.appDomains.failedToRemove": "Failed to remove domain",
   "cloud.appDomains.developmentUrl": "Development URL",
