@@ -198,8 +198,6 @@ export function readGitHubAccounts(
         DEFAULT_GITHUB_USER_ACCOUNT_ID,
       "GITHUB_USER_PAT",
       "ELIZA_E2E_GITHUB_USER_PAT",
-      // The plugin settings form's personal access token field.
-      "GITHUB_API_TOKEN",
     ),
   );
   addAccount(
@@ -253,11 +251,11 @@ function legacyAccount(
   runtime: IAgentRuntime,
   role: GitHubIdentity,
   accountId: string,
-  ...keys: string[]
+  primaryKey: string,
+  fallbackKey: string,
 ): GitHubAccountConfig | null {
-  const token = keys
-    .map((key) => readSetting(runtime, key))
-    .find((value) => value !== undefined);
+  const token =
+    readSetting(runtime, primaryKey) ?? readSetting(runtime, fallbackKey);
   if (!token) return null;
   return { accountId, role, token };
 }
