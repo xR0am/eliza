@@ -100,6 +100,30 @@ describe("providerRateLimitRetryAt through SDK error envelopes", () => {
     expect(providerRateLimitRetryAt(envelope, now)).toBeUndefined();
   });
 
+  it("keeps a message-only quota mention retryable: prose never sets permanence", () => {
+    const now = 1_000_000;
+    // The quota words appear only in the error message and in the body's
+    // message field — no structured code/type field anywhere in the graph.
+    // The file contract is "never a message substring", so the 429 stays a
+    // temporary rate limit and its Retry-After deadline must be honored.
+    const prose = Object.assign(
+      new Error("insufficient_quota: You exceeded your current quota"),
+      {
+        name: "AI_APICallError",
+        statusCode: 429,
+        responseHeaders: { "retry-after": "7" },
+        responseBody: '{"error":{"message":"You exceeded your current quota"}}',
+        isRetryable: true,
+      },
+    );
+    const envelope = new RetryError({
+      message: "Failed after 3 attempts. Last error: insufficient_quota",
+      reason: "maxRetriesExceeded",
+      errors: [prose],
+    });
+    expect(providerRateLimitRetryAt(envelope, now)).toBe(now + 7_000);
+  });
+
   it("gives no deadline when the wrapped 429 carries no retry hint", () => {
     const now = 1_000_000;
     const envelope = exhaustedRetriesEnvelope({});
