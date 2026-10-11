@@ -183,6 +183,21 @@ export interface MessageLookupHints {
   content?: string;
 }
 
+/**
+ * A lookup with no sender and no content matches the newest message from
+ * anyone, so an action that writes to its target must not run on one.
+ */
+const MESSAGE_TARGET_REQUIRED =
+  "messageId or a sender/content hint is required";
+
+function hasLookupTarget(lookup: MessageLookupHints): boolean {
+  return (
+    lookup.sender?.identifier !== undefined ||
+    lookup.sender?.displayName !== undefined ||
+    lookup.content !== undefined
+  );
+}
+
 function parseMessageLookupHints(
   params: Record<string, unknown>,
 ): MessageLookupHints | { error: string } {
@@ -386,6 +401,9 @@ export function parseDraftReplyParams(
   if (!body) return { error: "body is required" };
   const lookup = parseMessageLookupHints(params);
   if ("error" in lookup) return lookup;
+  if (!messageId && !hasLookupTarget(lookup)) {
+    return { error: MESSAGE_TARGET_REQUIRED };
+  }
   return { messageId, body, lookup };
 }
 
@@ -530,6 +548,9 @@ export function parseManageMessageParams(
   if ("error" in operation) return operation;
   const lookup = parseMessageLookupHints(params);
   if ("error" in lookup) return lookup;
+  if (!messageId && !hasLookupTarget(lookup)) {
+    return { error: MESSAGE_TARGET_REQUIRED };
+  }
   return { messageId, source, operation, lookup };
 }
 
@@ -576,8 +597,6 @@ function parseOperation(
       }
       return { kind: "tag_remove", tag };
     }
-    case "mute_thread":
-      return { kind: "mute_thread" };
     case "unsubscribe":
       return { kind: "unsubscribe" };
     case "block":
@@ -623,5 +642,8 @@ export function parseRespondToMessageParams(
   const body = asReplyBody(params);
   const lookup = parseMessageLookupHints(params);
   if ("error" in lookup) return lookup;
+  if (!messageId && !hasLookupTarget(lookup)) {
+    return { error: MESSAGE_TARGET_REQUIRED };
+  }
   return { messageId, body, lookup };
 }
