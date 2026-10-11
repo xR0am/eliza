@@ -1006,7 +1006,9 @@ export const googleAdsProvider: AdProvider = {
       spend: parseInt(result.metrics.costMicros || "0") / 1_000_000,
       impressions: parseInt(result.metrics.impressions || "0"),
       clicks: parseInt(result.metrics.clicks || "0"),
-      conversions: Number.parseFloat(result.metrics.conversions || "0"),
+      // Keep the existing integer-count contract: updateMetrics persists this
+      // value in ad_campaigns.total_conversions (an integer column).
+      conversions: Number.parseInt(result.metrics.conversions || "0", 10),
     };
 
     return { success: true, metrics };
