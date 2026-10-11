@@ -719,6 +719,52 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     }
   });
 
+  it("reads a libical TZID as the IANA zone after its prefix", async () => {
+    const source = await createSource();
+    const event = (uid: string, tzid: string) =>
+      [
+        "BEGIN:VEVENT",
+        `UID:${uid}`,
+        "DTSTAMP:20261101T000000Z",
+        `DTSTART;TZID=${tzid}:20261201T180000`,
+        `DTEND;TZID=${tzid}:20261201T190000`,
+        `SUMMARY:${uid}`,
+        "END:VEVENT",
+      ].join("\r\n");
+    await syncBody(
+      source.id,
+      calendar(
+        event("libical", "/freeassociation.sourceforge.net/Europe/Berlin"),
+        event(
+          "libical-old",
+          "/freeassociation.sourceforge.net/Tzfile/Europe/Berlin",
+        ),
+        event("citadel", "/citadel.org/20190914_1/Europe/Berlin"),
+      ),
+    );
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-12-01T00:00:00.000Z",
+        timeMax: "2026-12-03T00:00:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(feed.state).toBe("complete");
+    // 18:00 in Berlin (UTC+1 in December) is 17:00 UTC.
+    expect(
+      feed.events
+        .map((item) => [item.title, item.startAt, item.timezone])
+        .sort(),
+    ).toEqual([
+      ["citadel", "2026-12-01T17:00:00.000Z", "Europe/Berlin"],
+      ["libical", "2026-12-01T17:00:00.000Z", "Europe/Berlin"],
+      ["libical-old", "2026-12-01T17:00:00.000Z", "Europe/Berlin"],
+    ]);
+  });
+
   it("ends a day-length DURATION at the same local time across a DST change", async () => {
     const source = await createSource();
     await syncBody(
@@ -1106,6 +1152,46 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     ]);
   });
 
+  it("keeps the previous local day when a DATE EXDATE names the UTC day of a 00:00Z occurrence", async () => {
+    const source = await createSource();
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:evening-daily",
+          "DTSTAMP:20261101T000000Z",
+          "DTSTART;TZID=America/New_York:20261130T190000",
+          "DTEND;TZID=America/New_York:20261130T200000",
+          "RRULE:FREQ=DAILY;COUNT=5",
+          "EXDATE;VALUE=DATE:20261202",
+          "SUMMARY:Evening daily",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-11-30T00:00:00.000Z",
+        timeMax: "2026-12-31T00:00:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(feed.state).toBe("complete");
+    // 19:00 New York is 00:00Z of the next UTC day. The Dec 1 occurrence
+    // starts at the UTC midnight of Dec 2 and must stay; only the Dec 2
+    // occurrence (2026-12-03T00:00Z) is excluded.
+    expect(feed.events.map((event) => event.startAt)).toEqual([
+      "2026-12-01T00:00:00.000Z",
+      "2026-12-02T00:00:00.000Z",
+      "2026-12-04T00:00:00.000Z",
+      "2026-12-05T00:00:00.000Z",
+    ]);
+  });
+
   it("keeps usable EXDATE values when another EXDATE is malformed", async () => {
     const source = await createSource();
     await syncBody(
@@ -1391,6 +1477,74 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
       }),
       { sourceId: source.id },
     );
+  });
+
+  it("expands the RFC 5545 yearly examples that list months", async () => {
+    const source = await createSource();
+    const example = (uid: string, start: string, rrule: string) =>
+      [
+        "BEGIN:VEVENT",
+        `UID:${uid}`,
+        "DTSTAMP:19970301T000000Z",
+        `DTSTART;TZID=America/New_York:${start}`,
+        "DURATION:PT1H",
+        `RRULE:${rrule}`,
+        `SUMMARY:${uid}`,
+        "END:VEVENT",
+      ].join("\r\n");
+    await syncBody(
+      source.id,
+      calendar(
+        example(
+          "january-february-march",
+          "19970310T090000",
+          "FREQ=YEARLY;INTERVAL=2;COUNT=10;BYMONTH=1,2,3",
+        ),
+        // The RFC example has no end. UNTIL keeps the expected list short.
+        example(
+          "thursdays-in-march",
+          "19970313T090000",
+          "FREQ=YEARLY;BYMONTH=3;BYDAY=TH;UNTIL=19981231T000000Z",
+        ),
+      ),
+    );
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "1997-01-01T00:00:00.000Z",
+        timeMax: "2004-01-01T00:00:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(feed.state).toBe("complete");
+    const startsOf = (title: string) =>
+      feed.events
+        .filter((event) => event.title === title)
+        .map((event) => event.startAt.slice(0, 10));
+    // RFC 5545 3.8.5.3 gives these dates for the two rules.
+    expect(startsOf("january-february-march")).toEqual([
+      "1997-03-10",
+      "1999-01-10",
+      "1999-02-10",
+      "1999-03-10",
+      "2001-01-10",
+      "2001-02-10",
+      "2001-03-10",
+      "2003-01-10",
+      "2003-02-10",
+      "2003-03-10",
+    ]);
+    expect(startsOf("thursdays-in-march")).toEqual([
+      "1997-03-13",
+      "1997-03-20",
+      "1997-03-27",
+      "1998-03-05",
+      "1998-03-12",
+      "1998-03-19",
+      "1998-03-26",
+    ]);
   });
 
   it("does not load unrelated historical rows for a short expansion window", async () => {

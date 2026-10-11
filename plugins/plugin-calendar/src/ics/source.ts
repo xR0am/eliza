@@ -202,6 +202,7 @@ export function expandIcsCalendarEvents(args: {
         ? firstRecurrenceRule(recurrence, {
             localUntil: true,
             monthlyByDay: true,
+            yearlyByMonth: true,
           })
         : null;
     if (!rule || rule.beyondExpansionSubset || hasRdate) {
@@ -244,9 +245,9 @@ export function expandIcsCalendarEvents(args: {
       const occurrenceMs = start.getTime();
       if (!overlaps(occurrenceMs, occurrenceMs + durationMs)) continue;
       if (excluded.instants.has(occurrenceMs)) continue;
-      // A DATE EXDATE on a timed series names a day. It excludes the
-      // occurrence that starts on that day in the series time zone.
-      if (!event.isAllDay && excluded.dates.size > 0) {
+      // A DATE EXDATE names a day. It excludes the occurrence that starts on
+      // that day in the series time zone (UTC for an all-day series).
+      if (excluded.dates.size > 0) {
         const day = getZonedDateParts(start, seriesTimeZone);
         if (excluded.dates.has(Date.UTC(day.year, day.month - 1, day.day))) {
           continue;
