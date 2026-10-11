@@ -182,13 +182,14 @@ function normalizeAssignmentArray(raw: unknown): AssignmentJson[] {
   const out: AssignmentJson[] = [];
   for (const entry of raw) {
     const rec = asRecord(entry);
-    if (!rec) continue;
+    if (!rec) {
+      out.push({});
+      continue;
+    }
     const entityId =
       typeof rec.entityId === "string" ? rec.entityId : undefined;
     const newRole = typeof rec.newRole === "string" ? rec.newRole : undefined;
-    if (entityId || newRole) {
-      out.push({ entityId, newRole });
-    }
+    out.push({ entityId, newRole });
   }
   return out;
 }
@@ -404,7 +405,7 @@ async function buildAssignmentsFromParams(args: {
   }
   // A batch is applied entry by entry, so a bad entry must stop the whole
   // batch here: writing the rest would report a partial write as the request.
-  if (assignments.length > 0 && errors.length > 0) {
+  if (errors.length > 0) {
     return { assignments: [], errors };
   }
 

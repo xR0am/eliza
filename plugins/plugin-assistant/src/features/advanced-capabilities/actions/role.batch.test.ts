@@ -117,6 +117,54 @@ describe("ROLE batch assignments", () => {
     expect((await roles())[TARGET_ID]).toBe("USER");
   });
 
+  it("does not fall back to a named target after rejecting every batch entry", async () => {
+    const { runtime, roles } = await buildRuntime();
+    runtime.getEntitiesForRoom = async () => [
+      { id: TARGET_ID, names: ["Alex"], metadata: {} },
+    ];
+    const result = await roleAction.handler(
+      runtime,
+      buildMessage(),
+      undefined,
+      {
+        parameters: {
+          action: "assign",
+          assignments: [{ entityId: "Sam", newRole: "ADMIN" }],
+          target: "Alex",
+          role: "ADMIN",
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "ROLE_ASSIGN_FAILED",
+    });
+    expect((await roles())[TARGET_ID]).toBe("USER");
+  });
+
+  it.each([null, {}, 42, { entityId: 42 }])(
+    "rejects a malformed batch entry %j before writing a valid entry",
+    async (entry) => {
+      const { runtime, roles } = await buildRuntime();
+      const result = await roleAction.handler(
+        runtime,
+        buildMessage(),
+        undefined,
+        {
+          parameters: {
+            action: "assign",
+            assignments: [{ entityId: TARGET_ID, newRole: "ADMIN" }, entry],
+          },
+        },
+      );
+      expect(result).toMatchObject({
+        success: false,
+        error: "ROLE_ASSIGN_FAILED",
+      });
+      expect((await roles())[TARGET_ID]).toBe("USER");
+    },
+  );
+
   it("still applies a batch whose entries are all entity UUIDs", async () => {
     const { runtime, roles } = await buildRuntime();
 
