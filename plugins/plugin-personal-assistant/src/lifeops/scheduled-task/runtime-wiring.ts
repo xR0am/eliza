@@ -661,7 +661,10 @@ function targetNeedsOwnerResolution(
   target: string | undefined,
 ): boolean {
   const normalized = normalizeChannelTarget(channelKey, target);
-  return !normalized || normalized === channelKey;
+  if (!normalized || normalized === channelKey) return true;
+  const addressesOtherChannel =
+    normalized === target && normalized.includes(":");
+  return addressesOtherChannel;
 }
 
 async function resolveOwnerChannelTarget(
