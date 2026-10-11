@@ -12,7 +12,6 @@ import {
   Copy,
   ExternalLink,
   Globe,
-  Info,
   Loader2,
   Lock,
   Plus,
@@ -83,10 +82,57 @@ interface DomainStatus {
   dnsInstructions: DnsInstruction[];
 }
 
+/** A managed-domain row as `GET /api/v1/apps/:id/domains` returns it. */
+interface ManagedDomainRow {
+  id: string;
+  domain: string;
+  registrar: string;
+  status: string;
+  verified: boolean;
+  sslStatus: DomainInfo["sslStatus"];
+  verificationToken: string | null;
+}
+
 interface DomainsListResponse {
   success?: boolean;
-  domains?: DomainInfo[];
-  sandboxUrl?: string | null;
+  domains?: ManagedDomainRow[];
+}
+
+type VerificationRecord = { type: string; name: string; value: string };
+
+/** The TXT record `POST /domains/verify` checks for an external domain. */
+function verificationRecordFor(row: ManagedDomainRow): VerificationRecord[] {
+  return row.verificationToken
+    ? [
+        {
+          type: "TXT",
+          name: `_eliza-cloud-verify.${row.domain}`,
+          value: row.verificationToken,
+        },
+      ]
+    : [];
+}
+
+/**
+ * The view models an app as one primary entry carrying its custom domain.
+ * The route lists the managed domains attached to the app, so build that
+ * entry from them (an app has at most one attached custom domain).
+ */
+function primaryFromManagedDomains(rows: ManagedDomainRow[]): DomainInfo {
+  const row = rows[0];
+  return {
+    id: row?.id ?? "app",
+    subdomain: "",
+    subdomainUrl: "",
+    customDomain: row?.domain ?? null,
+    customDomainUrl: row ? `https://${row.domain}` : null,
+    customDomainVerified: row?.verified ?? false,
+    sslStatus: row?.sslStatus ?? "pending",
+    isPrimary: true,
+    verificationRecords: row ? verificationRecordFor(row) : [],
+    createdAt: "",
+    verifiedAt: null,
+  };
 }
 
 interface DomainStatusResponse extends Partial<DomainStatus> {
@@ -99,8 +145,7 @@ interface DomainMutationResponse {
   domain?: string;
   verified?: boolean;
   isApexDomain?: boolean;
-  verificationRecords?: Array<{ type: string; name: string; value: string }>;
-  dnsInstructions?: DnsInstruction[];
+  verificationRecord?: VerificationRecord | null;
 }
 
 interface AppDomainsProps {
@@ -110,7 +155,6 @@ interface AppDomainsProps {
 export function AppDomains({ appId }: AppDomainsProps) {
   const t = useCloudT();
   const [domains, setDomains] = useState<DomainInfo[]>([]);
-  const [sandboxUrl, setSandboxUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
@@ -129,8 +173,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
         `/api/v1/apps/${appId}/domains`,
       );
       if (data.success && data.domains) {
-        setDomains(data.domains);
-        setSandboxUrl(data.sandboxUrl || null);
+        setDomains([primaryFromManagedDomains(data.domains)]);
       }
     } finally {
       setIsLoading(false);
@@ -141,13 +184,25 @@ export function AppDomains({ appId }: AppDomainsProps) {
     async (domain: string, silent = false) => {
       if (!silent) setIsChecking(true);
       try {
+        // `/domains/verify` checks the TXT record and records the result;
+        // `/domains/status` only reads the stored state.
         const data = await api<DomainStatusResponse>(
-          `/api/v1/apps/${appId}/domains/status`,
+          `/api/v1/apps/${appId}/domains/verify`,
           { method: "POST", json: { domain } },
         );
 
         if (data.success) {
-          setDomainStatus(data as DomainStatus);
+          setDomainStatus((previous) => ({
+            domain: data.domain ?? domain,
+            status: data.verified ? "valid" : "pending",
+            configured: Boolean(data.verified),
+            verified: Boolean(data.verified),
+            sslStatus: data.verified ? "active" : "pending",
+            configuredBy: null,
+            records: previous?.records ?? [],
+            isApexDomain: previous?.isApexDomain ?? false,
+            dnsInstructions: previous?.dnsInstructions ?? [],
+          }));
           setLastChecked(new Date());
           if (data.verified) {
             if (!silent) {
@@ -269,9 +324,11 @@ export function AppDomains({ appId }: AppDomainsProps) {
           verified: Boolean(data.verified),
           sslStatus: data.verified ? "active" : "pending",
           configuredBy: null,
-          records: data.verificationRecords ?? [],
+          records: data.verificationRecord ? [data.verificationRecord] : [],
           isApexDomain: Boolean(data.isApexDomain),
-          dnsInstructions: data.dnsInstructions ?? [],
+          dnsInstructions: data.verificationRecord
+            ? [data.verificationRecord as DnsInstruction]
+            : [],
         });
         setNewDomain("");
         setShowAddForm(false);
@@ -378,34 +435,6 @@ export function AppDomains({ appId }: AppDomainsProps) {
               <div className="h-16 bg-bg-muted rounded-sm animate-pulse motion-reduce:animate-none" />
               <div className="h-16 bg-bg-muted rounded-sm animate-pulse opacity-50 motion-reduce:animate-none" />
             </div>
-          ) : !primaryDomain && sandboxUrl ? (
-            /* Sandbox URL */
-            <div className="space-y-3">
-              <DomainCard
-                domain={new URL(sandboxUrl).hostname}
-                url={sandboxUrl}
-                type="subdomain"
-                status="verified"
-              />
-              <div className="p-3 rounded-sm bg-bg-muted border border-border">
-                <div className="flex items-start gap-2">
-                  <Info className="size-4 text-muted-strong shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-xs text-txt-strong font-medium">
-                      {t("cloud.appDomains.developmentUrl", {
-                        defaultValue: "Development URL",
-                      })}
-                    </p>
-                    <p className="text-xs text-muted mt-0.5">
-                      {t("cloud.appDomains.developmentUrlHint", {
-                        defaultValue:
-                          "Deploy your app to get a permanent subdomain and add custom domains.",
-                      })}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
           ) : !primaryDomain ? (
             /* No App Deployed */
             <div className="p-6 rounded-sm bg-accent-subtle border border-accent/20 text-center">
@@ -427,7 +456,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
           ) : (
             <div className="space-y-3">
               {/* Subdomain */}
-              {primaryDomain && (
+              {primaryDomain?.subdomain && (
                 <DomainCard
                   domain={primaryDomain.subdomain}
                   url={primaryDomain.subdomainUrl}
@@ -562,7 +591,26 @@ export function AppDomains({ appId }: AppDomainsProps) {
             >
               <DnsConfigPanel
                 domain={primaryDomain?.customDomain || ""}
-                domainStatus={domainStatus}
+                domainStatus={
+                  domainStatus ?? {
+                    // After a reload the TXT record comes from the domain list.
+                    domain: primaryDomain?.customDomain || "",
+                    status: "pending",
+                    configured: false,
+                    verified: false,
+                    sslStatus: primaryDomain?.sslStatus ?? "pending",
+                    configuredBy: null,
+                    records: primaryDomain?.verificationRecords ?? [],
+                    isApexDomain: false,
+                    dnsInstructions: (
+                      primaryDomain?.verificationRecords ?? []
+                    ).map((record) => ({
+                      type: "TXT" as const,
+                      name: record.name,
+                      value: record.value,
+                    })),
+                  }
+                }
                 onRefresh={() =>
                   checkDomainStatus(primaryDomain?.customDomain || "")
                 }
