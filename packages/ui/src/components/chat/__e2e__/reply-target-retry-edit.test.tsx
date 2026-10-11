@@ -310,3 +310,101 @@ it("retries a turn that failed before it was saved with its original reply and k
     "Replying to Eliza",
   );
 });
+
+const PHOTO_BYTES = "photo-bytes";
+const PHOTO_HISTORY: ConversationMessage[] = [
+  {
+    id: "m-user-photo",
+    role: "user",
+    text: "what is this?",
+    timestamp: 1,
+    attachments: [
+      {
+        id: "abc",
+        url: "/api/media/abc.png",
+        title: "photo.png",
+        mimeType: "image/png",
+        contentType: "image",
+      },
+    ],
+  },
+  {
+    id: "m-agent-photo",
+    role: "assistant",
+    text: "",
+    timestamp: 2,
+    failureKind: "provider_issue",
+  },
+];
+const PHOTO_UPLOAD = [
+  { data: btoa(PHOTO_BYTES), mimeType: "image/png", name: "photo.png" },
+];
+
+/** Captures the upload payload each replayed turn sends to the server. */
+function mockServerImages() {
+  mockServer();
+  const sentImages: unknown[] = [];
+  vi.spyOn(client, "sendConversationMessageStream").mockImplementation(
+    async (_conversationId, _text, _onToken, _channelType, _signal, images) => {
+      sentImages.push(images);
+      return {
+        agentName: "Eliza",
+        text: "ok",
+        completed: true,
+      } as StreamResult;
+    },
+  );
+  return sentImages;
+}
+
+function mockStoredMedia() {
+  return vi.spyOn(client, "rawRequest").mockImplementation(
+    async () =>
+      ({
+        blob: async () => new Blob([PHOTO_BYTES], { type: "image/png" }),
+      }) as Response,
+  );
+}
+
+it("sends the stored image again when a failed turn is retried", async () => {
+  const sentImages = mockServerImages();
+  const media = mockStoredMedia();
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+
+  await act(async () => {
+    await chat.handleChatRetry("m-agent-photo");
+  });
+
+  await waitFor(() => expect(sentImages).toEqual([PHOTO_UPLOAD]));
+  expect(media).toHaveBeenCalledWith("/api/media/abc.png");
+});
+
+it("sends the stored image again when the turn text is edited", async () => {
+  const sentImages = mockServerImages();
+  mockStoredMedia();
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+
+  let edited!: boolean;
+  await act(async () => {
+    edited = await chat.handleChatEdit("m-user-photo", "what breed is this?");
+  });
+
+  expect(edited).toBe(true);
+  await waitFor(() => expect(sentImages).toEqual([PHOTO_UPLOAD]));
+});
+
+it("keeps the stored turn when its image cannot be read for an edit", async () => {
+  const sentImages = mockServerImages();
+  vi.spyOn(client, "rawRequest").mockRejectedValue(new Error("gone"));
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+
+  let edited!: boolean;
+  await act(async () => {
+    edited = await chat.handleChatEdit("m-user-photo", "what breed is this?");
+  });
+
+  expect(edited).toBe(false);
+  expect(client.truncateConversationMessages).not.toHaveBeenCalled();
+  expect(sentImages).toEqual([]);
+  expect(harnessMessagesRef.current).toEqual(PHOTO_HISTORY);
+});
