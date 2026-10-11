@@ -382,6 +382,7 @@ describe("boolean contract", () => {
   });
 });
 
+// biome-ignore format: preserve the existing no-semicolon test style
 describe("builtin format contracts", () => {
   it("applies display rules with the registered builtin handlers", () => {
     const booleanControl: FormControl = {
@@ -407,6 +408,7 @@ describe("builtin format contracts", () => {
     ).toBe("United States")
   })
 })
+
 describe("validateField currency numbers", () => {
   const control = { key: "amount", label: "Amount", type: "number" as const };
   it.each(["1,2", "12,34", "1,,234", "1.2,3"])(

@@ -293,7 +293,6 @@ const booleanType: ControlType = {
     return ["true", "yes", "1", "on"].includes(str);
   },
 
-
   extractionPrompt: "a yes/no or true/false value",
 };
 
@@ -347,7 +346,6 @@ const selectType: ControlType = {
   },
 
   parse: (value: string): string => value.trim(),
-
 
   // Note: extractionPrompt is typically customized per-field with option labels
   extractionPrompt: "one of the available options",
