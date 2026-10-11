@@ -90,7 +90,9 @@ async function saveUserDomains(
   if (!hasRuntimeCache(runtime)) {
     throw new Error("AUTOFILL_WHITELIST_CACHE_UNAVAILABLE");
   }
-  await runtime.setCache(WHITELIST_CACHE_KEY, domains);
+  if ((await runtime.setCache(WHITELIST_CACHE_KEY, domains)) === false) {
+    throw new Error("AUTOFILL_WHITELIST_WRITE_FAILED");
+  }
 }
 
 async function effectiveWhitelist(
