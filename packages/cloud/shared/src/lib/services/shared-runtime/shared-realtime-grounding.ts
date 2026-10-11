@@ -842,15 +842,58 @@ export function validateSharedRealtimeReply(reply: string, grounding: AvailableG
   return count > 0 && reply.slice(cursor).trim().length === 0;
 }
 
+/**
+ * Rewrites a natural citation (Markdown link, `<url>`, `(url)` or bare URL) as
+ * the internal source marker, only when the URL is a complete source in the
+ * current receipt. The claim before it is still checked by `claimSupported`,
+ * so citation spelling grants no source or factual authority. URLs outside the
+ * receipt are left in place and keep failing the claim's URL check.
+ */
+export function normalizeSharedPublicCitations(
+  reply: string,
+  grounding: AvailableGrounding,
+): string {
+  SOURCE_MARKER.lastIndex = 0;
+  // A malformed explicit marker is rejected as before, never repaired.
+  if (/\[\[SOURCE_URL:/iu.test(reply.replace(SOURCE_MARKER, ""))) return reply;
+  return reply.replace(
+    /\[\[SOURCE_URL:https?:\/\/[^\]\s]+\]\]|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s<>]+)>|\((https?:\/\/[^\s<>()]+)\)|https?:\/\/[^\s<>"'\]]+/giu,
+    (
+      token: string,
+      label: string | undefined,
+      markdownUrl: string | undefined,
+      angleUrl: string | undefined,
+      parenthesizedUrl: string | undefined,
+    ) => {
+      if (token.startsWith("[[")) return token;
+      const wrapped = markdownUrl ?? angleUrl ?? parenthesizedUrl;
+      const url = wrapped ?? token.replace(/[),.;]+$/u, "");
+      const source = sourceForUrl(grounding, url);
+      if (!source) return token;
+      // A link label that could assert a fact stays in the checked claim.
+      const text = label?.trim() ?? "";
+      const host = new URL(source.url).hostname.replace(/^www\./u, "");
+      const neutral =
+        !text ||
+        /^(?:source|sources|link|\d+)$/iu.test(text) ||
+        text.toLowerCase() === host ||
+        text.toLowerCase() === host.split(".")[0];
+      return `${neutral ? "" : text} [[SOURCE_URL:${source.url}]]${wrapped ? "" : token.slice(url.length)}`;
+    },
+  );
+}
+
 function supportedRealtimeReply(
   reply: string,
   grounding: AvailableGrounding,
   onRefusal?: (diagnostic: SharedRealtimeBindingDiagnostic) => void,
 ): { reply: string; selectedUrls: string[]; omittedUnsupported: boolean } | undefined {
   if (!hasTraceableRealtimeGrounding(grounding)) return undefined;
+  reply = normalizeSharedPublicCitations(reply, grounding);
   SOURCE_MARKER.lastIndex = 0;
   let cursor = 0;
   let omittedUnsupported = false;
+  let lastSegmentAccepted = false;
   const diagnostic = {
     markerCount: 0,
     knownSourceMarkerCount: 0,
@@ -868,12 +911,21 @@ function supportedRealtimeReply(
     if (source && claimSupported(claim, source, diagnostic)) {
       segments.push(claim);
       selectedUrls.push(marker[1]);
+      lastSegmentAccepted = true;
     } else {
       omittedUnsupported = true;
+      lastSegmentAccepted = false;
     }
     cursor = (marker.index ?? 0) + marker[0].length;
   }
-  if (reply.slice(cursor).trim()) omittedUnsupported = true;
+  const tail = reply.slice(cursor).trim();
+  if (tail && /^[.!?,;:…)\]]+$/u.test(tail)) {
+    // Closing punctuation after the last citation is not an uncited claim. It
+    // is kept only with an accepted segment, never with omitted text.
+    if (lastSegmentAccepted) segments[segments.length - 1] += tail;
+  } else if (tail) {
+    omittedUnsupported = true;
+  }
   if (segments.length === 0 && onRefusal) {
     try {
       onRefusal({
