@@ -9,6 +9,11 @@ import type { ChatTurnUsage } from "./types";
 import type { ChatTurnStatus } from "@elizaos/contracts";
 import {
   asObjectRecord as asRecord,
+  CHAT_UPLOAD_MIME_TYPE_SET,
+  MAX_CHAT_ATTACHMENT_NAME_LENGTH,
+  MAX_CHAT_IMAGE_BASE64_BYTES,
+  MAX_CHAT_MEDIA_BASE64_BYTES,
+  MAX_CHAT_UPLOAD_ATTACHMENTS,
   MESSAGE_SOURCE_CLIENT_CHAT,
 } from "@elizaos/core/protocol";
 import { type MutableRefObject, useCallback, useEffect, useRef } from "react";
@@ -56,7 +61,6 @@ import { logger } from "../logger.ts";
 import type { Tab } from "../navigation";
 import { isNative } from "../platform/init";
 import { directCloudSharedAgentIdFromBase } from "../utils/cloud-agent-base";
-import { filesToImageAttachments } from "../utils/image-attachment";
 import {
   dispatchViewActionHandoffDirect,
   findViewActionHandoff,
@@ -397,7 +401,12 @@ const STORED_MEDIA_URL =
 async function readReplayedTurnImages(
   attachments: MessageAttachment[],
 ): Promise<ImageAttachment[]> {
-  return Promise.all(
+  if (attachments.length > MAX_CHAT_UPLOAD_ATTACHMENTS) {
+    throw new Error(
+      "The original turn has too many attachments to replay intact",
+    );
+  }
+  const images = await Promise.all(
     attachments.map(async (attachment): Promise<ImageAttachment> => {
       const name = attachment.title ?? "";
       const transcript = attachment.transcriptId
@@ -429,15 +438,42 @@ async function readReplayedTurnImages(
         throw new Error(`attachment "${name}" is not stored media`);
       }
       const blob = await (await client.rawRequest(attachment.url)).blob();
-      const [image] = await filesToImageAttachments([
-        new File([blob], name, { type: attachment.mimeType ?? blob.type }),
-      ]);
-      if (!image) {
-        throw new Error(`attachment "${name}" can no longer be uploaded`);
-      }
-      return { ...image, ...transcript };
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const encoded = BASE64_DATA_URL.exec(String(reader.result));
+          if (!encoded)
+            reject(new Error(`attachment "${name}" could not be encoded`));
+          else resolve(encoded[2]);
+        };
+        reader.onerror = () =>
+          reject(reader.error ?? new Error("Attachment read failed"));
+        reader.onabort = () => reject(new Error("Attachment read aborted"));
+        reader.readAsDataURL(blob);
+      });
+      return {
+        data,
+        mimeType: attachment.mimeType ?? blob.type,
+        name: name || "attachment",
+        ...transcript,
+      };
     }),
   );
+  for (const image of images) {
+    const cap = image.mimeType.toLowerCase().startsWith("image/")
+      ? MAX_CHAT_IMAGE_BASE64_BYTES
+      : MAX_CHAT_MEDIA_BASE64_BYTES;
+    if (
+      !CHAT_UPLOAD_MIME_TYPE_SET.has(image.mimeType.toLowerCase()) ||
+      image.data.length > cap ||
+      (image.name?.length ?? 0) > MAX_CHAT_ATTACHMENT_NAME_LENGTH
+    ) {
+      throw new Error(
+        `attachment "${image.name}" cannot be replayed intact within the upload limits`,
+      );
+    }
+  }
+  return images;
 }
 /**
  * Commands render only after the drain resolves whether they are local,
@@ -3247,7 +3283,13 @@ export function useChatSend(deps: UseChatSendDeps) {
           (m) => m.id === assistantMsgId && m.role === "assistant",
         );
         userIdx = currentMessages.findIndex((m) => m.id === userMsg.id);
-        if (assistantIdx < 0 || userIdx < 0) return;
+        if (
+          assistantIdx < 0 ||
+          userIdx < 0 ||
+          currentMessages[userIdx] !== userMsg ||
+          currentMessages[assistantIdx] !== assistantMessage
+        )
+          return;
       }
       const canTruncate =
         Boolean(convId) &&
@@ -3387,7 +3429,8 @@ export function useChatSend(deps: UseChatSendDeps) {
         messageIndex = currentMessages.findIndex(
           (message) => message.id === messageId && message.role === "user",
         );
-        if (messageIndex < 0) return false;
+        if (messageIndex < 0 || currentMessages[messageIndex] !== targetMessage)
+          return false;
       }
       const restoredQueuedDraft = interruptActiveChatPipelineWithDraft();
       if (!restoredQueuedDraft.text) {

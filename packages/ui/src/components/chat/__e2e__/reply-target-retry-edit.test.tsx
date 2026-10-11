@@ -457,3 +457,29 @@ it("does not read another same-origin API path with the API credential", async (
   expect(sentImages).toEqual([]);
   expect(harnessMessagesRef.current).toEqual(history);
 });
+
+
+it("refuses an oversized stored image before truncation instead of recompressing it", async () => {
+  const sentImages = mockServerImages();
+  vi.spyOn(client, "rawRequest").mockResolvedValue({ blob: async () => new Blob([new Uint8Array(4 * 1024 * 1024)], { type: "image/png" }) } as Response);
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+  await act(async () => { await chat.handleChatRetry("m-agent-photo"); });
+  expect(client.truncateConversationMessages).not.toHaveBeenCalled();
+  expect(sentImages).toEqual([]);
+  expect(harnessMessagesRef.current).toEqual(PHOTO_HISTORY);
+});
+
+it("does not replay stale attachments when the source message changes during the read", async () => {
+  const sentImages = mockServerImages();
+  let finish!: (response: Response) => void;
+  vi.spyOn(client, "rawRequest").mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
+  render(<Harness history={PHOTO_HISTORY} armed={null} />);
+  await act(async () => {
+    const replay = chat.handleChatRetry("m-agent-photo");
+    harnessMessagesRef.current = [{ ...PHOTO_HISTORY[0], text: "a newer version" }, PHOTO_HISTORY[1]];
+    finish({ blob: async () => new Blob([PHOTO_BYTES], { type: "image/png" }) } as Response);
+    await replay;
+  });
+  expect(client.truncateConversationMessages).not.toHaveBeenCalled();
+  expect(sentImages).toEqual([]);
+});
