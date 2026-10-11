@@ -173,6 +173,27 @@ describe("GitHub account resolution", () => {
     );
   });
 
+  it("uses the settings form token as the user account", () => {
+    // The plugin settings card saves its required token as GITHUB_API_TOKEN.
+    expect(
+      readGitHubAccounts(runtime({ GITHUB_API_TOKEN: "form-token" })),
+    ).toEqual([
+      expect.objectContaining({
+        accountId: "user",
+        role: "user",
+        token: "form-token",
+      }),
+    ]);
+    expect(
+      readGitHubAccounts(
+        runtime({
+          GITHUB_API_TOKEN: "form-token",
+          GITHUB_USER_PAT: "user-token",
+        }),
+      ),
+    ).toEqual([expect.objectContaining({ role: "user", token: "user-token" })]);
+  });
+
   it("resolves explicit accountId before role defaults", () => {
     const accounts = readGitHubAccounts(
       runtime({
