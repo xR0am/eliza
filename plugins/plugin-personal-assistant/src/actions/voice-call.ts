@@ -41,8 +41,7 @@ type RecipientKind = "owner" | "external" | "e164";
 interface VoiceCallParams {
   /**
    * Recipient discriminator. Drives the routing inside `dial`:
-   *   - `owner`     → owner-escalation path (env-resolved owner number,
-   *                   standing-policy acknowledgement)
+   *   - `owner`     → owner-escalation path (env-resolved owner number)
    *   - `external`  → name-resolved third party + allow-list check
    *   - `e164`      → raw E.164 number, no relationship lookup
    */
@@ -57,7 +56,7 @@ interface VoiceCallParams {
 const SUBACTIONS: SubactionsMap<VoiceCallSubaction> = {
   dial: {
     description:
-      "Outbound Twilio voice call. recipientKind: owner escalation env owner number + standing-policy ack; external third party RelationshipStore + allow-list; e164 raw phoneNumber + bodyText. Draft first; the owner's next-turn yes dispatches.",
+      "Outbound Twilio voice call. recipientKind: owner escalation env owner number; external third party RelationshipStore + allow-list; e164 raw phoneNumber + bodyText. Draft first; the owner's next-turn yes dispatches.",
     descriptionCompressed:
       "Twilio voice dial: recipientKind=owner|external|e164; draft, owner yes/no next turn",
     required: ["recipientKind"],
@@ -88,63 +87,6 @@ function normalizeLookup(value: string): string {
 
 function messageText(message: Memory): string {
   return typeof message.content.text === "string" ? message.content.text : "";
-}
-
-function isStandingOwnerCallPolicy(message: Memory): boolean {
-  const text = normalizeLookup(messageText(message));
-  if (!text) {
-    return false;
-  }
-  const isConditional =
-    /\b(if|when|whenever)\b/.test(text) ||
-    /\bget stuck\b/.test(text) ||
-    /\bblocked\b/.test(text);
-  const mentionsCall = /\b(call|phone|dial)\b/.test(text);
-  const mentionsBlockedWork =
-    /\b(stuck|blocked|jam|jams|unblock)\b/.test(text) &&
-    /\b(browser|computer|desktop|remote|workflow|machine)\b/.test(text);
-  return isConditional && mentionsCall && mentionsBlockedWork;
-}
-
-function buildCallUserPolicyAcknowledgement(
-  userText: string,
-): ActionResult | null {
-  const normalized = userText.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-
-  const isStandingEscalationPolicy =
-    /\bif\b/u.test(normalized) &&
-    /\b(?:stuck|blocked|jammed|jams|unblock|can't continue|cannot continue)\b/u.test(
-      normalized,
-    ) &&
-    /\b(?:browser|computer|desktop|screen|remote workflow|on my machine)\b/u.test(
-      normalized,
-    ) &&
-    /\b(?:call me|phone me|ring me|dial me)\b/u.test(normalized);
-
-  if (!isStandingEscalationPolicy) {
-    return null;
-  }
-
-  return {
-    text: "If I get stuck in the browser or on your computer, I'll escalate by phone so you can jump in and unblock it. I will still require confirmation before placing an actual call.",
-    success: true,
-    values: {
-      success: true,
-      policyRecorded: true,
-    },
-    data: {
-      actionName: ACTION_NAME,
-      action: "dial",
-      subaction: "dial",
-      recipientKind: "owner",
-      policyRecorded: true,
-      policyType: "stuck_computer_phone_escalation",
-      channel: "phone_call",
-    },
-  };
 }
 
 function readOwnerNumber(
@@ -528,33 +470,6 @@ async function dialOwner(
   message: Memory,
   params: VoiceCallParams,
 ): Promise<ActionResult> {
-  const policyAcknowledgement = buildCallUserPolicyAcknowledgement(
-    messageText(message),
-  );
-  if (policyAcknowledgement) {
-    return policyAcknowledgement;
-  }
-
-  if (isStandingOwnerCallPolicy(message)) {
-    return {
-      text: "Recorded. If I get stuck in the browser or on your computer, I'll escalate by phone so you can jump in to unblock it.",
-      success: true,
-      values: {
-        success: true,
-        policyRecorded: true,
-        channel: "phone_call",
-      },
-      data: {
-        actionName: ACTION_NAME,
-        action: "dial",
-        subaction: "dial",
-        recipientKind: "owner",
-        policyRecorded: true,
-        channel: "phone_call",
-      },
-    };
-  }
-
   const to = readOwnerNumber(runtime);
   if (!to) {
     logger.warn(
@@ -823,7 +738,7 @@ export const voiceCallAction: Action & {
   description:
     "Owner-only outbound voice call via registered provider. Action dial; recipientKind=owner|external|e164. " +
     "Provider Twilio; Android/app-phone implementation-only until VOICE_CALL provider wired. " +
-    "owner env owner number + standing escalation policy; external RelationshipStore contact + allow-list; e164 raw phoneNumber. " +
+    "owner env owner number; external RelationshipStore contact + allow-list; e164 raw phoneNumber. " +
     "All paths draft first; the call is placed only after the owner replies yes on the next turn.",
   descriptionCompressed:
     "Twilio voice dial: recipientKind=owner|external|e164; draft, owner yes/no next turn",
@@ -937,20 +852,6 @@ export const voiceCallAction: Action & {
         name: "{{agentName}}",
         content: {
           text: 'Draft voice call to +15551234567:\n\n"The build is done."\n\nSay "confirm" to place the call.',
-        },
-      },
-    ],
-    [
-      {
-        name: "{{name1}}",
-        content: {
-          text: "If you get stuck in the browser or on my computer, call me and let me jump in to unblock it.",
-        },
-      },
-      {
-        name: "{{agentName}}",
-        content: {
-          text: "Recorded. If I get stuck in the browser or on your computer, I'll escalate by phone so you can jump in to unblock it.",
         },
       },
     ],

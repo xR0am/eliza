@@ -256,6 +256,24 @@ describe("VOICE_CALL confirmation and recipient binding", () => {
     );
   });
 
+  it("drafts the owner call when the request mentions blocked browser work", async () => {
+    const runtime = makeRuntime();
+    const text = "My browser is blocked on the login page, call me now.";
+    const owner = { recipientKind: "owner", bodyText: "You asked me to call." };
+
+    const draft = await dial(runtime, text, owner);
+
+    expect(draft?.success).toBe(false);
+    expect(draft?.data?.requiresConfirmation).toBe(true);
+    expect(draft?.text).toContain("You asked me to call.");
+    expect(draft?.values?.policyRecorded).toBeUndefined();
+
+    const confirmed = await dial(runtime, "yes", owner);
+
+    expect(confirmed?.success).toBe(true);
+    expect(twilio.sendTwilioVoiceCall).toHaveBeenCalledTimes(1);
+  });
+
   it("calls the declared recipient, not a contact the message only mentions", async () => {
     const runtime = makeRuntime();
     const external = {
