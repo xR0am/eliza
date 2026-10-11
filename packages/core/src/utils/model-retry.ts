@@ -27,9 +27,25 @@ function* retryEvidenceNodes(error: unknown): Generator<object> {
 			lastError?: unknown;
 			errors?: unknown;
 		};
-		if (wrapped.cause !== undefined) stack.push(wrapped.cause);
-		if (wrapped.lastError !== undefined) stack.push(wrapped.lastError);
-		if (Array.isArray(wrapped.errors)) stack.push(...wrapped.errors);
+		// Bound expansion as well as traversal: spreading an untrusted history
+		// can overflow the call stack before the node limit applies. Prefer the
+		// explicit final error, then cause, then recent retry history.
+		const children: unknown[] = [wrapped.lastError, wrapped.cause];
+		if (Array.isArray(wrapped.errors)) {
+			for (
+				let i = wrapped.errors.length - 1;
+				i >= 0 && children.length < 12;
+				i--
+			) {
+				children.push(wrapped.errors[i]);
+			}
+		}
+		for (let i = children.length - 1; i >= 0; i--) {
+			const child = children[i];
+			if (typeof child === "object" && child !== null && !seen.has(child)) {
+				stack.push(child);
+			}
+		}
 	}
 }
 

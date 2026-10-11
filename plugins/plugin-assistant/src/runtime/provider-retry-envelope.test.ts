@@ -129,4 +129,23 @@ describe("providerRateLimitRetryAt through SDK error envelopes", () => {
     const envelope = exhaustedRetriesEnvelope({});
     expect(providerRateLimitRetryAt(envelope, now)).toBeUndefined();
   });
+
+  it("bounds oversized histories and prefers the explicit final error", () => {
+    const now = 1_000_000;
+    const envelope = {
+      lastError: { statusCode: 429, retryAfterMs: 7000 },
+      errors: Array.from({ length: 200_000 }, () => ({
+        statusCode: 429,
+        retryAfterMs: 1000,
+      })),
+    };
+    expect(providerRateLimitRetryAt(envelope, now)).toBe(now + 7000);
+  });
+
+  it("terminates on cyclic retry envelopes", () => {
+    const envelope: { cause?: unknown; errors: unknown[] } = { errors: [] };
+    envelope.cause = envelope;
+    envelope.errors.push(envelope);
+    expect(providerRateLimitRetryAt(envelope)).toBeUndefined();
+  });
 });
