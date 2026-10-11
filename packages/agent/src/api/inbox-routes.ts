@@ -512,6 +512,19 @@ function readRoomConnectorAccountId(
     ? candidate.trim()
     : undefined;
 }
+/** The room's stored account when it is a registered account of the provider. */
+async function resolveRegisteredRoomAccountId(
+  runtime: AgentRuntime,
+  source: string,
+  storedAccountId: string | undefined,
+): Promise<string | undefined> {
+  if (!storedAccountId) return undefined;
+  const account = await getConnectorAccountManager(runtime).getAccount(
+    normalizeAccountProvider(source),
+    storedAccountId,
+  );
+  return account?.id === storedAccountId ? storedAccountId : undefined;
+}
 async function resolveInboxAccountRouting(
   runtime: AgentRuntime,
   source: string,
@@ -2702,22 +2715,28 @@ export async function handleInboxRoute(
     // server-owned room/account records; client-controlled Content.metadata is
     // never promoted into connector routing state.
     // A reply goes out from the account the room belongs to, so the contact
-    // sees the same identity they wrote to.
-    const roomAccountId = readRoomConnectorAccountId(room, trustedRoomSource);
-    if (accountId && roomAccountId && accountId !== roomAccountId) {
-      helpers.json(
-        res,
-        {
-          error: `This conversation belongs to connector account ${roomAccountId}. Select that account to reply.`,
-          code: "INBOX_CONNECTOR_ACCOUNT_ROOM_MISMATCH",
-          context: { accountId, roomAccountId, roomId, source },
-        },
-        409,
-      );
-      return true;
-    }
+    // sees the same identity they wrote to. The binding applies only when the
+    // room's stored account is a registered account of this provider; other
+    // rooms (no provider, removed account) keep the source-level routing.
     let accountRouting: InboxAccountRoutingResolution;
     try {
+      const roomAccountId = await resolveRegisteredRoomAccountId(
+        runtime,
+        source,
+        readRoomConnectorAccountId(room, trustedRoomSource),
+      );
+      if (accountId && roomAccountId && accountId !== roomAccountId) {
+        helpers.json(
+          res,
+          {
+            error: `This conversation belongs to connector account ${roomAccountId}. Select that account to reply.`,
+            code: "INBOX_CONNECTOR_ACCOUNT_ROOM_MISMATCH",
+            context: { accountId, roomAccountId, roomId, source },
+          },
+          409,
+        );
+        return true;
+      }
       accountRouting = await resolveInboxAccountRouting(
         runtime,
         source,
