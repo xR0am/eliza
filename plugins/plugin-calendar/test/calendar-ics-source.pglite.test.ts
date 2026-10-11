@@ -727,6 +727,50 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     ).toEqual(["School pickup"]);
   });
 
+  it.each(["ü", "€", "😀"])(
+    "reads a feed folded between every UTF-8 octet of %s",
+    async (character) => {
+      const source = await createSource();
+      // The first fold falls at 75 octets. Further folds inside the same
+      // scalar must also be removed before the strict UTF-8 decode.
+      const title = `${"a".repeat(66)}${character}ber`;
+      const line = new TextEncoder().encode(`SUMMARY:${title}`);
+      const body = Buffer.concat([
+        Buffer.from(
+          "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+            "BEGIN:VEVENT\r\nUID:folded\r\nDTSTAMP:20260701T080000Z\r\n" +
+            "DTSTART:20260701T100000Z\r\nDTEND:20260701T110000Z\r\n",
+        ),
+        line.subarray(0, 74),
+        ...Array.from(Buffer.from(character)).flatMap((octet, index) =>
+          index === 0
+            ? [Buffer.from([octet])]
+            : [Buffer.from("\r\n "), Buffer.from([octet])],
+        ),
+        line.subarray(74 + Buffer.byteLength(character)),
+        Buffer.from("\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"),
+      ]);
+      expect(line[74]).toBe(Buffer.from(character)[0]);
+
+      await service.syncIcsCalendarSource(source.id, {
+        transport: {
+          fetchImpl: async () =>
+            new Response(body, {
+              status: 200,
+              headers: { "content-type": "text/calendar" },
+            }),
+        },
+      });
+      const feed = await service.getCalendarFeed(
+        new URL("http://internal.test/api/calendar"),
+        { grantId: source.id, ...WINDOW },
+        new Date(),
+      );
+
+      expect(feed.events.map((event) => event.title)).toEqual([title]);
+    },
+  );
+
   it("keeps decoded parameter names through subscription sync and feed reads", async () => {
     const source = await createSource();
     const cases = [
