@@ -727,6 +727,43 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     ).toEqual(["School pickup"]);
   });
 
+  it("reads a feed whose line fold is inside a UTF-8 character", async () => {
+    const source = await createSource();
+    // A producer that folds at 75 octets cuts "ü" (C3 BC) after its first
+    // octet here: the line is "SUMMARY:" and 66 letters, then "ü".
+    const title = `${"a".repeat(66)}über`;
+    const line = new TextEncoder().encode(`SUMMARY:${title}`);
+    const body = Buffer.concat([
+      Buffer.from(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+          "BEGIN:VEVENT\r\nUID:folded\r\nDTSTAMP:20260701T080000Z\r\n" +
+          "DTSTART:20260701T100000Z\r\nDTEND:20260701T110000Z\r\n",
+      ),
+      line.subarray(0, 75),
+      Buffer.from("\r\n "),
+      line.subarray(75),
+      Buffer.from("\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"),
+    ]);
+    expect(line[74]).toBe(0xc3);
+
+    await service.syncIcsCalendarSource(source.id, {
+      transport: {
+        fetchImpl: async () =>
+          new Response(body, {
+            status: 200,
+            headers: { "content-type": "text/calendar" },
+          }),
+      },
+    });
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      { grantId: source.id, ...WINDOW },
+      new Date(),
+    );
+
+    expect(feed.events.map((event) => event.title)).toEqual([title]);
+  });
+
   it("keeps decoded parameter names through subscription sync and feed reads", async () => {
     const source = await createSource();
     const cases = [

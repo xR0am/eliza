@@ -86,6 +86,67 @@ export function fingerprintIcsSourceUrl(url: URL): string {
   return createHash("sha256").update(url.href).digest("hex");
 }
 
+/** Length of a line fold (a line break and one space or tab) at `index`. */
+function foldLengthAt(bytes: Uint8Array, index: number): number {
+  const first = bytes[index];
+  const breakLength =
+    first === 0x0d
+      ? bytes[index + 1] === 0x0a
+        ? 2
+        : 1
+      : first === 0x0a
+        ? 1
+        : 0;
+  const next = bytes[index + breakLength];
+  return breakLength > 0 && (next === 0x20 || next === 0x09)
+    ? breakLength + 1
+    : 0;
+}
+
+/**
+ * RFC 5545 section 3.1 counts line length in octets, so a producer can fold a
+ * line between the octets of one UTF-8 character. Such a body does not decode
+ * as UTF-8 until it is unfolded. This moves each such fold to the end of its
+ * character: the decoded text is then the same text with the fold one
+ * character later, and the parser removes the fold as usual.
+ */
+function moveFoldsOutOfUtf8Sequences(bytes: Uint8Array): Uint8Array {
+  const moved = new Uint8Array(bytes.length);
+  let written = 0;
+  // Continuation octets (10xxxxxx) that the current character still needs.
+  let pending = 0;
+  for (let index = 0; index < bytes.length; ) {
+    const foldLength = pending > 0 ? foldLengthAt(bytes, index) : 0;
+    if (foldLength > 0) {
+      const rest = bytes.subarray(
+        index + foldLength,
+        index + foldLength + pending,
+      );
+      if (
+        rest.length === pending &&
+        rest.every((octet) => (octet & 0xc0) === 0x80)
+      ) {
+        moved.set(rest, written);
+        moved.set(bytes.subarray(index, index + foldLength), written + pending);
+        written += pending + foldLength;
+        index += foldLength + pending;
+        pending = 0;
+        continue;
+      }
+    }
+    const octet = bytes[index] ?? 0;
+    moved[written] = octet;
+    written += 1;
+    index += 1;
+    if (pending > 0 && (octet & 0xc0) === 0x80) pending -= 1;
+    else if (octet >= 0xf0) pending = 3;
+    else if (octet >= 0xe0) pending = 2;
+    else if (octet >= 0xc0) pending = 1;
+    else pending = 0;
+  }
+  return moved;
+}
+
 async function readBoundedUtf8Body(
   response: Response,
   sourceFingerprint: string,
@@ -111,12 +172,12 @@ async function readBoundedUtf8Body(
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  let body = "";
+  const chunks: Uint8Array[] = [];
   let byteLength = 0;
 
-  const decode = (value?: Uint8Array, stream = false): string => {
+  const decode = (value: Uint8Array): string => {
     try {
-      return decoder.decode(value, { stream });
+      return decoder.decode(value);
     } catch (error) {
       // error-policy:J2 Preserve the decoder failure and add only the opaque
       // source identity; capability-bearing URLs never enter the error chain.
@@ -157,12 +218,12 @@ async function readBoundedUtf8Body(
           { sourceFingerprint, limit: MAX_ICS_FEED_BYTES },
         );
       }
-      body += decode(chunk.value, true);
+      chunks.push(chunk.value);
     }
-    body += decode();
   } finally {
     reader.releaseLock();
   }
+  const body = decode(moveFoldsOutOfUtf8Sequences(Buffer.concat(chunks)));
   return { body, byteLength };
 }
 
