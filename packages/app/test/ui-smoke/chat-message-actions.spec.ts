@@ -4,6 +4,7 @@
  * transcript containment can clip an otherwise visible, interactive element.
  */
 
+import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
@@ -22,8 +23,9 @@ const USER_TEXT = "draft me an action row";
 const EDITED_TEXT = "draft me a polished action row";
 const OUT_DIR = testOutputPath("app", "10713-message-actions");
 
-const PHOTO_DATA =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XcAAAAASUVORK5CYII=";
+const PHOTO_DATA = readFileSync(
+  new URL("../../public/favicon-180x180.png", import.meta.url),
+).toString("base64");
 const PHOTO_URL = `/api/media/${"a".repeat(64)}.png`;
 type StreamCall = Record<string, unknown>;
 
@@ -133,7 +135,12 @@ async function installMessageActionConversationRoutes(
   await page.route(
     `**/api/conversations/${CONVERSATION_ID}/messages/truncate`,
     async (route) => {
-      truncateCalls.push(JSON.parse(route.request().postData() ?? "{}"));
+      const request = JSON.parse(route.request().postData() ?? "{}");
+      truncateCalls.push(request);
+      const index = messages.findIndex(
+        (message) => message.id === request.messageId,
+      );
+      if (index >= 0) messages.splice(index);
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -363,6 +370,12 @@ for (const viewport of [
     expect(streamCalls[0].images).toEqual([
       { data: PHOTO_DATA, mimeType: "image/png", name: "photo.png" },
     ]);
+    await expect(page.getByText(ASSISTANT_TEXT, { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByText("Edited message received.", { exact: true }),
+    ).toBeVisible();
     await screenshot(page, `${viewport.name}-edited-photo`);
     expect(pageErrors, "no uncaught page errors").toEqual([]);
 
@@ -393,6 +406,12 @@ for (const viewport of [
       { data: PHOTO_DATA, mimeType: "image/png", name: "photo.png" },
     ]);
     expect(JSON.stringify(streamCalls[0])).toContain(USER_TEXT);
+    await expect(page.getByText(ASSISTANT_TEXT, { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByText("Edited message received.", { exact: true }),
+    ).toBeVisible();
     await screenshot(page, `${viewport.name}-retried-photo`);
   });
 }
