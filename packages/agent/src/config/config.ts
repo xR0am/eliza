@@ -91,7 +91,7 @@ function migrateConfig(config: ElizaConfig): void {
   migrateRetiredPluginConfig(config);
 }
 
-function resolveConfigWritePath(
+export function resolveConfigWritePath(
   env: NodeJS.ProcessEnv = process.env,
   canonicalConfigPath?: string,
 ): string {

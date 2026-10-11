@@ -55,7 +55,11 @@ import {
   resolveTradePermissionMode,
 } from "@elizaos/plugin-wallet/transactions";
 import { WebSocket, WebSocketServer } from "ws";
-import { loadElizaConfig, saveElizaConfig } from "../config/config.ts";
+import {
+  loadElizaConfig,
+  resolveConfigWritePath,
+  saveElizaConfig,
+} from "../config/config.ts";
 import {
   createDevCloudConfigAuthorityView,
   materializeDevCloudConfigAuthorityView,
@@ -159,7 +163,10 @@ import {
 } from "./blocked-object-keys.ts";
 import { resolveRegisteredTokenRoleAccess } from "./boundary-role-resolver.ts";
 import { handleStandaloneCloudPairRoute } from "./cloud-pair-route.ts";
-import { replaceConfigInPlace } from "./config-state.ts";
+import {
+  replaceConfigInPlace,
+  setLiveElizaConfigSource,
+} from "./config-state.ts";
 import { resolveConnectorHealthIntervalMs } from "./connector-health.ts";
 import { handleContextInspectorRoute } from "./context-inspector-routes.ts";
 import { restoreConversationsFromDb as restoreConversationsFromDbImpl } from "./conversation-restore.ts";
@@ -3391,6 +3398,7 @@ export async function startApiServer(opts?: {
   );
   logger.debug(`[eliza-api] Token check done (${Date.now() - apiStartTime}ms)`);
   let config: ElizaConfig;
+  const configWritePath = resolveConfigWritePath();
   try {
     config = hostConfig ?? loadElizaConfig();
   } catch (err) {
@@ -5211,9 +5219,16 @@ export async function startApiServer(opts?: {
       logger.debug({ error, helper }, `[eliza-api] ${helper} failed`);
     },
   });
+  const releaseLiveConfigSource =
+    hostConfig === undefined
+      ? setLiveElizaConfigSource(() => state.config, configWritePath)
+      : undefined;
   return {
     port: listener.port,
-    close: listener.close,
+    close: async () => {
+      releaseLiveConfigSource?.();
+      await listener.close();
+    },
     updateRuntime,
     runtimeOperations,
     reloadConfigFromDisk,
