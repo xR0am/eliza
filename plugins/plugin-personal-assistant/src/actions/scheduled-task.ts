@@ -1505,7 +1505,8 @@ async function handleUpdate(
   // applied, so it does not count as a change and the result reports it.
   const outputIgnored =
     existingBinding !== null &&
-    outputDiffersFromBound(patch.output, existing.output);
+    Object.hasOwn(patch, "output") &&
+    stableStringify(patch.output) !== stableStringify(existing.output);
   const patchEntries = Object.entries(patch).filter(
     ([key]) => !(outputIgnored && key === "output"),
   );

@@ -439,24 +439,30 @@ describe("SCHEDULED_TASK action", () => {
     expect(poisonedUpdate.text).toContain("telegram chat");
 
     // A patch whose only change is the pinned destination changes nothing.
-    const outputOnlyUpdate = await executePlannedToolCall(
-      runtime,
-      { message, userRoles: ["OWNER"], activeContexts: ["tasks"] },
-      {
-        name: "SCHEDULED_TASKS",
-        params: {
-          action: "update",
-          taskId: task?.taskId,
-          patch: {
-            output: { destination: "channel", target: "discord:public-room" },
+    for (const output of [
+      { destination: "channel", target: "discord:public-room" },
+      {},
+      null,
+    ]) {
+      const outputOnlyUpdate = await executePlannedToolCall(
+        runtime,
+        { message, userRoles: ["OWNER"], activeContexts: ["tasks"] },
+        {
+          name: "SCHEDULED_TASKS",
+          params: {
+            action: "update",
+            taskId: task?.taskId,
+            patch: {
+              output,
+            },
           },
         },
-      },
-    );
-    expect(outputOnlyUpdate.success).toBe(false);
-    expect(outputOnlyUpdate.data).toMatchObject({
-      error: "OUTPUT_BOUND_TO_CHAT",
-    });
+      );
+      expect(outputOnlyUpdate.success).toBe(false);
+      expect(outputOnlyUpdate.data).toMatchObject({
+        error: "OUTPUT_BOUND_TO_CHAT",
+      });
+    }
     const protectedTask = (await runner.list()).find(
       (candidate) => candidate.taskId === task?.taskId,
     );
