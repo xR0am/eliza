@@ -1134,6 +1134,31 @@ const CLOUD_ROUTING_MODEL_ENV: ReadonlyArray<[string, string]> = [
   ["ELIZAOS_CLOUD_RESPONSE_MODEL", "responseModel"],
   ["ELIZAOS_CLOUD_MEDIA_DESCRIPTION_MODEL", "mediaDescriptionModel"],
 ];
+// Operator launch values for the Cloud role pins. applyCloudConfigToEnv
+// writes these keys into process.env, and an in-process restart would read
+// that write back as operator input, so a pin reset to Default in Settings
+// would never clear. Captured on the first Cloud config step, after the host
+// loads dotenv.
+const CLOUD_ROLE_PIN_ENV_KEYS = [
+  "ELIZAOS_CLOUD_RESPONSE_HANDLER_MODEL",
+  "ELIZAOS_CLOUD_SHOULD_RESPOND_MODEL",
+  "ELIZAOS_CLOUD_ACTION_PLANNER_MODEL",
+  "ELIZAOS_CLOUD_PLANNER_MODEL",
+] as const;
+let launchCloudRolePinSnapshot: Readonly<NodeJS.ProcessEnv> | undefined;
+function launchCloudRolePinEnv(): Readonly<NodeJS.ProcessEnv> {
+  launchCloudRolePinSnapshot ??= Object.freeze(
+    Object.fromEntries(
+      CLOUD_ROLE_PIN_ENV_KEYS.map((key) => [key, process.env[key]]),
+    ),
+  );
+  return launchCloudRolePinSnapshot;
+}
+const CLOUD_ROLE_PIN_ENV_KEY_SET = new Set<string>(CLOUD_ROLE_PIN_ENV_KEYS);
+/** @internal Test-only: forget the launch copy so each case takes its own. */
+export function resetLaunchCloudRolePinEnvForTests(): void {
+  launchCloudRolePinSnapshot = undefined;
+}
 function mergeMissingCloudRoutingModelPins(
   config: ElizaConfig,
   env: NodeJS.ProcessEnv,
@@ -1146,9 +1171,14 @@ function mergeMissingCloudRoutingModelPins(
     | undefined;
   if (!llmText) return false;
   const patch: Record<string, string> = {};
+  const rolePinEnv = env === process.env ? launchCloudRolePinEnv() : env;
   for (const [envKey, routingField] of CLOUD_ROUTING_MODEL_ENV) {
     if (trimEnvString(llmText[routingField])) continue;
-    const value = readEffectiveEnvValue(config, envKey, env);
+    const value = readEffectiveEnvValue(
+      config,
+      envKey,
+      CLOUD_ROLE_PIN_ENV_KEY_SET.has(envKey) ? rolePinEnv : env,
+    );
     if (value) patch[routingField] = value;
   }
   if (Object.keys(patch).length === 0) return false;
@@ -1166,6 +1196,7 @@ export function ensureProvisionedCloudContainerConfig(
   config: ElizaConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  launchCloudRolePinEnv();
   if (!isProvisionedCloudContainer(env)) {
     return false;
   }
@@ -2170,6 +2201,7 @@ export function cloudApiKeyFingerprint(value: string | undefined): string {
  * ElizaCloud plugin can discover settings at startup.
  */
 export function applyCloudConfigToEnv(config: ElizaConfig): void {
+  launchCloudRolePinEnv();
   migrateLegacyRuntimeConfig(config as Record<string, unknown>);
   const devCloudSnapshot = applyDevCloudConfigAuthority(
     config as Record<string, unknown>,
@@ -2419,16 +2451,31 @@ function applyCloudConfigToEnvResolved(config: ElizaConfig): void {
       models?.mega ||
       readEffectiveEnvValue(config, "ELIZAOS_CLOUD_MEGA_MODEL") ||
       large;
+    // A saved Cloud route owns the role pins; only launch env and config.env
+    // can fill a pin it leaves unset.
+    const rolePinEnv = llmText ? launchCloudRolePinEnv() : process.env;
     const responseHandlerModel =
       llmText?.responseHandlerModel ||
       llmText?.shouldRespondModel ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_RESPONSE_HANDLER_MODEL") ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_SHOULD_RESPOND_MODEL");
+      readEffectiveEnvValue(
+        config,
+        "ELIZAOS_CLOUD_RESPONSE_HANDLER_MODEL",
+        rolePinEnv,
+      ) ||
+      readEffectiveEnvValue(
+        config,
+        "ELIZAOS_CLOUD_SHOULD_RESPOND_MODEL",
+        rolePinEnv,
+      );
     const actionPlannerModel =
       llmText?.actionPlannerModel ||
       llmText?.plannerModel ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_ACTION_PLANNER_MODEL") ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_PLANNER_MODEL");
+      readEffectiveEnvValue(
+        config,
+        "ELIZAOS_CLOUD_ACTION_PLANNER_MODEL",
+        rolePinEnv,
+      ) ||
+      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_PLANNER_MODEL", rolePinEnv);
     process.env.SMALL_MODEL = small;
     process.env.NANO_MODEL = nano;
     process.env.MEDIUM_MODEL = medium;
