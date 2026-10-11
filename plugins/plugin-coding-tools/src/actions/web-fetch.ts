@@ -33,12 +33,10 @@ export function isCodingWebFetchEnabled(): boolean {
   return !(raw === "0" || raw === "false" || raw === "off");
 }
 
-// HTML maps &#128;-&#159; through windows-1252 (WHATWG numeric character
-// reference table); the five unassigned slots stay C1 and are left as written.
-// Mirrors decodeBasicHtmlEntities in plugin-assistant/src/utils/html-entities.ts.
-const WINDOWS_1252_C1 =
-  "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f" +
-  "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
+// The five C1 slots that windows-1252 leaves unassigned. The entities
+// decoder maps them to the raw C1 control character; leave them as written
+// instead, like the reference decoder does.
+const UNASSIGNED_C1_CODES = new Set([0x81, 0x8d, 0x8f, 0x90, 0x9d]);
 
 function decodeHtmlEntity(entity: string): string {
   if (entity.startsWith("#")) {
@@ -46,21 +44,18 @@ function decodeHtmlEntity(entity: string): string {
       ? Number.parseInt(entity.slice(2), 16)
       : Number.parseInt(entity.slice(1), 10);
     // Exclude the UTF-16 surrogate range as well as values outside Unicode.
-    // Once this scalar-value guard passes, String.fromCodePoint cannot throw.
     const isUnicodeScalarValue =
       Number.isInteger(code) &&
       code > 0 &&
       code <= 0x10ffff &&
       (code < 0xd800 || code > 0xdfff);
     if (!isUnicodeScalarValue) return `&${entity};`;
-    if (code >= 0x80 && code <= 0x9f) {
-      const mapped = WINDOWS_1252_C1[code - 0x80];
-      return mapped.charCodeAt(0) === code ? `&${entity};` : mapped;
-    }
-    // The numeric spellings of U+00A0 (&#160; / &#xA0;) decode to the same
-    // character as &nbsp;, so they must become the same readable plain space.
-    return String.fromCodePoint(code).replace(/\u00a0/g, " ");
+    if (UNASSIGNED_C1_CODES.has(code)) return `&${entity};`;
   }
+  // decodeHTML decodes numeric references through the WHATWG windows-1252
+  // table (&#150; -> U+2013, &#128; -> U+20AC). The numeric spellings of
+  // U+00A0 (&#160; / &#xA0;) decode to the same character as &nbsp;, so they
+  // must become the same readable plain space.
   return decodeHTML(`&${entity};`).replace(/\u00a0/g, " ");
 }
 

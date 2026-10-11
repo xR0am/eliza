@@ -1,7 +1,8 @@
 /**
  * Regression tests for htmlToReadableText numeric character references.
  * HTML maps &#128;-&#159; through windows-1252 (WHATWG numeric character
- * reference table), matching decodeBasicHtmlEntities in plugin-assistant.
+ * reference table); the entities decoder applies that table, and the five
+ * unassigned C1 slots stay as written.
  */
 import { describe, expect, it } from "vitest";
 import { htmlToReadableText } from "./web-fetch.ts";
@@ -14,8 +15,8 @@ describe("htmlToReadableText numeric entities", () => {
   });
 
   it("leaves the unassigned C1 slots and &#0; as written", () => {
-    expect(htmlToReadableText("<p>&#129; &#141; &#157; &#0;</p>")).toBe(
-      "&#129; &#141; &#157; &#0;",
+    expect(htmlToReadableText("<p>&#129; &#141; &#143; &#144; &#157; &#0;</p>")).toBe(
+      "&#129; &#141; &#143; &#144; &#157; &#0;",
     );
   });
 
