@@ -24,14 +24,13 @@ export class Server {
   }
 }
 
-export const utils = new Proxy(
-  {},
-  {
-    get() {
-      throw new Error(NOT_AVAILABLE);
-    },
+// Same index-signature typing as the mammoth images proxy: any property
+// access throws at runtime and must typecheck in the build lane.
+export const utils = new Proxy({} as Record<string, never>, {
+  get() {
+    throw new Error(NOT_AVAILABLE);
   },
-);
+});
 
 const workerSsh2Surface = { Client, Server, utils };
 export default workerSsh2Surface;
