@@ -1195,6 +1195,8 @@ function buildCalendarServiceErrorFallback(
   if (
     error.code === "CALENDAR_SEARCH_QUERY_REQUIRED" ||
     error.code === "CALENDAR_TRIP_LOCATION_REQUIRED" ||
+    error.code === "CALENDAR_READ_DATE_INVALID" ||
+    error.code === "CALENDAR_READ_DATE_CONFLICT" ||
     error.code === "CALENDAR_ATTENDEE_ARGUMENT_INVALID" ||
     error.code === "CALENDAR_ATTENDEE_IDENTITY_REQUIRED" ||
     error.code === "CALENDAR_TARGET_SELECTOR_INVALID"
@@ -3218,8 +3220,15 @@ function resolveCalendarWindow(
   }
 
   const windowDays = detailNumber(details, "windowDays");
-  if (forSearch) {
-    const days = windowDays && windowDays > 0 ? Math.min(windowDays, 90) : 30;
+  // Feed and search share the read schema, so both honour windowDays. Without
+  // it a search covers 30 days and a feed covers today.
+  const days =
+    windowDays && windowDays > 0
+      ? Math.min(windowDays, 90)
+      : forSearch
+        ? 30
+        : undefined;
+  if (days !== undefined) {
     return {
       request: {
         calendarId,
@@ -3333,6 +3342,19 @@ function resolveCalendarReadWindow(
     llmPlan,
     timeZone,
   );
+  // A lone, unparseable or reversed timestamp bound resolves to no window. The
+  // default range would then answer a different question than the one asked.
+  if (
+    !resolved.explicitWindow &&
+    (detailString(details, "timeMin") !== undefined ||
+      detailString(details, "timeMax") !== undefined)
+  ) {
+    throw new CalendarServiceError(
+      400,
+      "timeMin and timeMax must be supplied together as valid timestamps with timeMax after timeMin. For whole local days use date and optional endDate instead.",
+      "CALENDAR_READ_DATE_INVALID",
+    );
+  }
   // Ground the reply in the actual read bounds, not a planner-authored label
   // that can name a different day from the supplied timestamps.
   if (resolved.request.timeMin && resolved.request.timeMax) {
