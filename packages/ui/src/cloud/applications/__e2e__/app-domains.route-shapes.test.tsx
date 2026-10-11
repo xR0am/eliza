@@ -3,7 +3,7 @@
  * The Domains tab rendered from the managed-domains route contract
  * (`GET /api/v1/apps/:id/domains`, `POST /domains/verify`).
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CloudI18nProvider } from "../../shell/CloudI18nProvider";
 import {
@@ -17,7 +17,7 @@ let verifyResponse: unknown;
 
 vi.mock("../../lib/api-client", () => ({
   api: async (path: string) => {
-    const route = path.replace(/^\/api\/v1\/apps\/app-1/, "");
+    const route = path.replace(/^\/api\/v1\/apps\/app-\d+/, "");
     requests.push(route);
     if (route === "/domains") {
       if (listResponse instanceof Error) throw listResponse;
@@ -149,5 +149,18 @@ it("does not claim TLS is secured while a verified domain's certificate is pendi
   const view = await renderTab({ success: true, domains: [{ ...purchased, sslStatus: "pending" }] });
   expect(screen.queryByText("SSL/TLS Secured")).toBeNull();
   expect(screen.queryByText("76.76.21.21")).toBeNull();
+  view.unmount();
+});
+
+
+it("does not publish the previous app's late domain response after navigation", async () => {
+  let resolvePrevious!: (value: unknown) => void;
+  listResponse = new Promise(resolve => { resolvePrevious = resolve; });
+  const view = render(<CloudI18nProvider initialLang="en"><AppDomains appId="app-1" /></CloudI18nProvider>);
+  listResponse = { success: true, domains: [] };
+  view.rerender(<CloudI18nProvider initialLang="en"><AppDomains appId="app-2" /></CloudI18nProvider>);
+  await screen.findByText("Use Your Own Domain");
+  await act(async () => { resolvePrevious({ success: true, domains: [unverified] }); });
+  expect(shown("shop.example.com")).toBe(false);
   view.unmount();
 });

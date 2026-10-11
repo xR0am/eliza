@@ -103,6 +103,10 @@ interface AppDomainsProps {
 }
 
 export function AppDomains({ appId }: AppDomainsProps) {
+  return <AppDomainsContent key={appId} appId={appId} />;
+}
+
+function AppDomainsContent({ appId }: AppDomainsProps) {
   const t = useCloudT();
   const [domains, setDomains] = useState<ManagedDomainRow[]>([]);
   const [listError, setListError] = useState<string | null>(null);
