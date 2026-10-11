@@ -846,6 +846,18 @@ export const voiceCallAction: Action & {
     [
       {
         name: "{{name1}}",
+        content: { text: "Call my phone now." },
+      },
+      {
+        name: "{{agentName}}",
+        content: {
+          text: 'Draft call to your configured phone number: "Your agent is calling you." Reply yes to confirm or no to cancel.',
+        },
+      },
+    ],
+    [
+      {
+        name: "{{name1}}",
         content: { text: "Call me at +15551234567 and say the build is done" },
       },
       {
