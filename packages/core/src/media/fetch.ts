@@ -91,7 +91,13 @@ function parseContentDispositionFileName(
 		const extValueMatch = /^([^']*)'([^']*)'([\s\S]*)$/.exec(cleaned);
 		const encoded = extValueMatch ? extValueMatch[3] : cleaned;
 		try {
-			return getBasename(decodeURIComponent(encoded));
+			const decoded =
+				extValueMatch?.[1].toLowerCase() === "iso-8859-1"
+					? encoded.replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
+							String.fromCharCode(Number.parseInt(hex, 16)),
+						)
+					: decodeURIComponent(encoded);
+			return getBasename(decoded);
 		} catch {
 			// error-policy:J3 Malformed RFC 5987 encoding is untrusted header
 			// input; retain only its basename as the sanitized invalid fallback.
