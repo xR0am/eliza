@@ -319,7 +319,7 @@ const GraphemeSegmenter = (
   Intl as unknown as {
     Segmenter: new (
       locale: string,
-      options: { granularity: "grapheme" },
+      options: { granularity: "grapheme" }
     ) => { segment(text: string): Iterable<{ segment: string }> };
   }
 ).Segmenter;
@@ -411,7 +411,7 @@ export function splitMessageForGoogleChat(
     for (const marker of ["\n", " "]) {
       let candidate = 0;
       for (const end of segmentEnds) {
-        if (end > prefixLength * 0.5 && remaining[end - 1] === marker) {
+        if (end - 1 > prefixLength * 0.5 && remaining[end - 1] === marker) {
           candidate = end;
         }
       }
