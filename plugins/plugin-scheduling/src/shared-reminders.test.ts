@@ -1,5 +1,5 @@
 /** Exercise Shared reminder argument admission against the real in-memory runner. */
-import type { IAgentRuntime, Memory } from "@elizaos/core";
+import type { HandlerOptions, IAgentRuntime, Memory } from "@elizaos/core";
 import { expect, it } from "vitest";
 import { ScheduledTaskRunnerService } from "./scheduled-task/runner-service.ts";
 import type { ScheduledTask } from "./scheduled-task/types.ts";
@@ -26,7 +26,7 @@ it("refuses invalid recurrence before writes and retains the stored timezone on 
       chatId: "123456",
     },
   });
-  const run = (parameters: Record<string, unknown>) =>
+  const run = (parameters: HandlerOptions["parameters"]) =>
     action.handler(
       runtime,
       {
