@@ -98,20 +98,6 @@ function verificationRecordFor(
     : null;
 }
 
-/**
- * The domain the tab shows: the one that needs the user's action first (an
- * unverified external domain), else a verified one.
- */
-function selectAppDomain(
-  rows: ManagedDomainRow[],
-): ManagedDomainRow | undefined {
-  return (
-    rows.find((r) => r.registrar === "external" && !r.verified) ??
-    rows.find((r) => r.verified) ??
-    rows[0]
-  );
-}
-
 interface AppDomainsProps {
   appId: string;
 }
@@ -125,6 +111,9 @@ export function AppDomains({ appId }: AppDomainsProps) {
   const [isRemoving, setIsRemoving] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verificationDomain, setVerificationDomain] = useState<string | null>(
+    null,
+  );
   const [newDomain, setNewDomain] = useState("");
   const [copiedValue, setCopiedValue] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -140,7 +129,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
         setDomains(data.domains);
         setListError(null);
       } else {
-        setListError(data.error ?? null);
+        setListError(data.error || "The server did not return a domain list.");
       }
     } catch (error) {
       setListError(error instanceof Error ? error.message : String(error));
@@ -154,6 +143,8 @@ export function AppDomains({ appId }: AppDomainsProps) {
   const verifyDomain = useCallback(
     async (domain: string) => {
       setIsChecking(true);
+      setVerificationDomain(domain);
+      setVerifyError(null);
       try {
         const data = await api<VerifyResponse>(
           `/api/v1/apps/${appId}/domains/verify`,
@@ -167,9 +158,6 @@ export function AppDomains({ appId }: AppDomainsProps) {
               defaultValue: "Domain verified!",
             }),
             {
-              description: t("cloud.appDomains.sslProvisioningNow", {
-                defaultValue: "SSL certificate is now being provisioned",
-              }),
               icon: <CheckCircle2 className="size-4 text-status-success" />,
             },
           );
@@ -259,10 +247,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
               }),
           {
             description: data.verified
-              ? t("cloud.appDomains.sslProvisioningAuto", {
-                  defaultValue:
-                    "SSL certificate is being provisioned automatically",
-                })
+              ? undefined
               : t("cloud.appDomains.configureDnsToComplete", {
                   defaultValue: "Configure your DNS records to complete setup",
                 }),
@@ -332,11 +317,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
     }
   };
 
-  const appDomain = selectAppDomain(domains);
-  const verificationRecord = appDomain
-    ? verificationRecordFor(appDomain)
-    : null;
-  const canAddDomain = !isLoading && listError === null && !appDomain;
+  const canAddDomain = !isLoading && listError === null;
 
   return (
     <TooltipProvider>
@@ -392,8 +373,9 @@ export function AppDomains({ appId }: AppDomainsProps) {
             </div>
           ) : (
             <div className="space-y-3">
-              {appDomain && (
+              {domains.map((appDomain) => (
                 <DomainCard
+                  key={appDomain.id}
                   domain={appDomain.domain}
                   url={`https://${appDomain.domain}`}
                   type="custom"
@@ -404,7 +386,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
                   isChecking={isChecking}
                   isRemoving={isRemoving}
                 />
-              )}
+              ))}
 
               {/* Add Domain Form */}
               <AnimatePresence mode="wait">
@@ -477,7 +459,7 @@ export function AppDomains({ appId }: AppDomainsProps) {
               </AnimatePresence>
 
               {/* Empty State */}
-              {!appDomain && !showAddForm && (
+              {domains.length === 0 && !showAddForm && (
                 <div className="p-6 rounded-sm border border-border bg-bg-muted text-center">
                   <h4 className="text-sm font-medium text-txt-strong">
                     {t("cloud.appDomains.useYourOwnDomain", {
@@ -503,75 +485,33 @@ export function AppDomains({ appId }: AppDomainsProps) {
 
         {/* DNS verification for an unverified external domain */}
         <AnimatePresence>
-          {appDomain && verificationRecord && (
-            <motion.div
-              initial={{ opacity: 0, transform: "translateY(10px)" }}
-              animate={{ opacity: 1, transform: "translateY(0px)" }}
-              exit={{ opacity: 0, transform: "translateY(-10px)" }}
-            >
-              <DnsConfigPanel
-                record={verificationRecord}
-                verifyError={verifyError}
-                onVerify={() => verifyDomain(appDomain.domain)}
-                isChecking={isChecking}
-                lastChecked={lastChecked}
-                copyToClipboard={copyToClipboard}
-                copiedValue={copiedValue}
-              />
-            </motion.div>
-          )}
+          {domains.map((appDomain) => {
+            const verificationRecord = verificationRecordFor(appDomain);
+            if (!verificationRecord) return null;
+            return (
+              <motion.div
+                key={appDomain.id}
+                initial={{ opacity: 0, transform: "translateY(10px)" }}
+                animate={{ opacity: 1, transform: "translateY(0px)" }}
+                exit={{ opacity: 0, transform: "translateY(-10px)" }}
+              >
+                <DnsConfigPanel
+                  record={verificationRecord}
+                  verifyError={
+                    verificationDomain === appDomain.domain ? verifyError : null
+                  }
+                  onVerify={() => verifyDomain(appDomain.domain)}
+                  isChecking={isChecking}
+                  lastChecked={
+                    verificationDomain === appDomain.domain ? lastChecked : null
+                  }
+                  copyToClipboard={copyToClipboard}
+                  copiedValue={copiedValue}
+                />
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
-
-        {/* Quick Reference */}
-        <Card variant="flatPadded">
-          <h3 className="text-sm font-medium text-txt-strong mb-4">
-            {t("cloud.appDomains.quickDnsReference", {
-              defaultValue: "Quick DNS Reference",
-            })}
-          </h3>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <div className="flex items-center justify-between p-4 rounded-sm bg-bg-muted">
-              <div>
-                <p className="text-sm font-medium text-txt-strong">
-                  {t("cloud.appDomains.subdomains", {
-                    defaultValue: "Subdomains",
-                  })}
-                </p>
-                <p className="text-xs text-muted font-mono mt-1">
-                  app.example.com
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-sm text-txt-strong font-mono">CNAME</p>
-                <p className="text-xs text-txt-strong font-mono mt-1">
-                  {"<your-cloudflare-cname>"}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-4 rounded-sm bg-bg-muted">
-              <div>
-                <p className="text-sm font-medium text-txt-strong">
-                  {t("cloud.appDomains.rootDomains", {
-                    defaultValue: "Root Domains",
-                  })}
-                </p>
-                <p className="text-xs text-muted font-mono mt-1">example.com</p>
-              </div>
-              <div className="text-right">
-                <p className="text-sm text-txt-strong font-mono">A</p>
-                <p className="text-xs text-txt-strong font-mono mt-1">
-                  76.76.21.21
-                </p>
-              </div>
-            </div>
-          </div>
-          <p className="mt-3 text-xs text-muted">
-            {t("cloud.appDomains.dnsPropagationNote", {
-              defaultValue:
-                "DNS changes typically propagate within 5 minutes to 48 hours",
-            })}
-          </p>
-        </Card>
       </div>
     </TooltipProvider>
   );
@@ -622,7 +562,7 @@ function DomainCard({
               </span>
             )}
           </div>
-          {isVerified && (
+          {isVerified && sslStatus === "active" && (
             <div className="flex items-center gap-1 text-status-success mt-2">
               <Lock className="size-3" />
               <span className="text-xs">

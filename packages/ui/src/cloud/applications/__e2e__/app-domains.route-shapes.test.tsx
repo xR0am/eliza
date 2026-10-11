@@ -106,13 +106,14 @@ it("keeps the TXT record after a Verify click that does not find it", async () =
   view.unmount();
 });
 
-it("shows the domain that needs action when several are attached", async () => {
+it("keeps every attached domain visible and offers another attachment", async () => {
   const view = await renderTab({
     success: true,
     domains: [purchased, unverified],
   });
   expect(shown("shop.example.com")).toBe(true);
-  expect(shown("bought.example.com")).toBe(false);
+  expect(shown("bought.example.com")).toBe(true);
+  expect(screen.getAllByText("Add Domain").length).toBeGreaterThan(0);
   view.unmount();
 });
 
@@ -121,5 +122,32 @@ it("shows the request error when the domain list fails", async () => {
   expect(screen.getByText("Could not load domains")).toBeTruthy();
   expect(screen.getByText("Request failed with status 500")).toBeTruthy();
   expect(screen.queryByText("Add Domain")).toBeNull();
+  view.unmount();
+});
+
+
+it("shows each pending domain's TXT record and reports only the checked domain's failure", async () => {
+  verifyResponse = { success: true, verified: false, error: "DNS proof missing" };
+  const view = await renderTab({ success: true, domains: [unverified, { ...unverified, id: "md-2", domain: "second.example.com", verificationToken: "second-proof" }] });
+  expect(shown("_eliza-cloud-verify.shop.example.com")).toBe(true);
+  expect(shown("_eliza-cloud-verify.second.example.com")).toBe(true);
+  const buttons = screen.getAllByRole("button").filter(button => button.textContent?.trim() === "Verify");
+  fireEvent.click(buttons[0]);
+  await screen.findByText("DNS proof missing");
+  expect(screen.getAllByText("DNS proof missing")).toHaveLength(1);
+  view.unmount();
+});
+
+it("does not present a failed list response as an empty successful list", async () => {
+  const view = await renderTab({ success: false });
+  expect(screen.getByText("Could not load domains")).toBeTruthy();
+  expect(screen.queryByText("Add Domain")).toBeNull();
+  view.unmount();
+});
+
+it("does not claim TLS is secured while a verified domain's certificate is pending", async () => {
+  const view = await renderTab({ success: true, domains: [{ ...purchased, sslStatus: "pending" }] });
+  expect(screen.queryByText("SSL/TLS Secured")).toBeNull();
+  expect(screen.queryByText("76.76.21.21")).toBeNull();
   view.unmount();
 });
