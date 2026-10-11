@@ -602,6 +602,19 @@ type AgentRow = typeof agentTable.$inferSelect;
 type AgentMessageExamples = NonNullable<Agent["messageExamples"]>;
 type AgentKnowledge = NonNullable<Agent["knowledge"]>;
 type MemoryRow = typeof memoryTable.$inferSelect;
+type RoomRow = Pick<
+  typeof roomTable.$inferSelect,
+  | "id"
+  | "name"
+  | "channelId"
+  | "agentId"
+  | "messageServerId"
+  | "serverId"
+  | "worldId"
+  | "type"
+  | "source"
+  | "metadata"
+>;
 
 class AtomicMemoryPublicationConflict extends Error {}
 
@@ -624,6 +637,21 @@ function memoryFromRow(row: MemoryRow, embedding?: number[], similarity?: number
         : (row.metadata as MemoryMetadata),
     ...(embedding ? { embedding } : {}),
     ...(similarity !== undefined ? { similarity } : {}),
+  };
+}
+
+function roomFromRow(room: RoomRow): Room {
+  return {
+    ...room,
+    id: room.id as UUID,
+    name: room.name ?? undefined,
+    agentId: room.agentId as UUID,
+    messageServerId: room.messageServerId as UUID,
+    serverId: room.serverId ?? undefined,
+    worldId: room.worldId as UUID,
+    channelId: room.channelId as UUID,
+    type: room.type as ChannelType,
+    metadata: room.metadata as Metadata,
   };
 }
 
@@ -5210,23 +5238,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .from(roomTable)
         .where(and(inArray(roomTable.id, roomIds), eq(roomTable.agentId, this.agentId)));
 
-      // Map the result to properly typed Room objects
-      const rooms = result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId:
-          room.serverId ??
-          (typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
-            ? ((room.metadata as Metadata).serverId as string)
-            : (room.messageServerId as UUID)),
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      const rooms = result.map(roomFromRow);
 
       return rooms;
     });
@@ -5240,22 +5252,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
   async getRoomsByWorld(worldId: UUID): Promise<Room[]> {
     return this.withDatabase(async () => {
       const result = await this.db.select().from(roomTable).where(eq(roomTable.worldId, worldId));
-      const rooms = result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId:
-          room.serverId ??
-          (typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
-            ? ((room.metadata as Metadata).serverId as string)
-            : (room.messageServerId as UUID)),
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      const rooms = result.map(roomFromRow);
       return rooms;
     });
   }
@@ -5267,14 +5264,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async updateRoom(room: Room): Promise<void> {
     return this.withDatabase(async () => {
-      const metadata =
-        room.serverId === undefined
-          ? room.metadata
-          : { ...(room.metadata ?? {}), serverId: room.serverId };
-      assertJsonbStorable(metadata);
+      assertJsonbStorable(room.metadata);
       await this.db
         .update(roomTable)
-        .set({ ...room, agentId: this.agentId, metadata })
+        .set({ ...room, agentId: this.agentId })
         .where(eq(roomTable.id, room.id));
     });
   }
@@ -5290,10 +5283,6 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         ...room,
         agentId: this.agentId,
         id: room.id || v4(), // ensure each room has a unique ID
-        metadata:
-          room.serverId === undefined
-            ? room.metadata
-            : { ...(room.metadata ?? {}), serverId: room.serverId },
       }));
       for (const room of roomsWithIds) assertJsonbStorable(room.metadata);
 
@@ -8257,22 +8246,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         query = query.limit(limit) as typeof query;
       }
       const result = await query;
-      return result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId:
-          room.serverId ??
-          (typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
-            ? ((room.metadata as Metadata).serverId as string)
-            : (room.messageServerId as UUID)),
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      return result.map(roomFromRow);
     });
   }
 
