@@ -408,6 +408,131 @@ describe("durable SQLite agent adapter", () => {
     expect(otherSource).toBeNull();
   });
 
+  it("returns entity components from getEntitiesByIds and getEntitiesForRooms as plugin-sql does", async () => {
+    const adapter = await open();
+    const worldId = id();
+    const componentId = id();
+    const bareEntityId = id();
+    await adapter.createAgents([{ id: agentId, name: "Connector agent" }]);
+    await adapter.createEntities([
+      { id: entityId, agentId, names: ["Discord user"] },
+      { id: bareEntityId, agentId, names: ["No components"] },
+    ]);
+    await adapter.createWorlds([{ id: worldId, name: "Guild", agentId }]);
+    await adapter.createRooms([
+      { id: roomId, agentId, worldId, type: ChannelType.GROUP, source: "test" },
+    ]);
+    await adapter.createRoomParticipants([entityId, bareEntityId], roomId);
+    await adapter.createComponents([
+      {
+        id: componentId,
+        entityId,
+        agentId,
+        roomId,
+        worldId,
+        sourceEntityId: agentId,
+        type: "discord",
+        createdAt: 1,
+        data: { channelId: "1100000000000000001" },
+      },
+    ]);
+
+    const byId = new Map(
+      (await adapter.getEntitiesByIds([entityId, bareEntityId])).map((e) => [
+        e.id,
+        e,
+      ]),
+    );
+    expect(byId.get(entityId)?.components).toHaveLength(1);
+    expect(byId.get(entityId)?.components?.[0]).toMatchObject({
+      id: componentId,
+      type: "discord",
+      data: { channelId: "1100000000000000001" },
+    });
+    expect(byId.get(bareEntityId)?.components).toEqual([]);
+
+    const componentReads = vi.spyOn(adapter, "getComponentsForEntities");
+    const [withoutComponents] = await adapter.getEntitiesForRooms(
+      [roomId],
+      false,
+    );
+    for (const entity of withoutComponents.entities) {
+      expect(entity.components).toBeUndefined();
+    }
+    // A room read that opts out of components must not read them.
+    expect(componentReads).not.toHaveBeenCalled();
+    componentReads.mockRestore();
+    const [withComponents] = await adapter.getEntitiesForRooms([roomId], true);
+    const inRoom = new Map(withComponents.entities.map((e) => [e.id, e]));
+    expect(inRoom.get(entityId)?.components?.map((c) => c.id)).toEqual([
+      componentId,
+    ]);
+    expect(inRoom.get(bareEntityId)?.components).toEqual([]);
+  });
+
+  it("does not store a components copy when an entity read is written back", async () => {
+    const adapter = await open();
+    const componentId = id();
+    const upsertedId = id();
+    await adapter.createAgents([{ id: agentId, name: "Write-back agent" }]);
+    await adapter.createEntities([
+      { id: entityId, agentId, names: ["Contact"] },
+      { id: upsertedId, agentId, names: ["Upserted contact"] },
+    ]);
+    await adapter.createComponents([
+      {
+        id: componentId,
+        entityId,
+        agentId,
+        roomId,
+        worldId: id(),
+        sourceEntityId: agentId,
+        type: "contact_info",
+        createdAt: 1,
+        data: { handle: "@contact" },
+      },
+      {
+        id: id(),
+        entityId: upsertedId,
+        agentId,
+        roomId,
+        worldId: id(),
+        sourceEntityId: agentId,
+        type: "contact_info",
+        createdAt: 1,
+        data: { handle: "@upserted" },
+      },
+    ]);
+
+    const [read, readForUpsert] = await adapter.getEntitiesByIds([
+      entityId,
+      upsertedId,
+    ]);
+    expect(read.components).toHaveLength(1);
+    expect(readForUpsert.components).toHaveLength(1);
+    await adapter.updateEntities([{ ...read, names: ["Contact", "Renamed"] }]);
+    await adapter.upsertEntities([readForUpsert]);
+
+    const storage = await adapter.getConnection();
+    const stored = await storage.get<Record<string, unknown>>(
+      "entities",
+      entityId,
+    );
+    expect(stored?.names).toEqual(["Contact", "Renamed"]);
+    expect(stored).not.toHaveProperty("components");
+    expect(
+      await storage.get<Record<string, unknown>>("entities", upsertedId),
+    ).not.toHaveProperty("components");
+
+    await adapter.deleteComponents([componentId]);
+    const [byName] = await adapter.getEntitiesByNames({
+      names: ["Renamed"],
+      agentId,
+    });
+    expect(byName.id).toBe(entityId);
+    expect(byName.components).toBeUndefined();
+  });
+
   it("reopens runtime records, full content and semantic search without an in-memory singleton", async () => {
     const adapter = await open();
     const worldId = id();
