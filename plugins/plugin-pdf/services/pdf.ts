@@ -391,11 +391,12 @@ export class PdfService extends Service {
     const uint8Array = validatePdfInput(pdfBuffer);
     const pdf = await getDocumentProxy(uint8Array);
     try {
+      // Keep the existing page-count boundary validation before extraction.
       requirePdfPageCount(pdf.numPages);
       // PDF text items are font runs, not words. Reuse the parser's spacing
-      // and line-break handling instead of inserting a space between runs.
-      const { text } = await extractText(pdf, { mergePages: true });
-      return this.cleanUpContent(text);
+      // and line-break handling; older unpdf merged mode collapses newlines.
+      const { text } = await extractText(pdf, { mergePages: false });
+      return this.cleanUpContent(text.join("\n"));
     } finally {
       await pdf.loadingTask.destroy();
     }
