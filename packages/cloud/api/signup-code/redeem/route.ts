@@ -37,14 +37,17 @@ app.post("/", async (c) => {
     try {
       user = await requireUserWithOrg(c);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       // requireUserWithOrg rejects with typed ApiErrors: 401 only when no
       // caller is authenticated, 403 for an inactive user, an inactive
       // organization, or an account without an organization. Keep that
       // status instead of reporting every rejection as 401, like the other
-      // requireUserWithOrg routes do through failureResponse.
-      const status = error instanceof ApiError ? error.status : 401;
-      return c.json({ error: message }, status as 401 | 403, NO_CACHE_HEADERS);
+      // requireUserWithOrg routes do through failureResponse. Anything that
+      // is not an ApiError (for example a database failure during auth) is
+      // not an auth rejection: rethrow it so the outer handler answers 500.
+      if (error instanceof ApiError) {
+        return c.json({ error: error.message }, error.status, NO_CACHE_HEADERS);
+      }
+      throw error;
     }
 
     let body: unknown;

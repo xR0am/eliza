@@ -18,8 +18,13 @@ import {
   ForbiddenError,
 } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 
-let authMode: "unauth" | "inactive-org" | "inactive-user" | "no-org" | "ok" =
-  "ok";
+let authMode:
+  | "unauth"
+  | "inactive-org"
+  | "inactive-user"
+  | "no-org"
+  | "db-failure"
+  | "ok" = "ok";
 
 mock.module("@elizaos/cloud-shared/auth", () => ({
   requireUserWithOrg: async () => {
@@ -34,6 +39,7 @@ mock.module("@elizaos/cloud-shared/auth", () => ({
         "access_denied",
         "This feature requires a full account. Please sign up to continue.",
       );
+    if (authMode === "db-failure") throw new Error("database unavailable");
     return {
       id: "user-1",
       organization_id: "org-1",
@@ -71,42 +77,53 @@ async function post() {
   });
 }
 
+async function bodyOf(res: Response): Promise<{ error: string }> {
+  return (await res.json()) as { error: string };
+}
+
 describe("POST /api/signup-code/redeem auth rejection status", () => {
   test("an unauthenticated caller still gets 401", async () => {
     authMode = "unauth";
     const res = await post();
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: "Authentication required" });
+    expect(await bodyOf(res)).toEqual({ error: "Authentication required" });
   });
 
   test("an inactive organization gets 403, not 401", async () => {
     authMode = "inactive-org";
     const res = await post();
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "Organization is inactive" });
+    expect(await bodyOf(res)).toEqual({ error: "Organization is inactive" });
   });
 
   test("an inactive user gets 403, not 401", async () => {
     authMode = "inactive-user";
     const res = await post();
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: "User account is inactive" });
+    expect(await bodyOf(res)).toEqual({ error: "User account is inactive" });
   });
 
   test("an account without an organization gets 403, not 401", async () => {
     authMode = "no-org";
     const res = await post();
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({
+    expect(await bodyOf(res)).toEqual({
       error:
         "This feature requires a full account. Please sign up to continue.",
     });
+  });
+
+  test("a non-ApiError auth failure is rethrown as 500, not flattened to 401", async () => {
+    authMode = "db-failure";
+    const res = await post();
+    expect(res.status).toBe(500);
+    expect(await bodyOf(res)).toEqual({ error: "Failed to redeem code" });
   });
 
   test("an authenticated caller still reaches the redeem path (400 on a bad code)", async () => {
     authMode = "ok";
     const res = await post();
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "Invalid signup code" });
+    expect(await bodyOf(res)).toEqual({ error: "Invalid signup code" });
   });
 });
