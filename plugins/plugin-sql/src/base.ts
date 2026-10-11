@@ -5216,7 +5216,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         name: room.name ?? undefined,
         agentId: room.agentId as UUID,
         messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID, // Backward compatibility alias
+        serverId:
+          typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
+            ? ((room.metadata as Metadata).serverId as string)
+            : (room.messageServerId as UUID),
         worldId: room.worldId as UUID,
         channelId: room.channelId as UUID,
         type: room.type as ChannelType,
@@ -5241,7 +5244,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         name: room.name ?? undefined,
         agentId: room.agentId as UUID,
         messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID, // Backward compatibility alias
+        serverId:
+          typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
+            ? ((room.metadata as Metadata).serverId as string)
+            : (room.messageServerId as UUID),
         worldId: room.worldId as UUID,
         channelId: room.channelId as UUID,
         type: room.type as ChannelType,
@@ -5258,10 +5264,11 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async updateRoom(room: Room): Promise<void> {
     return this.withDatabase(async () => {
-      assertJsonbStorable(room.metadata);
+      const metadata = room.metadata ?? {};
+      assertJsonbStorable(metadata);
       await this.db
         .update(roomTable)
-        .set({ ...room, agentId: this.agentId })
+        .set({ ...room, agentId: this.agentId, metadata })
         .where(eq(roomTable.id, room.id));
     });
   }
@@ -5277,6 +5284,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         ...room,
         agentId: this.agentId,
         id: room.id || v4(), // ensure each room has a unique ID
+        metadata: {
+          ...(room.metadata ?? {}),
+          ...(room.serverId === undefined ? {} : { serverId: room.serverId }),
+        },
       }));
       for (const room of roomsWithIds) assertJsonbStorable(room.metadata);
 
@@ -8246,7 +8257,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         name: room.name ?? undefined,
         agentId: room.agentId as UUID,
         messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID,
+        serverId:
+          typeof (room.metadata as Metadata | null | undefined)?.serverId === "string"
+            ? ((room.metadata as Metadata).serverId as string)
+            : (room.messageServerId as UUID),
         worldId: room.worldId as UUID,
         channelId: room.channelId as UUID,
         type: room.type as ChannelType,

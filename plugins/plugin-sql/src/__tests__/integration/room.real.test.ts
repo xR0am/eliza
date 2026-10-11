@@ -165,5 +165,31 @@ describe("Room Integration Tests", () => {
       if (!retrieved?.[0]) throw new Error("Room should exist");
       expect(retrieved[0].messageServerId).toBe(messageServerId);
     });
+
+    it("should preserve the connector serverId through runtime room persistence", async () => {
+      const roomId = uuidv4() as UUID
+      const messageServerId = uuidv4() as UUID
+      const serverId = "123456789012345678"
+
+      await _runtime.ensureRoomExists({
+        id: roomId,
+        agentId: testAgentId,
+        worldId: testWorldId,
+        source: "discord",
+        type: ChannelType.GROUP,
+        name: "Discord Guild Room",
+        channelId: "987654321098765432",
+        serverId,
+        messageServerId,
+        metadata: { accountId: "work" },
+      });
+
+      const retrieved = await adapter.getRoomsByIds([roomId]);
+
+      expect(retrieved).toHaveLength(1);
+      expect(retrieved[0]?.serverId).toBe(serverId);
+      expect(retrieved[0]?.messageServerId).toBe(messageServerId);
+      expect(retrieved[0]?.metadata).toMatchObject({ accountId: "work", serverId });
+    });
   });
 });
