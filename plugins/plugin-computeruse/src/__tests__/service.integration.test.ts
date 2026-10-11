@@ -1020,6 +1020,18 @@ describe("ComputerUseService file and terminal execution (real host I/O)", () =>
       height: 100,
     });
     expect(typeof bounded.success).toBe("boolean");
+
+    // The platform backends resize only when both dimensions are present, so a
+    // lone width is rejected instead of moving the window and reporting success.
+    const oneSided = await service.executeWindowAction({
+      action: "set_bounds",
+      windowId,
+      x: 0,
+      y: 0,
+      width: 800,
+    });
+    expect(oneSided.success).toBe(false);
+    expect(oneSided.error).toContain("width and height together");
   }, 20_000);
 
   it("drops a pending approval when the caller's signal aborts", async () => {
