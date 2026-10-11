@@ -19,6 +19,7 @@ import {
   type WorldSettings,
 } from "@elizaos/core";
 import {
+  FIRST_RUN_PROVIDER_CATALOG,
   getFirstRunProviderOption,
   normalizeFirstRunProviderId,
 } from "@elizaos/host/protocol";
@@ -133,6 +134,17 @@ function readParams(
 
 // ── op: update_ai_provider ────────────────────────────────────────────────
 
+/**
+ * The chat provider ids `normalizeFirstRunProviderId` accepts, as advertised
+ * to the planner. Subscription entries are coding-agent credentials and do not
+ * set the chat route, so they are not offered as an AI provider.
+ */
+const AI_PROVIDER_IDS = FIRST_RUN_PROVIDER_CATALOG.filter(
+  (provider) => provider.authMode !== "subscription",
+)
+  .map((provider) => provider.id)
+  .join(", ");
+
 async function handleUpdateAiProvider(
   params: Record<string, unknown>,
 ): Promise<ActionResult> {
@@ -148,7 +160,7 @@ async function handleUpdateAiProvider(
   if (!normalizedProvider) {
     return fail(
       "UNKNOWN_PROVIDER",
-      `Unknown AI provider: ${rawProvider}. Use one from the first-run catalog (anthropic, openai, openrouter, gemini, grok, groq, deepseek, mistral, together, ollama, zai, elizacloud).`,
+      `Unknown AI provider: ${rawProvider}. Use one from the first-run catalog (${AI_PROVIDER_IDS}).`,
       { provider: rawProvider },
     );
   }
@@ -742,8 +754,7 @@ export const settingsAction: Action = {
     },
     {
       name: "provider",
-      description:
-        "[update_ai_provider] AI provider id (anthropic, openai, openrouter, gemini, grok, groq, deepseek, mistral, together, ollama, zai, elizacloud).",
+      description: `[update_ai_provider] AI provider id (${AI_PROVIDER_IDS}).`,
       required: false,
       schema: { type: "string" as const },
     },
