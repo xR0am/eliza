@@ -88,6 +88,46 @@ describe("resolveImplicitReferent non-Latin lexical matching", () => {
     expect(result.ranked[0]?.candidate.id).toBe("zh-hotel");
   });
 
+  it("matches an accented Latin ask against an unaccented stored label", () => {
+    const candidates = [
+      {
+        id: "cafe-sync",
+        source: "calendar_event" as const,
+        label: "Cafe du matin sync",
+        summary: "Cafe du matin sync",
+        confirmation: "the cafe sync",
+      },
+      {
+        id: "matin-standup",
+        source: "calendar_event" as const,
+        label: "Matin standup",
+        summary: "Matin standup",
+        confirmation: "the morning standup",
+        prior: 0.5,
+      },
+    ];
+    const accentedAsk = resolveImplicitReferent({
+      ask: "Le Café du matin",
+      nowIso: NOW,
+      candidates,
+    });
+    const cafe = accentedAsk.ranked.find((r) => r.candidate.id === "cafe-sync");
+    expect(cafe?.evidence).toContain('matched "cafe"');
+    expect(cafe?.evidence).toContain('matched "matin"');
+    expect(accentedAsk.ranked[0]?.candidate.id).toBe("cafe-sync");
+
+    const unaccentedAsk = resolveImplicitReferent({
+      ask: "Le Cafe du matin",
+      nowIso: NOW,
+      candidates: candidates.map((c) =>
+        c.id === "cafe-sync"
+          ? { ...c, label: "Café du matin sync", summary: "Café du matin sync" }
+          : c,
+      ),
+    });
+    expect(unaccentedAsk.ranked[0]?.candidate.id).toBe("cafe-sync");
+  });
+
   it("keeps English matching and cross-language isolation unchanged", () => {
     const result = resolveImplicitReferent({
       ask: "what happened with the seoul trip hotel booking",

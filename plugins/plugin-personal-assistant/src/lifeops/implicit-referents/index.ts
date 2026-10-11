@@ -86,10 +86,21 @@ const STOP_WORDS = new Set([
 ]);
 
 function normalize(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
-    .trim();
+  return (
+    value
+      .normalize("NFD")
+      .toLowerCase()
+      // Fold accents: drop nonspacing marks (Latin accents, Greek tonos,
+      // kana dakuten) so an accented spelling meets its unaccented twin.
+      // Only Mn is dropped; spacing marks (Mc) are integral vowel signs in
+      // scripts such as Devanagari and stay part of the token.
+      .replace(/\p{Mn}+/gu, "")
+      // Recompose so Hangul syllables and other canonical composites keep
+      // the exact token shape the decomposed pass would otherwise change.
+      .normalize("NFC")
+      .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
+      .trim()
+  );
 }
 
 const SPACELESS_SCRIPT =
