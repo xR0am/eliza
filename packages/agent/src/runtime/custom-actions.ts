@@ -21,6 +21,7 @@ import {
   type HandlerOptions,
   type IAgentRuntime,
   isPrivateIpAddress,
+  logger,
   normalizeHostLike,
   toWellFormedUnicode,
 } from "@elizaos/core";
@@ -30,6 +31,7 @@ import {
 } from "@elizaos/host/protocol";
 
 import { hasSelectedContextOrSignalSync } from "@elizaos/plugin-assistant";
+import { loadElizaConfig } from "../config/config.ts";
 
 /** Cached runtime reference for hot-registration of new actions. */
 let _runtime: IAgentRuntime | null = null;
@@ -69,6 +71,24 @@ export function unregisterCustomActionLive(id: string): boolean {
   liveActions.delete(id);
   if (!_runtime || !action || !_runtime.actions.includes(action)) return false;
   return _runtime.unregisterAction(action.name);
+}
+
+/** Register every enabled custom action saved in config. Called from plugin.init(). */
+export function registerSavedCustomActions(): void {
+  let defs: CustomActionDef[];
+  try {
+    defs = loadElizaConfig().customActions ?? [];
+  } catch (err) {
+    logger.warn(
+      `[custom-actions] Failed to load custom actions from config: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+  for (const def of defs) {
+    if (def.enabled) registerCustomActionLive(def);
+  }
 }
 
 /** Valid handler types that we actually support. */
