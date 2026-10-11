@@ -408,6 +408,64 @@ describe("durable SQLite agent adapter", () => {
     expect(otherSource).toBeNull();
   });
 
+  it("returns entity components from getEntitiesByIds and getEntitiesForRooms as plugin-sql does", async () => {
+    const adapter = await open();
+    const worldId = id();
+    const componentId = id();
+    const bareEntityId = id();
+    await adapter.createAgents([{ id: agentId, name: "Connector agent" }]);
+    await adapter.createEntities([
+      { id: entityId, agentId, names: ["Discord user"] },
+      { id: bareEntityId, agentId, names: ["No components"] },
+    ]);
+    await adapter.createWorlds([{ id: worldId, name: "Guild", agentId }]);
+    await adapter.createRooms([
+      { id: roomId, agentId, worldId, type: ChannelType.GROUP, source: "test" },
+    ]);
+    await adapter.createRoomParticipants([entityId, bareEntityId], roomId);
+    await adapter.createComponents([
+      {
+        id: componentId,
+        entityId,
+        agentId,
+        roomId,
+        worldId,
+        sourceEntityId: agentId,
+        type: "discord",
+        createdAt: 1,
+        data: { channelId: "1100000000000000001" },
+      },
+    ]);
+
+    const byId = new Map(
+      (await adapter.getEntitiesByIds([entityId, bareEntityId])).map((e) => [
+        e.id,
+        e,
+      ]),
+    );
+    expect(byId.get(entityId)?.components).toHaveLength(1);
+    expect(byId.get(entityId)?.components?.[0]).toMatchObject({
+      id: componentId,
+      type: "discord",
+      data: { channelId: "1100000000000000001" },
+    });
+    expect(byId.get(bareEntityId)?.components).toEqual([]);
+
+    const [withoutComponents] = await adapter.getEntitiesForRooms(
+      [roomId],
+      false,
+    );
+    for (const entity of withoutComponents.entities) {
+      expect(entity.components).toBeUndefined();
+    }
+    const [withComponents] = await adapter.getEntitiesForRooms([roomId], true);
+    const inRoom = new Map(withComponents.entities.map((e) => [e.id, e]));
+    expect(inRoom.get(entityId)?.components?.map((c) => c.id)).toEqual([
+      componentId,
+    ]);
+    expect(inRoom.get(bareEntityId)?.components).toEqual([]);
+  });
+
   it("reopens runtime records, full content and semantic search without an in-memory singleton", async () => {
     const adapter = await open();
     const worldId = id();

@@ -675,6 +675,13 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       const entity = await this.storage.get<Entity>(COLLECTIONS.ENTITIES, id);
       if (entity) entities.push(entity);
     }
+    // plugin-sql left-joins components here; [] when the entity has none.
+    const components = await this.getComponentsForEntities(
+      entities.flatMap((entity) => (entity.id ? [entity.id] : [])),
+    );
+    for (const entity of entities) {
+      entity.components = components.filter((c) => c.entityId === entity.id);
+    }
     return entities;
   }
 
@@ -745,16 +752,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         ...new Set(participants.map((p) => p.entityId)),
       ] as UUID[];
       const entities = await this.getEntitiesByIds(entityIds);
-
-      if (includeComponents) {
-        for (const entity of entities) {
-          if (!entity.id) continue;
-          const components = await this.getComponentsForEntities([entity.id]);
-          (entity as Entity & { components?: Component[] }).components =
-            components;
-        }
+      if (!includeComponents) {
+        for (const entity of entities) entity.components = undefined;
       }
-
       result.push({ roomId, entities });
     }
     return result;
