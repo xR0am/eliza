@@ -55,7 +55,11 @@ import {
   resolveTradePermissionMode,
 } from "@elizaos/plugin-wallet/transactions";
 import { WebSocket, WebSocketServer } from "ws";
-import { loadElizaConfig, saveElizaConfig } from "../config/config.ts";
+import {
+  loadElizaConfig,
+  resolveConfigWritePath,
+  saveElizaConfig,
+} from "../config/config.ts";
 import {
   createDevCloudConfigAuthorityView,
   materializeDevCloudConfigAuthorityView,
@@ -3395,6 +3399,7 @@ export async function startApiServer(opts?: {
   );
   logger.debug(`[eliza-api] Token check done (${Date.now() - apiStartTime}ms)`);
   let config: ElizaConfig;
+  const configWritePath = resolveConfigWritePath();
   try {
     config = hostConfig ?? loadElizaConfig();
   } catch (err) {
@@ -3510,7 +3515,6 @@ export async function startApiServer(opts?: {
     resolveAgentAutomationMode: resolveAgentAutomationModeFromConfig,
     resolveTradePermissionMode,
   });
-  const releaseLiveConfigSource = setLiveElizaConfigSource(() => state.config);
   const configuredAdminEntityId = config.agents?.defaults?.adminEntityId;
   if (configuredAdminEntityId && isUuidLike(configuredAdminEntityId)) {
     state.adminEntityId = configuredAdminEntityId;
@@ -5216,10 +5220,14 @@ export async function startApiServer(opts?: {
       logger.debug({ error, helper }, `[eliza-api] ${helper} failed`);
     },
   });
+  const releaseLiveConfigSource =
+    hostConfig === undefined
+      ? setLiveElizaConfigSource(() => state.config, configWritePath)
+      : undefined;
   return {
     port: listener.port,
     close: async () => {
-      releaseLiveConfigSource();
+      releaseLiveConfigSource?.();
       await listener.close();
     },
     updateRuntime,
