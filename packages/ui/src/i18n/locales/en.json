@@ -7773,6 +7773,7 @@
   "cloud.appDomains.subtitle": "Connect custom domains to your app",
   "cloud.appDomains.addDomain": "Add Domain",
   "cloud.appDomains.domainVerified": "Domain verified!",
+  "cloud.appDomains.notVerifiedYet": "Domain not verified yet",
   "cloud.appDomains.sslProvisioningNow": "SSL certificate is now being provisioned",
   "cloud.appDomains.copiedToClipboard": "{{label}} copied to clipboard",
   "cloud.appDomains.invalidDomain": "Invalid domain",

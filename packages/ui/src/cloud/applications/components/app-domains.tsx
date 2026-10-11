@@ -59,7 +59,7 @@ interface DomainInfo {
   customDomainVerified: boolean;
   sslStatus: "pending" | "provisioning" | "active" | "error";
   isPrimary: boolean;
-  verificationRecords: Array<{ type: string; name: string; value: string }>;
+  verificationRecords: VerificationRecord[];
   createdAt: string;
   verifiedAt: string | null;
 }
@@ -98,7 +98,7 @@ interface DomainsListResponse {
   domains?: ManagedDomainRow[];
 }
 
-type VerificationRecord = { type: string; name: string; value: string };
+type VerificationRecord = { type: "TXT"; name: string; value: string };
 
 /** The TXT record `POST /domains/verify` checks for an external domain. */
 function verificationRecordFor(row: ManagedDomainRow): VerificationRecord[] {
@@ -115,11 +115,15 @@ function verificationRecordFor(row: ManagedDomainRow): VerificationRecord[] {
 
 /**
  * The view models an app as one primary entry carrying its custom domain.
- * The route lists the managed domains attached to the app, so build that
- * entry from them (an app has at most one attached custom domain).
+ * The route lists the managed domains attached to the app; show the one that
+ * needs the user's action first (an unverified external domain), else a
+ * verified one.
  */
 function primaryFromManagedDomains(rows: ManagedDomainRow[]): DomainInfo {
-  const row = rows[0];
+  const row =
+    rows.find((r) => r.registrar === "external" && !r.verified) ??
+    rows.find((r) => r.verified) ??
+    rows[0];
   return {
     id: row?.id ?? "app",
     subdomain: "",
@@ -184,25 +188,35 @@ export function AppDomains({ appId }: AppDomainsProps) {
     async (domain: string, silent = false) => {
       if (!silent) setIsChecking(true);
       try {
-        // `/domains/verify` checks the TXT record and records the result;
-        // `/domains/status` only reads the stored state.
-        const data = await api<DomainStatusResponse>(
-          `/api/v1/apps/${appId}/domains/verify`,
+        // A click checks the TXT record (`/domains/verify` records the
+        // result); the background poll only reads the stored state.
+        const data = await api<DomainStatusResponse & { error?: string }>(
+          `/api/v1/apps/${appId}/domains/${silent ? "status" : "verify"}`,
           { method: "POST", json: { domain } },
         );
 
         if (data.success) {
+          // The DNS records come from the domain list on every render; this
+          // keeps only the check result.
           setDomainStatus((previous) => ({
             domain: data.domain ?? domain,
             status: data.verified ? "valid" : "pending",
             configured: Boolean(data.verified),
             verified: Boolean(data.verified),
-            sslStatus: data.verified ? "active" : "pending",
+            sslStatus: data.sslStatus ?? previous?.sslStatus ?? "pending",
             configuredBy: null,
-            records: previous?.records ?? [],
+            records: [],
             isApexDomain: previous?.isApexDomain ?? false,
-            dnsInstructions: previous?.dnsInstructions ?? [],
+            dnsInstructions: [],
           }));
+          if (!silent && !data.verified && data.error) {
+            toast.error(
+              t("cloud.appDomains.notVerifiedYet", {
+                defaultValue: "Domain not verified yet",
+              }),
+              { description: data.error },
+            );
+          }
           setLastChecked(new Date());
           if (data.verified) {
             if (!silent) {
@@ -324,11 +338,9 @@ export function AppDomains({ appId }: AppDomainsProps) {
           verified: Boolean(data.verified),
           sslStatus: data.verified ? "active" : "pending",
           configuredBy: null,
-          records: data.verificationRecord ? [data.verificationRecord] : [],
+          records: [],
           isApexDomain: Boolean(data.isApexDomain),
-          dnsInstructions: data.verificationRecord
-            ? [data.verificationRecord as DnsInstruction]
-            : [],
+          dnsInstructions: [],
         });
         setNewDomain("");
         setShowAddForm(false);
@@ -591,26 +603,21 @@ export function AppDomains({ appId }: AppDomainsProps) {
             >
               <DnsConfigPanel
                 domain={primaryDomain?.customDomain || ""}
-                domainStatus={
-                  domainStatus ?? {
-                    // After a reload the TXT record comes from the domain list.
-                    domain: primaryDomain?.customDomain || "",
-                    status: "pending",
-                    configured: false,
-                    verified: false,
-                    sslStatus: primaryDomain?.sslStatus ?? "pending",
-                    configuredBy: null,
-                    records: primaryDomain?.verificationRecords ?? [],
-                    isApexDomain: false,
-                    dnsInstructions: (
-                      primaryDomain?.verificationRecords ?? []
-                    ).map((record) => ({
-                      type: "TXT" as const,
-                      name: record.name,
-                      value: record.value,
-                    })),
-                  }
-                }
+                domainStatus={{
+                  domain: primaryDomain?.customDomain || "",
+                  status: domainStatus?.status ?? "pending",
+                  configured: domainStatus?.configured ?? false,
+                  verified: domainStatus?.verified ?? false,
+                  sslStatus:
+                    domainStatus?.sslStatus ??
+                    primaryDomain?.sslStatus ??
+                    "pending",
+                  configuredBy: null,
+                  isApexDomain: domainStatus?.isApexDomain ?? false,
+                  // The TXT record `/domains/verify` checks, from the list.
+                  records: primaryDomain?.verificationRecords ?? [],
+                  dnsInstructions: primaryDomain?.verificationRecords ?? [],
+                }}
                 onRefresh={() =>
                   checkDomainStatus(primaryDomain?.customDomain || "")
                 }
