@@ -5756,35 +5756,6 @@ export class RemindersDomain {
       "phoneNumber",
     );
     const privacyClass = normalizePrivacyClass(request.privacyClass);
-    // Delivery selects the oldest primary policy, so a number captured earlier
-    // (another number, or the same one under a previous key) must stop being
-    // primary or it keeps receiving reminders under its old permissions.
-    for (const policy of await this.ctx.repository.listChannelPolicies(
-      this.ctx.agentId(),
-    )) {
-      if (
-        (policy.channelType !== "sms" && policy.channelType !== "voice") ||
-        policy.channelRef === phoneNumber ||
-        policy.metadata.isPrimary !== true
-      ) {
-        continue;
-      }
-      await this.ctx.repository.upsertChannelPolicy({
-        ...policy,
-        metadata: { ...policy.metadata, isPrimary: false },
-        updatedAt: new Date().toISOString(),
-      });
-      await this.ctx.recordChannelPolicyAudit(
-        policy.id,
-        "channel policy replaced as primary",
-        { request },
-        {
-          channelType: policy.channelType,
-          channelRef: policy.channelRef,
-          replacedBy: phoneNumber,
-        },
-      );
-    }
     const baseMetadata = {
       ...normalizeOptionalRecord(request.metadata, "metadata"),
       phoneNumber,
@@ -5830,6 +5801,38 @@ export class RemindersDomain {
           normalizeOptionalBoolean(request.allowVoice, "allowVoice") ?? false,
       },
     });
+
+    // Delivery selects the oldest primary policy, so a number captured earlier
+    // (another number, or the same one under a previous key) must stop being
+    // primary or it keeps receiving reminders under its old permissions. This
+    // runs after the new policies are stored so a rejected request changes
+    // nothing.
+    for (const policy of await this.ctx.repository.listChannelPolicies(
+      this.ctx.agentId(),
+    )) {
+      if (
+        (policy.channelType !== "sms" && policy.channelType !== "voice") ||
+        policy.channelRef === phoneNumber ||
+        policy.metadata.isPrimary !== true
+      ) {
+        continue;
+      }
+      await this.ctx.repository.upsertChannelPolicy({
+        ...policy,
+        metadata: { ...policy.metadata, isPrimary: false },
+        updatedAt: new Date().toISOString(),
+      });
+      await this.ctx.recordChannelPolicyAudit(
+        policy.id,
+        "channel policy replaced as primary",
+        { request },
+        {
+          channelType: policy.channelType,
+          channelRef: policy.channelRef,
+          replacedBy: phoneNumber,
+        },
+      );
+    }
 
     // Register SMS/voice in the escalation channel list when the user
     // consents so the escalation service can reach them without manual
