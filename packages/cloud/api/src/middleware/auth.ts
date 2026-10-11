@@ -1,6 +1,6 @@
 /**
  * Global auth middleware — Hono auth gate. Steward cookie/session resolution
- * lives in `getCurrentUser` (`packages/lib/auth/workers-hono-auth.ts`).
+ * lives in `getCurrentUser` (`packages/cloud/shared/src/lib/auth/workers-hono-auth.ts`).
  *
  * Behavior:
  *   - Public paths pass through with no auth.

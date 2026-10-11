@@ -750,7 +750,6 @@ export const personalAssistantAction: Action = {
     "DOCUSIGN",
     // PRD action-catalog aliases. Travel workflows resolve to action=book_travel
     // on PERSONAL_ASSISTANT.
-    // See packages/docs/action-prd-map.md.
     "TRAVEL_CAPTURE_PREFERENCES",
     "TRAVEL_BOOK_FLIGHT",
     "TRAVEL_BOOK_HOTEL",
