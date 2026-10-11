@@ -10,6 +10,8 @@ const KNOWN_HANDLES: Record<string, string> = {
   "alice.bsky.social": "did:plc:alice123",
 };
 
+const UNAVAILABLE_HANDLE = "busy.bsky.social";
+
 const originalFetch = globalThis.fetch;
 let createRecordBodies: Array<{ record: { text: string; facets?: SentFacet[] } }>;
 let resolvedHandles: string[];
@@ -39,6 +41,9 @@ function stubBlueskyServer(input: RequestInfo | URL, init?: RequestInit): Promis
   if (method === "com.atproto.identity.resolveHandle") {
     const handle = url.searchParams.get("handle") ?? "";
     resolvedHandles.push(handle);
+    if (handle === UNAVAILABLE_HANDLE) {
+      return Promise.resolve(new Response("upstream unavailable", { status: 503 }));
+    }
     const did = KNOWN_HANDLES[handle];
     return Promise.resolve(
       did
@@ -163,5 +168,14 @@ describe("blueskyProvider.createPost facets", () => {
     expect(
       tags.map((f) => decoder.decode(bytes.slice(f.index.byteStart, f.index.byteEnd))),
     ).toEqual(["#alpha", "#two"]);
+  }, 20_000);
+
+  test("a failed handle lookup fails the post instead of dropping the mention", async () => {
+    const result = await blueskyProvider.createPost(credentials, {
+      text: "Hi @busy.bsky.social",
+    });
+
+    expect(result.success).toBe(false);
+    expect(createRecordBodies).toHaveLength(0);
   }, 20_000);
 });

@@ -89,7 +89,6 @@ async function bskyApiRequest<T>(
   endpoint: string,
   accessJwt: string,
   options: RequestInit = {},
-  maxRetries = 3,
 ): Promise<T> {
   const { data } = await withRetry<T>(
     () =>
@@ -106,7 +105,7 @@ async function bskyApiRequest<T>(
       if (json.error) throw new Error(json.message || json.error);
       return json;
     },
-    { platform: "bluesky", maxRetries },
+    { platform: "bluesky", maxRetries: 3 },
   );
   return data;
 }
@@ -140,22 +139,23 @@ async function uploadBlob(
 }
 
 async function resolveHandle(handle: string, accessJwt: string): Promise<string | null> {
-  try {
-    const { did } = await bskyApiRequest<{ did?: string }>(
-      `com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`,
-      accessJwt,
-      {},
-      0,
-    );
-    return typeof did === "string" && did.startsWith("did:") ? did : null;
-  } catch (error) {
-    // error-policy:J4 a mention link is advisory; an unresolved handle stays plain text
-    logger.warn("[Bluesky] Could not resolve mention handle", {
-      handle,
-      error: extractErrorMessage(error),
-    });
+  const response = await blueskyFetch(
+    `${BLUESKY_SERVICE}/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(handle)}`,
+    { headers: { Authorization: `Bearer ${accessJwt}` } },
+  );
+  // The PDS answers 400 for a handle that does not exist: that mention stays
+  // plain text. Any other failure fails the post so it can be retried.
+  if (response.status === 400) {
+    await response.body?.cancel();
+    logger.warn("[Bluesky] Mention handle does not resolve", { handle });
     return null;
   }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`Bluesky handle lookup failed: ${response.status}`);
+  }
+  const { did } = (await response.json()) as { did?: unknown };
+  return typeof did === "string" && did.startsWith("did:") ? did : null;
 }
 
 // Mentions follow https://docs.bsky.app/docs/advanced-guides/post-richtext: they
