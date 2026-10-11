@@ -217,6 +217,9 @@ export function PromoteAppDialog({
   const toggleChannel = (channel: PromotionChannel) => {
     setConfig((prev) => ({
       ...prev,
+      ...(channel === "advertising" && !prev.channels.includes(channel)
+        ? { advertising: getAdvertisingConfig(prev) }
+        : {}),
       channels: prev.channels.includes(channel)
         ? prev.channels.filter((c) => c !== channel)
         : [...prev.channels, channel],
