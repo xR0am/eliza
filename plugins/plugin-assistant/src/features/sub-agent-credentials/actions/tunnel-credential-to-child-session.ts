@@ -85,25 +85,10 @@ export const tunnelCredentialToChildSessionAction: Action = {
     },
   ],
 
-  validate: async (
-    runtime: IAgentRuntime,
-    _message: Memory,
-    _state?: State,
-    options?: HandlerOptions,
-  ): Promise<boolean> => {
-    if (!getBridge(runtime)) return false;
-    const params = readParams(options);
-    return (
-      typeof params.childSessionId === "string" &&
-      params.childSessionId.length > 0 &&
-      typeof params.credentialScopeId === "string" &&
-      params.credentialScopeId.length > 0 &&
-      typeof params.key === "string" &&
-      params.key.length > 0 &&
-      typeof params.value === "string" &&
-      params.value.length > 0
-    );
-  },
+  // Availability only: the planner tool surface calls validate without
+  // arguments. The schema and the handler check the arguments.
+  validate: async (runtime: IAgentRuntime): Promise<boolean> =>
+    getBridge(runtime) !== null,
 
   handler: async (
     runtime: IAgentRuntime,

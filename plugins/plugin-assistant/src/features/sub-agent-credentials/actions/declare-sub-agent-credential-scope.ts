@@ -94,28 +94,10 @@ export const declareSubAgentCredentialScopeAction: Action = {
     },
   ],
 
-  validate: async (
-    runtime: IAgentRuntime,
-    _message: Memory,
-    _state?: State,
-    options?: HandlerOptions,
-  ): Promise<boolean> => {
-    if (!getBridge(runtime)) return false;
-    const params = readParams(options);
-    if (
-      typeof params.childSessionId !== "string" ||
-      params.childSessionId.trim().length === 0
-    ) {
-      return false;
-    }
-    if (
-      !Array.isArray(params.credentialKeys) ||
-      params.credentialKeys.length === 0
-    ) {
-      return false;
-    }
-    return true;
-  },
+  // Availability only: the planner tool surface calls validate without
+  // arguments. The schema and the handler check the arguments.
+  validate: async (runtime: IAgentRuntime): Promise<boolean> =>
+    getBridge(runtime) !== null,
 
   handler: async (
     runtime: IAgentRuntime,
