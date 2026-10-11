@@ -110,6 +110,15 @@ async function runList(
   const repo = requireString(options, "repo");
   const prs: PRSummary[] = [];
 
+  // Without a repo or an author the search query matches every PR on GitHub,
+  // which the search API cannot return in full.
+  if (!repo && !author) {
+    const err =
+      "PR list requires repo (owner/name) or author (a GitHub login, or @me for the token's own account)";
+    await callback?.({ text: err });
+    return { success: false, error: err };
+  }
+
   const parts = repo ? splitRepo(repo) : null;
   if (repo && !parts) {
     const err = `Invalid repo "${repo}" — expected "owner/name"`;
@@ -320,7 +329,8 @@ export const prOpAction: Action = {
     },
     {
       name: "repo",
-      description: "Repository in owner/name form.",
+      description:
+        "Repository in owner/name form. list requires repo or author.",
       required: false,
       schema: { type: "string" },
     },
@@ -342,7 +352,8 @@ export const prOpAction: Action = {
     },
     {
       name: "author",
-      description: "Optional PR author username filter for list.",
+      description:
+        "PR author login filter for list; @me means the token's own account. list requires repo or author.",
       required: false,
       schema: { type: "string" },
     },
