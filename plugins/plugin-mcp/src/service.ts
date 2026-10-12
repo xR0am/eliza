@@ -640,6 +640,11 @@ export class McpService extends Service {
     if (connection.server.disabled) {
       throw new Error(`Server "${serverName}" is disabled`);
     }
+    if (connection.server.status !== "connected") {
+      throw new Error(
+        `Server "${serverName}" is not connected (status: ${connection.server.status})`
+      );
+    }
     const timeout = this.connectionRequestTimeout(connection);
     const result = await connection.client.callTool(
       {
@@ -661,6 +666,11 @@ export class McpService extends Service {
     }
     if (connection.server.disabled) {
       throw new Error(`Server "${serverName}" is disabled`);
+    }
+    if (connection.server.status !== "connected") {
+      throw new Error(
+        `Server "${serverName}" is not connected (status: ${connection.server.status})`
+      );
     }
     return await connection.client.readResource(
       { uri },
