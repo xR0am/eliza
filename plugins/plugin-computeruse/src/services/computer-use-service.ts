@@ -11,7 +11,7 @@
  */
 import os from "node:os";
 import path from "node:path";
-import { type IAgentRuntime, logger, Service } from "@elizaos/core";
+import { ElizaError, type IAgentRuntime, logger, Service } from "@elizaos/core";
 import { AppControlCoordinator } from "../app-control/coordinator.js";
 import {
   guardedPhysicalPointer,
@@ -341,24 +341,20 @@ export function parseComputerUseActionTimeoutMs(
   return parsed;
 }
 
-/**
- * Canonical TCP-port parse for `COMPUTERUSE_SANDBOX_RPC_PORT` /
- * `COMPUTER_USE_SANDBOX_RPC_PORT`. Only plain decimal digits are accepted
- * (`Number("0x50")` would otherwise sneak a hex spelling through, and
- * `"80.5"` / `"99999"` would pass a bare `Number.isFinite` check), and the
- * value must be a real TCP port (1–65535). Anything else returns `undefined`
- * so the sandbox backend keeps its default port instead of building a
- * malformed guest RPC URL such as `http://127.0.0.1:80.5/cua`.
- */
+/** Parse an explicit sandbox TCP port; only an unset value uses the default. */
 export function parseSandboxRpcPort(
   raw: string | undefined,
 ): number | undefined {
-  if (raw === undefined) return undefined;
-  const trimmed = raw.trim();
-  if (trimmed === "") return undefined;
-  if (!/^\d+$/.test(trimmed)) return undefined;
-  const port = Number(trimmed);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new ElizaError(
+      "Sandbox RPC port must be an integer from 1 to 65535",
+      {
+        code: "INVALID_SANDBOX_RPC_PORT",
+      },
+    );
+  }
   return port;
 }
 
@@ -2918,8 +2914,7 @@ export class ComputerUseService extends Service {
       const rpcPortRaw =
         getSetting("COMPUTERUSE_SANDBOX_RPC_PORT") ??
         getSetting("COMPUTER_USE_SANDBOX_RPC_PORT");
-      // Reject non-integer or out-of-range values so the backend keeps its
-      // default port instead of building a malformed guest RPC URL.
+      // Reject invalid explicit settings before selecting a sandbox endpoint.
       const rpcPort = parseSandboxRpcPort(rpcPortRaw);
       const options =
         rpcUrl || rpcPort !== undefined
