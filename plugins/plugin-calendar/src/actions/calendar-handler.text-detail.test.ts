@@ -166,4 +166,38 @@ describe("parseExplicitLocalDate Intl names", () => {
       day: 23,
     });
   });
+
+  it("resolves Korean and Chinese weekday names, including before particles", () => {
+    const friday = { year: 2026, month: 10, day: 16 };
+    for (const text of [
+      "금요일 15:00",
+      "금요일에 치과",
+      "이번 주 금요일",
+      "星期五",
+      "周五",
+      "星期五下午三点",
+      "viernes",
+      "Friday",
+    ]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual(friday);
+    }
+    expect(parseExplicitLocalDate("三月 15", ZONE, NOW)).toEqual({
+      year: 2026,
+      month: 3,
+      day: 15,
+    });
+  });
+
+  it("keeps English word boundaries and skips one-syllable Korean words", () => {
+    for (const text of [
+      "fridays",
+      "fridayish",
+      "xfriday",
+      "friday_x",
+      "일정 확인 오후 3시",
+      "월급날",
+    ]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toBeNull();
+    }
+  });
 });

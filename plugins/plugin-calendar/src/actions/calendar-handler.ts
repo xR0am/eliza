@@ -425,20 +425,38 @@ function buildIntlWeekdayMap(): Record<string, number> {
 const MONTH_MAP: Record<string, number> = buildIntlMonthMap();
 const WEEKDAY_MAP: Record<string, number> = buildIntlWeekdayMap();
 
+// `\b` is ASCII-only, so it never matches beside Hangul or Han. Letters and
+// digits of every script are word characters, except Hangul, Han and kana,
+// which may abut particles ("금요일에", "星期五下午").
+const SPACED_WORD_CHAR = String.raw`(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{M}\p{N}_]`;
+const SPACED_WORD_CHAR_PATTERN = new RegExp(`^${SPACED_WORD_CHAR}$`, "u");
+
+function wholeWordSource(name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const open = SPACED_WORD_CHAR_PATTERN.test(name.at(0) ?? "")
+    ? `(?<!${SPACED_WORD_CHAR})`
+    : "";
+  const close = SPACED_WORD_CHAR_PATTERN.test(name.at(-1) ?? "")
+    ? `(?!${SPACED_WORD_CHAR})`
+    : "";
+  return `${open}${escaped}${close}`;
+}
+
 const MONTH_NAMES_SORTED = Object.keys(MONTH_MAP).sort(
   (a, b) => b.length - a.length,
 );
 const MONTH_NAME_PATTERN = new RegExp(
-  `\\b(${MONTH_NAMES_SORTED.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
-  "i",
+  `(${MONTH_NAMES_SORTED.map(wholeWordSource).join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
+  "iu",
 );
 
-const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP).sort(
-  (a, b) => b.length - a.length,
-);
+// One-syllable Korean short forms (일, 월, 수, 금, …) are everyday words.
+const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP)
+  .filter((name) => name.length > 1)
+  .sort((a, b) => b.length - a.length);
 const WEEKDAY_NAME_PATTERN = new RegExp(
-  `\\b(?:(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
-  "i",
+  `(?:(?<!${SPACED_WORD_CHAR})(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map(wholeWordSource).join("|")})`,
+  "iu",
 );
 // Accepted alternate spellings for planner details live beside the
 // planner-facing schema (calendar-action-schema.ts: CALENDAR_DETAIL_ALIASES)
@@ -2445,7 +2463,7 @@ function distinctStatedLocalDates(
   // A comma inside a month/day/year date is not a boundary between requests.
   // Retain its year before splitting separate date clauses for intent narrowing.
   const dateClauses = text.replace(
-    new RegExp(MONTH_NAME_PATTERN.source, "gi"),
+    new RegExp(MONTH_NAME_PATTERN.source, "giu"),
     (date) => date.replace(/,\s*(?=\d{4}\b)/, " "),
   );
   for (const segment of dateClauses.split(DATE_SEGMENT_SPLIT_PATTERN)) {
