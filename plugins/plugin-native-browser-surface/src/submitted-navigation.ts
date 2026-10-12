@@ -28,7 +28,7 @@ export class SubmittedNavigation {
   constructor(
     private readonly options: {
       check: (address: string) => Promise<SubmittedNavigationVerdict>;
-      /** Only a confirmed blacklist hit stops navigation. Checks remain advisory while pending. */
+      /** Only a confirmed blacklist hit stops navigation after the host check. */
       policy?: "check-first" | "blacklist";
     },
   ) {}
@@ -52,7 +52,7 @@ export class SubmittedNavigation {
       revision,
       address,
       verdict: null,
-      permitted: address !== null && this.options.policy === "blacklist",
+      permitted: false,
     });
     if (!address) return;
     // A subscriber may synchronously close/navigate while receiving the reset.

@@ -3,7 +3,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { expect, test } from "vitest";
 import { SubmittedNavigation } from "./submitted-navigation";
 
-test("blacklist navigation stays open during a stalled check, fences old replies and stops a confirmed hit", async () => {
+test("blacklist navigation checks locally before opening, fences old replies and stops a confirmed hit", async () => {
   const requests = new Map<string, ServerResponse>();
   const server = createServer((request, response) => {
     requests.set(request.url ?? "/", response);
@@ -17,7 +17,7 @@ test("blacklist navigation stays open during a stalled check, fences old replies
   const navigation = new SubmittedNavigation({ check, policy: "blacklist" });
   try {
     navigation.open("/first");
-    expect(navigation.snapshot().permitted).toBe(true);
+    expect(navigation.snapshot().permitted).toBe(false);
     await expect.poll(() => requests.has("/first")).toBe(true);
     navigation.navigate("/second");
     await expect.poll(() => requests.has("/second")).toBe(true);
