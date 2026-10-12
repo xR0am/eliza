@@ -357,7 +357,6 @@
     "./lib/services/credits": "./src/lib/services/credits.ts",
     "./lib/services/crypto-payment-refunds": "./src/lib/services/crypto-payment-refunds.ts",
     "./lib/services/crypto-payments": "./src/lib/services/crypto-payments.ts",
-    "./lib/services/daily-budget-remaining": "./src/lib/services/daily-budget-remaining.ts",
     "./lib/services/dedicated-compute-price-acceptance": "./src/lib/services/dedicated-compute-price-acceptance.ts",
     "./lib/services/dedicated-fleet-liveness": "./src/lib/services/dedicated-fleet-liveness.ts",
     "./lib/services/default-agent-character": "./src/lib/services/default-agent-character.ts",

@@ -22,7 +22,6 @@ import {
 } from "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare";
 import { agentBudgetService } from "@elizaos/cloud-shared/lib/services/agent-budgets";
 import { creditsService } from "@elizaos/cloud-shared/lib/services/credits";
-import { dailyBudgetRemaining } from "@elizaos/cloud-shared/lib/services/daily-budget-remaining";
 import { organizationsService } from "@elizaos/cloud-shared/lib/services/organizations";
 import { redeemableEarningsService } from "@elizaos/cloud-shared/lib/services/redeemable-earnings";
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
@@ -102,10 +101,9 @@ app.get("/", async (c) => {
         const allocated = budget ? Number(budget.allocated_budget) : 0;
         const spent = budget ? Number(budget.spent_budget) : 0;
         const available = allocated - spent;
-        const { dailyLimit, dailySpent, dailyRemaining } = dailyBudgetRemaining(
-          budget?.daily_limit,
-          budget ? budget.daily_spent : 0,
-        );
+        const dailyLimit =
+          budget?.daily_limit != null ? Number(budget.daily_limit) : null;
+        const dailySpent = budget ? Number(budget.daily_spent) : 0;
         return {
           id: agent.id,
           name: agent.name,
@@ -117,7 +115,7 @@ app.get("/", async (c) => {
           available,
           dailyLimit,
           dailySpent,
-          dailyRemaining,
+          dailyRemaining: dailyLimit !== null ? dailyLimit - dailySpent : null,
           isPaused: budget?.is_paused ?? false,
           pauseReason: budget?.pause_reason ?? null,
           totalEarnings: Number(agent.total_creator_earnings),
