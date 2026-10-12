@@ -125,28 +125,23 @@ export class NewsDataService extends Service {
   }
 
   private decodeHtmlEntities(text: string): string {
-    const entities: Record<string, string> = {
+    // The wallet renders the numeric quote references as straight quotes,
+    // where the shared decoder returns the curly characters. Every other
+    // entity defers to the shared decoder. Decode in one pass over the
+    // source text: replacement output is never rescanned, so an escaped
+    // entity such as `&amp;amp;` decodes one layer to the literal text
+    // `&amp;` instead of collapsing both layers to `&`.
+    const straightQuotes: Record<string, string> = {
       "&#8217;": "'",
       "&#8216;": "'",
       "&#8220;": '"',
       "&#8221;": '"',
-      "&#8211;": "–",
-      "&#8212;": "—",
-      "&#038;": "&",
-      "&amp;": "&",
-      "&nbsp;": " ",
-      "&lt;": "<",
-      "&gt;": ">",
-      "&quot;": '"',
-      "&#39;": "'",
     };
 
-    let decoded = text;
-    for (const [entity, char] of Object.entries(entities)) {
-      decoded = decoded.replace(new RegExp(entity, "g"), char);
-    }
-
-    return decodeBasicHtmlEntities(decoded);
+    return text.replace(
+      /&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g,
+      (entity) => straightQuotes[entity] ?? decodeBasicHtmlEntities(entity),
+    );
   }
 
   async getLatestNews(options?: {
