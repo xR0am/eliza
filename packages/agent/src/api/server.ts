@@ -559,7 +559,7 @@ function wireNativeBrowserPageReader(runtime: AgentRuntime | null): void {
   bindReader();
 }
 // On mobile the agent bundle aliases `@elizaos/plugin-browser` to a null-stub
-// (scripts/mobile-stubs/null-plugin.ts): the module imports fine but its
+// (packages/agent/scripts/mobile-stubs/null-plugin.ts): the module imports fine but its
 // workspace functions are absent, so calling one throws an uncaught TypeError
 // that surfaces as a 500 (and a raw "X is not a function" in the /browser view).
 // The browser workspace is desktop-only, so resolve the plugin only when it
