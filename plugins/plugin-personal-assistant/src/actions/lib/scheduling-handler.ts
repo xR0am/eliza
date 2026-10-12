@@ -1530,9 +1530,11 @@ export async function runSchedulingNegotiationHandler(
       }
       // The negotiation zone is the zone offset-less proposal clocks are read
       // in, so a name that identifies no zone is refused instead of stored.
+      // Without one, the owner's meeting-preference zone applies, as it does
+      // for slot proposals and availability checks.
       const timezone =
         params.timezone === undefined
-          ? undefined
+          ? (await readLifeOpsMeetingPreferences(runtime)).timeZone
           : resolveKnownTimeZone(params.timezone);
       if (timezone === null) {
         return respond({
