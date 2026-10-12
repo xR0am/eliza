@@ -153,6 +153,19 @@ async function resolveNamedContact(
     return uniqueMatch(exactName);
   }
 
+  // A whole name part is stronger evidence than a substring in another
+  // contact's name or address. Preserve ambiguity within this tier.
+  const wholeNamePattern = new RegExp(
+    `(?<![\\p{L}\\p{M}\\p{N}])${escapeRegExp(needle)}(?![\\p{L}\\p{M}\\p{N}])`,
+    "u",
+  );
+  const wholeName = relationships.filter((relationship) =>
+    wholeNamePattern.test(normalizeLookup(relationship.name)),
+  );
+  if (wholeName.length > 0) {
+    return uniqueMatch(wholeName);
+  }
+
   const byAddress = relationships.filter(
     (relationship) =>
       normalizeLookup(relationship.primaryHandle).includes(needle) ||

@@ -126,6 +126,36 @@ describe("ENTITY structured-name resolution fails closed on ambiguity", () => {
     vi.restoreAllMocks();
   });
 
+  it("prefers a whole name part over another contact's address substring", async () => {
+    directory = [
+      relationship("rel-bethann", "Bethann Cole", "bethann@example.test"),
+      relationship("rel-ann", "Zoe Ann", "zoe@example.test"),
+    ];
+    const outcome = await logNamedInteraction(makeRuntime(), { name: "ann" });
+    expect(outcome.interactionRelationshipId).toBe("rel-ann");
+    expect(loggedRelationshipIds).toEqual(["rel-ann"]);
+  });
+
+  it("does not fall through a whole-name tie to a unique address", async () => {
+    directory = [
+      relationship("rel-ann-smith", "Ann Smith", "ann@example.test"),
+      relationship("rel-ann-jones", "Ann Jones", "jones@example.test"),
+    ];
+    const outcome = await logNamedInteraction(makeRuntime(), { name: "ann" });
+    expect(outcome.success).toBe(false);
+    expect(loggedRelationshipIds).toEqual([]);
+  });
+
+  it("keeps accented letters inside whole-name boundaries", async () => {
+    directory = [
+      relationship("rel-joanne", "Joanné", "joanne@example.test"),
+      relationship("rel-ann", "Zoe Ann", "zoe@example.test"),
+    ];
+    const outcome = await logNamedInteraction(makeRuntime(), { name: "ann" });
+    expect(outcome.interactionRelationshipId).toBe("rel-ann");
+    expect(loggedRelationshipIds).toEqual(["rel-ann"]);
+  });
+
   it("rejects a name fragment that two contacts share instead of logging the first", async () => {
     directory = [
       relationship("rel-ann-smith", "Ann Smith", "ann.smith@example.test"),
