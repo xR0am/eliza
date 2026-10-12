@@ -459,12 +459,12 @@ const WEEKDAY_NAME_PATTERN = new RegExp(
   "iu",
 );
 // Korean and Chinese put the week qualifier before the weekday name
-// ("다음 주 금요일", "下周五"). Past and every-week forms name no single
-// upcoming date, so they are left unresolved.
+// ("다음 주 금요일", "下周五", "下周星期五", "下周的星期五"). Past and
+// every-week forms name no single upcoming date, so they are left unresolved.
 const CJK_NEXT_WEEK_QUALIFIER =
-  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)|下个?)\s*$/u;
+  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)(?:\s*의)?|下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
 const CJK_UNRESOLVED_WEEK_QUALIFIER =
-  /(?:(?<![\p{L}\p{N}])(?:지난\s*주|지난|저번\s*주|저번|매주|매)|上个?|每个?)\s*$/u;
+  /(?:(?<![\p{L}\p{N}])(?:지난\s*주|지난|저번\s*주|저번|매주|매)(?:\s*의)?|(?:上个?|每个?)(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
 // Accepted alternate spellings for planner details live beside the
 // planner-facing schema (calendar-action-schema.ts: CALENDAR_DETAIL_ALIASES)
 // so the two surfaces are reviewed together.

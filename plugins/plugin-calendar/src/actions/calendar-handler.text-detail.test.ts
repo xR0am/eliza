@@ -195,16 +195,22 @@ describe("parseExplicitLocalDate Intl names", () => {
       "다음주 금요일 3시",
       "下周五",
       "下星期五下午",
+      "下周星期五",
+      "下周的星期五",
+      "下个星期五",
+      "다음 주의 금요일",
     ]) {
       expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual(
         nextWeekFriday,
       );
     }
-    expect(parseExplicitLocalDate("这周五", ZONE, NOW)).toEqual({
-      year: 2026,
-      month: 10,
-      day: 16,
-    });
+    for (const text of ["这周五", "这周星期五"]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual({
+        year: 2026,
+        month: 10,
+        day: 16,
+      });
+    }
   });
 
   it("leaves past and every-week Korean and Chinese weekdays unresolved", () => {
@@ -214,6 +220,9 @@ describe("parseExplicitLocalDate Intl names", () => {
       "매주 금요일",
       "上周五",
       "每周五",
+      "上周星期五",
+      "每周星期五",
+      "上周的星期五",
     ]) {
       expect(parseExplicitLocalDate(text, ZONE, NOW), text).toBeNull();
     }
