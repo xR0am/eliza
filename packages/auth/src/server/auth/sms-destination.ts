@@ -91,6 +91,6 @@ export function smsSendGlobalMaxPerHour(
 ): number {
   const raw = env.STEWARD_SMS_SEND_GLOBAL_MAX_PER_HOUR?.trim();
   if (!raw) return 300;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 300;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 300;
 }
