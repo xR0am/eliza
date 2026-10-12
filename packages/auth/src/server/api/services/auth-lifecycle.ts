@@ -10,6 +10,7 @@ import {
   type EmailAuthConfig,
   hashSha256Hex,
   isDevSecretAllowed,
+  isSmsDestinationAllowed,
   type MagicLinkTemplateData,
   type ManagedSmsOtpProvider,
   MemoryBackend,
@@ -23,10 +24,13 @@ import {
   ResendProvider,
   renderCustomTemplate,
   SmsChallengeInProgressError,
+  SmsDestinationNotAllowedError,
   type SmsProvider,
+  SmsSendBudgetExceededError,
   SmsVerificationNotAttemptedError,
   type StoreBackend,
   signAccessToken,
+  smsSendGlobalMaxPerHour,
   TokenStore,
   TwilioSmsProvider,
   TwilioVerifyProvider,
@@ -44,6 +48,7 @@ import type {
 import { runtimeEnvironmentValue } from "../../shared/runtime-env.ts";
 import { KeyStore } from "../../wallet/index.ts";
 import { defaultAuthTenantId } from "../services/default-auth-tenant";
+import { checkGlobalAuthBudget } from "./auth-rate-limit";
 
 export const SMS_VERIFY_MAX_FAILED_ATTEMPTS = 5;
 
@@ -935,8 +940,40 @@ export function getPhoneAuth(): PhoneAuth {
     provider,
     managedProvider,
     tokenStore: new TokenStore({ backend: getMfaBackend() }),
+    sendGuard: guardSmsSend,
   });
   return _phoneAuth;
+}
+
+/**
+ * SMS pumping guard for every OTP send: a deployment-wide destination policy
+ * (default US + Canada) and a deployment-wide hourly ceiling. Per-IP and
+ * per-destination limits stay at the routes; pumping rotates both.
+ */
+async function guardSmsSend(phone: string): Promise<void> {
+  if (!isSmsDestinationAllowed(phone)) {
+    logger.warn(
+      {
+        details: [`[SmsGuard] refused destination prefix ${phone.slice(0, 4)}`],
+      },
+      "[Login:auth] warn",
+    );
+    throw new SmsDestinationNotAllowedError();
+  }
+  const max = smsSendGlobalMaxPerHour();
+  if (max === 0) return;
+  const budget = await checkGlobalAuthBudget("sms-send-global", 3_600_000, max);
+  if (!budget.allowed) {
+    logger.error(
+      {
+        details: [
+          `[SmsGuard] ALERT: deployment-wide SMS budget of ${max}/hour is used up; OTP sends are refused until the window resets`,
+        ],
+      },
+      "[Login:auth] error",
+    );
+    throw new SmsSendBudgetExceededError(budget.retryAfterSecs);
+  }
 }
 
 export function buildTwilioVerifyProviderFromEnvironment(

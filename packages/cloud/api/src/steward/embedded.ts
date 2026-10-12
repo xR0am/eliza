@@ -799,6 +799,14 @@ export const embeddedStewardHandler: MiddlewareHandler<AppEnv> = async (c) => {
   const headers = init.headers as Headers;
   headers.set("x-forwarded-host", url.host);
   headers.set("x-forwarded-proto", url.protocol.replace(":", ""));
+  // Steward rate-limits auth sends per client IP. A caller-supplied
+  // x-forwarded-for chain must not reach it: forward only the address the
+  // Cloudflare edge observed, which the caller cannot set.
+  const edgeClientIp = c.req.header("cf-connecting-ip")?.trim();
+  for (const name of ["x-forwarded-for", "x-real-ip", "forwarded"]) {
+    headers.delete(name);
+  }
+  if (edgeClientIp) headers.set("x-forwarded-for", edgeClientIp);
   // Strip the host header that Workers carries from the inbound request — the
   // upstream fetch sets its own.
   headers.delete("host");
