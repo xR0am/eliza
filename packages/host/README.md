@@ -17,9 +17,13 @@ From the repository root, run `bun run --cwd packages/host build`,
 
 Consumer hosts can use `@elizaos/host/native-host` for authenticated
 SQLite task lifecycles and explicit domain-route extensions. Document/canvas
-bundling and verified ARM64 packaging live in `native-host/build-document-runtime.mjs`
+bundling and verified Android packaging live in `native-host/build-document-runtime.mjs`
 and `native-host/android-documents.mjs`; consumers supply reviewed source identity,
-canvas version and locked package records. App runtime integrations run with `bun run --cwd packages/app test:consumer-host`.
+canvas version and locked package records. Staging and verification accept
+`targetAbi: "arm64-v8a"` (the default) or `"x86_64"`. Each build admits only the
+selected canvas package, native path and ELF architecture; mixed ABI document
+libraries are refused. Packaging checks do not prove Android canvas execution.
+App runtime integrations run with `bun run --cwd packages/app test:consumer-host`.
 The renderer gateway and Cloud services remain owned by `packages/agent/native-host`
 and `packages/auth/native-host`; these build helpers do not provide device acceptance.
 
