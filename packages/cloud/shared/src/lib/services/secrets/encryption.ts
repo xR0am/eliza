@@ -137,8 +137,6 @@ type KMSClientType = {
  *      to re-encrypt each DEK under the local master key.
  *   4. Once all secrets are rotated, this class and the
  *      `@aws-sdk/client-kms` dependency can be removed.
- *
- * See `packages/cloud/infra/cloud/AWS_RETIREMENT.md` for the full plan.
  */
 export class AWSKMSProvider implements KMSProvider {
   private static deprecationWarned = false;
