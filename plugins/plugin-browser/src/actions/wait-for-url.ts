@@ -128,7 +128,7 @@ export async function waitForUrl(
       lastUrl = currentUrl;
     }
 
-    if (currentUrl !== null && predicate.test(currentUrl)) {
+    if (currentUrl !== null && now() < deadline && predicate.test(currentUrl)) {
       const elapsedMs = now() - startedAt;
       const message = `Done — tab reached ${currentUrl} (matched ${predicate.kind} "${predicate.pattern}" after ${polls} check${polls === 1 ? "" : "s"}).`;
       await deps.emitStatus?.(`✅ ${message}`);
