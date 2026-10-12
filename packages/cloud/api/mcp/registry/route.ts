@@ -233,11 +233,9 @@ const MCP_REGISTRY: McpRegistryEntry[] = [
     status: "live",
     icon: "cloud",
     color: "#3B82F6",
-    toolCount: 4,
+    toolCount: 2,
     features: [
       "get_current_weather",
-      "get_weather_forecast",
-      "compare_weather",
       "search_location",
     ],
     pricing: BUILTIN_MCP_PRICING.weather,

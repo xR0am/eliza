@@ -113,8 +113,6 @@ export const INTEGRATION_TRUST: Readonly<Record<string, IntegrationTrust>> =
       reviewedAt: "2026-08-20",
       capabilities: [
         read("get_current_weather"),
-        read("get_weather_forecast"),
-        read("compare_weather"),
         read("search_location"),
       ],
     };
