@@ -439,28 +439,51 @@ export function splitTweetContent(
   }
   appendTextUnits(content.slice(cursor));
 
+  const isWhitespace = (unit: string | undefined) =>
+    unit !== undefined && /^\s+$/u.test(unit);
+
   const chunks: string[] = [];
-  let chunk = "";
-  for (const unit of units) {
-    const unitWeight = countTwitterWeightedLength(unit);
-    if (unitWeight > maxLength) {
-      throw new ElizaError(
-        "An indivisible X post token exceeds the provider limit",
-        {
-          code: "X_POST_TOKEN_TOO_LONG",
-          context: { maxLength },
-        },
-      );
-    }
-    const candidate = `${chunk}${unit}`;
-    if (chunk && countTwitterWeightedLength(candidate) > maxLength) {
-      chunks.push(chunk);
-      chunk = unit;
-    } else {
+  let start = 0;
+  while (start < units.length) {
+    let end = start;
+    let chunk = "";
+    for (; end < units.length; end += 1) {
+      const unit = units[end] as string;
+      if (countTwitterWeightedLength(unit) > maxLength) {
+        throw new ElizaError(
+          "An indivisible X post token exceeds the provider limit",
+          {
+            code: "X_POST_TOKEN_TOO_LONG",
+            context: { maxLength },
+          },
+        );
+      }
+      const candidate = `${chunk}${unit}`;
+      if (chunk && countTwitterWeightedLength(candidate) > maxLength) break;
       chunk = candidate;
     }
+
+    // Like splitSlackText: end the post after the last whitespace when that
+    // keeps it over half full, so words are not cut. The whitespace stays on
+    // this post, so joining the posts still gives back the original text.
+    if (end < units.length && !isWhitespace(units[end])) {
+      let cut = end - 1;
+      while (cut > start && !isWhitespace(units[cut])) cut -= 1;
+      if (cut > start) {
+        const kept = units.slice(start, cut + 1).join("");
+        if (
+          /\S/u.test(kept) &&
+          countTwitterWeightedLength(kept) > maxLength / 2
+        ) {
+          chunk = kept;
+          end = cut + 1;
+        }
+      }
+    }
+
+    chunks.push(chunk);
+    start = end;
   }
-  if (chunk) chunks.push(chunk);
   return chunks;
 }
 
