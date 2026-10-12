@@ -176,3 +176,19 @@ test("malformed provider values and oversized content reject rather than silentl
   }
   assert.throws(() => createMailboxReadPort({ request: async () => detail }));
 });
+
+test("list rejects missing pagination state rather than claiming search is complete", async () => {
+  for (const value of [
+    { messages: [] },
+    { messages: [], nextPageToken: undefined },
+  ]) {
+    const port = createMailboxReadPort({
+      accountId,
+      request: async () => value,
+    });
+    await assert.rejects(
+      port.list({ accountId, query: "in:inbox", pageSize: 10 }),
+      { status: 502 },
+    );
+  }
+});

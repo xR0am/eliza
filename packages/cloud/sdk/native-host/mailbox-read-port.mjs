@@ -106,7 +106,8 @@ export function createMailboxReadPort({ accountId, request }) {
       if (
         !Array.isArray(value?.messages) ||
         value.messages.length > input.pageSize ||
-        (value.nextPageToken != null &&
+        !Object.hasOwn(value, "nextPageToken") ||
+        (value.nextPageToken !== null &&
           (typeof value.nextPageToken !== "string" ||
             !value.nextPageToken ||
             value.nextPageToken.length > 4096))
