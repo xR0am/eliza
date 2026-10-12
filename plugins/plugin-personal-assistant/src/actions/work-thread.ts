@@ -652,7 +652,7 @@ export const workThreadAction: Action & {
                     sourceWorkThreadIds,
                     mergeRequestId,
                     patch: {
-                      summary: operation.summary ?? current.summary,
+                      summary: operation.summary,
                       instruction: operation.instruction ?? null,
                       lastMessageMemoryId:
                         typeof message.id === "string" ? message.id : null,

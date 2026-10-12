@@ -23,6 +23,7 @@ import {
 } from "@elizaos/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { workThreadAction } from "../src/actions/work-thread.ts";
+import { LifeOpsRepository } from "../src/lifeops/repository.ts";
 import { registerLifeOpsScheduledTaskRunnerDeps } from "../src/lifeops/scheduled-task/runtime-wiring.js";
 import { processDueScheduledTasks } from "../src/lifeops/scheduled-task/scheduler.ts";
 import { ScheduledTaskRunnerService } from "../src/lifeops/scheduled-task/service.js";
@@ -203,6 +204,83 @@ async function applyThreadOpsField(
 }
 
 describe("LifeOps work threads", () => {
+  it.each([undefined, "Explicit merged summary"])(
+    "retries a merge after an owner edit with summary %s",
+    async (summary) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("merge-retry-room");
+      const ref = { connector: "test", roomId, canMutate: true };
+      const target = await store.create({
+        title: "Prepare report",
+        summary: "Original target",
+        currentPlanSummary: "Original plan",
+        primarySourceRef: ref,
+      });
+      const source = await store.create({
+        title: "Collect notes",
+        summary: "Source notes",
+        primarySourceRef: ref,
+      });
+      const originalMerge = LifeOpsRepository.prototype.mergeWorkThreadsAtomic;
+      const versions: number[] = [];
+      vi.spyOn(
+        LifeOpsRepository.prototype,
+        "mergeWorkThreadsAtomic",
+      ).mockImplementation(async function (this: LifeOpsRepository, input) {
+        versions.push(input.target.version);
+        if (versions.length === 1) {
+          // Represent a writer outside the action's process-local lock.
+          // The original SQL transaction still produces the real conflict.
+          await store.update(target.id, {
+            summary: "Owner edited summary",
+            currentPlanSummary: "Owner edited plan",
+            eventType: "steered",
+          });
+        }
+        return originalMerge.call(this, input);
+      });
+      const result = await runThreadAction(
+        runtime,
+        message(runtime, roomId, "Merge the notes into the report"),
+        [
+          {
+            type: "merge",
+            workThreadId: target.id,
+            sourceWorkThreadIds: [source.id],
+            ...(summary === undefined ? {} : { summary }),
+          },
+        ],
+      );
+      expect(result.success).toBe(true);
+      expect(versions).toEqual([1, 2]);
+      expect(await store.get(target.id)).toMatchObject({
+        summary: summary ?? "Owner edited summary",
+        currentPlanSummary: "Owner edited plan",
+        version: 3,
+        metadata: { mergedFromWorkThreadIds: [source.id] },
+      });
+      expect(await store.get(source.id)).toMatchObject({
+        status: "stopped",
+        version: 2,
+        metadata: { mergedIntoWorkThreadId: target.id },
+      });
+      const repo = new LifeOpsRepository(runtime);
+      const targetEvents = await repo.listWorkThreadEvents({
+        agentId: runtime.agentId,
+        workThreadId: target.id,
+      });
+      const sourceEvents = await repo.listWorkThreadEvents({
+        agentId: runtime.agentId,
+        workThreadId: source.id,
+      });
+      expect(targetEvents.filter((e) => e.type === "steered")).toHaveLength(1);
+      expect(targetEvents.filter((e) => e.type === "merged")).toHaveLength(1);
+      expect(sourceEvents.filter((e) => e.type === "merged_into")).toHaveLength(
+        1,
+      );
+    },
+  );
   it("defers only the owning message's reply while retaining complete durable results", async () => {
     const runtime = await createRuntime();
     for (const owner of ["direct", "planner", "other-message"] as const) {
