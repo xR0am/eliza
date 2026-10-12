@@ -1,15 +1,10 @@
 /**
  * End-to-end coverage for the cookie/CORS authority split across the
- * agent → app host-bridge seam.
- *
- * The agent-side suite that first drove real TCP with a deterministic
- * `resolveHttpRequestAuthorization` substitute is gone; this file keeps that
- * end-to-end coverage for the cross-package plumbing — the real bridge
- * installed by `installAgentHostBridge()`, the real `resolveAuthorizedRouteRole`,
- * and the real session/CSRF cookie and header names — was previously only verified by
- * inspection. Sessions come from a real PGlite-backed `AuthStore`: an untrusted
- * origin must lose the ambient cookie while explicit bearer auth survives, and
- * cookie mutations must still present a valid CSRF token.
+ * agent → app host-bridge seam. Exercises the real bridge installed by
+ * `installAgentHostBridge()`, `resolveAuthorizedRouteRole`, and the
+ * session/CSRF cookie and header names with a PGlite-backed `AuthStore`.
+ * An untrusted origin must lose the ambient cookie while explicit bearer
+ * auth survives; cookie mutations must present a valid CSRF token.
  */
 
 import fs from "node:fs";
