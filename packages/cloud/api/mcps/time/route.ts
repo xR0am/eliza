@@ -27,30 +27,6 @@ app.get("/", (c) =>
         price: MCP_FREE_COST_LABEL,
         example: { timezone: "America/New_York", format: "all" },
       },
-      {
-        name: "convert_timezone",
-        description: "Convert times between timezones",
-        price: MCP_FREE_COST_LABEL,
-        example: { time: "now", fromTimezone: "PST", toTimezone: "JST" },
-      },
-      {
-        name: "format_date",
-        description: "Format dates in various locales and styles",
-        price: MCP_FREE_COST_LABEL,
-        example: { date: "now", locale: "ja-JP" },
-      },
-      {
-        name: "calculate_time_diff",
-        description: "Calculate difference between two dates",
-        price: MCP_FREE_COST_LABEL,
-        example: { startDate: "2024-01-01", endDate: "now" },
-      },
-      {
-        name: "list_timezones",
-        description: "List common timezones with current offsets",
-        price: MCP_FREE_COST_LABEL,
-        example: { filter: "America" },
-      },
     ],
     payment: {
       protocol: "free",
