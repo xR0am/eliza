@@ -8,7 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { openTaskDatabase } from "./task-storage.mjs";
@@ -43,7 +43,9 @@ test("encrypted policy without complete provider writes nothing and never opens 
 });
 test("legacy profile retains durable SQLite behavior and private permissions", async (t) => {
   const path = await temporary(t);
-  const db = await openTaskDatabase({ databasePath: path });
+  const db = await openTaskDatabase({
+    databasePath: relative(process.cwd(), path),
+  });
   db.exec(
     "CREATE TABLE sample(value TEXT); INSERT INTO sample VALUES ('controlled')",
   );

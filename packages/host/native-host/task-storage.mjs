@@ -1,5 +1,5 @@
 import { chmod, mkdir } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { dirname, resolve } from "node:path";
 import { NativeHostError } from "./errors.mjs";
 
 const unavailable = () =>
@@ -16,10 +16,12 @@ export async function openTaskDatabase({
 } = {}) {
   if (
     typeof databasePath !== "string" ||
-    !isAbsolute(databasePath) ||
+    !databasePath ||
     typeof requireEncryption !== "boolean"
   )
     throw unavailable();
+  // Keep the legacy host-relative path contract; providers receive one stable path.
+  databasePath = resolve(databasePath);
   // Before even creating a directory: incomplete encrypted configuration writes nothing.
   if (
     requireEncryption &&
