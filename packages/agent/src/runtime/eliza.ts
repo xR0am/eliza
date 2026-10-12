@@ -27,6 +27,7 @@ import {
   type Entity,
   formatError,
   type IAgentRuntime,
+  type IDatabaseAdapter,
   type LogEntry,
   logger,
   MESSAGE_SOURCE_CLIENT_CHAT,
@@ -1546,11 +1547,121 @@ const SIGNAL_SERVICE_STOP_TIMEOUT_MS = 13000;
  * PGlite manager, so restarts must close the adapter or the next runtime can
  * silently reuse the same broken manager instance.
  */
+export interface HostRuntimeStopOptions extends RuntimeStopOptions {
+  /**
+   * Stop the runtime but leave its database adapter open. An API stop uses
+   * this so the host can still verify sessions while the agent is stopped;
+   * the host later closes the adapter with {@link closeRuntimeAdapter}.
+   */
+  keepAdapterOpen?: boolean;
+}
+/** Close a runtime's database adapter, as {@link shutdownRuntime} does. */
+export async function closeRuntimeAdapter(
+  runtime: AgentRuntime,
+  context: string,
+): Promise<void> {
+  const adapter = runtime.adapter as RuntimeAdapterWithClose | undefined;
+  if (!adapter || typeof adapter.close !== "function") return;
+  try {
+    logger.debug(`[eliza] ${context}: closing database adapter`);
+    await adapter.close();
+    logger.debug(`[eliza] ${context}: database adapter closed`);
+  } catch (err) {
+    logger.warn(
+      `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
+    );
+    throw err;
+  }
+}
+
+/**
+ * Reopen only a stopped runtime's database adapter.
+ *
+ * Hosts use this after a replacement boot fails. The runtime services stay
+ * stopped, but its persistent authentication repository becomes available
+ * again so the owner can retry Start without restarting the process.
+ */
+export async function reopenRuntimeAdapter(
+  runtime: AgentRuntime,
+  context: string,
+): Promise<void> {
+  let replacement: IDatabaseAdapter | undefined;
+  try {
+    // Reopen the backend that this host actually stopped, independent of other hosts' environment.
+    const { SQLiteDatabaseAdapter } = await import("@elizaos/plugin-sqlite");
+    if (runtime.adapter instanceof SQLiteDatabaseAdapter) {
+      const sqlitePath = runtime.getSetting("SQLITE_DATABASE_PATH");
+      if (typeof sqlitePath !== "string" || !path.isAbsolute(sqlitePath)) {
+        throw new ElizaError(
+          "Cannot reopen SQLite authentication storage without an absolute path",
+          {
+            code: "SQLITE_PATH_REQUIRED",
+          },
+        );
+      }
+      replacement = SQLiteDatabaseAdapter.create(sqlitePath, runtime.agentId);
+    } else {
+      const {
+        createDatabaseAdapter,
+        PgDatabaseAdapter,
+        PgliteDatabaseAdapter,
+      } = await import("@elizaos/plugin-sql");
+      if (runtime.adapter instanceof PgliteDatabaseAdapter) {
+        const dataDir = runtime.adapter.getPgliteDataDir();
+        if (!dataDir || dataDir === ":memory:")
+          throw new ElizaError(
+            "Stopped authentication storage is not durable",
+            {
+              code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+            },
+          );
+        replacement = createDatabaseAdapter({ dataDir }, runtime.agentId);
+      } else if (runtime.adapter instanceof PgDatabaseAdapter) {
+        const postgresUrl = runtime.getSetting("POSTGRES_URL");
+        if (typeof postgresUrl !== "string" || !postgresUrl.trim()) {
+          throw new ElizaError(
+            "Stopped PostgreSQL authentication storage has no connection configuration",
+            {
+              code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+            },
+          );
+        }
+        replacement = createDatabaseAdapter({ postgresUrl }, runtime.agentId);
+      } else {
+        throw new ElizaError(
+          "Host must supply recovery for its database adapter",
+          {
+            code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+          },
+        );
+      }
+    }
+    await replacement.initialize();
+    runtime.adapter = replacement;
+    logger.debug(`[eliza] ${context}: database adapter reopened`);
+  } catch (error) {
+    if (replacement) {
+      try {
+        await replacement.close();
+      } catch (closeError) {
+        throw new ElizaError(
+          "Database adapter reopen and cleanup both failed",
+          {
+            code: "DATABASE_ADAPTER_REOPEN_CLEANUP_FAILED",
+            cause: new AggregateError([error, closeError]),
+          },
+        );
+      }
+    }
+    throw error;
+  }
+}
 export async function shutdownRuntime(
   runtime: AgentRuntime | null | undefined,
   context: string,
-  options: RuntimeStopOptions = {},
+  hostOptions: HostRuntimeStopOptions = {},
 ): Promise<void> {
+  const { keepAdapterOpen = false, ...options } = hostOptions;
   let firstError: unknown = null;
   try {
     await stopMemorySampler();
@@ -1564,7 +1675,6 @@ export async function shutdownRuntime(
     if (firstError) throw firstError;
     return;
   }
-  const adapter = runtime.adapter as RuntimeAdapterWithClose | undefined;
   try {
     const pendingDeferredBoot = pendingDeferredBootTaskCount(runtime);
     if (pendingDeferredBoot > 0) {
@@ -1604,18 +1714,11 @@ export async function shutdownRuntime(
     );
   }
 
-  if (adapter && typeof adapter.close === "function") {
+  if (!keepAdapterOpen) {
     try {
-      logger.debug(`[eliza] ${context}: closing database adapter`);
-      await adapter.close();
-      logger.debug(`[eliza] ${context}: database adapter closed`);
+      await closeRuntimeAdapter(runtime, context);
     } catch (err) {
-      if (!firstError) {
-        firstError = err;
-      }
-      logger.warn(
-        `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
-      );
+      if (!firstError) firstError = err;
     }
   }
   if (firstError) {

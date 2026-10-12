@@ -38,6 +38,7 @@ import {
   loadElizaConfig,
   normalizeWsClientId,
   persistConversationRoomTitle,
+  type RuntimeRestartOptions,
   removeResetCredentialsFromVault,
   resolveDefaultAgentWorkspaceDir,
   resolveMcpServersRejection,
@@ -71,7 +72,7 @@ import {
   resolveLinkedAccountsInConfig,
   settingsDebugCloudSummary,
 } from "@elizaos/host/protocol";
-import { authStoreForRuntime } from "../services/auth-store";
+import { authStoreForHost } from "../services/auth-store";
 import { sharedVault } from "../services/vault-mirror";
 import { handleAccountPoolStatusRoute } from "./account-pool-status-routes";
 import {
@@ -968,7 +969,7 @@ async function runCompatRequestPipeline(
       (getProvidedApiToken(req) || readCookie(req, SESSION_COOKIE_NAME)) &&
       !isAuthorized(req) &&
       !isRegisteredTokenRoleAuthorized(req, "GET", pathname) &&
-      !authStoreForRuntime(state.current)
+      !authStoreForHost(state)
     ) {
       res.setHeader("Retry-After", "1");
       sendJsonResponse(res, 503, { error: "db_unavailable" });
@@ -1052,6 +1053,7 @@ export async function startApiServer(
 
   const callerOptions = args[0];
   const callerStop = callerOptions?.onStop;
+  const callerRestart = callerOptions?.onRestart;
   const voiceHost = createSelfHostedVoice(compatState, {
     protectedHost: Boolean(callerOptions?.hostAdmission),
   });
@@ -1059,6 +1061,8 @@ export async function startApiServer(
   const upstreamStart = Date.now();
   const server = await upstreamStartApiServer({
     ...callerOptions,
+    getAuthenticationRuntime: () =>
+      compatState.current ?? compatState.stoppedAuthRuntime ?? null,
     composeStatus: (payload) =>
       composeAppStatus(
         callerOptions?.composeStatus
@@ -1072,6 +1076,7 @@ export async function startApiServer(
         voiceHost.reset();
       }
       compatState.current = activeRuntime;
+      compatState.stoppedAuthRuntime = null;
       if (speechHostStarted) warmStandaloneKokoro(compatState);
       clearCompatRuntimeRestart(compatState);
       await callerOptions?.onRuntimeActivated?.(previousRuntime, activeRuntime);
@@ -1092,6 +1097,31 @@ export async function startApiServer(
                 voiceHost.reset();
                 compatState.current = null;
               }
+              // The host keeps the stopped runtime's database open until the
+              // next start or shutdown, so sessions stay verifiable meanwhile.
+              compatState.stoppedAuthRuntime = runtime;
+            }
+          },
+        }
+      : {}),
+    ...(callerRestart
+      ? {
+          onRestart: async (restartOptions?: RuntimeRestartOptions) => {
+            // The host closes the stopped runtime's database before it boots
+            // the replacement; stop reading sessions from it first.
+            const stoppedRuntime = compatState.stoppedAuthRuntime;
+            compatState.stoppedAuthRuntime = null;
+            try {
+              const restarted = await callerRestart(restartOptions);
+              if (!restarted && stoppedRuntime) {
+                compatState.stoppedAuthRuntime = stoppedRuntime;
+              }
+              return restarted;
+            } catch (error) {
+              if (stoppedRuntime) {
+                compatState.stoppedAuthRuntime = stoppedRuntime;
+              }
+              throw error;
             }
           },
         }
@@ -1115,9 +1145,7 @@ export async function startApiServer(
         identityId: string;
       }): Promise<boolean> => {
         bindSessionSocket(binding, request.socket);
-        const store = compatState.current
-          ? authStoreForRuntime(compatState.current)
-          : null;
+        const store = authStoreForHost(compatState);
         const stillActive = store
           ? await findActiveSession(store, binding.sessionId).catch(
               (error: unknown) => {
@@ -1166,9 +1194,12 @@ export async function startApiServer(
         extractAuthToken(request)?.trim() ||
         null;
       if (sessionToken) {
-        if (compatState.current?.adapter) {
+        if (
+          compatState.current?.adapter ||
+          compatState.stoppedAuthRuntime?.adapter
+        ) {
           try {
-            const store = authStoreForRuntime(compatState.current);
+            const store = authStoreForHost(compatState);
             const session = store
               ? await findActiveSession(store, sessionToken)
               : null;
@@ -1259,6 +1290,7 @@ export async function startApiServer(
 
   const originalClose = server.close.bind(server);
   server.close = async () => {
+    compatState.stoppedAuthRuntime = null;
     closeStandaloneKokoro(compatState);
     voiceHost.close();
     await originalClose();
