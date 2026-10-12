@@ -68,6 +68,7 @@ function fixture(override = {}) {
         codeType: "mobile_app_auth_code",
         code: "private-grant",
         expiresAt: future(),
+        accountCreated: true,
       });
     if (path.endsWith("/token"))
       return Response.json({
@@ -126,7 +127,11 @@ test("native email sign-in persists before acknowledgement and returns no author
   const f = fixture(),
     begun = await start(f),
     result = await verify(f, begun);
-  assert.deepEqual(result, { status: "authenticated", connected: true });
+  assert.deepEqual(result, {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
   assert.equal(f.state.pending, null);
   assert.equal(f.state.active, "private-credential-not-for-renderer");
   const connect = f.calls.find((x) => x.path.endsWith("/connect"));
@@ -176,7 +181,12 @@ test("lost acknowledgement keeps durable receipt and resumes without email or a 
   assert.ok(f.state.pending);
   assert.equal(f.state.active, null);
   lost = false;
-  assert.equal((await f.auth.handle("resume")).connected, true);
+  // Cloud's account-created fact is kept with the receipt.
+  assert.deepEqual(await f.auth.handle("resume"), {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
   assert.equal(f.calls.filter((x) => x.path.endsWith("/connect")).length, 1);
 });
 test("pending credential cancellation revokes before forgetting it; failure stays recoverable", async () => {
@@ -544,7 +554,11 @@ test("enrollment retains its session as memory-only billing authority bound to t
   });
   assert.equal(await g.auth.billingAuthority(), null);
   const result = await verify(g, await start(g));
-  assert.deepEqual(result, { status: "authenticated", connected: true });
+  assert.deepEqual(result, {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
   const authority = await g.auth.billingAuthority();
   assert.equal(authority.token, token);
   assert.ok(Date.parse(authority.expiresAt) > Date.now());
