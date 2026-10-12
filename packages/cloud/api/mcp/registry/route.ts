@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: file contains MCP config templates with literal ${BASE_URL} placeholders resolved by this route
 /**
  * Serves the public MCP catalog with validated filters and optional community
  * entries. Platform entries carry trust/health/availability metadata from the
@@ -7,7 +8,6 @@
  */
 
 import { getCurrentUser } from "@elizaos/cloud-shared/auth";
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: file contains MCP config templates with literal ${BASE_URL} placeholders resolved by this route
 import { BUILTIN_MCP_PRICING } from "@elizaos/cloud-shared/billing";
 import { failureResponse } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import { userMcpsService } from "@elizaos/cloud-shared/lib/services/user-mcps";
@@ -158,7 +158,7 @@ const MCP_REGISTRY: McpRegistryEntry[] = [
       servers: {
         doordash: {
           type: "streamable-http",
-          url: "/api/mcps/doordash/streamable-http",
+          url: "${BASE_URL}/api/mcps/doordash/streamable-http",
         },
       },
     },
@@ -184,7 +184,7 @@ const MCP_REGISTRY: McpRegistryEntry[] = [
       servers: {
         "crypto-prices": {
           type: "streamable-http",
-          url: "/api/mcps/crypto/streamable-http",
+          url: "${BASE_URL}/api/mcps/crypto/streamable-http",
         },
       },
     },
@@ -216,7 +216,7 @@ const MCP_REGISTRY: McpRegistryEntry[] = [
       servers: {
         "time-server": {
           type: "streamable-http",
-          url: "/api/mcps/time/streamable-http",
+          url: "${BASE_URL}/api/mcps/time/streamable-http",
         },
       },
     },
@@ -246,7 +246,7 @@ const MCP_REGISTRY: McpRegistryEntry[] = [
       servers: {
         weather: {
           type: "streamable-http",
-          url: "/api/mcps/weather/streamable-http",
+          url: "${BASE_URL}/api/mcps/weather/streamable-http",
         },
       },
     },
