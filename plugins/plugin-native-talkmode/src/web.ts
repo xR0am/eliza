@@ -185,6 +185,17 @@ export class TalkModeWeb extends WebPlugin {
   }
 
   async speak(options: SpeakOptions): Promise<SpeakResult> {
+    // Both native bridges resolve missing, non-string, empty, or blank text
+    // as a no-op success before any TTS engine is touched (Android
+    // TalkModePlugin.speak getString/trim guard; iOS TalkModePlugin.speak
+    // guard), and they report usedSystemTts: false because nothing was
+    // spoken. Keep that order and result here: the empty case must not
+    // claim system TTS, and it must not fail when synthesis is unavailable.
+    const text = typeof options?.text === "string" ? options.text.trim() : "";
+    if (!text) {
+      return { completed: true, interrupted: false, usedSystemTts: false };
+    }
+
     if (!this.synthesis) {
       return {
         completed: false,
@@ -195,10 +206,6 @@ export class TalkModeWeb extends WebPlugin {
     }
 
     // Web can only use system TTS (no ElevenLabs due to CORS)
-    const text = options.text.trim();
-    if (!text) {
-      return { completed: true, interrupted: false, usedSystemTts: true };
-    }
 
     this.setState("speaking", "Speaking");
     this.notifyListeners("speaking", { text, isSystemTts: true });
