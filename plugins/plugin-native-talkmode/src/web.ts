@@ -96,6 +96,15 @@ export class TalkModeWeb extends WebPlugin {
       const recognition = new SpeechRecognitionAPI();
       recognition.continuous = true;
       recognition.interimResults = true;
+      // Apply the configured STT language, as both native bridges do
+      // (Android passes it as EXTRA_LANGUAGE; iOS builds the recognizer
+      // with that locale) and as the sibling Swabble web implementation
+      // does. Without this the browser recognizer silently uses the
+      // page/system default language instead of the caller's config.
+      const sttLanguage = this.config.stt?.language;
+      if (typeof sttLanguage === "string" && sttLanguage.trim()) {
+        recognition.lang = sttLanguage;
+      }
 
       recognition.onresult = (event: SpeechRecognitionResultEvent) => {
         // A replaced recognizer can still deliver a queued result before
