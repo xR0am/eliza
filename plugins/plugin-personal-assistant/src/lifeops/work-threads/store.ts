@@ -257,10 +257,13 @@ export function createWorkThreadStore(
         metadata: input.metadata
           ? { ...(current.metadata ?? {}), ...input.metadata }
           : current.metadata,
+        version: current.version + 1,
         updatedAt: timestamp,
         lastActivityAt: timestamp,
       };
-      await repo.upsertWorkThread(agentId, next);
+      await repo.upsertWorkThread(agentId, next, {
+        expectedVersion: current.version,
+      });
       await this.appendEvent(workThreadId, input.eventType ?? "updated", {
         reason: input.reason,
         detail: input.detail,
