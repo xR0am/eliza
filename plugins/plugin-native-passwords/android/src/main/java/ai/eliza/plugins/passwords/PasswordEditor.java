@@ -101,9 +101,11 @@ final class PasswordEditor {
     }; value.setId(View.generateViewId()); caption.setLabelFor(value.getId());
     value.setContentDescription(activity.getString(title)); value.setSingleLine(true); value.setInputType(inputType);
     if (title == R.string.eliza_passwords_editor_password) value.setTransformationMethod(android.text.method.PasswordTransformationMethod.getInstance());
+    int[] editRevision = {0};
     value.setFilters(new InputFilter[]{(source, start, end, dest, dstart, dend) -> {
-      if ((long) dest.length() - (dend - dstart) + end - start <= max) { value.setError(null); return null; }
-      value.setError(activity.getString(R.string.eliza_passwords_editor_too_long, max));
+      int revision = ++editRevision[0];
+      if ((long) dest.length() - (dend - dstart) + end - start <= max) return null;
+      value.post(() -> { if (revision == editRevision[0]) value.setError(activity.getString(R.string.eliza_passwords_editor_too_long, max)); });
       return dest.subSequence(dstart, dend); // Reject the entire edit; never truncate a secret.
     }});
     value.setMinHeight(PasswordSheet.dp(activity, 48));

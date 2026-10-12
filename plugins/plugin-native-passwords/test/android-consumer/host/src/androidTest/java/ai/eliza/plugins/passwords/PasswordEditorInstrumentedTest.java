@@ -59,12 +59,13 @@ public final class PasswordEditorInstrumentedTest {
           assertTrue("Password remains masked after single-line configuration", secret.getTransformationMethod() instanceof android.text.method.PasswordTransformationMethod);
           secret.getText().replace(0, secret.length(), "x".repeat(16385));
           assertEquals("An oversize replacement never truncates or changes the original", "synthetic-editor-canary", secret.getText().toString());
-          assertNotNull(secret.getError());
           secret.selectAll();
           assertFalse("Secret copy is unavailable", secret.onTextContextMenuItem(android.R.id.copy));
           assertFalse("Secret cut is unavailable", secret.onTextContextMenuItem(android.R.id.cut));
         } catch (Exception failure) { throw new AssertionError(failure); }
       });
+      androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+      scenario.onActivity(activity -> assertNotNull("Oversize edit shows an error", drafts.get(3).getError()));
       scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED);
       assertEquals(1, cancellations.get());
       for (EditText draft : drafts) assertEquals("", draft.getText().toString());
