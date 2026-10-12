@@ -19,8 +19,9 @@ function feedWithSummary(summary: string): string {
 
 describe("decodeIcsText unknown escapes", () => {
   it("keeps the backslash of undefined escapes", () => {
-    const cal = parseIcsCalendar(feedWithSummary("see C:\\\\notes\\\\file and 100\\\\% done"));
-    expect(cal.events[0]?.title).toBe("see C:\\notes\\file and 100\\% done");
+    const raw = String.raw`keep \q and 100\% done`;
+    const cal = parseIcsCalendar(feedWithSummary(raw));
+    expect(cal.events[0]?.title).toBe(raw);
   });
   it("still decodes the defined escapes", () => {
     // ICS value: a\,b\;c\\d\ne  ->  a,b;c\<newline>e
