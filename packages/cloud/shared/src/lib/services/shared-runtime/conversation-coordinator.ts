@@ -15,7 +15,11 @@ import type {
 } from "../../mobile-push/types";
 import { logger } from "../../utils/logger";
 import type { BridgeRequest, BridgeResponse } from "../eliza-sandbox";
-import { coordinatorFetch, deadlineBoundCoordinatorStub } from "./coordinator-fetch";
+import {
+  coordinatorFetch,
+  deadlineBoundCoordinatorStub,
+  SHARED_RUNTIME_TURN_DEADLINE_MS,
+} from "./coordinator-fetch";
 import type { NetworkSharedTurnObservation } from "./network-shared-context";
 import type { PersonalSharedFallbackAccountState } from "./personal-fallback-account-state";
 import { personalSharedAgentId } from "./personal-shared-identity";
@@ -422,6 +426,8 @@ export async function coordinateSharedBridge(
       }),
       ...(options.abortSignal ? { signal: options.abortSignal } : {}),
     },
+    // Cost: one existing DO hop; non-streaming inference completes before response headers.
+    rpc.method === "message.send" ? SHARED_RUNTIME_TURN_DEADLINE_MS : undefined,
   );
   await requireCoordinatorResponse(response, "conversation");
   return (await response.json()) as BridgeResponse;

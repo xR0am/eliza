@@ -1,3 +1,4 @@
+import { SHARED_RUNTIME_TURN_DEADLINE_MS } from "./coordinator-fetch";
 import {
   createOwnerBoundSharedGooglePort,
   isPersonalGooglePrivateAudience,
@@ -162,7 +163,6 @@ export { sharedTurnClientMessageId } from "./shared-turn-client-message-id";
 const SSE_TRANSPORT_READY_COMMENT = ": ready\n\n";
 const BRIDGE_INSUFFICIENT_CREDITS_CODE = -32002;
 const PROVIDER_CANCELLATION_OBSERVE_MS = 5_000;
-const SHARED_STREAM_TERMINAL_DEADLINE_MS = 75_000;
 const PERSONAL_SHARED_IMAGE_MODEL_ID = "fal-ai/flux/schnell";
 const linkedCharacterMemoryCache = new InMemoryLRUCache<UserCharacter>(256, 60_000);
 
@@ -1365,7 +1365,7 @@ function sseError(message: string): Response {
 }
 
 export class SharedRuntimeChatService {
-  constructor(private readonly streamTerminalDeadlineMs = SHARED_STREAM_TERMINAL_DEADLINE_MS) {}
+  constructor(private readonly streamTerminalDeadlineMs = SHARED_RUNTIME_TURN_DEADLINE_MS) {}
 
   async recordLifecycleEvent(
     agentId: string,
