@@ -15,6 +15,7 @@ import {
   Memory,
   MemoryType,
   stringToUuid,
+  textIncludesKeywordTerm,
   type UUID,
   type World,
 } from "@elizaos/core";
@@ -322,16 +323,10 @@ async function handleMessageCreate(
         return { processed: true };
       }
     } else if (metadata.responseMode === "keyword") {
-      // Only respond if message contains keywords (word boundary matching)
-      const contentLower = data.content.toLowerCase();
-      const hasKeyword = metadata.keywords?.some((k) => {
-        const keywordLower = k.toLowerCase();
-        // Use word boundary regex to avoid false positives (e.g., "or" matching "organization")
-        const wordBoundaryRegex = new RegExp(
-          `\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-        );
-        return wordBoundaryRegex.test(contentLower);
-      });
+      // Only respond if message contains keywords. ASCII keywords keep word
+      // boundaries ("or" must not match "organization"); keywords in other
+      // scripts ("엘리자", "café") match as NFKC substrings.
+      const hasKeyword = metadata.keywords?.some((k) => textIncludesKeywordTerm(data.content, k));
       if (!hasKeyword) {
         return { processed: true };
       }
