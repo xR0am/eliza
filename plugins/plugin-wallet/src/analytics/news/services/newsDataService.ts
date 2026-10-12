@@ -7,6 +7,7 @@
  */
 import type { IAgentRuntime } from "@elizaos/core";
 import { Service } from "@elizaos/core";
+import { decodeBasicHtmlEntities } from "@elizaos/plugin-assistant/html-entities";
 import type { RealWorldNewsArticle } from "../interfaces/types";
 
 interface RSSItem {
@@ -21,12 +22,6 @@ interface RSSItem {
 }
 
 export const DEFAULT_NEWS_RSS_FETCH_TIMEOUT_MS = 10_000;
-
-// HTML maps &#128;-&#159; through windows-1252 (WHATWG numeric character
-// reference table); the five unassigned slots stay C1 code points.
-const WINDOWS_1252_C1 =
-  "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f" +
-  "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
 
 export class NewsDataService extends Service {
   static serviceType = "NEWS_DATA_SERVICE";
@@ -151,36 +146,7 @@ export class NewsDataService extends Service {
       decoded = decoded.replace(new RegExp(entity, "g"), char);
     }
 
-    // Handle numeric entities, decimal and hex. Mirror the gmail connector
-    // and the shared reference decoder: fromCharCode truncates astral-plane
-    // entities to 16 bits ("&#128512;" becomes U+F600 instead of the grinning
-    // face), so use fromCodePoint and leave invalid code points raw; the
-    // numeric spellings of U+00A0 become the same plain space as `&nbsp;`
-    // above, and &#128;-&#159; map through windows-1252 instead of producing
-    // raw C1 control characters (the unassigned slots stay as written).
-    decoded = decoded.replace(
-      /&#(x[0-9a-f]+|\d+);/gi,
-      (entity, ref: string) => {
-        const hex = ref.toLowerCase().startsWith("x");
-        const code = Number.parseInt(hex ? ref.slice(1) : ref, hex ? 16 : 10);
-        if (!Number.isSafeInteger(code) || code <= 0 || code > 0x10ffff) {
-          return entity;
-        }
-        if (code >= 0xd800 && code <= 0xdfff) {
-          return entity;
-        }
-        if (code === 0xa0) {
-          return " ";
-        }
-        if (code >= 0x80 && code <= 0x9f) {
-          const mapped = WINDOWS_1252_C1[code - 0x80];
-          return mapped.charCodeAt(0) === code ? entity : mapped;
-        }
-        return String.fromCodePoint(code);
-      },
-    );
-
-    return decoded;
+    return decodeBasicHtmlEntities(decoded);
   }
 
   async getLatestNews(options?: {
