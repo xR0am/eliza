@@ -824,7 +824,7 @@ export const workThreadAction: Action & {
                   const persisted = await store.get(workThreadId);
                   if (
                     persisted?.currentScheduledTaskId !== task.taskId &&
-                    !(await runner.remove(task.taskId))
+                    !(await runner.remove?.(task.taskId))
                   ) {
                     throw new ElizaError(
                       "Follow-up removal could not be confirmed",
@@ -854,7 +854,7 @@ export const workThreadAction: Action & {
 
             const status = statusForOperation(type);
             if (status) {
-              await store.update(workThreadId, {
+              await updateMutableThread(workThreadId, {
                 status,
                 eventType:
                   type === "stop"

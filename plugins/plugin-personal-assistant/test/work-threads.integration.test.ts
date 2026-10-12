@@ -208,7 +208,7 @@ async function applyThreadOpsField(
 }
 
 describe("LifeOps work threads", () => {
-  it.each([false, true, "remove fails"])(
+  it.each([false, true, "remove fails", "remove unavailable"])(
     "links one follow-up or removes it after exhausted owner conflicts (%s)",
     async (exhaust) => {
       const runtime = await createRuntime();
@@ -256,6 +256,11 @@ describe("LifeOps work threads", () => {
       });
       if (exhaust === "remove fails")
         vi.spyOn(runner, "remove").mockResolvedValue(false);
+      if (exhaust === "remove unavailable")
+        Object.defineProperty(runner, "remove", {
+          value: undefined,
+          configurable: true,
+        });
       const action = runThreadAction(
         runtime,
         message(runtime, roomId, "Follow up on the report"),
@@ -268,10 +273,17 @@ describe("LifeOps work threads", () => {
           },
         ],
       );
-      if (exhaust === "remove fails")
+      if (typeof exhaust === "string")
         await expect(action).rejects.toMatchObject({
           code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
           context: { workThreadId: thread.id },
+          cause: expect.objectContaining({
+            errors: expect.arrayContaining([
+              expect.objectContaining({
+                code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
+              }),
+            ]),
+          }),
         });
       else if (exhaust) await expect(action).rejects.toThrow();
       else expect((await action).success).toBe(true);
@@ -281,7 +293,7 @@ describe("LifeOps work threads", () => {
       const final = await store.get(thread.id);
       expect(final?.summary).toBe(`Owner edit ${conflicts}`);
       if (exhaust) {
-        expect(tasks).toHaveLength(exhaust === "remove fails" ? 1 : 0);
+        expect(tasks).toHaveLength(typeof exhaust === "string" ? 1 : 0);
         expect(final?.currentScheduledTaskId ?? null).toBeNull();
         expect(conflicts).toBe(3);
       } else {
@@ -289,6 +301,49 @@ describe("LifeOps work threads", () => {
         expect(final?.currentScheduledTaskId).toBe(tasks[0].taskId);
         expect(conflicts).toBe(1);
       }
+    },
+  );
+
+  it.each(["mark_waiting", "mark_completed"] as const)(
+    "does not overwrite an owner stop with a stale %s request",
+    async (type) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("status-owner-stop-race");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Report",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const originalGet = LifeOpsRepository.prototype.getWorkThread;
+      let changed = false;
+      vi.spyOn(LifeOpsRepository.prototype, "getWorkThread").mockImplementation(
+        async function (this: LifeOpsRepository, agentId, id) {
+          const snapshot = await originalGet.call(this, agentId, id);
+          if (id === thread.id && snapshot && !changed) {
+            changed = true;
+            await this.upsertWorkThread(
+              agentId,
+              {
+                ...snapshot,
+                status: "stopped",
+                version: snapshot.version + 1,
+              },
+              { expectedVersion: snapshot.version },
+            );
+          }
+          return snapshot;
+        },
+      );
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "Update thread"), [
+          { type, workThreadId: thread.id },
+        ]),
+      ).rejects.toMatchObject({ code: "WORK_THREAD_NOT_ACTIVE" });
+      expect(await store.get(thread.id)).toMatchObject({
+        status: "stopped",
+        version: thread.version + 1,
+      });
     },
   );
 
