@@ -487,7 +487,11 @@ export function createDesktopBrowserWorkspaceCommandScript(
   const findTarget = () => {
     if (command.selector) {
       const selectorChain = normalizeSelectorSyntax(command.selector)
-        .split(/s*>>s*/)
+        // NOTE: this script is built inside a template literal. The whitespace
+        // class in the split pattern needs a double backslash in this source
+        // so the generated page script sees a single-backslash whitespace
+        // class. A lone letter s here would match literal s characters.
+        .split(/\\s*>>\\s*/)
         .map((segment) => segment.trim())
         .filter(Boolean);
       if (selectorChain.length > 1) {
