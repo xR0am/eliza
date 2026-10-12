@@ -409,3 +409,13 @@ UI context and cancellation. The process-local usage ceiling is 60 input-audio
 minutes per UTC day per host/owner; restarting resets that local counter.
 Hosts configured with mandatory `hostAdmission` currently refuse this optional
 protocol until continuous protected-host admission is implemented.
+
+`buildConsumerAndroidRuntime` accepts `targetAbi: "x86_64"` for an emulator or
+Cuttlefish bundle; the default remains `"arm64-v8a"`. The reviewed upstream stager
+selects the matching Bun, musl loader and libraries, and the consumer builder
+checks their target ELF machine and records the ABI in provenance. A supplied
+`bunArchiveFile` uses the selected architecture's verified local archive input.
+The host gateway callback receives `{targetAbi}` as its third argument so it can
+stage ABI-specific dependencies. Hosts must also select that ABI for runtime
+inventory, native document assets and APK packaging. This is bundle integrity
+support; installed execution, live services and image boot remain separate tests.
