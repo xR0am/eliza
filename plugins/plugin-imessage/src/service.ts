@@ -387,13 +387,13 @@ function statusMetadata(status: IMessageServiceStatus): Record<string, string | 
 }
 
 function normalizedSearchText(value: string | undefined): string {
-  // Fold accents ("Jose" matches "José") but keep non-Latin letters such as Hangul.
+  // Fold Latin accents ("Jose" matches "José") while preserving marks in other scripts.
   return (value ?? "")
     .normalize("NFKD")
-    .replace(/\p{M}+/gu, "")
+    .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
     .normalize("NFC")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}@+._-]+/gu, " ")
+    .replace(/[^\p{L}\p{M}\p{N}@+._-]+/gu, " ")
     .trim();
 }
 

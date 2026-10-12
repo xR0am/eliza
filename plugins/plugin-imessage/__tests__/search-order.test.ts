@@ -122,6 +122,10 @@ const ADDRESS_BOOK = new Map([
   ["+14155550102", { name: "이영희" }],
   ["+14155550103", { name: "Josh" }],
   ["+14155550104", { name: "José García" }],
+  ["+14155550105", { name: "ガク" }],
+  ["+14155550106", { name: "カク" }],
+  ["+14155550107", { name: "किरण" }],
+  ["+14155550108", { name: "करण" }],
 ]);
 
 function registerWithAddressBook(): MessageConnectorRegistration {
@@ -162,6 +166,15 @@ describe("iMessage connector — resolveTargets with non-ASCII names", () => {
   it("does not match a partial Hangul syllable against a different syllable", async () => {
     expect(await resolvedLabels("기")).toEqual([]);
   });
+
+  it.each(["ガク", "カク", "किरण", "करण"])(
+    "preserves meaning-bearing marks when resolving %s",
+    async (query) => {
+      const labels = await resolvedLabels(query);
+      expect(labels.length).toBeGreaterThan(0);
+      expect(labels.every((label) => label.includes(query))).toBe(true);
+    }
+  );
 
   it("does not match José against Josh", async () => {
     const labels = await resolvedLabels("José");
