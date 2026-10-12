@@ -1204,6 +1204,47 @@ describe("ApprovalQueue integration (real PGlite)", () => {
     }
   }, 60_000);
 
+  it("refuses a start without a timezone when the saved meeting zone is unknown", async () => {
+    const previous = await readLifeOpsMeetingPreferences(runtime);
+    await updateLifeOpsMeetingPreferences(runtime, { timeZone: "Not/AZone" });
+    try {
+      const started = await runSchedulingNegotiationHandler(
+        runtime,
+        {
+          id: runtime.agentId,
+          entityId: String(runtime.agentId),
+          roomId: runtime.agentId,
+          content: { text: "Start scheduling a tax review" },
+        } as never,
+        undefined,
+        {
+          parameters: {
+            subaction: "start",
+            subject: "Tax review",
+            durationMinutes: 30,
+          },
+        } as never,
+        async () => [],
+      );
+      expect(started.success).toBe(false);
+      expect(started.data).toMatchObject({
+        error: "UNKNOWN_TIMEZONE",
+        timezone: "Not/AZone",
+      });
+      expect(
+        (
+          await new LifeOpsService(runtime).listActiveNegotiations({
+            limit: 100,
+          })
+        ).some((negotiation) => negotiation.subject === "Tax review"),
+      ).toBe(false);
+    } finally {
+      await updateLifeOpsMeetingPreferences(runtime, {
+        timeZone: previous.timeZone,
+      });
+    }
+  }, 60_000);
+
   it("keeps scheduling delivery unclaimed during a handoff pause and sends once after resume", async () => {
     const { request } = await createOpeningApproval({
       suffix: "handoff-pause",
