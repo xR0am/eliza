@@ -24,6 +24,7 @@ export function matchActionWildcardParts(
 		pos = found + literal.length;
 	}
 
+	if (parts.length === 1) return name.length === last.length;
 	if (last) {
 		if (!name.endsWith(last)) return false;
 		if (pos > name.length - last.length) return false;
