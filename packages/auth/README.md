@@ -51,6 +51,10 @@ untrusted chains cannot trigger revocation requests.
 storage, and host activation callbacks. Activation must call its guard immediately
 before committing. Keep storage and callbacks outside the renderer. Enrollment owns
 PKCE, acknowledgement, cancellation fencing and remote revocation receipts.
+A finished sign-in returns `{status: "authenticated", connected: true, created}`.
+`created` is Cloud's `accountCreated` from the mobile connect grant: `true` when
+this sign-in made the Cloud account, `false` when it existed. It is kept with the
+pending receipt for `resume`, and it is absent when Cloud did not send it.
 
 The stored app credential stays inference-only. A successful code `verify`/`mfa`
 also keeps that Steward session in memory as billing authority, bound to the

@@ -274,12 +274,14 @@ export async function getCurrentUserForStewardToken(
     if (!user) {
       try {
         const { syncUserFromSteward } = await import("../steward-sync");
-        user = await syncUserFromSteward({
+        const synced = await syncUserFromSteward({
           stewardUserId: claims.userId,
           email: claims.email,
           walletAddress: claims.walletAddress,
           walletChainType: claims.walletChain,
         });
+        if (synced.accountCreated) c.set("stewardAccountCreated", true);
+        user = synced;
       } catch (error) {
         logger.error("[AUTH] Steward JIT sync failed", {
           userId: claims.userId,
