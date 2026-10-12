@@ -186,6 +186,33 @@ describe("TASKS stop_agent / cancel default target", () => {
   }
 });
 
+describe("TASKS control / share default target", () => {
+  it("control stop without a session id ends the running sub-agent", async () => {
+    await withRunningAndFinished("control-stop", async (ctx) => {
+      const result = await runTasks(ctx.runtime, {
+        action: "control",
+        controlAction: "stop",
+      });
+
+      expect(result?.success).toBe(true);
+      expect((await ctx.service.getSession(ctx.runningId))?.status).toBe(
+        "stopped",
+      );
+    });
+  }, 20_000);
+
+  it("share without a session id reports the running sub-agent", async () => {
+    await withRunningAndFinished("share", async (ctx) => {
+      const result = await runTasks(ctx.runtime, { action: "share" });
+
+      expect(result?.success).toBe(true);
+      expect(
+        (result?.data as { sessionId?: string } | undefined)?.sessionId,
+      ).toBe(ctx.runningId);
+    });
+  }, 20_000);
+});
+
 /**
  * Two sub-agents run at once. The older one belongs to a durable task; the
  * newer one does not. A task id must select the older one.
