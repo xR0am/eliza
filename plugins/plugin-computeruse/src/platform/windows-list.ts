@@ -256,7 +256,12 @@ export async function warmWindowsCache(): Promise<void> {
 // proc`, matched by app/title term), so the owning app name + window title are
 // the only usable identifiers. The id is the title when present, else the app.
 function parseDarwinWindowEntry(entry: string): WindowInfo | null {
-  const [app, title] = entry.split("|||");
+  // Split on the FIRST sentinel only: a window title may itself contain
+  // "|||" (e.g. a document named "a ||| b"), and a plain split would silently
+  // truncate the title at the second sentinel.
+  const separator = entry.indexOf("|||");
+  const app = separator === -1 ? entry : entry.slice(0, separator);
+  const title = separator === -1 ? undefined : entry.slice(separator + 3);
   const appName = app?.trim() ?? "";
   const winTitle = title?.trim() ?? "";
   if (!appName && !winTitle) return null;
