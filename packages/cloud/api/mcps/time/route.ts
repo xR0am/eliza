@@ -35,11 +35,7 @@ app.get("/", (c) =>
     features: [
       "Accurate timezone handling via IANA database",
       "Timezone aliases (PST, EST, JST, etc.)",
-      "Multi-locale date formatting",
-      "Relative time calculations",
       "Unix timestamp conversions",
-      "Leap year detection",
-      "Week/day of year calculations",
     ],
     status: "live",
   }),
