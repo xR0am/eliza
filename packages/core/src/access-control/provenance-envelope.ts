@@ -366,6 +366,23 @@ export interface RecalledItem {
 	memory: Memory;
 	provenance: CanonicalProvenance;
 	dedupeKey: string;
+	/** Candidate position of the record's best-ranked copy; lower is a closer match. */
+	rank: number;
+}
+
+/**
+ * Keep the `count` best-ranked items and return them in transcript order.
+ * Recall items are sorted by time, so truncating them directly keeps the
+ * oldest matches instead of the closest ones.
+ */
+export function selectBestRankedRecallItems(
+	items: readonly RecalledItem[],
+	count: number,
+): RecalledItem[] {
+	return [...items]
+		.sort((a, b) => a.rank - b.rank)
+		.slice(0, count)
+		.sort((a, b) => a.provenance.timestampMs - b.provenance.timestampMs);
 }
 
 /**
@@ -483,7 +500,7 @@ function evaluateCanonicalRecall(
 		}
 	};
 
-	for (const memory of input.candidates) {
+	for (const [rank, memory] of input.candidates.entries()) {
 		const provenanceResult = deriveCanonicalProvenance(memory, input.agentId);
 		if (!provenanceResult.valid) {
 			recordDenial(provenanceResult.code, provenanceResult.reason);
@@ -512,7 +529,12 @@ function evaluateCanonicalRecall(
 
 		const existing = byKey.get(dedupeKey);
 		if (!existing || provenance.timestampMs < existing.provenance.timestampMs) {
-			byKey.set(dedupeKey, { memory, provenance, dedupeKey });
+			byKey.set(dedupeKey, {
+				memory,
+				provenance,
+				dedupeKey,
+				rank: existing?.rank ?? rank,
+			});
 		}
 	}
 
@@ -842,7 +864,7 @@ export async function searchCanonicalConversationMemories(
 	const items =
 		explicitCount === undefined
 			? eligibleItems
-			: eligibleItems.slice(0, explicitCount);
+			: selectBestRankedRecallItems(eligibleItems, explicitCount);
 
 	if (
 		deliveryMessage &&
