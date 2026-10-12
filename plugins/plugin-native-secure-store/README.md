@@ -109,6 +109,17 @@ records read as one binding, and `list()` still reports the primary web origin. 
 never includes passwords. `PasswordVaultFrame` is the unchanged ciphertext frame, extracted so
 it can be tested on a JVM: `bun run --cwd plugins/plugin-native-secure-store test:native-passwords`.
 
+`VerifiedAccountCredentialStore` optionally stores a verified Cloud credential and
+owner in one versioned encrypted JSON slot. Supply a new no-backup directory and
+alias, plus the lock used for all native owner changes. `read(guard)` returns an
+opaque snapshot; `compareExchange(expected, next, guard)` replaces or clears the
+whole record only if that snapshot still matches. Both check ownership inside the
+lock before and after storage. A failed post-check can follow a committed write;
+reconcile using the durable enrollment/revocation receipt. This class validates
+shape, not server authenticity: only trusted host verification may supply a record.
+No legacy credential slot is read or migrated, no broker route is registered, and
+no product policy or encrypted task database is enabled. Java credential strings
+cannot be reliably erased from memory. Keep all writers in one Android process.
 `TaskDataKeyStore` is a native-only building block for encrypted task storage. It
 stores random 256-bit data keys in dedicated `JsonCredentialSlots`, bound to an
 exact account ID and stable database ID with length-prefixed UTF-8 identities.
