@@ -243,3 +243,47 @@ test("feed policy must be explicit and cache filenames cannot traverse the host 
   ])
     assert.throws(() => create({ feeds }), /configuration/);
 });
+
+test("local-only checks return during a stalled feed download and use the result after refresh", async () => {
+  const { createServer } = await import("node:http");
+  const { once } = await import("node:events");
+  let finish;
+  const requested = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const server = createServer((_request, response) => finish(response));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${server.address().port}/feed`;
+  const check = createWebsiteReputation({
+    feeds: [{ ...REPUTATION_FEEDS[0], url, mirror: false }],
+    waitForRefresh: false,
+    minEntries: 2,
+    now: () => start,
+  });
+  try {
+    const verdict = await Promise.race([
+      check("https://bad.example"),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(Error("lookup waited for the feed")),
+          1000,
+        ).unref(),
+      ),
+    ]);
+    assert.equal(verdict.status, "unavailable");
+    const response = await requested;
+    response.writeHead(200, { "last-modified": new Date(start).toUTCString() });
+    response.end("bad.example\nphishing.example\n");
+    await check.warmup();
+    assert.equal((await check("https://bad.example")).status, "blocked");
+    assert.equal(
+      (await check("https://notbad.example")).status,
+      "no-known-threat",
+    );
+  } finally {
+    check.stop();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

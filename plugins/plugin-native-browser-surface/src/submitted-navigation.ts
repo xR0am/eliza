@@ -28,6 +28,8 @@ export class SubmittedNavigation {
   constructor(
     private readonly options: {
       check: (address: string) => Promise<SubmittedNavigationVerdict>;
+      /** Only a confirmed blacklist hit stops navigation. Checks remain advisory while pending. */
+      policy?: "check-first" | "blacklist";
     },
   ) {}
   readonly snapshot = (): SubmittedNavigationState => this.state;
@@ -50,7 +52,7 @@ export class SubmittedNavigation {
       revision,
       address,
       verdict: null,
-      permitted: false,
+      permitted: address !== null && this.options.policy === "blacklist",
     });
     if (!address) return;
     // A subscriber may synchronously close/navigate while receiving the reset.
@@ -75,13 +77,15 @@ export class SubmittedNavigation {
           };
         }
       } catch {
-        /* A failed or malformed check never permits navigation. */
+        /* A failed or malformed check remains unavailable under either host policy. */
       }
       if (this.state.revision !== revision) return;
       this.publish({
         ...this.state,
         verdict: Object.freeze(verdict),
-        permitted: verdict.status === "no-known-threat",
+        permitted:
+          verdict.status === "no-known-threat" ||
+          (this.options.policy === "blacklist" && verdict.status !== "blocked"),
       });
     })();
   }
