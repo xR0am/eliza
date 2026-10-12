@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   closeRuntimeAdapter,
+  ensureTrajectoriesTable,
   reopenRuntimeAdapter,
   shutdownRuntime,
 } from "@elizaos/agent";
@@ -98,6 +99,7 @@ async function startHost(options?: {
         services: [SlowStopService as never],
       });
       await runtime.initialize();
+      await ensureTrajectoriesTable(runtime);
       const adapter = runtime.adapter as { close: () => Promise<void> };
       const close = adapter.close.bind(adapter);
       adapterCloses[index] = 0;
@@ -177,7 +179,7 @@ it("waits for a replacement boot that is still running when the signal arrives",
   await request;
 }, 60_000);
 
-it("keeps an owner browser session valid after an API stop, so it can start the agent again", async () => {
+it("keeps stopped owner sessions isolated between hosts and can start the agent again", async () => {
   // Treat the loopback client as a remote browser: no trusted-local bypass.
   vi.stubEnv("ELIZA_REQUIRE_LOCAL_AUTH", "1");
   vi.stubEnv("ELIZA_API_TOKEN", "server-only-teardown-static-credential");
@@ -200,19 +202,77 @@ it("keeps an owner browser session valid after an API stop, so it can start the 
     rememberDevice: false,
   });
   const csrf = deriveCsrfToken(session);
-  const call = (method: "GET" | "POST", route: string) =>
-    fetch(`http://127.0.0.1:${port}${route}`, {
+  const call = (
+    method: "GET" | "POST",
+    route: string,
+    targetPort = port,
+    sessionId = session.id,
+    csrfToken = csrf,
+  ) =>
+    fetch(`http://127.0.0.1:${targetPort}${route}`, {
       method,
+      signal: AbortSignal.timeout(30_000),
       headers: {
-        origin: `http://127.0.0.1:${port}`,
-        cookie: `eliza_session=${encodeURIComponent(session.id)}; eliza_csrf=${csrf}`,
-        "x-eliza-csrf": csrf,
+        origin: `http://127.0.0.1:${targetPort}`,
+        cookie: `eliza_session=${encodeURIComponent(sessionId)}; eliza_csrf=${csrfToken}`,
+        "x-eliza-csrf": csrfToken,
         ...(method === "POST" ? { "content-type": "application/json" } : {}),
       },
       ...(method === "POST" ? { body: "{}" } : {}),
     });
   try {
     expect((await call("POST", "/api/agent/stop")).status).toBe(200);
+    const other = await startHost();
+    try {
+      const otherStore = authStoreForRuntime(other.runtimes[0]);
+      if (!otherStore) throw new Error("second runtime has no auth store");
+      const otherOwner = await otherStore.createIdentity({
+        id: randomUUID(),
+        kind: "owner",
+        displayName: "Other owner",
+        createdAt: Date.now(),
+        passwordHash: await hashPassword("other-owner-password-1234"),
+      });
+      const { session: otherSession } = await createBrowserSession(otherStore, {
+        identityId: otherOwner.id,
+        ip: null,
+        userAgent: null,
+        rememberDevice: false,
+      });
+      const otherCsrf = deriveCsrfToken(otherSession);
+      expect(
+        (
+          await call(
+            "POST",
+            "/api/agent/stop",
+            other.port,
+            otherSession.id,
+            otherCsrf,
+          )
+        ).status,
+      ).toBe(200);
+      expect((await call("GET", "/api/auth/me")).status).toBe(200);
+      expect(
+        (
+          await call(
+            "GET",
+            "/api/auth/me",
+            other.port,
+            otherSession.id,
+            otherCsrf,
+          )
+        ).status,
+      ).toBe(200);
+      expect(
+        (await call("GET", "/api/auth/me", port, otherSession.id, otherCsrf))
+          .status,
+      ).toBe(401);
+      expect((await call("GET", "/api/auth/me", other.port)).status).toBe(401);
+      expect(authStoreForRuntime(null)).toBeNull();
+    } finally {
+      await other.host.close();
+    }
+    expect((await call("GET", "/api/auth/me")).status).toBe(200);
     const status = await call("GET", "/api/status");
     expect(status.status).toBe(200);
     expect(((await status.json()) as { state: string }).state).toBe("stopped");
@@ -224,7 +284,8 @@ it("keeps an owner browser session valid after an API stop, so it can start the 
     await host.close();
   }
   expect(adapterCloses).toEqual([1, 1]);
-}, 60_000);
+  // Two independent database boots plus the original host restart.
+}, 120_000);
 
 it("restores the stopped session store when replacement boot fails", async () => {
   vi.stubEnv("ELIZA_REQUIRE_LOCAL_AUTH", "1");

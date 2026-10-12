@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import type http from "node:http";
 import { logger } from "@elizaos/core";
 import type { AuthRepository } from "../services/auth-repository";
-import { authStoreForRuntime } from "../services/auth-store";
+import { authStoreForHost } from "../services/auth-store";
 import {
   appendAuditEvent,
   assertPasswordStrong,
@@ -159,7 +159,7 @@ export async function handleAuthSessionRoutes(
   const url = new URL(req.url ?? "/", "http://localhost");
   if (!url.pathname.startsWith("/api/auth/")) return false;
 
-  const store = authStoreForRuntime(state.current);
+  const store = authStoreForHost(state);
   if (!store) {
     // Routes here all need the DB — return service unavailable rather than
     // routing further. The bootstrap-token endpoint behaves the same way.

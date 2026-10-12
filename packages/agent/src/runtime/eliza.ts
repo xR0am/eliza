@@ -1587,28 +1587,54 @@ export async function reopenRuntimeAdapter(
 ): Promise<void> {
   let replacement: IDatabaseAdapter | undefined;
   try {
-    if (isSQLiteSelected()) {
+    // Reopen the backend that this host actually stopped, independent of other hosts' environment.
+    const { SQLiteDatabaseAdapter } = await import("@elizaos/plugin-sqlite");
+    if (runtime.adapter instanceof SQLiteDatabaseAdapter) {
       const sqlitePath = runtime.getSetting("SQLITE_DATABASE_PATH");
       if (typeof sqlitePath !== "string" || !path.isAbsolute(sqlitePath)) {
         throw new ElizaError(
           "Cannot reopen SQLite authentication storage without an absolute path",
-          { code: "SQLITE_PATH_REQUIRED" },
+          {
+            code: "SQLITE_PATH_REQUIRED",
+          },
         );
       }
-      const { SQLiteDatabaseAdapter } = await import("@elizaos/plugin-sqlite");
       replacement = SQLiteDatabaseAdapter.create(sqlitePath, runtime.agentId);
     } else {
-      const { createDatabaseAdapter } = await import("@elizaos/plugin-sql");
-      const dataDir = runtime.getSetting("PGLITE_DATA_DIR");
-      const postgresUrl = runtime.getSetting("POSTGRES_URL");
-      replacement = createDatabaseAdapter(
-        {
-          dataDir: typeof dataDir === "string" ? dataDir : undefined,
-          postgresUrl:
-            typeof postgresUrl === "string" ? postgresUrl : undefined,
-        },
-        runtime.agentId,
-      );
+      const {
+        createDatabaseAdapter,
+        PgDatabaseAdapter,
+        PgliteDatabaseAdapter,
+      } = await import("@elizaos/plugin-sql");
+      if (runtime.adapter instanceof PgliteDatabaseAdapter) {
+        const dataDir = runtime.adapter.getPgliteDataDir();
+        if (!dataDir || dataDir === ":memory:")
+          throw new ElizaError(
+            "Stopped authentication storage is not durable",
+            {
+              code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+            },
+          );
+        replacement = createDatabaseAdapter({ dataDir }, runtime.agentId);
+      } else if (runtime.adapter instanceof PgDatabaseAdapter) {
+        const postgresUrl = runtime.getSetting("POSTGRES_URL");
+        if (typeof postgresUrl !== "string" || !postgresUrl.trim()) {
+          throw new ElizaError(
+            "Stopped PostgreSQL authentication storage has no connection configuration",
+            {
+              code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+            },
+          );
+        }
+        replacement = createDatabaseAdapter({ postgresUrl }, runtime.agentId);
+      } else {
+        throw new ElizaError(
+          "Host must supply recovery for its database adapter",
+          {
+            code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+          },
+        );
+      }
     }
     await replacement.initialize();
     runtime.adapter = replacement;
