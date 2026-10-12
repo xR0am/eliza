@@ -68,7 +68,11 @@ export function createMailboxReadPort({ accountId, request }) {
     return {
       id: value.externalId,
       threadId: value.threadId,
-      sender: text(value.fromEmail, 1024),
+      // Cloud retains the display From header when no address can be parsed.
+      sender: text(
+        value.fromEmail === null ? value.from : value.fromEmail,
+        1024,
+      ),
       subject: text(value.subject ?? "", 8192),
       receivedAt: text(value.receivedAt, 128),
       snippet: text(value.snippet ?? "", 16384),
