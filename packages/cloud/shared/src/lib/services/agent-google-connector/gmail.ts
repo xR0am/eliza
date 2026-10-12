@@ -183,7 +183,7 @@ function htmlToPlainText(value: string): string {
     stripHtmlRawTextElements(value)
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<\/(?:p|div|section|article|li|tr|table|h[1-6])>/gi, "\n")
-      .replace(/<(?:li)[^>]*>/gi, "- ")
+      .replace(/<li\b[^>]*>/gi, "- ")
       .replace(/<[^>]+>/g, " "),
   )
     .replace(/\r/g, "")

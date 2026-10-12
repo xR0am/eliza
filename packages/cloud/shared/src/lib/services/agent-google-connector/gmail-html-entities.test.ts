@@ -29,4 +29,18 @@ describe("normalizeManagedGmailBodyText C1 numeric entities", () => {
     expect(normalizeManagedGmailBodyText("<p>A&#8217;B</p>")).toBe("A\u2019B");
     expect(normalizeManagedGmailBodyText("<p>A&amp;B</p>")).toBe("A&B");
   });
+
+  test("does not render a bullet for tags that merely start with li", () => {
+    // A <link> element in the head is not a list item; the sibling
+    // htmlToPlainText in plugin-assistant url-ingest requires a word
+    // boundary after "li", and a real <li> still becomes a bullet here.
+    expect(
+      normalizeManagedGmailBodyText(
+        '<html><head><link rel="stylesheet" href="https://x.example/a.css"></head><body><p>Hello world</p></body></html>',
+      ),
+    ).toBe("Hello world");
+    expect(normalizeManagedGmailBodyText("<ul><li>First</li><li>Second</li></ul>")).toBe(
+      "- First\n- Second",
+    );
+  });
 });
