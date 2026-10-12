@@ -222,7 +222,7 @@ export class Cascade {
       const start =
         (await this.coordsForRef(input, brainOut, action.ref, /*from*/ true)) ??
         from;
-      const end = (await this.resolveCoords(input, brainOut, false)) ?? to;
+      const end = to ?? (await this.resolveCoords(input, brainOut, false));
       if (
         !start ||
         !end ||
