@@ -122,13 +122,13 @@ export function convertMarkdownToTelegram(markdown: string): string {
   //     inside a code block, and the rest of the text is still code. Hold it
   //     aside like a closed body; the style passes below cannot see fence
   //     state, so a `#` comment line would become a heading and `**` would
-  //     become bold. No closing fence is invented: the output keeps the
-  //     fence parity of the input.
+  //     become bold. Close the Telegram code entity at the message boundary
+  //     while preserving all code content from the input.
   converted = converted.replace(
     /```([^\s`]+)?\r?\n([\s\S]*)$/,
     (_match, lang, code) => {
       const escapedCode = escapeCode(code);
-      const formatted = `\`\`\`${lang || ""}\n${escapedCode}`;
+      const formatted = `\`\`\`${lang || ""}\n${escapedCode}\`\`\``;
       return storeReplacement(formatted);
     },
   );
