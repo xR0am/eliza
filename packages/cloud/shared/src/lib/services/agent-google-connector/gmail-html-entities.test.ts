@@ -29,4 +29,17 @@ describe("normalizeManagedGmailBodyText C1 numeric entities", () => {
     expect(normalizeManagedGmailBodyText("<p>A&#8217;B</p>")).toBe("A\u2019B");
     expect(normalizeManagedGmailBodyText("<p>A&amp;B</p>")).toBe("A&B");
   });
+
+  test("does not render a bullet for tags that merely start with li", () => {
+    // Only the li tag is a list item; link and custom elements stay plain.
+    expect(
+      normalizeManagedGmailBodyText(
+        '<html><head><link rel="stylesheet" href="https://x.example/a.css"></head><body><p>Hello world</p></body></html>',
+      ),
+    ).toBe("Hello world");
+    expect(normalizeManagedGmailBodyText("<li-custom>Widget</li-custom>")).toBe("Widget");
+    expect(normalizeManagedGmailBodyText("<ul><li>First</li><li>Second</li></ul>")).toBe(
+      "- First\n- Second",
+    );
+  });
 });
