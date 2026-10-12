@@ -402,7 +402,6 @@ export async function fetchKeylessWeb(
             objective:
                 "Return each article's own title, original publication date and opening article header. Preserve conflicting dates. Do not substitute modified, retrieval or related-article dates.",
             full_content: false,
-            allow_live_fetch: true,
             ...(options.sessionId && /^[A-Za-z0-9_-]{1,100}$/.test(options.sessionId)
                 ? { session_id: options.sessionId }
                 : {}),

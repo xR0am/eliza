@@ -26,10 +26,15 @@ describe("fetchKeylessWeb", () => {
         expect(request.params.arguments).toMatchObject({
             urls,
             full_content: false,
-            allow_live_fetch: true,
             session_id: "session_fixture",
         });
         expect(request.params.arguments.objective.length).toBeLessThanOrEqual(200);
+        expect(Object.keys(request.params.arguments).sort()).toEqual([
+            "full_content",
+            "objective",
+            "session_id",
+            "urls",
+        ]);
         await expect(
             fetchKeylessWeb([...urls, "https://publisher.example/news/third"], { fetchImpl })
         ).rejects.toThrow();
