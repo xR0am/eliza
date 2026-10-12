@@ -458,6 +458,13 @@ const WEEKDAY_NAME_PATTERN = new RegExp(
   `(?:(?<!${SPACED_WORD_CHAR})(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map(wholeWordSource).join("|")})`,
   "iu",
 );
+// Korean and Chinese put the week qualifier before the weekday name
+// ("다음 주 금요일", "下周五"). Past and every-week forms name no single
+// upcoming date, so they are left unresolved.
+const CJK_NEXT_WEEK_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)|下个?)\s*$/u;
+const CJK_UNRESOLVED_WEEK_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:지난\s*주|지난|저번\s*주|저번|매주|매)|上个?|每个?)\s*$/u;
 // Accepted alternate spellings for planner details live beside the
 // planner-facing schema (calendar-action-schema.ts: CALENDAR_DETAIL_ALIASES)
 // so the two surfaces are reviewed together.
@@ -1768,8 +1775,13 @@ export function parseExplicitLocalDate(
   }
 
   const weekdayMatch = normalized.match(WEEKDAY_NAME_PATTERN);
-  if (weekdayMatch) {
-    const qualifier = normalizeLookupKey(weekdayMatch[1] ?? "");
+  const beforeWeekday = weekdayMatch
+    ? normalized.slice(0, weekdayMatch.index)
+    : "";
+  if (weekdayMatch && !CJK_UNRESOLVED_WEEK_QUALIFIER.test(beforeWeekday)) {
+    const qualifier = CJK_NEXT_WEEK_QUALIFIER.test(beforeWeekday)
+      ? "next"
+      : normalizeLookupKey(weekdayMatch[1] ?? "");
     const weekdayKey = normalizeLookupKey(weekdayMatch[2] ?? "");
     const targetWeekday = WEEKDAY_MAP[weekdayKey];
     if (targetWeekday !== undefined) {

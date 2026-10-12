@@ -188,6 +188,42 @@ describe("parseExplicitLocalDate Intl names", () => {
     });
   });
 
+  it("reads Korean and Chinese next-week qualifiers like next friday", () => {
+    const nextWeekFriday = { year: 2026, month: 10, day: 23 };
+    for (const text of [
+      "다음 주 금요일",
+      "다음주 금요일 3시",
+      "下周五",
+      "下星期五下午",
+    ]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual(
+        nextWeekFriday,
+      );
+    }
+    expect(parseExplicitLocalDate("这周五", ZONE, NOW)).toEqual({
+      year: 2026,
+      month: 10,
+      day: 16,
+    });
+  });
+
+  it("leaves past and every-week Korean and Chinese weekdays unresolved", () => {
+    for (const text of [
+      "지난 금요일",
+      "지난주 금요일",
+      "매주 금요일",
+      "上周五",
+      "每周五",
+    ]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toBeNull();
+    }
+    expect(parseExplicitLocalDate("구매 금요일까지", ZONE, NOW)).toEqual({
+      year: 2026,
+      month: 10,
+      day: 16,
+    });
+  });
+
   it("keeps English word boundaries and skips one-syllable Korean words", () => {
     for (const text of [
       "fridays",
