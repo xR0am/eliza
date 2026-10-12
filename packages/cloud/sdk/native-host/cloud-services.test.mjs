@@ -1093,3 +1093,54 @@ test("a task port reports the connected Google address with its grant", async (t
     email: "owner@example.test",
   });
 });
+
+test("mailbox projection fences grant replacement while a read is in flight", async (t) => {
+  let release;
+  const google = {
+    connectionId: GRANT_A,
+    beforeSearch: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  };
+  const { routes } = googleHost(t, google);
+  const port = routes.mailboxForAccount({
+    actorId: "owner",
+    accountId: GRANT_A,
+    retryDelaysMs: [],
+  });
+  const read = port.list({
+    accountId: GRANT_A,
+    query: "in:inbox",
+    pageSize: 10,
+  });
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  google.connectionId = GRANT_B;
+  release();
+  await assert.rejects(read, { code: "account_changed", status: 409 });
+});
+
+test("mailbox projection rejects another grant and revoked connection before content access", async (t) => {
+  const google = { connectionId: GRANT_A };
+  const { routes, calls, post } = googleHost(t, google);
+  const port = routes.mailboxForAccount({
+    actorId: "owner",
+    accountId: GRANT_A,
+    retryDelaysMs: [],
+  });
+  await assert.rejects(
+    port.list({
+      accountId: GRANT_B,
+      query: "in:inbox",
+      pageSize: 10,
+      pageToken: "from-another-grant",
+    }),
+    { status: 409 },
+  );
+  assert.ok(!calls.some((c) => c.url.includes("/gmail/search")));
+  await post("/gmail/disconnect", { connectionId: GRANT_A });
+  await assert.rejects(
+    port.list({ accountId: GRANT_A, query: "in:inbox", pageSize: 10 }),
+    { code: "account_changed" },
+  );
+});
