@@ -341,6 +341,27 @@ export function parseComputerUseActionTimeoutMs(
   return parsed;
 }
 
+/**
+ * Canonical TCP-port parse for `COMPUTERUSE_SANDBOX_RPC_PORT` /
+ * `COMPUTER_USE_SANDBOX_RPC_PORT`. Only plain decimal digits are accepted
+ * (`Number("0x50")` would otherwise sneak a hex spelling through, and
+ * `"80.5"` / `"99999"` would pass a bare `Number.isFinite` check), and the
+ * value must be a real TCP port (1–65535). Anything else returns `undefined`
+ * so the sandbox backend keeps its default port instead of building a
+ * malformed guest RPC URL such as `http://127.0.0.1:80.5/cua`.
+ */
+export function parseSandboxRpcPort(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return undefined;
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const port = Number(trimmed);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  return port;
+}
+
 export class ComputerUseService extends Service {
   static serviceType = "computeruse";
 
@@ -2897,14 +2918,14 @@ export class ComputerUseService extends Service {
       const rpcPortRaw =
         getSetting("COMPUTERUSE_SANDBOX_RPC_PORT") ??
         getSetting("COMPUTER_USE_SANDBOX_RPC_PORT");
-      const rpcPort = rpcPortRaw ? Number(rpcPortRaw) : undefined;
+      // Reject non-integer or out-of-range values so the backend keeps its
+      // default port instead of building a malformed guest RPC URL.
+      const rpcPort = parseSandboxRpcPort(rpcPortRaw);
       const options =
-        rpcUrl || (rpcPort !== undefined && Number.isFinite(rpcPort))
+        rpcUrl || rpcPort !== undefined
           ? {
               ...(rpcUrl ? { rpcUrl } : {}),
-              ...(rpcPort !== undefined && Number.isFinite(rpcPort)
-                ? { rpcPort }
-                : {}),
+              ...(rpcPort !== undefined ? { rpcPort } : {}),
             }
           : undefined;
       // docker + qemu require an image; wsb (Windows Sandbox) is imageless.
