@@ -8,7 +8,7 @@
  * APPROVED by the founder on 2026-10-11 (eliza-research/thenetwork#22). A
  * change to the wording needs a new approval. The page is still mounted only
  * when `VITE_NETWORK_HOME=1` is set at build time (see ./network-home-flag.ts),
- * together with NETWORK_TAKEOVER.
+ * with rollout coordinated with the gateway NETWORK_TAKEOVER flag.
  */
 
 export const NETWORK_HOME_COPY_STATUS: "DRAFT" | "APPROVED" = "APPROVED";
