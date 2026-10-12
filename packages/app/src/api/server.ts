@@ -71,7 +71,10 @@ import {
   resolveLinkedAccountsInConfig,
   settingsDebugCloudSummary,
 } from "@elizaos/host/protocol";
-import { authStoreForRuntime } from "../services/auth-store";
+import {
+  authStoreForRuntime,
+  setStoppedAuthRuntime,
+} from "../services/auth-store";
 import { sharedVault } from "../services/vault-mirror";
 import { handleAccountPoolStatusRoute } from "./account-pool-status-routes";
 import {
@@ -1052,6 +1055,7 @@ export async function startApiServer(
 
   const callerOptions = args[0];
   const callerStop = callerOptions?.onStop;
+  const callerRestart = callerOptions?.onRestart;
   const voiceHost = createSelfHostedVoice(compatState, {
     protectedHost: Boolean(callerOptions?.hostAdmission),
   });
@@ -1072,6 +1076,7 @@ export async function startApiServer(
         voiceHost.reset();
       }
       compatState.current = activeRuntime;
+      setStoppedAuthRuntime(null);
       if (speechHostStarted) warmStandaloneKokoro(compatState);
       clearCompatRuntimeRestart(compatState);
       await callerOptions?.onRuntimeActivated?.(previousRuntime, activeRuntime);
@@ -1093,6 +1098,19 @@ export async function startApiServer(
                 compatState.current = null;
               }
             }
+            // The host keeps the stopped runtime's database open until the
+            // next start or shutdown, so sessions stay verifiable meanwhile.
+            setStoppedAuthRuntime(runtime);
+          },
+        }
+      : {}),
+    ...(callerRestart
+      ? {
+          onRestart: async () => {
+            // The host closes the stopped runtime's database before it boots
+            // the replacement; stop reading sessions from it first.
+            setStoppedAuthRuntime(null);
+            return await callerRestart();
           },
         }
       : {}),
@@ -1115,9 +1133,7 @@ export async function startApiServer(
         identityId: string;
       }): Promise<boolean> => {
         bindSessionSocket(binding, request.socket);
-        const store = compatState.current
-          ? authStoreForRuntime(compatState.current)
-          : null;
+        const store = authStoreForRuntime(compatState.current);
         const stillActive = store
           ? await findActiveSession(store, binding.sessionId).catch(
               (error: unknown) => {
@@ -1259,6 +1275,7 @@ export async function startApiServer(
 
   const originalClose = server.close.bind(server);
   server.close = async () => {
+    setStoppedAuthRuntime(null);
     closeStandaloneKokoro(compatState);
     voiceHost.close();
     await originalClose();

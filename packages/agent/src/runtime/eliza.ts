@@ -1546,11 +1546,38 @@ const SIGNAL_SERVICE_STOP_TIMEOUT_MS = 13000;
  * PGlite manager, so restarts must close the adapter or the next runtime can
  * silently reuse the same broken manager instance.
  */
+export interface HostRuntimeStopOptions extends RuntimeStopOptions {
+  /**
+   * Stop the runtime but leave its database adapter open. An API stop uses
+   * this so the host can still verify sessions while the agent is stopped;
+   * the host later closes the adapter with {@link closeRuntimeAdapter}.
+   */
+  keepAdapterOpen?: boolean;
+}
+/** Close a runtime's database adapter, as {@link shutdownRuntime} does. */
+export async function closeRuntimeAdapter(
+  runtime: AgentRuntime,
+  context: string,
+): Promise<void> {
+  const adapter = runtime.adapter as RuntimeAdapterWithClose | undefined;
+  if (!adapter || typeof adapter.close !== "function") return;
+  try {
+    logger.debug(`[eliza] ${context}: closing database adapter`);
+    await adapter.close();
+    logger.debug(`[eliza] ${context}: database adapter closed`);
+  } catch (err) {
+    logger.warn(
+      `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
+    );
+    throw err;
+  }
+}
 export async function shutdownRuntime(
   runtime: AgentRuntime | null | undefined,
   context: string,
-  options: RuntimeStopOptions = {},
+  hostOptions: HostRuntimeStopOptions = {},
 ): Promise<void> {
+  const { keepAdapterOpen = false, ...options } = hostOptions;
   let firstError: unknown = null;
   try {
     await stopMemorySampler();
@@ -1564,7 +1591,6 @@ export async function shutdownRuntime(
     if (firstError) throw firstError;
     return;
   }
-  const adapter = runtime.adapter as RuntimeAdapterWithClose | undefined;
   try {
     const pendingDeferredBoot = pendingDeferredBootTaskCount(runtime);
     if (pendingDeferredBoot > 0) {
@@ -1604,18 +1630,11 @@ export async function shutdownRuntime(
     );
   }
 
-  if (adapter && typeof adapter.close === "function") {
+  if (!keepAdapterOpen) {
     try {
-      logger.debug(`[eliza] ${context}: closing database adapter`);
-      await adapter.close();
-      logger.debug(`[eliza] ${context}: database adapter closed`);
+      await closeRuntimeAdapter(runtime, context);
     } catch (err) {
-      if (!firstError) {
-        firstError = err;
-      }
-      logger.warn(
-        `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
-      );
+      if (!firstError) firstError = err;
     }
   }
   if (firstError) {

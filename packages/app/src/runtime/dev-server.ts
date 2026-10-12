@@ -125,6 +125,19 @@ const hadUserApiTokenInEnv = !!resolveApiToken(process.env);
 let currentRuntime: AgentRuntime | null = null;
 /** Teardown started by an API stop or restart; signal shutdown waits for it. */
 let pendingRuntimeTeardown: Promise<unknown> | null = null;
+/**
+ * Runtime stopped by the API. Its database adapter stays open so the API can
+ * still verify sessions (and accept Start) while the agent is stopped.
+ */
+let stoppedRuntime: AgentRuntime | null = null;
+/** Closes the adapter an API stop left open, before a reopen or exit. */
+async function closeStoppedRuntime(reason: string): Promise<void> {
+  const runtime = stoppedRuntime;
+  stoppedRuntime = null;
+  if (!runtime) return;
+  const { closeRuntimeAdapter } = await loadElizaRuntimeModule();
+  await closeRuntimeAdapter(runtime, reason);
+}
 /** The API server's `updateRuntime` handle (set after startup). */
 let apiUpdateRuntime: ((rt: AgentRuntime) => void) | null = null;
 /** API server startup diagnostics updater (set after startup). */
@@ -351,6 +364,7 @@ delete process.env.ELIZA_DEV_TRAJECTORY_RECOVERY;
 async function createRuntime(): Promise<AgentRuntime> {
   const runtimeModule = await loadElizaRuntimeModule();
   const { shutdownRuntime, startEliza } = runtimeModule;
+  await closeStoppedRuntime("dev-server createRuntime");
   if (currentRuntime) {
     // Relinquish ownership before teardown so a signal during a restart waits
     // for this teardown instead of closing the same adapter again.
@@ -483,6 +497,15 @@ async function shutdown(): Promise<void> {
   // whole restart so the replacement is stopped below instead of opening
   // resources after shutdown.
   if (restartPromise) await restartPromise.catch(() => undefined);
+  try {
+    await closeStoppedRuntime("dev-server shutdown");
+  } catch (err) {
+    // error-policy:J6 the process boundary is already shutting down and a
+    // forced-exit timer guarantees completion after this warning.
+    logger.warn(
+      `${getLogPrefix()} Error closing the stopped runtime's database during shutdown: ${formatError(err)}`,
+    );
+  }
   if (currentRuntime) {
     try {
       // currentRuntime is only ever set inside createRuntime(), which has
@@ -528,11 +551,13 @@ async function main() {
       }
       const stop = shutdownRuntime(runtimeToStop, "dev-server API stop", {
         requireQuiescence: true,
+        keepAdapterOpen: true,
       });
       pendingRuntimeTeardown = stop;
       try {
         await stop;
       } finally {
+        stoppedRuntime = runtimeToStop;
         if (pendingRuntimeTeardown === stop) pendingRuntimeTeardown = null;
         if (currentRuntime === runtimeToStop) {
           currentRuntime = null;

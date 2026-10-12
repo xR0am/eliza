@@ -4,12 +4,8 @@
  * idempotent resource shutdown without owning process signals or exit policy.
  */
 import process from "node:process";
-import {
-  type AgentRuntime,
-  formatError,
-  logger,
-  type RuntimeStopOptions,
-} from "@elizaos/core";
+import type { HostRuntimeStopOptions } from "@elizaos/agent";
+import { type AgentRuntime, formatError, logger } from "@elizaos/core";
 import {
   readAliasedEnv,
   resolveApiExposePort,
@@ -44,7 +40,11 @@ export interface StartServerOnlyHostOptions {
   stopRuntime: (
     runtime: AgentRuntime,
     reason: string,
-    options?: RuntimeStopOptions,
+    options?: HostRuntimeStopOptions,
+  ) => Promise<unknown>;
+  closeRuntimeAdapter: (
+    runtime: AgentRuntime,
+    reason: string,
   ) => Promise<unknown>;
   stopWithoutRuntime: () => void;
 }
@@ -52,10 +52,22 @@ export async function startServerOnlyHost({
   options,
   bootRuntime,
   stopRuntime,
+  closeRuntimeAdapter,
   stopWithoutRuntime,
 }: StartServerOnlyHostOptions): Promise<AgentRuntime | undefined> {
   bootLap("startEliza:serverOnly entry");
   let currentRuntime: AgentRuntime | undefined;
+  /**
+   * Runtime stopped by the API. Its database adapter stays open so the API can
+   * still verify sessions (and accept Start) while the agent is stopped.
+   */
+  let stoppedRuntime: AgentRuntime | undefined;
+  /** Closes the adapter an API stop left open, before a reopen or exit. */
+  const closeStoppedRuntime = async (reason: string): Promise<void> => {
+    const runtime = stoppedRuntime;
+    stoppedRuntime = undefined;
+    if (runtime) await closeRuntimeAdapter(runtime, reason);
+  };
   /** API stop or restart (teardown and replacement boot) in flight; close() waits for it. */
   let pendingRuntimeTeardown: Promise<unknown> | undefined;
   let runtimePublished = false;
@@ -186,11 +198,13 @@ export async function startServerOnlyHost({
         postReadyPhase = "pending";
         const stop = stopRuntime(runtimeToStop, "server-only API stop", {
           requireQuiescence: true,
+          keepAdapterOpen: true,
         });
         pendingRuntimeTeardown = stop;
         try {
           await stop;
         } finally {
+          stoppedRuntime = runtimeToStop;
           if (pendingRuntimeTeardown === stop)
             pendingRuntimeTeardown = undefined;
           if (currentRuntime === runtimeToStop) {
@@ -213,6 +227,7 @@ export async function startServerOnlyHost({
         // replacement boot — so a signal cannot finish shutdown while the
         // replacement is still opening resources.
         const restart = (async (): Promise<AgentRuntime | null> => {
+          await closeStoppedRuntime("server-only restart");
           if (currentRuntime) {
             // Relinquish ownership before teardown, as the API stop does, so
             // close() waits for it instead of closing the same adapter again.
@@ -372,10 +387,14 @@ export async function startServerOnlyHost({
     // keeps its own forced-exit timer).
     if (pendingRuntimeTeardown)
       await pendingRuntimeTeardown.catch(() => undefined);
-    if (currentRuntime) {
-      await stopRuntime(currentRuntime, "server-only shutdown");
-    } else {
-      stopWithoutRuntime();
+    try {
+      await closeStoppedRuntime("server-only shutdown");
+    } finally {
+      if (currentRuntime) {
+        await stopRuntime(currentRuntime, "server-only shutdown");
+      } else {
+        stopWithoutRuntime();
+      }
     }
   };
   options.onServerOnlyHostReady?.({

@@ -1,11 +1,19 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { shutdownRuntime } from "@elizaos/agent";
+import { closeRuntimeAdapter, shutdownRuntime } from "@elizaos/agent";
 import { AgentRuntime, Service } from "@elizaos/core";
 import { installHttpPluginLifecycle } from "@elizaos/host/protocol";
 import { plugin as sqlPlugin } from "@elizaos/plugin-sql";
 import { afterEach, expect, it, vi } from "vitest";
+import { hashPassword } from "../../api/auth/passwords.js";
+import {
+  createBrowserSession,
+  deriveCsrfToken,
+} from "../../api/auth/sessions.js";
+import { authStoreForRuntime } from "../../services/auth-store.js";
+import { installAgentHostBridge } from "../install-agent-host-bridge.js";
 import type { ServerOnlyHost } from "../server-only-process.js";
 import { startServerOnlyHost } from "./server-only-host.js";
 
@@ -90,6 +98,7 @@ async function startHost(holdReplacementBoot?: Promise<void>) {
     },
     stopRuntime: (runtime, reason, options) =>
       shutdownRuntime(runtime, reason, options),
+    closeRuntimeAdapter,
     stopWithoutRuntime: () => {},
   });
   if (!host) throw new Error("server-only host did not start");
@@ -99,7 +108,14 @@ async function startHost(holdReplacementBoot?: Promise<void>) {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     }).catch(() => undefined);
-  return { host, post, runtimes, adapterCloses, replacementBootStarted };
+  return {
+    host,
+    port,
+    post,
+    runtimes,
+    adapterCloses,
+    replacementBootStarted,
+  };
 }
 
 it.each(["stop", "restart"] as const)(
@@ -146,4 +162,53 @@ it("waits for a replacement boot that is still running when the signal arrives",
   expect(runtimes).toHaveLength(2);
   expect(adapterCloses).toEqual([1, 1]);
   await request;
+}, 60_000);
+
+it("keeps an owner browser session valid after an API stop, so it can start the agent again", async () => {
+  // Treat the loopback client as a remote browser: no trusted-local bypass.
+  vi.stubEnv("ELIZA_REQUIRE_LOCAL_AUTH", "1");
+  vi.stubEnv("ELIZA_API_TOKEN", "server-only-teardown-static-credential");
+  // startEliza installs the session-aware authorization before the host.
+  installAgentHostBridge();
+  const { host, port, runtimes, adapterCloses } = await startHost();
+  const store = authStoreForRuntime(runtimes[0]);
+  if (!store) throw new Error("runtime has no auth store");
+  const owner = await store.createIdentity({
+    id: randomUUID(),
+    kind: "owner",
+    displayName: "Owner",
+    createdAt: Date.now(),
+    passwordHash: await hashPassword("owner-password-1234"),
+  });
+  const { session } = await createBrowserSession(store, {
+    identityId: owner.id,
+    ip: null,
+    userAgent: null,
+    rememberDevice: false,
+  });
+  const csrf = deriveCsrfToken(session);
+  const call = (method: "GET" | "POST", route: string) =>
+    fetch(`http://127.0.0.1:${port}${route}`, {
+      method,
+      headers: {
+        origin: `http://127.0.0.1:${port}`,
+        cookie: `eliza_session=${encodeURIComponent(session.id)}; eliza_csrf=${csrf}`,
+        "x-eliza-csrf": csrf,
+        ...(method === "POST" ? { "content-type": "application/json" } : {}),
+      },
+      ...(method === "POST" ? { body: "{}" } : {}),
+    });
+  try {
+    expect((await call("POST", "/api/agent/stop")).status).toBe(200);
+    const status = await call("GET", "/api/status");
+    expect(status.status).toBe(200);
+    expect(((await status.json()) as { state: string }).state).toBe("stopped");
+    expect((await call("POST", "/api/agent/start")).status).toBe(200);
+    // Start closed the stopped database once, before the replacement opened.
+    expect(runtimes).toHaveLength(2);
+    expect(adapterCloses[0]).toBe(1);
+  } finally {
+    await host.close();
+  }
+  expect(adapterCloses).toEqual([1, 1]);
 }, 60_000);

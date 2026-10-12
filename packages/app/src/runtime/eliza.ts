@@ -14,6 +14,7 @@
 import process from "node:process";
 import {
   type BootElizaRuntimeOptions,
+  closeRuntimeAdapter,
   ensureProtectedProfileAdmission,
   type StartElizaOptions,
   bootElizaRuntime as upstreamBootElizaRuntime,
@@ -56,7 +57,7 @@ export {
   runPostReadyBootTail,
   shutdownRuntime,
 } from "./startup/app-runtime-host.js";
-export { startDeferredLocalEmbeddingWarmup };
+export { closeRuntimeAdapter, startDeferredLocalEmbeddingWarmup };
 export interface BootElizaRuntimeOptionsExt extends BootElizaRuntimeOptions {
   /** Optional callback for embedding model download/init progress. */
   onEmbeddingProgress?: EmbeddingProgressCallback;
@@ -177,6 +178,7 @@ export async function startEliza(
         }
       },
       stopRuntime: shutdownRuntime,
+      closeRuntimeAdapter,
       stopWithoutRuntime: () => stopRuntimeBootResources(bootResources),
     });
   }

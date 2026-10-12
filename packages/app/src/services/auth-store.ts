@@ -678,10 +678,20 @@ function isAuthDrizzleDatabase(value: unknown): value is DrizzleDatabase {
     typeof value.delete === "function"
   );
 }
+/**
+ * Runtime the API stopped while its host keeps the database adapter open.
+ * Sessions live in that database, so they stay verifiable (and the owner can
+ * start the agent again) while no runtime is active.
+ */
+let stoppedAuthRuntime: AuthRuntimeSource | null = null;
+export function setStoppedAuthRuntime(runtime: AuthRuntimeSource | null): void {
+  stoppedAuthRuntime = runtime;
+}
 /** Select the existing auth contract from the agent's own persistent database. */
 export function authStoreForRuntime(
-  runtime: AuthRuntimeSource | null | undefined,
+  activeRuntime: AuthRuntimeSource | null | undefined,
 ): AuthRepository | null {
+  const runtime = activeRuntime ?? stoppedAuthRuntime;
   const adapter = runtime?.adapter;
   if (!adapter) return null;
   if (adapter.recordStore) {
