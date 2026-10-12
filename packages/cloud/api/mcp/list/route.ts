@@ -426,16 +426,6 @@ const mcpDefinitions = [
         cost: MCP_FREE_COST_LABEL,
       },
       {
-        name: "get_weather_forecast",
-        description: "Get multi-day forecast (up to 16 days)",
-        cost: MCP_FREE_COST_LABEL,
-      },
-      {
-        name: "compare_weather",
-        description: "Compare weather between multiple cities",
-        cost: MCP_FREE_COST_LABEL,
-      },
-      {
         name: "search_location",
         description: "Search for location coordinates and timezone",
         cost: MCP_FREE_COST_LABEL,
