@@ -597,7 +597,15 @@ export function createNativeCloudAuth({
     // The session that just minted this credential is also current billing authority.
     if (session && scope === billingScope)
       retainBilling(session, pending.proof.secret);
-    return { status: "authenticated", connected: true };
+    // Cloud says whether this sign-in made the account. A sign-in saved before
+    // Cloud sent this fact has no flag, and the reply then has no `created`.
+    return {
+      status: "authenticated",
+      connected: true,
+      ...(typeof pending.accountCreated === "boolean"
+        ? { created: pending.accountCreated }
+        : {}),
+    };
   }
   async function exchange(value, ticket, scope) {
     if (value.mfaRequired === true) {
@@ -694,6 +702,10 @@ export function createNativeCloudAuth({
         credentialId: credential.credentialId,
         secret: credential.secret,
       },
+      // Kept with the receipt, so a resumed acknowledgement reports it too.
+      ...(typeof grant.accountCreated === "boolean"
+        ? { accountCreated: grant.accountCreated }
+        : {}),
     };
     check(ticket);
     await pendingStore.write(JSON.stringify(pending));

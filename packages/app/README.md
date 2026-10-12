@@ -410,6 +410,19 @@ minutes per UTC day per host/owner; restarting resets that local counter.
 Hosts configured with mandatory `hostAdmission` currently refuse this optional
 protocol until continuous protected-host admission is implemented.
 
+Consumer `runIsolatedAndroidTest` can alternatively select a caller-owned disposable
+Cuttlefish on `127.0.0.1:PORT`: omit `expectedAvdName` and supply
+`expectedCuttlefish: {callerOwned: true, serialNumber, fingerprint}` with exact
+`ro.serialno` and `ro.build.fingerprint` values. This lane requires a booted vsoc
+instance, enforcing SELinux, the requested ABI and foreground owner user 0. It
+pins the kernel boot ID and rechecks instance/image/user/boot before each runner
+command, including `context.run` callbacks and cancellation cleanup. Reconnection or reboot
+retains installations for explicit recovery rather than deleting from a changed
+instance. HOME and browser roles must remain unchanged; the runner does not
+repair unrelated role policy. SDK AVD admission is unchanged. Caller ownership
+is an explicit assertion, not inferred from a loopback address, and this lane
+proves only the selected APK scenarios, not product-image or live integrations.
+
 `buildConsumerAndroidRuntime` accepts `targetAbi: "x86_64"` for an emulator or
 Cuttlefish bundle; the default remains `"arm64-v8a"`. The reviewed upstream stager
 selects the matching Bun, musl loader and libraries, and the consumer builder

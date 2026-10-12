@@ -4,6 +4,7 @@ import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createDocumentImageDescriber } from "./document-image-describer.mjs";
 import { NativeCloudServiceError } from "./errors.mjs";
+import { createMailboxReadPort } from "./mailbox-read-port.mjs";
 import { createManagedGoogleReadPort } from "./managed-google-read-port.mjs";
 import { executePlanChange, validatePlanChangeInput } from "./plan-change.mjs";
 import { projectRenewalReview } from "./subscription-review.mjs";
@@ -1893,12 +1894,10 @@ export function createCloudRoutes({
   // is still the grant it reads, so a reconnect to another mailbox is noticed.
   // Without `accountId`, the caller binds each task to the grant that
   // `currentAccountId()` returned when the task started.
-  handleCloudRoute.googleForAccount = ({
-    actorId,
-    accountId,
-    timeoutMs = 20000,
-    retryDelaysMs = [250, 1000],
-  }) => {
+  const googleReadPort = (
+    { actorId, accountId, timeoutMs = 20000, retryDelaysMs = [250, 1000] },
+    createPort,
+  ) => {
     if (typeof credentialGate !== "function" || typeof actorId !== "string")
       throw fail(message("taskAccountBindingUnavailable"), 503);
     const epoch = generation;
@@ -2003,14 +2002,17 @@ export function createCloudRoutes({
     };
     const currentAccountId = async (googleEpoch) =>
       (await currentAccount(googleEpoch)).accountId;
-    const port = createManagedGoogleReadPort({
+    const port = createPort({
       accountId,
       request: async (path, maxBytes, grantId) => {
         const googleEpoch = googleGeneration;
         if ((await currentAccountId(googleEpoch)) !== grantId)
           throw googleReadFailure("account_changed");
         try {
-          return await readJson(path, maxBytes, googleEpoch);
+          const value = await readJson(path, maxBytes, googleEpoch);
+          if ((await currentAccountId(googleEpoch)) !== grantId)
+            throw googleReadFailure("account_changed");
+          return value;
         } catch (error) {
           if (!error?.googleConflict) throw error;
           // Name the Google conflict from the connection's current status:
@@ -2027,6 +2029,12 @@ export function createCloudRoutes({
       currentAccount: () => currentAccount(googleGeneration),
     });
   };
+  handleCloudRoute.googleForAccount = (options) =>
+    googleReadPort(options, createManagedGoogleReadPort);
+  // A separate read-only inbox projection. Hosts must explicitly authorize its
+  // renderer/native bridge; existing task routes do not gain inbox authority.
+  handleCloudRoute.mailboxForAccount = (options) =>
+    googleReadPort(options, createMailboxReadPort);
   handleCloudRoute.documentImagesForAccount = ({
     actorId,
     model,

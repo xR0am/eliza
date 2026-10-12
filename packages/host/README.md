@@ -89,3 +89,23 @@ Ink/Sonic adapters, Fish adapter, and canonical conversation SSE bridge. Hosts
 must inject token verification, owner/session authorization, conversation scope,
 revocation and usage storage; importing these modules grants no authority or
 opens provider connections. Cloud retains its JWT and durable Redis policies.
+
+Task gateways accept a trusted host `databaseProvider` with `open({path})` and
+`assertEncryption({db,path})`. `requireEncryptedDatabase: true` refuses startup
+unless the provider explicitly verifies the open connection before the gateway
+writes task schemas or records. It never silently opens ordinary SQLite as a
+fallback. Providers must close partially opened resources when `open` throws;
+the gateway closes a returned connection when admission fails. Provider error
+bodies and key details are not returned. The default remains legacy ordinary
+SQLite for existing consumers; this admission contract is not an encryption
+implementation or a readiness claim.
+
+Encrypted deployments still need the reviewed SQLCipher/other compatible driver
+and packaged native libraries, a dedicated per-account data-key slot wrapped by
+native secure-store custody, active-key/WAL verification, and separate encryption
+for outcome journals/evidence/diagnostics. Migration must stop writers, preserve
+source and all sidecars, copy to a new destination, validate task/outcome counts
+and recovery records, then durably switch an explicit manifest. Never automatically
+delete the source or overwrite a recovery copy. Test interruption at every phase,
+wrong/lost key, new-account admission and revocation before enabling that profile.
+This API does not perform migration, deletion, key export or renderer admission.

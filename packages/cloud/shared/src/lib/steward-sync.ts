@@ -63,6 +63,8 @@ export type StewardSyncedUser = UserWithOrganization &
      * the independently self-healing character + tenant provisioning tail.
      */
     postCommitProvisioningDeferred?: true;
+    /** True only when this sync made the Cloud user and its organization. */
+    accountCreated?: true;
   };
 export interface StewardSyncExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
@@ -1225,6 +1227,7 @@ export async function syncUserFromSteward(params: StewardSyncParams): Promise<St
     });
   return {
     ...userWithOrg,
+    accountCreated: true,
     initialCreditsGranted,
     initialFreeCreditsUsd,
     ...(params.executionCtx ? { postCommitProvisioningDeferred: true as const } : {}),

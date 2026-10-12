@@ -707,6 +707,8 @@ export interface Variables {
   apiKeyId?: string;
   /** Registered app that issued a mobile lifecycle credential. */
   apiKeySourceAppId?: string;
+  /** The Steward session of this request made a new Cloud user and organization. */
+  stewardAccountCreated?: true;
 }
 
 export type AppEnv = {
