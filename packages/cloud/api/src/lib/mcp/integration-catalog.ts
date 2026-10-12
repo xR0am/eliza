@@ -99,10 +99,6 @@ export const INTEGRATION_TRUST: Readonly<Record<string, IntegrationTrust>> =
       reviewedAt: "2026-08-20",
       capabilities: [
         read("get_current_time"),
-        read("convert_timezone"),
-        read("format_date"),
-        read("calculate_time_diff"),
-        read("list_timezones"),
       ],
     };
     const weather: IntegrationTrust = {
