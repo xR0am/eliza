@@ -38,6 +38,7 @@ import {
   loadElizaConfig,
   normalizeWsClientId,
   persistConversationRoomTitle,
+  type RuntimeRestartOptions,
   removeResetCredentialsFromVault,
   resolveDefaultAgentWorkspaceDir,
   resolveMcpServersRejection,
@@ -1109,12 +1110,12 @@ export async function startApiServer(
       : {}),
     ...(callerRestart
       ? {
-          onRestart: async () => {
+          onRestart: async (restartOptions?: RuntimeRestartOptions) => {
             // The host closes the stopped runtime's database before it boots
             // the replacement; stop reading sessions from it first.
             setStoppedAuthRuntime(null);
             try {
-              const restarted = await callerRestart();
+              const restarted = await callerRestart(restartOptions);
               if (!restarted && stoppedSessionRuntime) {
                 setStoppedAuthRuntime(stoppedSessionRuntime);
               }
