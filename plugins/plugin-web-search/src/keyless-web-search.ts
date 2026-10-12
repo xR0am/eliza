@@ -379,7 +379,11 @@ export async function searchKeylessWeb(
     };
 }
 
-/** Reads one or two articles through the fixed anonymous MCP, preserving the complete payload. */
+/**
+ * Internal transport for prevalidated public article URLs. The edge facade owns
+ * canonical host protection; callers must validate destinations before using this helper.
+ * This module is not a public package subpath. Complete MCP payloads are preserved.
+ */
 export async function fetchKeylessWeb(
     urls: readonly string[],
     options: KeylessWebSearchOptions = {}

@@ -14,9 +14,23 @@ import type {
     State,
 } from "@elizaos/core";
 import { isBlockedHostname, isPrivateIpAddress } from "@elizaos/core";
-import { isKeylessWebSearchUnavailableError, searchKeylessWeb } from "./keyless-web-search";
+import {
+    fetchKeylessWeb as fetchKeylessWebTransport,
+    isKeylessWebSearchUnavailableError,
+    type KeylessWebSearchOptions,
+    searchKeylessWeb,
+} from "./keyless-web-search";
 
-export { fetchKeylessWeb } from "./keyless-web-search";
+/** Validates public destinations before asking the anonymous provider to read article URLs. */
+export async function fetchKeylessWeb(
+    urls: readonly string[],
+    options: KeylessWebSearchOptions = {}
+) {
+    for (const url of urls) {
+        if (publicHttpUrl(url) !== url) throw new Error("Canonical public article URL is required");
+    }
+    return fetchKeylessWebTransport(urls, options);
+}
 
 export const WEB_SEARCH_EDGE_COMPATIBILITY = {
     target: "edge",
