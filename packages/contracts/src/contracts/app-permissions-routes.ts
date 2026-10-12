@@ -2,11 +2,13 @@
  * Zod schemas for the App Permissions HTTP routes.
  *
  * **Pilot for the typed-routes initiative.** Replaces hand-rolled
- * `if (typeof body.x !== 'string')` validation in
- * `packages/agent/src/api/apps-routes.ts` and the parallel client-side
- * type re-declarations in `packages/ui/src/api/client-skills.ts` with a
- * single source of truth: zod schemas defined here, parsed on the
- * server, and used to derive the client's request/response types.
+ * `if (typeof body.x !== 'string')` validation with a single source of
+ * truth: zod schemas defined here, parsed on the server, and used to
+ * derive the client's request/response types — the client imports these
+ * types in `packages/ui/src/api/client-skills.ts` instead of
+ * re-declaring them. The agent server does not mount
+ * `/api/apps/permissions` yet; the UI treats that route's 404 as a
+ * designed unsupported state.
  *
  * The pattern that lands here is the template for migrating other
  * routes off the manual-validation pattern — keep schemas alongside
