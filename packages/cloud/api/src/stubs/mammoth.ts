@@ -31,14 +31,14 @@ export function embedStyleMap(): never {
   throw new Error(NOT_AVAILABLE);
 }
 
-// Every property access throws, so the proxy surface is typed as an index
-// signature returning never; a bare {} type makes any test-time access a
-// compile error (TS2339) inside the package build lane.
-export const images = new Proxy({} as Record<string, never>, {
-  get() {
-    throw new Error(NOT_AVAILABLE);
+export const images = new Proxy(
+  {},
+  {
+    get() {
+      throw new Error(NOT_AVAILABLE);
+    },
   },
-});
+);
 
 const workerMammothSurface = {
   convertToHtml,
