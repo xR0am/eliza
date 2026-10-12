@@ -17,8 +17,8 @@ app.get("/", (c) =>
     name: "Time & Date MCP",
     version: "2.0.0",
     description:
-      "Real-time date/time utilities with timezone conversion, formatting, and calculations using native JavaScript Intl APIs.",
-    transport: ["http", "sse"],
+      "Current date and time in an IANA timezone or supported alias, with ISO, Unix, and readable output.",
+    transport: ["http"],
     endpoint: "/api/mcps/time/mcp",
     tools: [
       {
@@ -35,7 +35,7 @@ app.get("/", (c) =>
     features: [
       "Accurate timezone handling via IANA database",
       "Timezone aliases (PST, EST, JST, etc.)",
-      "Unix timestamp conversions",
+      "Current time as a Unix timestamp",
     ],
     status: "live",
   }),
