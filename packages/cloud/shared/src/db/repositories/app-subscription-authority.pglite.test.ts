@@ -1164,8 +1164,8 @@ describe("sponsored pilot admission ledger", () => {
     maximum = 2,
     opens = "now() - interval '1 day'",
     closes = "now() + interval '1 day'",
-    appId = appA,
-    planId = planA,
+    appId: string = appA,
+    planId: string = planA,
   ) {
     const { appPilotCodeDigest } = await import("./app-pilot-redemptions");
     const code = randomUUID().replaceAll("-", "");
