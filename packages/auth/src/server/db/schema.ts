@@ -69,7 +69,9 @@ import type {
 // Postgres BYTEA column. Typed as Uint8Array to avoid the Node `Buffer` vs
 // Cloudflare workers-types Buffer conflict that bites when both type packs
 // are in scope. The runtime value is whatever the driver returns; callers
-// normalize it (see packages/auth/src/server/api/services/audit.ts toU8 helper).
+// normalize it (see the toU8 helper in
+// packages/auth/src/server/db/audit-codec.ts;
+// packages/auth/src/server/api/services/audit.ts is one caller).
 const bytea = customType<{ data: Uint8Array; default: false; notNull: false }>({
   dataType() {
     return "bytea";

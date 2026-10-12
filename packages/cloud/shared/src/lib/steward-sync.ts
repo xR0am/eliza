@@ -1072,14 +1072,10 @@ export async function syncUserFromSteward(params: StewardSyncParams): Promise<St
             await linkVerifiedPhoneForStewardSync(existingUser.id, verifiedPhone);
           }
           if (existingUser.steward_user_id !== stewardUserId) {
-            // NOTE: This is the link path that the Steward identity-link DB
-            // migration drafts depend on.
-            // The match-by-email or match-by-wallet branches above find the
+            // NOTE: This is the Steward identity-link path. The
+            // match-by-email or match-by-wallet branches above find the
             // existing auth row, and this block writes the
             // steward_user_id link onto both `users` and `user_identities`.
-            // The drafted Phase 3 migration will not run until the
-            // unlinked-active-user count hits zero, which depends on this
-            // path executing for every active user.
             logger.info(
               `[StewardSync] Linking Steward account for ${email}: ${existingUser.steward_user_id} → ${stewardUserId}`,
             );
