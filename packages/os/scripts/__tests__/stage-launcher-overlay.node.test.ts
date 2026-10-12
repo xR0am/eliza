@@ -381,6 +381,23 @@ test("companion inspection requires its package, the launcher signer, and no HOM
       ),
     /must not be a launcher/,
   );
+  for (const home of [
+    xml.replace("E: activity", "E: activity-alias"),
+    xml.replace(/ {4}A: android:exported[^\n]*\n/, ""),
+  ]) {
+    assert.throws(
+      () =>
+        validateCompanionInspection(
+          d,
+          updater,
+          companionBadging,
+          home,
+          signer,
+          false,
+        ),
+      /must not be a launcher/,
+    );
+  }
   const debug = `A: android:debuggable(0x0101000f)=(type 0x12)0xffffffff\n${service}`;
   assert.throws(
     () =>

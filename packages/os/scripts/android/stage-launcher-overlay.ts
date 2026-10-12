@@ -169,7 +169,7 @@ export function createDevelopmentLauncherDescriptor(options: {
 }
 /** True when one eligible exported activity has MAIN/HOME/DEFAULT together.
  * A receiver or a private/disabled activity does not qualify as a launcher. */
-function hasHomeActivity(xml: string): boolean {
+function hasHomeActivity(xml: string, anyHomeDeclaration = false): boolean {
   interface ManifestElement {
     indent: number;
     name: string;
@@ -211,8 +211,19 @@ function hasHomeActivity(xml: string): boolean {
     );
   return elements.some((filter) => {
     const activity = filter.parent;
-    if (filter.name !== "intent-filter" || activity?.name !== "activity")
-      return false;
+    if (filter.name !== "intent-filter") return false;
+    // Companion packages must not declare HOME, including aliases and older
+    // manifests whose exported state is implicit. They may become enabled later.
+    if (anyHomeDeclaration)
+      return (
+        ["activity", "activity-alias"].includes(activity?.name ?? "") &&
+        filter.children.some(
+          (child) =>
+            child.name === "category" &&
+            named(child, "android.intent.category.HOME"),
+        )
+      );
+    if (activity?.name !== "activity") return false;
     if (
       !activity.attributes.some((attribute) =>
         /android:exported[^\n]*0xffffffff/.test(attribute),
@@ -275,7 +286,8 @@ export function validateCompanionInspection(
   const name = companion.moduleName;
   if (/package: name='([^']+)'/.exec(badging)?.[1] !== companion.packageName)
     throw new Error(`${name} package mismatch`);
-  if (hasHomeActivity(xml)) throw new Error(`${name} must not be a launcher`);
+  if (hasHomeActivity(xml, true))
+    throw new Error(`${name} must not be a launcher`);
   if (!development && DEBUGGABLE.test(xml))
     throw new Error(`Debug ${name} requires --development`);
   if (launcherSigner(signatures) !== d.certificateSha256)
