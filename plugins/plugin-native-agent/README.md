@@ -53,7 +53,7 @@ must authorize its route and provide its private token and response-size limit.
 It deliberately contains no product route catalog. A second `exchange` overload
 takes up to eight host-chosen request headers, for example a correlation ID
 (`EmbeddedRuntimeService.exchangeHttp` has the same overload). A name must be
-letters, digits or hyphens; a value must be 1-256 printable ASCII characters.
+letters, digits or hyphens; a value must be 1-512 printable ASCII characters.
 The transport's own headers (`Host`, `Authorization`, `Content-Type`,
 `Content-Length`, `Connection`, `Transfer-Encoding`) cannot be replaced, and a
 rejected header fails before any connection. The instrumented contract
