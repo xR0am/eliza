@@ -26,6 +26,7 @@ import {
 
 const GOOGLE_GMAIL_MESSAGES_ENDPOINT = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
 const GOOGLE_GMAIL_SEND_ENDPOINT = `${GOOGLE_GMAIL_MESSAGES_ENDPOINT}/send`;
+const GOOGLE_GMAIL_PROFILE_ENDPOINT = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
 const GMAIL_METADATA_HEADERS = [
   "Subject",
   "From",
@@ -546,6 +547,23 @@ export async function fetchManagedGoogleGmailSearch(args: {
       ? connectorStatus.identity.email
       : null;
 
+  // Read the mailbox revision before the page. A later page that reports a
+  // different revision was listed from a changed mailbox, so the client knows
+  // that a row can be missing between the two pages.
+  const profileResponse = await googleFetch({
+    organizationId: args.organizationId,
+    userId: args.userId,
+    side: args.side,
+    grantId: args.grantId,
+    personalContextRead: args.personalContextRead,
+    url: `${GOOGLE_GMAIL_PROFILE_ENDPOINT}?fields=historyId`,
+  });
+  const { historyId: mailboxHistoryId } = (await profileResponse.json()) as {
+    historyId?: unknown;
+  };
+  if (typeof mailboxHistoryId !== "string" || !/^\d{1,20}$/.test(mailboxHistoryId))
+    fail(502, "Invalid Gmail mailbox revision.");
+
   return {
     ...(await fetchManagedGoogleGmailMessages({
       organizationId: args.organizationId,
@@ -558,6 +576,7 @@ export async function fetchManagedGoogleGmailSearch(args: {
       query,
       pageToken: args.pageToken,
     })),
+    mailboxHistoryId,
     syncedAt: new Date().toISOString(),
   };
 }
