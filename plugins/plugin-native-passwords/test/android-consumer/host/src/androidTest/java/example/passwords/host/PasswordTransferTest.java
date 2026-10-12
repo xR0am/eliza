@@ -33,6 +33,33 @@ public final class PasswordTransferTest {
  private void value(String key, String predicate) {
   ui.await(() -> "true".equals(js("Boolean(results[" + JSONObject.quote(key) + "]?.value && (" + predicate + "))")), "Bridge result: " + key);
  }
+ private void editorField(String label, String text) {
+  android.os.Bundle args = new android.os.Bundle();
+  args.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+  ui.await(() -> {
+   android.view.accessibility.AccessibilityNodeInfo node = ui.find(item -> item.isEditable() && label.contentEquals(item.getContentDescription() == null ? "" : item.getContentDescription()));
+   return node != null && node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+  }, "Native editor accepts " + label);
+ }
+ private void obscuredSave(int flags) {
+  InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+   android.widget.Button save = null;
+   for (android.view.View root : android.view.inspector.WindowInspector.getGlobalWindowViews()) {
+    android.widget.Button button = root.findViewById(android.R.id.button1);
+    if (button != null && button.isShown() && "Save".contentEquals(button.getText())) save = button;
+   }
+   assertNotNull("Native Save action exists", save);
+   android.view.MotionEvent.PointerProperties pointer = new android.view.MotionEvent.PointerProperties(); pointer.id = 0; pointer.toolType = android.view.MotionEvent.TOOL_TYPE_FINGER;
+   android.view.MotionEvent.PointerCoords coords = new android.view.MotionEvent.PointerCoords(); coords.x = save.getWidth()/2f; coords.y = save.getHeight()/2f; coords.pressure = 1;
+   long now = android.os.SystemClock.uptimeMillis();
+   for (int action : new int[]{android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_UP}) {
+    android.view.MotionEvent event = android.view.MotionEvent.obtain(now, now, action, 1,
+      new android.view.MotionEvent.PointerProperties[]{pointer}, new android.view.MotionEvent.PointerCoords[]{coords},
+      0, 0, 1, 1, 0, 0, android.view.InputDevice.SOURCE_TOUCHSCREEN, flags);
+    try { save.dispatchTouchEvent(event); } finally { event.recycle(); }
+   }
+  });
+ }
  private void unlock(String pin) throws Exception {
   invoke("unlock", "ElizaPasswords", "unlock", new JSONObject()); ui.pin(pin); value("unlock", "results.unlock.value.unlocked===true");
  }
@@ -57,6 +84,31 @@ public final class PasswordTransferTest {
      .put("websites", new org.json.JSONArray().put("https://transfer.example")).put("password", password));
    value("save", "true");
    String id = new org.json.JSONTokener(js("results.save.value.id")).nextValue().toString();
+
+   // A real native editor creates a second encrypted entry without carrying its
+   // draft through Capacitor. Only the saved id returns to the WebView.
+   invoke("editor", "ElizaPasswords", "openEditor", new JSONObject());
+   ui.await(() -> ui.find(node -> "Add a password".contentEquals(node.getText() == null ? "" : node.getText())) != null, "Native password editor shown");
+   String editorPassword = "Native-only-" + token + "x".repeat(4100);
+   editorField("Name", "Editor fixture");
+   editorField("HTTPS website origin", "https://editor.example");
+   editorField("Username", "editor-" + token);
+   editorField("Password", editorPassword);
+   ui.captureDialog("Add a password", "password-editor-filled.png");
+   for (int flag : new int[]{android.view.MotionEvent.FLAG_WINDOW_IS_OBSCURED, android.view.MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED}) {
+    obscuredSave(flag);
+    assertEquals("Obscured Save has no vault effect", 1, (int) PasswordVaultAccess.get(context).use(store -> store.entries().length()));
+    assertEquals("Obscured Save does not resolve the bridge", "true", js("results.editor.pending===true"));
+   }
+   ui.press("Save");
+   value("editor", "results.editor.value.status==='saved' && Object.keys(results.editor.value).length===2");
+   String editorId = new org.json.JSONTokener(js("results.editor.value.id")).nextValue().toString();
+   assertFalse("Secret never returned through bridge", js("JSON.stringify(results)").contains(editorPassword));
+   assertTrue("Native entry bytes are exact", PasswordVaultAccess.get(context).use(store ->
+     editorPassword.equals(store.get(editorId).getString("password"))));
+   invoke("editorDelete", "ElizaPasswords", "remove", new JSONObject().put("id", editorId)); value("editorDelete", "true");
+   invoke("cancelEditor", "ElizaPasswords", "openEditor", new JSONObject());
+   ui.press("Cancel"); value("cancelEditor", "results.cancelEditor.value.status==='cancelled' && Object.keys(results.cancelEditor.value).length===1");
 
    invoke("export", "ElizaPasswordTransfer", "exportVault", new JSONObject());
    ui.await(() -> ui.find(node -> "Export saved passwords?".contentEquals(node.getText() == null ? "" : node.getText())) != null, "Export review shown");
