@@ -554,8 +554,12 @@ export class McpService extends Service {
         : null;
     if (matchedKey) {
       const currentKey = this.runtime.getSetting("ELIZAOS_API_KEY") ?? "";
-      const storedKey = this.connectionApiKeys.get(matchedKey) ?? "";
-      if (currentKey !== storedKey) {
+      // Only stdio connections never record a key (connectionApiKeys is only
+      // written by createHttpTransport), so an untracked key must not count
+      // as a rotation. Otherwise every call tears down stdio connections
+      // whenever ELIZAOS_API_KEY is set.
+      const storedKey = this.connectionApiKeys.get(matchedKey);
+      if (storedKey !== undefined && currentKey !== storedKey) {
         logger.info(`[MCP] API key changed for ${matchedKey}, reconnecting`);
         await this.disconnect(matchedKey);
       } else {
