@@ -112,34 +112,65 @@ function normalizeLookup(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+/** Outcome of matching one caller-supplied name against the contact directory. */
+type NamedContactResolution =
+  | { kind: "matched"; relationshipId: string }
+  | { kind: "ambiguous" }
+  | { kind: "unmatched" };
+
+async function resolveNamedContact(
+  service: LifeOpsService,
+  rawName: string,
+): Promise<NamedContactResolution> {
+  const needle = normalizeLookup(rawName);
+  if (!needle) {
+    return { kind: "unmatched" };
+  }
+
+  const relationships = await service.listRelationships();
+
+  // A durable write needs one identified contact. Inside every tier a tie
+  // is ambiguous input: picking the list-order winner would log the
+  // interaction against a contact the caller did not name, so a tie fails
+  // closed instead (same contract as the free-text stages below).
+  const uniqueMatch = (
+    matches: typeof relationships,
+  ): NamedContactResolution => {
+    const [soleMatch] = matches;
+    return matches.length === 1 && soleMatch
+      ? { kind: "matched", relationshipId: soleMatch.id }
+      : { kind: "ambiguous" };
+  };
+
+  const exactName = relationships.filter(
+    (relationship) => normalizeLookup(relationship.name) === needle,
+  );
+  if (exactName.length > 0) {
+    return uniqueMatch(exactName);
+  }
+
+  const byAddress = relationships.filter(
+    (relationship) =>
+      normalizeLookup(relationship.primaryHandle).includes(needle) ||
+      normalizeLookup(relationship.email ?? "").includes(needle),
+  );
+  if (byAddress.length > 0) {
+    return uniqueMatch(byAddress);
+  }
+
+  return uniqueMatch(
+    relationships.filter((relationship) =>
+      normalizeLookup(relationship.name).includes(needle),
+    ),
+  );
+}
+
 async function resolveRelationshipIdByName(
   service: LifeOpsService,
   rawName: string,
 ): Promise<string | null> {
-  const needle = normalizeLookup(rawName);
-  if (!needle) {
-    return null;
-  }
-
-  const relationships = await service.listRelationships();
-  const exactMatch =
-    relationships.find(
-      (relationship) => normalizeLookup(relationship.name) === needle,
-    ) ??
-    relationships.find(
-      (relationship) =>
-        normalizeLookup(relationship.primaryHandle).includes(needle) ||
-        normalizeLookup(relationship.email ?? "").includes(needle),
-    );
-  if (exactMatch) {
-    return exactMatch.id;
-  }
-
-  return (
-    relationships.find((relationship) =>
-      normalizeLookup(relationship.name).includes(needle),
-    )?.id ?? null
-  );
+  const resolved = await resolveNamedContact(service, rawName);
+  return resolved.kind === "matched" ? resolved.relationshipId : null;
 }
 
 async function resolveRelationshipIdFromText(
@@ -226,9 +257,15 @@ async function resolveRelationshipId(
     return null;
   }
 
-  const resolvedFromName = await resolveRelationshipIdByName(service, name);
-  if (resolvedFromName) {
-    return resolvedFromName;
+  const named = await resolveNamedContact(service, name);
+  if (named.kind === "matched") {
+    return named.relationshipId;
+  }
+  // An ambiguous name must not be laundered into a one-sided resolution by
+  // the free-text token stage: token shapes differ per contact, so a tie
+  // in the structured tiers can survive there as a false sole candidate.
+  if (named.kind === "ambiguous") {
+    return null;
   }
 
   return resolveRelationshipIdFromText(service, name);
