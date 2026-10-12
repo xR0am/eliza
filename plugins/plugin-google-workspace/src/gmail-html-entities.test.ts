@@ -128,12 +128,10 @@ describe("Gmail numeric HTML entities", () => {
   });
 
   it("does not render a bullet for tags that merely start with li", async () => {
-    // A <link> element in the head is not a list item; the sibling
-    // htmlToPlainText in plugin-assistant url-ingest requires a word
-    // boundary after "li", and a real <li> still becomes a bullet here.
+    // Only the li tag is a list item; link and custom elements stay plain.
     const html =
       '<html><head><link rel="stylesheet" href="https://x.example/a.css"></head>' +
-      "<body><p>Hello world</p><ul><li>First</li></ul></body></html>";
+      "<body><li-custom></li-custom><p>Hello world</p><ul><li>First</li></ul></body></html>";
     const client = new GoogleGmailClient(
       stubFactory({
         id: "msg-html-link",
