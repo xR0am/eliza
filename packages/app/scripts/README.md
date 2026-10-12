@@ -52,3 +52,10 @@ or lost custody fails; a crash alone never passes. Call a separate successful
 `instrumentPhase` to verify product recovery before returning. Its record names
 the interruption it recovers; cleanup cannot satisfy this requirement. This API
 is not a device-acceptance claim and does not retry interrupted user effects.
+
+Android SIGSYS shim caches are reusable only with a completed source/output receipt.
+The receipt binds the ABI, Zig target/version, selected C source, shared preservation
+header, loader wrapper, compiler recipe/policy and both output hashes. `compile-shim.ts --skip-if-present` rebuilds legacy or stale pairs; staging rejects them if provisioning
+is disabled or fails. Never add a receipt to old binaries manually. Build both outputs
+with the reviewed compiler entrypoint. Cache freshness does not qualify Bun child
+processes or Android runtime behavior; installed process/signal tests remain required.
