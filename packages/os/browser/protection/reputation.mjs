@@ -53,6 +53,8 @@ export function createWebsiteReputation({
   cacheDir = null,
   feeds = [],
   userAgent = "Eliza-Browser-Protection",
+  // Opt in to local-only lookup; feed downloads never delay the caller.
+  waitForRefresh = true,
 } = {}) {
   if (
     !Array.isArray(feeds) ||
@@ -176,7 +178,7 @@ export function createWebsiteReputation({
       states.map(async (state) => {
         if (!fresh(state.snapshot)) {
           const work = update(state);
-          if (!usable(state.snapshot)) await work;
+          if (waitForRefresh && !usable(state.snapshot)) await work;
         }
       }),
     );

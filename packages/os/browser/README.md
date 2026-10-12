@@ -324,7 +324,7 @@ main-frame GET; navigation failure, commit, expiry or tab removal revokes it.
 
 `createWebsiteReputation` requires explicit feeds and accepts an optional private
 cache directory. It downloads the configured lists, never visited URLs, and never
-reports missing/expired feed data as clean. Feed configuration is trusted host
+reports missing/expired feed data as clean. Set `waitForRefresh: false` for a local-cache lookup that starts refreshes in the background and returns unavailable when current data is missing. `warmup()` still waits for refresh completion. Feed configuration is trusted host
 policy, not model input. The Phishing.Database mirror adapter pins fallback bytes
 to an official commit. Hosts must ship the selected feeds' required attribution.
 
