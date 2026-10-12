@@ -252,8 +252,8 @@ not redefine it. Other UI strings can use the host's localized resource director
 The reviewed consumer toolchain remains Gradle 8.13 / AGP 8.13 / Kotlin 2.2.20 /
 JDK 21, independently of the full app's newer default wrapper. The distribution
 and shared wrapper JAR are hash pinned. Run the filesystem contract with
-`node --test scripts/mobile/android/consumer-host.test.mjs`; with SDK 36 and
-build-tools 36.0.0, `node scripts/mobile/android/qualify-consumer-host.mjs` builds
+`node --test packages/app/scripts/mobile/android/consumer-host.test.mjs`; with SDK 36 and
+build-tools 36.0.0, `node packages/app/scripts/mobile/android/qualify-consumer-host.mjs` builds
 two independent identities and checks eight host variant APKs plus four separate
 companion APKs. Linked-library compilation and companion asset isolation are checked.
 Reports go to root `test-results/android-consumer-host`. This is build/manifest
