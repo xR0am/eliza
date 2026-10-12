@@ -786,6 +786,14 @@ ${tweet.text}`;
     uniqueTweetCandidates = uniqueTweetCandidates
       .sort((a, b) => a.id.localeCompare(b.id))
       .filter((tweet) => !profileId || tweet.userId !== profileId);
+    // Pagination keeps the whole page containing the watermark, so drop
+    // already-handled tweets before the per-run cap or they can fill every slot.
+    const watermark = this.client.getLatestCheckedTweetId(profileId);
+    if (watermark !== null) {
+      uniqueTweetCandidates = uniqueTweetCandidates.filter(
+        (tweet) => BigInt(tweet.id) > watermark,
+      );
+    }
     // Get TWITTER_TARGET_USERS configuration
     const targetUsersConfig =
       ((getSetting(this.runtime, "TWITTER_TARGET_USERS") ??

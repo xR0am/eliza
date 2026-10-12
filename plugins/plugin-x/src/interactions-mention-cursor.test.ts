@@ -183,3 +183,55 @@ describe("outgoing post vs. incoming mention cursor (#22433)", () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("mention watermark vs. per-run engagement cap", () => {
+  const BASE = 1_000_000_000_000_000_000n;
+  const idAt = (n: number) => (BASE + BigInt(n)).toString();
+
+  beforeEach(() => {
+    logger.log = vi.fn();
+    logger.info = vi.fn();
+    logger.warn = vi.fn();
+    logger.error = vi.fn();
+  });
+
+  async function runPoll(ids: number[], watermark: number) {
+    const runtime = createRuntime();
+    const client = createClient(runtime, vi.fn());
+    const interactions = new TwitterInteractionClient(
+      client,
+      runtime,
+      {} as TwitterClientState,
+    );
+    const handled: string[] = [];
+    vi.spyOn(interactions, "handleTweet").mockImplementation(
+      async ({ tweet }) => {
+        handled.push(tweet.id);
+        return [];
+      },
+    );
+    client.recordLatestCheckedTweetId(PROFILE_ID, BASE + BigInt(watermark));
+    await interactions.processMentionTweets(
+      ids.map((n) => mention({ id: idAt(n), conversationId: idAt(n) })),
+    );
+    return { handled, watermark: client.getLatestCheckedTweetId(PROFILE_ID) };
+  }
+
+  it("answers a new mention even when 12 already-handled ones share the page", async () => {
+    const below = Array.from({ length: 12 }, (_, i) => 100 + i);
+    const result = await runPoll([...below, 200], 150);
+
+    expect(result.handled).toEqual([idAt(200)]);
+    expect(result.watermark).toBe(BASE + 200n);
+  });
+
+  it("spends the cap on tweets above the watermark (861..900, watermark 875)", async () => {
+    const ids = Array.from({ length: 40 }, (_, i) => 861 + i);
+    const result = await runPoll(ids, 875);
+
+    expect(result.handled).toEqual(
+      Array.from({ length: 10 }, (_, i) => idAt(876 + i)),
+    );
+    expect(result.watermark).toBe(BASE + 885n);
+  });
+});
