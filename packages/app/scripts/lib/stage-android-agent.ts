@@ -46,6 +46,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { locateCompiledShim } from "../aosp/compile-shim.ts";
 import {
   ensureEmbeddingArtifact,
   FUSED_EMBEDDING_ARTIFACT,
@@ -1076,8 +1077,9 @@ export function autoProvisionSeccompShim({
   if (process.env.ELIZA_SECCOMP_SHIM_NO_AUTOPROVISION === "1") {
     return false;
   }
-  const abiCacheDir = path.join(cacheDir, androidAbi);
-  if (fs.existsSync(path.join(abiCacheDir, "libsigsys-handler.so"))) {
+  if (
+    locateCompiledShim({ cacheDir, abi: androidAbi, zigVersion: ZIG_VERSION })
+  ) {
     return true;
   }
   const zigToolchain = resolveZigToolchain();
@@ -1154,7 +1156,13 @@ export function autoProvisionSeccompShim({
     );
     return false;
   }
-  return fs.existsSync(path.join(abiCacheDir, "libsigsys-handler.so"));
+  return (
+    locateCompiledShim({
+      cacheDir,
+      abi: androidAbi,
+      zigVersion: ZIG_VERSION,
+    }) !== null
+  );
 }
 
 /** ELF `e_type` for a shared object / dynamic loader (`ET_DYN`). */
@@ -1204,18 +1212,23 @@ export function stageSeccompShimForAbi({
   log,
 }) {
   const abiCacheDir = path.join(cacheDir, androidAbi);
-  const cachedWrap = path.join(abiCacheDir, ldName);
-  const cachedShim = path.join(abiCacheDir, "libsigsys-handler.so");
-  if (!fs.existsSync(cachedWrap) || !fs.existsSync(cachedShim)) {
+  if (
+    !locateCompiledShim({ cacheDir, abi: androidAbi, zigVersion: ZIG_VERSION })
+  ) {
     // Provision in place before refusing: pinned-zig download + compile-shim,
     // the same self-sufficiency this script's bun/Alpine downloads already
     // have, so fresh hosts and CI runners build device-valid APKs without a
     // manual toolchain step.
     autoProvisionSeccompShim({ androidAbi, cacheDir, log });
   }
-  if (!fs.existsSync(cachedWrap) || !fs.existsSync(cachedShim)) {
+  const compiled = locateCompiledShim({
+    cacheDir,
+    abi: androidAbi,
+    zigVersion: ZIG_VERSION,
+  });
+  if (!compiled || compiled.realLoaderName !== ldName) {
     throw new Error(
-      `[stage-android-agent] Missing compiled SIGSYS shim for ${androidAbi}. ` +
+      `[stage-android-agent] Missing compiled SIGSYS shim for ${androidAbi}, or cache source/output identity is stale. ` +
         `Stock Android kills the raw Alpine loader with SIGSYS during Bun's ` +
         `event loop startup; refusing to build an APK that cannot boot. Run ` +
         `\`node packages/app/scripts/aosp/compile-shim.ts --abi ${androidAbi}\` ` +
@@ -1242,7 +1255,7 @@ export function stageSeccompShimForAbi({
   const stagedLoaderExists = fs.existsSync(stagedLoader);
   const stagedLoaderIsAlpine =
     stagedLoaderExists &&
-    !fs.readFileSync(stagedLoader).equals(fs.readFileSync(cachedWrap)) &&
+    !fs.readFileSync(stagedLoader).equals(compiled.wrapBytes) &&
     readElfType(stagedLoader) === ELF_TYPE_SHARED_OBJECT;
 
   if (stagedLoaderIsAlpine) {
@@ -1266,10 +1279,20 @@ export function stageSeccompShimForAbi({
     );
   }
 
-  // Stage the wrapper as <ldName>.
-  if (copyIfDifferent(cachedWrap, stagedLoader)) changes += 1;
-  // Stage libsigsys-handler.so alongside.
-  if (copyIfDifferent(cachedShim, stagedShim)) changes += 1;
+  // Use the exact validated buffers, never re-read mutable shared-cache paths.
+  for (const { bytes, destination } of [
+    { bytes: compiled.wrapBytes, destination: stagedLoader },
+    { bytes: compiled.shimBytes, destination: stagedShim },
+  ]) {
+    if (
+      !fs.existsSync(destination) ||
+      !fs.readFileSync(destination).equals(bytes)
+    ) {
+      fs.writeFileSync(destination, bytes);
+      fs.chmodSync(destination, 0o755);
+      changes += 1;
+    }
+  }
 
   if (changes > 0) {
     log?.(
