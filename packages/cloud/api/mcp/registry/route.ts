@@ -7,7 +7,7 @@
  */
 
 import { getCurrentUser } from "@elizaos/cloud-shared/auth";
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: file contains MCP config templates with literal ${BASE_URL} placeholders for client-side substitution
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: file contains MCP config templates with literal ${BASE_URL} placeholders resolved by this route
 import { BUILTIN_MCP_PRICING } from "@elizaos/cloud-shared/billing";
 import { failureResponse } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import { userMcpsService } from "@elizaos/cloud-shared/lib/services/user-mcps";
