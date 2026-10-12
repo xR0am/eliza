@@ -36,7 +36,7 @@ final class PasswordEditor {
     PasswordEditor editor = new PasswordEditor(activity, access, ticket, result);
     current = editor;
     try { editor.dialog.show(); editor.deadline.watch(() -> access.unlocked(ticket) ? access.remainingMillis() : 0, () -> editor.finish(null)); }
-    catch (RuntimeException failure) { editor.finish(null); }
+    catch (RuntimeException failure) { editor.clear(); throw failure; }
   }
 
   private PasswordEditor(Activity activity, PasswordVaultAccess access, long ticket, Result result) {
@@ -114,12 +114,17 @@ final class PasswordEditor {
     parent.addView(value); return value;
   }
 
-  private void finish(String id) {
-    if (finished) return;
+  private boolean clear() {
+    if (finished) return false;
     finished = true; deadline.cancel();
     if (current == this) current = null;
     label.setText(""); website.setText(""); username.setText(""); password.setText("");
     if (dialog.isShowing()) dialog.dismiss();
+    return true;
+  }
+
+  private void finish(String id) {
+    if (!clear()) return;
     if (id == null) result.cancelled(); else result.saved(id);
   }
 
