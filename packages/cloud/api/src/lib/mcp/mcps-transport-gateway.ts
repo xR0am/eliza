@@ -404,7 +404,11 @@ async function callCryptoTool(
     });
     if (!res.ok) return errorResult({ error: "CoinGecko request failed" });
     const data = (await res.json()) as Record<string, Record<string, number>>;
-    return textResult(data[coin] ?? {});
+    const price = data[coin];
+    if (price === undefined) {
+      return errorResult({ error: `Unknown coin: ${coin}` });
+    }
+    return textResult(price);
   }
 
   if (name === "get_market_data") {
