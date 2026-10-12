@@ -28,6 +28,8 @@ export interface KeylessWebSearchOptions {
     fetchImpl?: KeylessWebSearchFetch;
     /** Caller cancellation; an aborted search is never dispatched. */
     signal?: AbortSignal;
+    /** Optional server-owned anonymous MCP session; never a credential. */
+    sessionId?: string;
 }
 
 export interface KeylessWebSearchResult {
@@ -375,4 +377,42 @@ export async function searchKeylessWeb(
         text,
         truncated: false,
     };
+}
+
+/** Reads one or two articles through the fixed anonymous MCP, preserving the complete payload. */
+export async function fetchKeylessWeb(
+    urls: readonly string[],
+    options: KeylessWebSearchOptions = {}
+): Promise<KeylessWebSearchResult | undefined> {
+    if (urls.length < 1 || urls.length > 2 || new Set(urls).size !== urls.length) {
+        throw new Error("One or two distinct public article URLs are required");
+    }
+    for (const value of urls) {
+        const url = new URL(value);
+        if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.href !== value) {
+            throw new Error("Canonical public article URL is required");
+        }
+    }
+    const text = await callMcp(
+        "parallel",
+        PARALLEL_MCP_URL,
+        "web_fetch",
+        {
+            urls: [...urls],
+            objective:
+                "Return each article's own title, original publication date and opening article header. Preserve conflicting dates. Do not substitute modified, retrieval or related-article dates.",
+            full_content: false,
+            allow_live_fetch: true,
+            ...(options.sessionId && /^[A-Za-z0-9_-]{1,100}$/.test(options.sessionId)
+                ? { session_id: options.sessionId }
+                : {}),
+        },
+        {
+            fetchImpl: options.fetchImpl ?? ((input, init) => fetch(input, init)),
+            timeoutMs: options.timeoutMs ?? 5_000,
+            maxResponseBytes: options.maxResponseBytes ?? DEFAULT_RESPONSE_BYTES,
+            signal: options.signal,
+        }
+    );
+    return text === undefined ? undefined : { provider: "parallel", text, truncated: false };
 }

@@ -16,6 +16,8 @@ import type {
 import { isBlockedHostname, isPrivateIpAddress } from "@elizaos/core";
 import { isKeylessWebSearchUnavailableError, searchKeylessWeb } from "./keyless-web-search";
 
+export { fetchKeylessWeb } from "./keyless-web-search";
+
 export const WEB_SEARCH_EDGE_COMPATIBILITY = {
     target: "edge",
     state: "none",
