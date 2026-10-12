@@ -370,7 +370,10 @@ function decodeIcsText(value: string): string {
     if (escaped === "n" || escaped === "N") decoded += "\n";
     else if (escaped === "," || escaped === ";" || escaped === "\\")
       decoded += escaped;
-    else decoded += escaped;
+    // RFC 5545 defines no meaning for any other escape. Keep the backslash
+    // so literal text such as Windows paths ("C:\notes\file") survives
+    // instead of silently losing characters.
+    else decoded += `\\${escaped}`;
   }
   return decoded;
 }

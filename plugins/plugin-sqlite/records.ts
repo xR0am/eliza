@@ -892,7 +892,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
               params.agentId ? component.agentId === params.agentId : true,
           )
         : (matchedComponentsByEntity.get(entity.id) ?? []);
-      if (components.length > 0) {
+      if (params.includeAllComponents || hasComponentQuery) {
         entity.components = components;
       } else {
         delete entity.components;

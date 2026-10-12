@@ -634,7 +634,17 @@ export async function searchFlights(
   config?: DuffelConfig,
 ): Promise<SearchFlightsResult> {
   const resolvedConfig = config ?? readDuffelConfigFromEnv();
-  const passengerCount = Math.max(1, Math.round(request.passengers ?? 1));
+  const rawPassengers = request.passengers ?? 1;
+  // `Math.max(1, …)` cannot clamp NaN: `Math.round(NaN)` is NaN, so
+  // `passengers: NaN` silently built a zero-passenger offer request, and
+  // `Infinity` escaped into `Array.from({ length })` as a RangeError.
+  // Fail fast on non-finite input instead.
+  if (!Number.isFinite(rawPassengers)) {
+    throw new Error(
+      "Duffel searchFlights: passengers must be a finite number",
+    );
+  }
+  const passengerCount = Math.max(1, Math.round(rawPassengers));
 
   const slices: Array<{
     origin: string;

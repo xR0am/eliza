@@ -2950,6 +2950,8 @@ interface AospPreparedTextRequestArgs {
   contextWindowTokens: number;
   prompt: string;
   promptTokenCount: number;
+  /** Caller's explicit output cap; absent when decode may fill the context. */
+  requestedMaxTokens?: number;
   stopSequences?: string[];
   grammar?: string;
   stopOnFirstSentence?: boolean;
@@ -2968,7 +2970,10 @@ export function createAospPreparedTextRequestGuard(
     provider: PROVIDER,
     model: path.basename(args.modelPath),
     contextWindowTokens: args.contextWindowTokens,
-    outputReserveTokens: args.config.maxTokens,
+    // An explicit cap reserves its tokens. Without one, config.maxTokens is the
+    // remaining context, a decode ceiling rather than a reservation, so reserve
+    // only room to begin decoding (as the iOS native path does).
+    outputReserveTokens: args.requestedMaxTokens ?? 1,
     projectRequest: () => ({
       prompt: args.prompt,
       stopSequences: args.stopSequences ? [...args.stopSequences] : undefined,
@@ -3441,6 +3446,7 @@ export async function tryBuildAospFusedTextLoader(): Promise<AospLoader | null> 
           active.contextSize ?? readPositiveIntEnv("ELIZA_LLAMA_N_CTX", 4096),
         prompt: args.prompt,
         promptTokenCount: promptTokens.length,
+        requestedMaxTokens: args.maxTokens,
         stopSequences: args.stopSequences,
         grammar: args.grammar,
         stopOnFirstSentence: args.stopOnFirstSentence,

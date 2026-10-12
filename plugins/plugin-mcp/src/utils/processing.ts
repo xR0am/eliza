@@ -71,12 +71,12 @@ export function processResourceResult(
   const attachments: Media[] = [];
   for (const content of result.contents) {
     if (content.text) {
-      resourceContent += content.text;
+      resourceContent += `${resourceContent ? "\n" : ""}${content.text}`;
     } else if (typeof content.blob === "string") {
       attachments.push(
         resourceAttachment(content, runtime, serverName, messageEntityId, attachments.length)
       );
-      resourceContent += `[Binary data${content.mimeType ? ` - ${content.mimeType}` : ""}]`;
+      resourceContent += `${resourceContent ? "\n" : ""}[Binary data${content.mimeType ? ` - ${content.mimeType}` : ""}]`;
     }
     resourceMeta += `Resource: ${content.uri ?? uri}\n`;
     if (content.mimeType) {
@@ -105,7 +105,7 @@ export function processToolResult(
   let mediaIndex = 0;
   for (const content of result.content) {
     if (content.type === "text" && content.text) {
-      toolOutput += content.text;
+      toolOutput += `${toolOutput ? "\n" : ""}${content.text}`;
     } else if (content.type === "resource_link") {
       toolOutput += `\n\nResource link:\n${JSON.stringify(content)}`;
     } else if (

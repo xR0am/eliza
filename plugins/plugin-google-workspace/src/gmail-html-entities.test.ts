@@ -126,4 +126,40 @@ describe("Gmail numeric HTML entities", () => {
       "Price \u20ac100 \u2018deal\u2019 \u2013 \u0178\n Slot &#129; stays"
     );
   });
+
+  it("does not render a bullet for tags that merely start with li", async () => {
+    // Only the li tag is a list item; link and custom elements stay plain.
+    const html =
+      '<html><head><link rel="stylesheet" href="https://x.example/a.css"></head>' +
+      "<body><li-custom></li-custom><p>Hello world</p><ul><li>First</li></ul></body></html>";
+    const client = new GoogleGmailClient(
+      stubFactory({
+        id: "msg-html-link",
+        threadId: "thr-html-link",
+        labelIds: ["INBOX", "UNREAD"],
+        internalDate: "1728450000000",
+        snippet: "html body",
+        payload: {
+          mimeType: "text/html",
+          headers: [
+            { name: "Subject", value: "HTML body" },
+            { name: "From", value: "Sender <sender@example.com>" },
+            { name: "To", value: "me@example.com" },
+          ],
+          body: {
+            data: Buffer.from(html, "utf8").toString("base64url"),
+            size: Buffer.byteLength(html),
+          },
+        },
+      })
+    );
+
+    const detail = await client.getGmailMessageDetail({
+      accountId: "acct-test",
+      messageId: "msg-html-link",
+      selfEmail: "me@example.com",
+    });
+
+    expect(detail?.bodyText).toBe("Hello world\n - First");
+  });
 });
