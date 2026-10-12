@@ -119,6 +119,21 @@ test("attachment requires current allowlisted metadata, byte limit, canonical by
           sha256: createHash("sha256").update(pdf).digest("hex"),
         }
       : detail;
+  // Gmail uses the empty part ID for an attachment on the root MIME part.
+  const rootPort = createMailboxReadPort({
+    accountId,
+    request: async (path) => {
+      const value = await request(path);
+      return new URL(path, "https://cloud.test").searchParams.has("partId")
+        ? { ...value, partId: "" }
+        : { ...value, attachments: [{ ...descriptor, partId: "" }] };
+    },
+  });
+  assert.deepEqual(
+    (await rootPort.attachment({ ...input, partId: "" })).data,
+    pdf,
+    "a listed root MIME attachment keeps its valid empty part ID",
+  );
   const { attachment } = createMailboxReadPort({ accountId, request });
   assert.deepEqual(
     (await attachment({ ...input, partId: "1" })).data,

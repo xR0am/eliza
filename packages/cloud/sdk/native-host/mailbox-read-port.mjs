@@ -139,7 +139,7 @@ export function createMailboxReadPort({ accountId, request }) {
       const attachments = value.attachments.map((part) => {
         if (
           typeof part?.partId !== "string" ||
-          !/^[0-9.]{1,128}$/.test(part.partId) ||
+          !/^[0-9.]{0,128}$/.test(part.partId) ||
           !Number.isSafeInteger(part.size) ||
           part.size < 0
         )
