@@ -11,12 +11,14 @@ import path from "node:path";
 import { AgentRuntime, ModelType } from "@elizaos/core";
 import { describe, expect, it } from "vitest";
 import { firstSentenceEndIndex } from "../src/aosp-llama-paths";
+import type { AospLlmStreamConfig } from "../src/aosp-llama-streaming";
 import {
   type AospLoader,
   AospLoaderRuntimeService,
   aospAsrAssetsPresent,
   buildAospLoadModelArgs,
   buildGenerateArgsFromParams,
+  createAospPreparedTextRequestGuard,
   ensureAospLocalInferenceHandlers,
   flattenGenerateTextParamsForAospPrompt,
   isAospLocalEmbeddingEnabled,
@@ -26,6 +28,7 @@ import {
   registerAospLlamaLoader,
   registerAospLoaderService,
   removeAospGeneratedStagingDir,
+  resolveAospCompletionBudget,
   shouldEvictChatForAvailMb,
   VOICE_COLOAD_KEEP_AVAIL_MB,
 } from "../src/aosp-local-inference-bootstrap";
@@ -436,6 +439,69 @@ describe("buildGenerateArgsFromParams", () => {
         minFirstSentenceChars: 10,
       }),
     );
+  });
+});
+
+describe("createAospPreparedTextRequestGuard", () => {
+  const streamConfig = (maxTokens: number): AospLlmStreamConfig => ({
+    maxTokens,
+    temperature: 0.7,
+    topP: 0.9,
+    topK: 40,
+    repeatPenalty: 1.1,
+    slotId: -1,
+    promptCacheKey: null,
+    draftMin: 0,
+    draftMax: 0,
+    mtpDrafterPath: null,
+    disableThinking: false,
+    contextSize: 4096,
+  });
+
+  it("admits an uncapped request that may decode into the rest of the context", () => {
+    // REPLY and grounded replies call TEXT_LARGE / TEXT_SMALL without
+    // maxTokens, so the fused loader decodes up to the remaining context.
+    const maxTokens = resolveAospCompletionBudget({
+      contextSize: 4096,
+      promptTokenCount: 1000,
+    });
+    const guard = createAospPreparedTextRequestGuard({
+      modelPath: "/models/chat.gguf",
+      contextWindowTokens: 4096,
+      prompt: "Reply to the user.",
+      promptTokenCount: 1000,
+      config: streamConfig(maxTokens),
+    });
+
+    expect(maxTokens).toBe(3096);
+    expect(guard.budget).toMatchObject({
+      inputTokens: 1000,
+      outputReserveTokens: 1,
+      dispatchThresholdTokens: 4095,
+    });
+    guard.assertBeforeAttempt();
+    expect(guard.attempts).toBe(1);
+  });
+
+  it("reserves an explicit output cap and rejects a prompt that crowds it out", () => {
+    const capped = {
+      modelPath: "/models/chat.gguf",
+      contextWindowTokens: 4096,
+      prompt: "Reply to the user.",
+      requestedMaxTokens: 256,
+      config: streamConfig(256),
+    };
+
+    expect(
+      createAospPreparedTextRequestGuard({ ...capped, promptTokenCount: 1000 })
+        .budget,
+    ).toMatchObject({
+      outputReserveTokens: 256,
+      dispatchThresholdTokens: 3840,
+    });
+    expect(() =>
+      createAospPreparedTextRequestGuard({ ...capped, promptTokenCount: 3900 }),
+    ).toThrow("exceeds its context budget");
   });
 });
 
