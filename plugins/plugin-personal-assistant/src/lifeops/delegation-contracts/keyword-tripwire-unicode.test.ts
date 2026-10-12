@@ -46,6 +46,18 @@ describe("keyword tripwire Unicode matching", () => {
     );
   });
 
+  it("does not escalate for keywords that normalize to empty", () => {
+    expect(outcomeFor(["🚨"], "hello, lunch tomorrow?")).toBe("in_bounds");
+    expect(outcomeFor(["★"], "hello there")).toBe("in_bounds");
+    expect(outcomeFor(["!!!"], "anything at all")).toBe("in_bounds");
+    expect(outcomeFor(["【】"], "hello there")).toBe("in_bounds");
+    expect(outcomeFor([""], "hello there")).toBe("in_bounds");
+    expect(outcomeFor(["   "], "hello there")).toBe("in_bounds");
+    expect(outcomeFor(["🚨", "renewal"], "the renewal date moved")).toBe(
+      "escalate_owner",
+    );
+  });
+
   it("keeps ASCII keyword and price-shaped keyword behavior", () => {
     expect(outcomeFor(["renewal"], "the renewal date moved")).toBe(
       "escalate_owner",
