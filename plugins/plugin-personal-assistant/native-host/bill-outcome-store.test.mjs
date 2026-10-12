@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {
+import fs, {
   appendFileSync,
   chmodSync,
   mkdtempSync,
@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -343,6 +344,120 @@ test("a failed journal write keeps the outcome pending and asks for a retry", as
   } finally {
     db.close();
     rmSync(f.directory, { recursive: true, force: true });
+  }
+
+  for (const rollbackFails of [false, true]) {
+    const f = await journalFixture();
+    let current = f.first;
+    const originalWrite = fs.writeFileSync,
+      originalTruncate = fs.ftruncateSync;
+    try {
+      const store = createBillOutcomeStore(current.db, current.tasks, {
+        journalPath: f.journalPath,
+      });
+      assert.equal(
+        store.forTask(current.runtime, f.task.id).save(observed, "observation")
+          .saveStatus,
+        "saved",
+      );
+      const acknowledged = readFileSync(f.journalPath, "utf8");
+      const next = (id) => {
+        let task = current.runtime.create({
+          id,
+          goalRef: id,
+          authorization: {
+            decisionId: id,
+            policyRevision: "policy",
+            state: "active",
+            decidedAt: new Date().toISOString(),
+            revokedAt: null,
+          },
+          allowedCapabilities: [],
+          allowedOrigins: ["https://example.test"],
+        });
+        task = current.tasks.transition(
+          task.id,
+          {
+            owner: current.runtime.owner,
+            expectedRevision: task.revision,
+            now: Date.now(),
+          },
+          {
+            type: "observe",
+            observation: {
+              id,
+              pageId: id,
+              origin: "https://example.test",
+              version: 1,
+              inputRevision: 0,
+              observedAt: Date.now(),
+            },
+          },
+        ).task;
+        return store.forTask(current.runtime, task.id);
+      };
+      const second = next("task2");
+      // Real file bytes are written before the controlled disk-full error.
+      fs.writeFileSync = (fd, data, ...args) => {
+        if (
+          typeof fd === "number" &&
+          typeof data === "string" &&
+          data.includes('"ownerKey"')
+        ) {
+          originalWrite(fd, data.slice(0, 20), ...args);
+          throw Object.assign(new Error("Controlled partial append"), {
+            code: "ENOSPC",
+          });
+        }
+        return originalWrite(fd, data, ...args);
+      };
+      if (rollbackFails)
+        fs.ftruncateSync = () => {
+          throw Object.assign(new Error("Controlled rollback failure"), {
+            code: "EIO",
+          });
+        };
+      syncBuiltinESMExports();
+      assert.equal(
+        second.save({ ...observed, reference: "TEST-10" }, "task2").saveStatus,
+        "pending",
+      );
+      fs.writeFileSync = originalWrite;
+      fs.ftruncateSync = originalTruncate;
+      syncBuiltinESMExports();
+      if (!rollbackFails)
+        assert.equal(
+          readFileSync(f.journalPath, "utf8"),
+          acknowledged,
+          "Rollback preserves every acknowledged record",
+        );
+      assert.equal(second.retry().saveStatus, "saved");
+      const third = next("task3");
+      const result = third.save({ ...observed, reference: "TEST-11" }, "task3");
+      assert.equal(result.saveStatus, rollbackFails ? "pending" : "saved");
+      if (rollbackFails) assert.equal(third.retry().saveStatus, "saved");
+      current.db.close();
+      current = f.open();
+      const reopened = createBillOutcomeStore(current.db, current.tasks, {
+        journalPath: f.journalPath,
+      });
+      for (const [id, reference] of [
+        [f.task.id, "TEST-9"],
+        ["task2", "TEST-10"],
+        ["task3", "TEST-11"],
+      ]) {
+        const evidence = reopened.forTask(current.runtime, id).loadEvidence();
+        assert.equal(evidence.persisted, true);
+        assert.equal(evidence.record.decision.reference, reference);
+      }
+      assert.equal(readFileSync(f.journalPath, "utf8"), "");
+    } finally {
+      fs.writeFileSync = originalWrite;
+      fs.ftruncateSync = originalTruncate;
+      syncBuiltinESMExports();
+      current.db.close();
+      rmSync(f.directory, { recursive: true, force: true });
+    }
   }
 });
 
