@@ -192,3 +192,30 @@ test("list rejects missing pagination state rather than claiming search is compl
     );
   }
 });
+
+test("server-valid null sender addresses retain display text in list and detail", async () => {
+  for (const from of [
+    "Unknown sender",
+    "",
+    '<img src="https://tracker.test">',
+  ]) {
+    const source = { ...message, fromEmail: null, from };
+    const port = createMailboxReadPort({
+      accountId,
+      request: async (path) =>
+        path.includes("/search?")
+          ? { messages: [source], nextPageToken: null }
+          : { ...detail, message: source },
+    });
+    const listed = await port.list({
+      accountId,
+      query: "in:inbox",
+      pageSize: 10,
+    });
+    assert.equal(listed.messages[0].sender, from);
+    const opened = await port.read(input);
+    assert.equal(opened.message.sender, from);
+    assert.equal(opened.remoteImages, false);
+    assert.equal(opened.format, "text");
+  }
+});
