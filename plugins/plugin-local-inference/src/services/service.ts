@@ -17,7 +17,11 @@ import {
 	ActiveModelCoordinator,
 	type LocalInferenceLoadOverrides,
 } from "./active-model";
-import { readEffectiveAssignments, setAssignment } from "./assignments";
+import {
+	clearAssignmentsForModel,
+	readEffectiveAssignments,
+	setAssignment,
+} from "./assignments";
 import { registerBundledModels } from "./bundled-models";
 import { MODEL_CATALOG } from "./catalog";
 import { Downloader } from "./downloader";
@@ -756,7 +760,9 @@ export class LocalInferenceService {
 		if (this.activeModel.snapshot().modelId === modelId) {
 			await this.activeModel.unload(null);
 		}
-		return removeElizaModel(modelId);
+		const result = await removeElizaModel(modelId);
+		if (result.removed) await clearAssignmentsForModel(modelId);
+		return result;
 	}
 }
 

@@ -210,6 +210,23 @@ export async function setAssignment(
 }
 
 /**
+ * Remove every saved slot that names `modelId`. Called after an uninstall:
+ * a saved slot overrides the recommendation, so a slot left on a deleted
+ * model fails every load even while another model is installed.
+ */
+export async function clearAssignmentsForModel(modelId: string): Promise<void> {
+	const current = await readAssignments();
+	const next: ModelAssignments = {};
+	for (const [slot, assigned] of Object.entries(current) as Array<
+		[AgentModelSlot, string | undefined]
+	>) {
+		if (assigned && assigned !== modelId) next[slot] = assigned;
+	}
+	if (Object.keys(next).length === Object.keys(current).length) return;
+	await writeAssignments(next);
+}
+
+/**
  * Decide which slots a freshly-installed model is a sensible default for.
  *
  * Today the curated catalog tags models with `category` ∈
