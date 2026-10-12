@@ -541,7 +541,7 @@ app.get("/", async (c) => {
                     key,
                     {
                       ...value,
-                      url: value.url.replace("${BASE_URL}", ""),
+                      url: value.url.replace("${BASE_URL}", baseUrl),
                     },
                   ],
                 ),
