@@ -69,6 +69,8 @@ function createClient() {
     },
     chat: {
       postMessage: vi.fn().mockResolvedValue({ ok: true, ts: "1.000001" }),
+      update: vi.fn().mockResolvedValue({ ok: true }),
+      delete: vi.fn().mockResolvedValue({ ok: true }),
     },
     team: { info: vi.fn().mockResolvedValue({ team: { name: "Sandbox" } }) },
   };
@@ -851,6 +853,44 @@ describe("persisted Slack policy through Bolt handlers", () => {
         sender: { id: "B0123BOT" },
       },
     });
+  });
+
+  it("edits and deletes an OWNER user-token post with the token that posted it", async () => {
+    // Slack lets a bot token change only the bot's own posts, so a message the
+    // agent posted as the owner must be edited and deleted as the owner.
+    const harness = await startHarness({
+      role: "OWNER",
+      userToken: "xoxp-owner-token",
+    });
+    const state = (
+      harness.service as unknown as {
+        getAccountState(accountId?: string | null): {
+          userClient: unknown;
+        } | null;
+      }
+    ).getAccountState("default");
+    if (!state) throw new Error("Slack account state was not initialised");
+    const userChat = {
+      postMessage: vi.fn().mockResolvedValue({ ok: true, ts: "1.000002" }),
+      update: vi.fn().mockResolvedValue({ ok: true }),
+      delete: vi.fn().mockResolvedValue({ ok: true }),
+    };
+    state.userClient = { chat: userChat };
+
+    await harness.service.editMessage(OPS, "1700000000.000100", "fixed text");
+    await harness.service.deleteMessage(OPS, "1700000000.000100");
+
+    expect(userChat.update).toHaveBeenCalledWith({
+      channel: OPS,
+      ts: "1700000000.000100",
+      text: "fixed text",
+    });
+    expect(userChat.delete).toHaveBeenCalledWith({
+      channel: OPS,
+      ts: "1700000000.000100",
+    });
+    expect(harness.app.client.chat.update).not.toHaveBeenCalled();
+    expect(harness.app.client.chat.delete).not.toHaveBeenCalled();
   });
 
   it("treats an OWNER user-token post as agent-owned", async () => {
