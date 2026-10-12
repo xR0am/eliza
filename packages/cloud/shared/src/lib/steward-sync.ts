@@ -1073,8 +1073,7 @@ export async function syncUserFromSteward(params: StewardSyncParams): Promise<St
           }
           if (existingUser.steward_user_id !== stewardUserId) {
             // NOTE: This is the link path that the Steward identity-link DB
-            // migration drafts depend on (see
-            // packages/db/migrations/_drafts_steward_link/README.md, Phase 2).
+            // migration drafts depend on.
             // The match-by-email or match-by-wallet branches above find the
             // existing auth row, and this block writes the
             // steward_user_id link onto both `users` and `user_identities`.

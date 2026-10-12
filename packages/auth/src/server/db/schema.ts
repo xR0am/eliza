@@ -69,7 +69,7 @@ import type {
 // Postgres BYTEA column. Typed as Uint8Array to avoid the Node `Buffer` vs
 // Cloudflare workers-types Buffer conflict that bites when both type packs
 // are in scope. The runtime value is whatever the driver returns; callers
-// normalize it (see packages/api/src/services/audit.ts toU8 helper).
+// normalize it (see packages/auth/src/server/api/services/audit.ts toU8 helper).
 const bytea = customType<{ data: Uint8Array; default: false; notNull: false }>({
   dataType() {
     return "bytea";
@@ -2271,10 +2271,9 @@ export const secretRoutes = pgTable(
 //       lifetimeCheck (which IS declared in-schema because expires_at is NOT
 //       NULL on grants).
 //
-//    The regression test `packages/db/src/__tests__/provider-authority-migration.test.ts`
-//    ("schema-only invariants ..." cases) asserts all five triggers, the trigger
-//    function, and the lifetime CHECK exist after migration so accidental
-//    removal fails CI.
+//    These triggers live only in raw SQL migrations, which drizzle-kit cannot
+//    see. No current automated test asserts their presence, so deleting the
+//    trigger SQL would fail nothing in CI and only surface at runtime.
 
 export const providerEnvironmentEnum = pgEnum("provider_environment", [
   "development",
@@ -3375,7 +3374,7 @@ export type NewAgentPolicyRow = typeof agentPolicies.$inferInsert;
 // historical row invalidates verification of every subsequent row. The HMAC
 // key is held in app config (STEWARD_AUDIT_HMAC_KEY) separately from DB
 // credentials, so DB-only write access cannot forge rows that verify.
-// See packages/api/src/services/audit.ts for the writer and verifier.
+// See packages/auth/src/server/api/services/audit.ts for the writer and verifier.
 export const auditEvents = pgTable(
   "audit_events",
   {
