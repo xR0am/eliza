@@ -5,7 +5,12 @@
  * The harness wires the real `sendTweet` and `TwitterInteractionClient` against a
  * deterministic in-memory cursor and a mocked runtime/messageService.
  */
-import { type IAgentRuntime, logger, type UUID } from "@elizaos/core";
+import {
+  type IAgentRuntime,
+  logger,
+  type Memory,
+  type UUID,
+} from "@elizaos/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientBase } from "./base";
 import type { Tweet } from "./client";
@@ -195,13 +200,21 @@ describe("mention watermark vs. per-run engagement cap", () => {
     logger.error = vi.fn();
   });
 
-  async function runPoll(ids: number[], watermark: number) {
+  async function runPoll(
+    ids: number[],
+    watermark: number,
+    replied: number[] = [],
+    polls = 1,
+  ) {
     const runtime = createRuntime();
     const client = createClient(runtime, vi.fn());
     const interactions = new TwitterInteractionClient(
       client,
       runtime,
       {} as TwitterClientState,
+    );
+    vi.spyOn(runtime as IAgentRuntime, "getMemories").mockResolvedValue(
+      replied.map((n) => ({ content: { inReplyTo: idAt(n) } }) as Memory),
     );
     const handled: string[] = [];
     vi.spyOn(interactions, "handleTweet").mockImplementation(
@@ -211,9 +224,11 @@ describe("mention watermark vs. per-run engagement cap", () => {
       },
     );
     client.recordLatestCheckedTweetId(PROFILE_ID, BASE + BigInt(watermark));
-    await interactions.processMentionTweets(
-      ids.map((n) => mention({ id: idAt(n), conversationId: idAt(n) })),
-    );
+    for (let poll = 0; poll < polls; poll++) {
+      await interactions.processMentionTweets(
+        ids.map((n) => mention({ id: idAt(n), conversationId: idAt(n) })),
+      );
+    }
     return { handled, watermark: client.getLatestCheckedTweetId(PROFILE_ID) };
   }
 
@@ -233,5 +248,11 @@ describe("mention watermark vs. per-run engagement cap", () => {
       Array.from({ length: 10 }, (_, i) => idAt(876 + i)),
     );
     expect(result.watermark).toBe(BASE + 885n);
+
+    // Replies can be durable even when a crash leaves the saved cursor behind.
+    const replied = Array.from({ length: 10 }, (_, i) => 876 + i);
+    const recovered = await runPoll([...replied, 886], 875, replied, 2);
+    expect(recovered.handled).toEqual([idAt(886)]);
+    expect(recovered.watermark).toBe(BASE + 886n);
   });
 });

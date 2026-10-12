@@ -916,6 +916,9 @@ ${tweet.text}`;
           logger.log(
             `Already responded to tweet ${tweet.id} (found in conversation history), skipping`,
           );
+          // A durable reply can survive a crash before the cursor was saved.
+          this.assertCurrentSession(session);
+          this.client.recordLatestCheckedTweetId(profileId, BigInt(tweet.id));
           continue;
         }
         logger.log("New Tweet found", tweet.id);
