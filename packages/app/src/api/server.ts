@@ -1056,6 +1056,7 @@ export async function startApiServer(
   const callerOptions = args[0];
   const callerStop = callerOptions?.onStop;
   const callerRestart = callerOptions?.onRestart;
+  let stoppedSessionRuntime: AgentRuntime | null = null;
   const voiceHost = createSelfHostedVoice(compatState, {
     protectedHost: Boolean(callerOptions?.hostAdmission),
   });
@@ -1076,6 +1077,7 @@ export async function startApiServer(
         voiceHost.reset();
       }
       compatState.current = activeRuntime;
+      stoppedSessionRuntime = null;
       setStoppedAuthRuntime(null);
       if (speechHostStarted) warmStandaloneKokoro(compatState);
       clearCompatRuntimeRestart(compatState);
@@ -1097,10 +1099,11 @@ export async function startApiServer(
                 voiceHost.reset();
                 compatState.current = null;
               }
+              // The host keeps the stopped runtime's database open until the
+              // next start or shutdown, so sessions stay verifiable meanwhile.
+              stoppedSessionRuntime = runtime;
+              setStoppedAuthRuntime(runtime);
             }
-            // The host keeps the stopped runtime's database open until the
-            // next start or shutdown, so sessions stay verifiable meanwhile.
-            setStoppedAuthRuntime(runtime);
           },
         }
       : {}),
@@ -1110,7 +1113,18 @@ export async function startApiServer(
             // The host closes the stopped runtime's database before it boots
             // the replacement; stop reading sessions from it first.
             setStoppedAuthRuntime(null);
-            return await callerRestart();
+            try {
+              const restarted = await callerRestart();
+              if (!restarted && stoppedSessionRuntime) {
+                setStoppedAuthRuntime(stoppedSessionRuntime);
+              }
+              return restarted;
+            } catch (error) {
+              if (stoppedSessionRuntime) {
+                setStoppedAuthRuntime(stoppedSessionRuntime);
+              }
+              throw error;
+            }
           },
         }
       : {}),
@@ -1275,6 +1289,7 @@ export async function startApiServer(
 
   const originalClose = server.close.bind(server);
   server.close = async () => {
+    stoppedSessionRuntime = null;
     setStoppedAuthRuntime(null);
     closeStandaloneKokoro(compatState);
     voiceHost.close();

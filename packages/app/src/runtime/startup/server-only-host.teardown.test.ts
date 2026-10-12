@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { closeRuntimeAdapter, shutdownRuntime } from "@elizaos/agent";
+import {
+  closeRuntimeAdapter,
+  reopenRuntimeAdapter,
+  shutdownRuntime,
+} from "@elizaos/agent";
 import { AgentRuntime, Service } from "@elizaos/core";
 import { installHttpPluginLifecycle } from "@elizaos/host/protocol";
 import { plugin as sqlPlugin } from "@elizaos/plugin-sql";
@@ -37,7 +41,10 @@ afterEach(async () => {
   );
 });
 
-async function startHost(holdReplacementBoot?: Promise<void>) {
+async function startHost(options?: {
+  holdReplacementBoot?: Promise<void>;
+  failReplacementBootOnce?: boolean;
+}) {
   const dir = await mkdtemp(path.join(tmpdir(), "server-only-teardown-"));
   dirs.push(dir);
   const configPath = path.join(dir, "eliza.json");
@@ -58,6 +65,7 @@ async function startHost(holdReplacementBoot?: Promise<void>) {
   const replacementBootStarted = new Promise<void>((resolve) => {
     replacementBootEntered = resolve;
   });
+  let replacementFailureUsed = false;
   let host: ServerOnlyHost | undefined;
   await startServerOnlyHost({
     options: {
@@ -69,14 +77,18 @@ async function startHost(holdReplacementBoot?: Promise<void>) {
       const index = runtimes.length;
       if (index > 0) {
         replacementBootEntered();
-        await holdReplacementBoot;
+        await options?.holdReplacementBoot;
+        if (options?.failReplacementBootOnce && !replacementFailureUsed) {
+          replacementFailureUsed = true;
+          throw new Error("forced replacement boot failure");
+        }
       }
       const runtime = new AgentRuntime({
         character: { name: "Eliza", bio: ["test"] },
         plugins: [],
         logLevel: "fatal",
       });
-      runtime.setSetting("PGLITE_DATA_DIR", path.join(dir, `pg-${index}`));
+      runtime.setSetting("PGLITE_DATA_DIR", path.join(dir, "pg"));
       runtime.setSetting("POSTGRES_URL", "");
       installHttpPluginLifecycle(runtime);
       await runtime.registerPlugin(sqlPlugin);
@@ -99,6 +111,7 @@ async function startHost(holdReplacementBoot?: Promise<void>) {
     stopRuntime: (runtime, reason, options) =>
       shutdownRuntime(runtime, reason, options),
     closeRuntimeAdapter,
+    reopenRuntimeAdapter,
     stopWithoutRuntime: () => {},
   });
   if (!host) throw new Error("server-only host did not start");
@@ -145,7 +158,7 @@ it("waits for a replacement boot that is still running when the signal arrives",
     releaseBoot = resolve;
   });
   const { host, post, runtimes, adapterCloses, replacementBootStarted } =
-    await startHost(hold);
+    await startHost({ holdReplacementBoot: hold });
   const request = post("restart");
   // The old runtime is torn down and the replacement boot is held open.
   await replacementBootStarted;
@@ -211,4 +224,51 @@ it("keeps an owner browser session valid after an API stop, so it can start the 
     await host.close();
   }
   expect(adapterCloses).toEqual([1, 1]);
+}, 60_000);
+
+it("restores the stopped session store when replacement boot fails", async () => {
+  vi.stubEnv("ELIZA_REQUIRE_LOCAL_AUTH", "1");
+  vi.stubEnv("ELIZA_API_TOKEN", "server-only-teardown-static-credential");
+  installAgentHostBridge();
+  const { host, port, runtimes } = await startHost({
+    failReplacementBootOnce: true,
+  });
+  const store = authStoreForRuntime(runtimes[0]);
+  if (!store) throw new Error("runtime has no auth store");
+  const owner = await store.createIdentity({
+    id: randomUUID(),
+    kind: "owner",
+    displayName: "Owner",
+    createdAt: Date.now(),
+    passwordHash: await hashPassword("owner-password-1234"),
+  });
+  const { session } = await createBrowserSession(store, {
+    identityId: owner.id,
+    ip: null,
+    userAgent: null,
+    rememberDevice: false,
+  });
+  const csrf = deriveCsrfToken(session);
+  const call = (method: "GET" | "POST", route: string) =>
+    fetch(`http://127.0.0.1:${port}${route}`, {
+      method,
+      headers: {
+        origin: `http://127.0.0.1:${port}`,
+        cookie: `eliza_session=${encodeURIComponent(session.id)}; eliza_csrf=${csrf}`,
+        "x-eliza-csrf": csrf,
+        ...(method === "POST" ? { "content-type": "application/json" } : {}),
+      },
+      ...(method === "POST" ? { body: "{}" } : {}),
+    });
+  try {
+    expect((await call("POST", "/api/agent/stop")).status).toBe(200);
+    expect((await call("POST", "/api/agent/start")).status).toBe(500);
+    expect((await call("GET", "/api/auth/me")).status).toBe(200);
+
+    expect((await call("POST", "/api/agent/start")).status).toBe(200);
+    expect(runtimes).toHaveLength(2);
+    expect((await call("GET", "/api/auth/me")).status).toBe(200);
+  } finally {
+    await host.close();
+  }
 }, 60_000);

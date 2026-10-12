@@ -5,7 +5,12 @@
  */
 import process from "node:process";
 import type { HostRuntimeStopOptions } from "@elizaos/agent";
-import { type AgentRuntime, formatError, logger } from "@elizaos/core";
+import {
+  type AgentRuntime,
+  ElizaError,
+  formatError,
+  logger,
+} from "@elizaos/core";
 import {
   readAliasedEnv,
   resolveApiExposePort,
@@ -46,6 +51,10 @@ export interface StartServerOnlyHostOptions {
     runtime: AgentRuntime,
     reason: string,
   ) => Promise<unknown>;
+  reopenRuntimeAdapter: (
+    runtime: AgentRuntime,
+    reason: string,
+  ) => Promise<unknown>;
   stopWithoutRuntime: () => void;
 }
 export async function startServerOnlyHost({
@@ -53,6 +62,7 @@ export async function startServerOnlyHost({
   bootRuntime,
   stopRuntime,
   closeRuntimeAdapter,
+  reopenRuntimeAdapter,
   stopWithoutRuntime,
 }: StartServerOnlyHostOptions): Promise<AgentRuntime | undefined> {
   bootLap("startEliza:serverOnly entry");
@@ -65,8 +75,28 @@ export async function startServerOnlyHost({
   /** Closes the adapter an API stop left open, before a reopen or exit. */
   const closeStoppedRuntime = async (reason: string): Promise<void> => {
     const runtime = stoppedRuntime;
-    stoppedRuntime = undefined;
-    if (runtime) await closeRuntimeAdapter(runtime, reason);
+    if (!runtime) return;
+    await closeRuntimeAdapter(runtime, reason);
+    if (stoppedRuntime === runtime) stoppedRuntime = undefined;
+  };
+  const restoreStoppedRuntimeAfterBootFailure = async (
+    runtime: AgentRuntime | undefined,
+    bootError: unknown,
+  ): Promise<never> => {
+    if (!runtime) throw bootError;
+    try {
+      await reopenRuntimeAdapter(runtime, "server-only failed-start recovery");
+      stoppedRuntime = runtime;
+    } catch (reopenError) {
+      throw new ElizaError(
+        "Runtime replacement failed and authentication storage could not reopen",
+        {
+          code: "RUNTIME_RESTART_AUTH_RECOVERY_FAILED",
+          cause: new AggregateError([bootError, reopenError]),
+        },
+      );
+    }
+    throw bootError;
   };
   /** API stop or restart (teardown and replacement boot) in flight; close() waits for it. */
   let pendingRuntimeTeardown: Promise<unknown> | undefined;
@@ -227,6 +257,7 @@ export async function startServerOnlyHost({
         // replacement boot — so a signal cannot finish shutdown while the
         // replacement is still opening resources.
         const restart = (async (): Promise<AgentRuntime | null> => {
+          const runtimeToRestore = stoppedRuntime;
           await closeStoppedRuntime("server-only restart");
           if (currentRuntime) {
             // Relinquish ownership before teardown, as the API stop does, so
@@ -245,11 +276,19 @@ export async function startServerOnlyHost({
             // error-policy:J1 restart orchestration boundary — publish a failed
             // lifecycle state before propagating the boot failure to the route.
             publishStartup("failed");
-            throw error;
+            return await restoreStoppedRuntimeAfterBootFailure(
+              runtimeToRestore,
+              error,
+            );
           }
           if (!currentRuntime) {
             publishStartup("failed");
-            return null;
+            return await restoreStoppedRuntimeAfterBootFailure(
+              runtimeToRestore,
+              new ElizaError("Runtime replacement returned no runtime", {
+                code: "RUNTIME_RESTART_RESULT_MISSING",
+              }),
+            );
           }
           runtimePublished = true;
           publishPostReadyPhase(postReadyPhase);

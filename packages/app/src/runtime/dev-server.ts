@@ -43,7 +43,12 @@ function elapsedSinceModuleBodyStart(): number {
   return Date.now() - MODULE_BODY_START;
 }
 
-import { type AgentRuntime, getLogPrefix, logger } from "@elizaos/core";
+import {
+  type AgentRuntime,
+  ElizaError,
+  getLogPrefix,
+  logger,
+} from "@elizaos/core";
 import {
   formatError,
   formatUncaughtError,
@@ -133,10 +138,30 @@ let stoppedRuntime: AgentRuntime | null = null;
 /** Closes the adapter an API stop left open, before a reopen or exit. */
 async function closeStoppedRuntime(reason: string): Promise<void> {
   const runtime = stoppedRuntime;
-  stoppedRuntime = null;
   if (!runtime) return;
   const { closeRuntimeAdapter } = await loadElizaRuntimeModule();
   await closeRuntimeAdapter(runtime, reason);
+  if (stoppedRuntime === runtime) stoppedRuntime = null;
+}
+async function restoreStoppedRuntimeAfterBootFailure(
+  runtime: AgentRuntime | null,
+  bootError: unknown,
+): Promise<never> {
+  if (!runtime) throw bootError;
+  const { reopenRuntimeAdapter } = await loadElizaRuntimeModule();
+  try {
+    await reopenRuntimeAdapter(runtime, "dev-server failed-start recovery");
+    stoppedRuntime = runtime;
+  } catch (reopenError) {
+    throw new ElizaError(
+      "Runtime replacement failed and authentication storage could not reopen",
+      {
+        code: "RUNTIME_RESTART_AUTH_RECOVERY_FAILED",
+        cause: new AggregateError([bootError, reopenError]),
+      },
+    );
+  }
+  throw bootError;
 }
 /** The API server's `updateRuntime` handle (set after startup). */
 let apiUpdateRuntime: ((rt: AgentRuntime) => void) | null = null;
@@ -364,43 +389,56 @@ delete process.env.ELIZA_DEV_TRAJECTORY_RECOVERY;
 async function createRuntime(): Promise<AgentRuntime> {
   const runtimeModule = await loadElizaRuntimeModule();
   const { shutdownRuntime, startEliza } = runtimeModule;
-  await closeStoppedRuntime("dev-server createRuntime");
-  if (currentRuntime) {
-    // Relinquish ownership before teardown so a signal during a restart waits
-    // for this teardown instead of closing the same adapter again.
-    const runtimeToStop = currentRuntime;
-    currentRuntime = null;
-    const teardown = shutdownRuntime(runtimeToStop, "dev-server createRuntime");
-    pendingRuntimeTeardown = teardown;
-    try {
-      await teardown;
-    } finally {
-      if (pendingRuntimeTeardown === teardown) pendingRuntimeTeardown = null;
+  const runtimeToRestore = stoppedRuntime;
+  let stoppedAdapterClosed = false;
+  try {
+    await closeStoppedRuntime("dev-server createRuntime");
+    stoppedAdapterClosed = runtimeToRestore !== null;
+    if (currentRuntime) {
+      // Relinquish ownership before teardown so a signal during a restart waits
+      // for this teardown instead of closing the same adapter again.
+      const runtimeToStop = currentRuntime;
+      currentRuntime = null;
+      const teardown = shutdownRuntime(
+        runtimeToStop,
+        "dev-server createRuntime",
+      );
+      pendingRuntimeTeardown = teardown;
+      try {
+        await teardown;
+      } finally {
+        if (pendingRuntimeTeardown === teardown) pendingRuntimeTeardown = null;
+      }
     }
-  }
-  const result = await startEliza({ headless: true });
-  if (!result) {
-    throw new Error("startEliza returned null — runtime failed to initialize");
-  }
-  if (devTrajectoryRecoveryRequested) {
-    const { createDevTrajectoryRecoveryIpc } = await import(
-      "./dev-trajectory-recovery-ipc"
-    );
-    trajectoryRecoveryIpc ??= createDevTrajectoryRecoveryIpc();
-    try {
-      const { prepareDevTrajectoryRecovery } = await import("@elizaos/agent");
-      await prepareDevTrajectoryRecovery(result, trajectoryRecoveryIpc);
-    } catch (error) {
-      // error-policy:J2 A failed ownership/recovery gate must not publish a runtime.
-      await shutdownRuntime(result, "dev-server trajectory recovery failed");
+    const result = await startEliza({ headless: true });
+    if (!result) {
       throw new Error(
-        "Development trajectory recovery failed before runtime readiness",
-        { cause: error },
+        "startEliza returned null — runtime failed to initialize",
       );
     }
+    if (devTrajectoryRecoveryRequested) {
+      const { createDevTrajectoryRecoveryIpc } = await import(
+        "./dev-trajectory-recovery-ipc"
+      );
+      trajectoryRecoveryIpc ??= createDevTrajectoryRecoveryIpc();
+      try {
+        const { prepareDevTrajectoryRecovery } = await import("@elizaos/agent");
+        await prepareDevTrajectoryRecovery(result, trajectoryRecoveryIpc);
+      } catch (error) {
+        // error-policy:J2 A failed ownership/recovery gate must not publish a runtime.
+        await shutdownRuntime(result, "dev-server trajectory recovery failed");
+        throw new Error(
+          "Development trajectory recovery failed before runtime readiness",
+          { cause: error },
+        );
+      }
+    }
+    currentRuntime = result as AgentRuntime;
+    return currentRuntime;
+  } catch (error) {
+    if (!stoppedAdapterClosed) throw error;
+    return await restoreStoppedRuntimeAfterBootFailure(runtimeToRestore, error);
   }
-  currentRuntime = result as AgentRuntime;
-  return currentRuntime;
 }
 let restartPromise: Promise<void> | null = null;
 async function handleRestart(reason?: string): Promise<void> {

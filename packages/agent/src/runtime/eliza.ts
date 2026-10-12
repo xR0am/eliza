@@ -27,6 +27,7 @@ import {
   type Entity,
   formatError,
   type IAgentRuntime,
+  type IDatabaseAdapter,
   type LogEntry,
   logger,
   MESSAGE_SOURCE_CLIENT_CHAT,
@@ -1570,6 +1571,63 @@ export async function closeRuntimeAdapter(
       `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
     );
     throw err;
+  }
+}
+
+/**
+ * Reopen only a stopped runtime's database adapter.
+ *
+ * Hosts use this after a replacement boot fails. The runtime services stay
+ * stopped, but its persistent authentication repository becomes available
+ * again so the owner can retry Start without restarting the process.
+ */
+export async function reopenRuntimeAdapter(
+  runtime: AgentRuntime,
+  context: string,
+): Promise<void> {
+  let replacement: IDatabaseAdapter | undefined;
+  try {
+    if (isSQLiteSelected()) {
+      const sqlitePath = runtime.getSetting("SQLITE_DATABASE_PATH");
+      if (typeof sqlitePath !== "string" || !path.isAbsolute(sqlitePath)) {
+        throw new ElizaError(
+          "Cannot reopen SQLite authentication storage without an absolute path",
+          { code: "SQLITE_PATH_REQUIRED" },
+        );
+      }
+      const { SQLiteDatabaseAdapter } = await import("@elizaos/plugin-sqlite");
+      replacement = SQLiteDatabaseAdapter.create(sqlitePath, runtime.agentId);
+    } else {
+      const { createDatabaseAdapter } = await import("@elizaos/plugin-sql");
+      const dataDir = runtime.getSetting("PGLITE_DATA_DIR");
+      const postgresUrl = runtime.getSetting("POSTGRES_URL");
+      replacement = createDatabaseAdapter(
+        {
+          dataDir: typeof dataDir === "string" ? dataDir : undefined,
+          postgresUrl:
+            typeof postgresUrl === "string" ? postgresUrl : undefined,
+        },
+        runtime.agentId,
+      );
+    }
+    await replacement.initialize();
+    runtime.adapter = replacement;
+    logger.debug(`[eliza] ${context}: database adapter reopened`);
+  } catch (error) {
+    if (replacement) {
+      try {
+        await replacement.close();
+      } catch (closeError) {
+        throw new ElizaError(
+          "Database adapter reopen and cleanup both failed",
+          {
+            code: "DATABASE_ADAPTER_REOPEN_CLEANUP_FAILED",
+            cause: new AggregateError([error, closeError]),
+          },
+        );
+      }
+    }
+    throw error;
   }
 }
 export async function shutdownRuntime(
