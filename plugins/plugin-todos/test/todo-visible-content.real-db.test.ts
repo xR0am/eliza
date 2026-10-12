@@ -412,4 +412,29 @@ describe("TODO visible-content addressing — real PGLite (#29690)", () => {
     expect(answer.data).toMatchObject({ requiresConfirmation: true });
     expect(await rows(entityId)).toHaveLength(1);
   });
+
+  it("counts a not-found miss as a turn step, so the next change in that turn still applies", async () => {
+    const entityId = newEntity();
+    const message = say(entityId, "mark buy milk done and add call mom");
+    const miss = await todoAction.handler?.(runtime, message, undefined, {
+      parameters: { action: "complete", target: "buy milk" },
+    } as HandlerOptions);
+    expect(miss?.success).toBe(false);
+
+    // The planner hands earlier steps to the next one with the tool name
+    // added to their data (collectPreviousActionResults).
+    const created = await todoAction.handler?.(runtime, message, undefined, {
+      parameters: { action: "create", content: "Call mom" },
+      actionContext: {
+        previousResults: [
+          { ...miss, data: { ...(miss?.data ?? {}), actionName: "TODO" } },
+        ],
+      },
+    } as unknown as HandlerOptions);
+
+    expect(created?.success).toBe(true);
+    expect((await rows(entityId)).map((todo) => todo.content)).toEqual([
+      "Call mom",
+    ]);
+  });
 });
