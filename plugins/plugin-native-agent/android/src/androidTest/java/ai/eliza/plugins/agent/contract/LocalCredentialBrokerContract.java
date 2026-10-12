@@ -18,6 +18,8 @@ public final class LocalCredentialBrokerContract {
   }
   public static void main(String[] args) throws Exception { run(); System.out.println("Credential broker socket contract passed"); }
   public static void run() throws Exception {
+    taskKeyContract();
+    taskKeyRetirementContract();
     MemoryStore primary = new MemoryStore(), pending = new MemoryStore();
     try { new LocalCredentialBroker(primary, pending, ""); throw new AssertionError("Empty token accepted"); }
     catch (IllegalArgumentException expected) { }
@@ -36,6 +38,7 @@ public final class LocalCredentialBrokerContract {
       require(operation(broker, "pending-read", null).getJSONObject("body").getString("value").equals("synthetic-pending"), "Pending changed");
       check(operation(broker, "pending-clear", null), 200);
       require(pending.value == null && primary.value.equals("synthetic-primary"), "Store separation failed");
+      check(operation(broker, "task-key-read", null), 503);
       int before = primary.calls;
       check(operation(broker, "unsupported", null), 503);
       check(exchange(broker.port(), "", "{", "contract-token", "POST /credential HTTP/1.1", null), 503);
@@ -46,6 +49,79 @@ public final class LocalCredentialBrokerContract {
       primary.fail = false;
       check(operation(broker, "clear", null), 200);
       require(operation(broker, "read", null).getJSONObject("body").isNull("value"), "Clear failed");
+    }
+  }
+  private static void taskKeyContract() throws Exception {
+    final String record = "{\"version\":1,\"id\":\"12345678-1234-1234-1234-123456789abc\",\"key\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}";
+    final int[] calls = {0};
+    final boolean[] present = {false};
+    LocalCredentialBroker.TaskKeyCustody keys = new LocalCredentialBroker.TaskKeyCustody() {
+      public String read() { calls[0]++; return present[0] ? record : null; }
+      public String createForNewDatabase() { calls[0]++; present[0] = true; return record; }
+      public boolean remove(String id) { calls[0]++; if (!id.equals("12345678-1234-1234-1234-123456789abc")) return false; boolean removed=present[0];present[0]=false;return removed; }
+    };
+    final class OwnerGuard implements LocalCredentialBroker.Guard {
+      int checks; int refuseAt = Integer.MAX_VALUE;
+      public void check() throws Exception {
+        require(Thread.holdsLock(this), "Owner operation is not serialized");
+        if (++checks >= refuseAt) throw new IOException("private-owner-detail");
+      }
+    }
+    OwnerGuard guard = new OwnerGuard();
+    try (LocalCredentialBroker broker = new LocalCredentialBroker(new MemoryStore(), new MemoryStore(), "contract-token", keys, guard)) {
+      require(operation(broker,"task-key-read",null).getJSONObject("body").isNull("value"),"Missing key changed");
+      check(exchange(broker.port(),"","{\"operation\":\"task-key-create\",\"accountId\":\"other\"}","contract-token","POST /credential HTTP/1.1",null),503);
+      require(calls[0]==1,"Wire identity reached custody");
+      require(operation(broker,"task-key-create",null).getJSONObject("body").getString("value").equals(record),"Create changed key");
+      require(operation(broker,"task-key-read",null).getJSONObject("body").getString("value").equals(record),"Read changed key");
+      require(!operation(broker,"task-key-remove","87654321-1234-1234-1234-123456789abc").getJSONObject("body").getBoolean("removed"),"Stale generation removed key");
+      guard.refuseAt=guard.checks+2;
+      JSONObject retired=operation(broker,"task-key-read",null);check(retired,503);
+      require(!retired.toString().contains(record) && !retired.toString().contains("private-owner-detail"),"Retired response leaked");
+      int before=calls[0];check(operation(broker,"task-key-create",null),503);require(calls[0]==before,"Retired owner mutated custody");
+      guard.refuseAt=Integer.MAX_VALUE;
+      require(operation(broker,"task-key-remove","12345678-1234-1234-1234-123456789abc").getJSONObject("body").getBoolean("removed"),"Remove failed");
+    }
+  }
+  private static void taskKeyRetirementContract() throws Exception {
+    final class OwnerGuard implements LocalCredentialBroker.Guard {
+      boolean active = true;
+      public void check() throws Exception { if (!active) throw new IOException("synthetic-owner-canary"); }
+    }
+    for (String mode : new String[]{"waiting", "closed", "create", "remove"}) {
+      OwnerGuard guard = new OwnerGuard(); final int[] calls = {0};
+      LocalCredentialBroker.TaskKeyCustody keys = new LocalCredentialBroker.TaskKeyCustody() {
+        public String read() { calls[0]++; return "synthetic-key-canary"; }
+        public String createForNewDatabase() { calls[0]++;guard.active=false;return "synthetic-key-canary"; }
+        public boolean remove(String id) { calls[0]++;guard.active=false;return true; }
+      };
+      try (LocalCredentialBroker broker = new LocalCredentialBroker(new MemoryStore(),new MemoryStore(),"contract-token",keys,guard)) {
+        JSONObject response;
+        if (mode.equals("waiting") || mode.equals("closed")) {
+          java.util.concurrent.FutureTask<JSONObject> request = new java.util.concurrent.FutureTask<>(() -> operation(broker,"task-key-read",null));
+          synchronized (guard) {
+            Thread caller = new Thread(request,"TaskKeyRetirementClient");caller.start();
+            long deadline = System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            boolean waiting=false;
+            while (System.nanoTime()<deadline && !waiting) {
+              for (Thread thread:Thread.getAllStackTraces().keySet()) {
+                if(thread.getName().equals("AccountCredentialBroker") && thread.getState()==Thread.State.BLOCKED) waiting=true;
+              }
+              if(!waiting)Thread.sleep(5);
+            }
+            require(waiting,"Broker did not wait on owner mutex");
+            if(mode.equals("closed"))broker.close();else guard.active=false;
+          }
+          response=request.get(5,java.util.concurrent.TimeUnit.SECONDS);
+          require(calls[0]==0,"Queued retired broker accessed custody");
+        } else {
+          response=operation(broker,"task-key-"+mode,mode.equals("remove")?"12345678-1234-1234-1234-123456789abc":null);
+          require(calls[0]==1,"Mutation did not execute once");
+        }
+        check(response,503);
+        require(response.getJSONObject("body").getString("error").equals("Native account storage unavailable"),"Unexpected public error");
+        require(!response.toString().contains("canary"),"Retired key/owner leaked");
+      }
     }
   }
   private static JSONObject operation(LocalCredentialBroker broker, String operation, String value) throws Exception {
