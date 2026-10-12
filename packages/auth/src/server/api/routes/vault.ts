@@ -277,16 +277,14 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 function base64UrlDecode(value: string): Uint8Array | null {
+  // Mirrors the user.ts copy of this decoder: base64url wire values may
+  // arrive padded or unpadded (the shared web-push helper documents the
+  // same contract), so optional trailing padding is accepted.
+  if (!/^[A-Za-z0-9_-]+={0,2}$/u.test(value)) return null;
   try {
-    if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-    const paddingLength = (4 - (padded.length % 4)) % 4;
-    const binary = atob(`${padded}${"=".repeat(paddingLength)}`);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
   } catch {
     return null;
   }
