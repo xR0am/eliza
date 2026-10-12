@@ -1772,8 +1772,9 @@ export class MessageManager {
         _actionName?: string,
       ) => {
         try {
-          // If response is from reasoning do not send it.
-          if (!content.text) {
+          // Skip an empty reply (reasoning with no text), but still deliver an
+          // attachment-only reply such as ATTACH_TO_CHAT's media.
+          if (!content.text?.trim() && !content.attachments?.length) {
             return [];
           }
 
