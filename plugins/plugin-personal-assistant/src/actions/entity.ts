@@ -137,9 +137,13 @@ async function resolveNamedContact(
     matches: typeof relationships,
   ): NamedContactResolution => {
     const [soleMatch] = matches;
-    return matches.length === 1 && soleMatch
-      ? { kind: "matched", relationshipId: soleMatch.id }
-      : { kind: "ambiguous" };
+    if (matches.length === 1 && soleMatch) {
+      return { kind: "matched", relationshipId: soleMatch.id };
+    }
+    // Zero matches and a tie are different inputs: only a tie is ambiguous
+    // input. A zero-match tier must report `unmatched` so the caller keeps
+    // falling through to the next tier and, last, the free-text fallback.
+    return matches.length === 0 ? { kind: "unmatched" } : { kind: "ambiguous" };
   };
 
   const exactName = relationships.filter(
@@ -163,14 +167,6 @@ async function resolveNamedContact(
       normalizeLookup(relationship.name).includes(needle),
     ),
   );
-}
-
-async function resolveRelationshipIdByName(
-  service: LifeOpsService,
-  rawName: string,
-): Promise<string | null> {
-  const resolved = await resolveNamedContact(service, rawName);
-  return resolved.kind === "matched" ? resolved.relationshipId : null;
 }
 
 async function resolveRelationshipIdFromText(
@@ -234,12 +230,18 @@ async function resolveRelationshipId(
       return explicitRelationshipId;
     }
 
-    const resolvedFromRelationshipId = await resolveRelationshipIdByName(
+    const aliasContact = await resolveNamedContact(
       service,
       explicitRelationshipId,
     );
-    if (resolvedFromRelationshipId) {
-      return resolvedFromRelationshipId;
+    if (aliasContact.kind === "matched") {
+      return aliasContact.relationshipId;
+    }
+    // An ambiguous relationshipId alias is the same fail-closed case as an
+    // ambiguous name: the only stages left below are free-text ones, and a
+    // directory tie that survives there is a false sole candidate.
+    if (aliasContact.kind === "ambiguous") {
+      return null;
     }
   }
 

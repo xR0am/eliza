@@ -1,8 +1,11 @@
 /**
- * Tests that ENTITY structured-name resolution (`resolveRelationshipIdByName`
- * through the real `entityAction.handler`) never picks a list-order winner
- * for a durable interaction write: a tie inside any tier is ambiguous input
- * and must fail closed, while a unique match still resolves.
+ * Tests that ENTITY structured-name resolution (through the real
+ * `entityAction.handler`) never picks a list-order winner for a durable
+ * interaction write: a tie inside any tier is ambiguous input and must fail
+ * closed on every parameter that can carry it (`name` and non-id
+ * `relationshipId` alike), while a unique match still resolves through its
+ * own tier and an unmatched structured name still falls back to the
+ * free-text token stage.
  */
 import type { IAgentRuntime, Memory, UUID } from "@elizaos/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,6 +73,7 @@ function makeMessage(text: string): Memory {
 async function logNamedInteraction(
   runtime: IAgentRuntime,
   params: Record<string, unknown>,
+  messageText = "please log this",
 ): Promise<{
   success: boolean;
   error: string | undefined;
@@ -77,7 +81,7 @@ async function logNamedInteraction(
 }> {
   const result = (await entityAction.handler(
     runtime,
-    makeMessage("please log this"),
+    makeMessage(messageText),
     undefined,
     { parameters: { action: "log_interaction", ...params } },
   )) as {
@@ -186,7 +190,7 @@ describe("ENTITY structured-name resolution fails closed on ambiguity", () => {
     expect(loggedRelationshipIds).toEqual(["rel-ann-smith"]);
   });
 
-  it("still resolves a name that only matches one contact's address through the token stage", async () => {
+  it("still resolves a name that uniquely matches one contact's email through the address tier", async () => {
     directory = [
       relationship(
         "rel-rebecca",
@@ -202,14 +206,43 @@ describe("ENTITY structured-name resolution fails closed on ambiguity", () => {
     expect(loggedRelationshipIds).toEqual(["rel-rebecca"]);
   });
 
-  it("rejects a non-id relationshipId value that two contacts ambiguously share", async () => {
+  it("still resolves a name fragment unique to one contact's name through the name tier", async () => {
+    directory = [
+      relationship("rel-nadia", "Nadia Nour", "nadia@example.test"),
+      relationship("rel-omar", "Omar Osei", "omar@example.test"),
+    ];
+    const outcome = await logNamedInteraction(makeRuntime(), { name: "nour" });
+    expect(outcome.success).toBe(true);
+    expect(outcome.interactionRelationshipId).toBe("rel-nadia");
+    expect(loggedRelationshipIds).toEqual(["rel-nadia"]);
+  });
+
+  it("falls back to the free-text token stage when no structured tier matches", async () => {
+    // "bobby jones" substring-matches no tier (the handle token "bobby" is
+    // the only signal), so only the preserved free-text fallback may resolve
+    // it; a zero-match tier is unmatched, never ambiguous.
+    directory = [relationship("rel-bob", "Bob Jones", "@bobby")];
+    const outcome = await logNamedInteraction(makeRuntime(), {
+      name: "bobby jones",
+    });
+    expect(outcome.success).toBe(true);
+    expect(outcome.interactionRelationshipId).toBe("rel-bob");
+    expect(loggedRelationshipIds).toEqual(["rel-bob"]);
+  });
+
+  it("rejects a non-id relationshipId value that two contacts ambiguously share, even when the body names one of them", async () => {
     directory = [
       relationship("rel-ann-smith", "Ann Smith", "ann.smith@example.test"),
       relationship("rel-ann-jones", "Ann Jones", "ann.jones@example.test"),
     ];
-    const outcome = await logNamedInteraction(makeRuntime(), {
-      relationshipId: "ann",
-    });
+    // The body uniquely names one Ann; the tie on the relationshipId alias
+    // must still fail closed instead of laundering through the free-text
+    // stage. Without the alias guard this message resolves to rel-ann-smith.
+    const outcome = await logNamedInteraction(
+      makeRuntime(),
+      { relationshipId: "ann" },
+      "send ann smith the deck",
+    );
     expect(outcome.success).toBe(false);
     expect(outcome.error).toBe("MISSING_EDGE_ID");
     expect(loggedRelationshipIds).toEqual([]);
