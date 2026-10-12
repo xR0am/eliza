@@ -31,13 +31,18 @@ export class TalkModeWeb extends WebPlugin {
   private statusText = "Off";
   private synthesis: SpeechSynthesis | null = null;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
-  // Wall-clock start of the current utterance, in milliseconds. The native
-  // bridges report how far playback had progressed when stopSpeaking()
-  // interrupts it (Android: TalkModeAndroidBridgeContract
-  // .interruptedAtSeconds over speakStartTimeMs, set for every speak path;
-  // iOS: stopSpeakingInternal returns the elapsed interval). Web playback
-  // has no position API, so the elapsed time since the utterance was
-  // submitted is the same quantity the Android contract computes.
+  // The utterance the browser is actually playing, bound by its start event.
+  // SpeechSynthesis queues later speak() calls behind the active one, so the
+  // most recently submitted utterance is not necessarily the one playing.
+  private activeUtterance: SpeechSynthesisUtterance | null = null;
+  // Wall-clock start of the ACTIVE utterance, in milliseconds, set by its
+  // onstart event rather than at submission: a queued utterance has not
+  // started playing yet. The native bridges report how far playback had
+  // progressed when stopSpeaking() interrupts it (Android:
+  // TalkModeAndroidBridgeContract.interruptedAtSeconds over
+  // speakStartTimeMs; iOS: stopSpeakingInternal returns the elapsed
+  // interval). Web playback has no position API, so the elapsed time since
+  // the active utterance's start event is the matching quantity.
   private speechStartedAtMs: number | null = null;
   private pendingSpeech = new Map<
     SpeechSynthesisUtterance,
@@ -235,10 +240,21 @@ export class TalkModeWeb extends WebPlugin {
       // not claim successful speech even if the browser later reports an end.
       const isStale = () => this.currentUtterance !== utterance;
 
+      // The start event binds the interruption clock to the utterance the
+      // browser is actually playing. speak() calls queue behind it, so a
+      // later submission must not restart the clock before it starts.
+      utterance.onstart = () => {
+        this.activeUtterance = utterance;
+        this.speechStartedAtMs = Date.now();
+      };
+
       utterance.onend = () => {
         const stale = isStale();
         this.pendingSpeech.delete(utterance);
-        if (!stale) this.speechStartedAtMs = null;
+        if (this.activeUtterance === utterance) {
+          this.activeUtterance = null;
+          this.speechStartedAtMs = null;
+        }
         if (!stale) this.currentUtterance = null;
         this.notifyListeners("speakComplete", {
           completed: !outcome.cancelled,
@@ -258,7 +274,10 @@ export class TalkModeWeb extends WebPlugin {
       utterance.onerror = (event) => {
         const stale = isStale();
         this.pendingSpeech.delete(utterance);
-        if (!stale) this.speechStartedAtMs = null;
+        if (this.activeUtterance === utterance) {
+          this.activeUtterance = null;
+          this.speechStartedAtMs = null;
+        }
         if (!stale) this.currentUtterance = null;
         this.notifyListeners("speakComplete", { completed: false });
         if (!stale) this.setState("idle", "Speech error");
@@ -270,19 +289,19 @@ export class TalkModeWeb extends WebPlugin {
         });
       };
 
-      this.speechStartedAtMs = Date.now();
       this.synthesis?.speak(utterance);
     });
   }
 
   async stopSpeaking(): Promise<{ interruptedAt?: number }> {
     if (this.synthesis && this.currentUtterance) {
-      // Both native bridges include interruptedAt (seconds since the speak
-      // call started) when stopSpeaking interrupts live speech, and omit it
-      // when nothing is speaking. Compute it before cancelling, which
-      // clears the start time.
+      // Both native bridges include interruptedAt (seconds since playback
+      // of the active utterance started) when stopSpeaking interrupts live
+      // speech, and omit it when nothing is playing — including when an
+      // utterance is only queued and has not started. Compute it before
+      // cancelling, which clears the start time.
       const interruptedAt =
-        this.speechStartedAtMs !== null
+        this.activeUtterance !== null && this.speechStartedAtMs !== null
           ? (Date.now() - this.speechStartedAtMs) / 1000
           : undefined;
       this.cancelPendingSpeech();
@@ -302,6 +321,7 @@ export class TalkModeWeb extends WebPlugin {
     for (const outcome of this.pendingSpeech.values()) outcome.cancelled = true;
     this.pendingSpeech.clear();
     this.currentUtterance = null;
+    this.activeUtterance = null;
     this.speechStartedAtMs = null;
     this.synthesis?.cancel();
   }
