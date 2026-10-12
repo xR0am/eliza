@@ -30,7 +30,21 @@ public final class InstalledRuntimeLibraries {
     } finally { Files.deleteIfExists(temporary); }
   }
 
-  /** Standard sonames used by the bundled ARM64 Linux runtime. */
+  /** Select one supported loader from the verified, ABI-specific APK library directory. */
+  public static Path loader(Path installed) throws IOException {
+    Path selected = null;
+    for (String name : new String[]{"libeliza_ld_musl_aarch64.so", "libeliza_ld_musl_x86_64.so"}) {
+      Path candidate = installed.resolve(name);
+      if (!Files.isRegularFile(candidate)) continue;
+      if (selected != null || Files.size(candidate) == 0)
+        throw new IOException("Installed runtime must have one supported loader");
+      selected = candidate;
+    }
+    if (selected == null) throw new IOException("Installed embedded runtime loader is unavailable");
+    return selected;
+  }
+
+  /** Standard sonames used by the bundled Linux runtime. */
   public static void prepare(Path installed, Path aliases) throws IOException {
     for (String[] pair : new String[][]{{"libstdc++.so.6", "libeliza_stdcpp.so"}, {"libgcc_s.so.1", "libeliza_gcc_s.so"}})
       if (link(aliases.resolve(pair[0]), installed.resolve(pair[1])) == LinkResult.MISSING)
@@ -39,9 +53,11 @@ public final class InstalledRuntimeLibraries {
 
   /** The canvas loader uses process.dlopen on the installed .so, not a copied .node. */
   public static void configureCanvas(Path installed, Path aliases, Map<String,String> environment) throws IOException {
-    Path legacy = aliases.resolve("skia.linux-arm64-musl.node");
-    replaceable(legacy);
-    Files.deleteIfExists(legacy);
+    for (String name : new String[]{"skia.linux-arm64-musl.node", "skia.linux-x64-musl.node"}) {
+      Path legacy = aliases.resolve(name);
+      replaceable(legacy);
+      Files.deleteIfExists(legacy);
+    }
     environment.remove("NAPI_RS_NATIVE_LIBRARY_PATH");
     Path canvas = installed.resolve("libeliza_canvas.so").toAbsolutePath();
     if (Files.isRegularFile(canvas)) environment.put("NAPI_RS_NATIVE_LIBRARY_PATH", canvas.toString());

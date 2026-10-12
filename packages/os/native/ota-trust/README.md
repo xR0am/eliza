@@ -42,3 +42,9 @@ source directory, build-time host policy and optional consumer Go tests. The hos
 verifies its reviewed pin before calling. The composer hashes all inputs, rejects
 test collisions and symlinks, and verifies cached bytes before reuse. Run its
 contracts with `node --test scripts/compose-source.test.mjs`.
+
+Runtime artifact verification accepts ARM64 or x86_64 only when that ABI appears
+in the authenticated release artifact. Every inventoried native ELF must match
+the selected machine, and its ABI-specific musl loader is required. Mixed loader
+inventories fail. This does not qualify an x86_64 host for release or change
+hardware, signing, rollout or installation policy.

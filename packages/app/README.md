@@ -422,3 +422,13 @@ instance. HOME and browser roles must remain unchanged; the runner does not
 repair unrelated role policy. SDK AVD admission is unchanged. Caller ownership
 is an explicit assertion, not inferred from a loopback address, and this lane
 proves only the selected APK scenarios, not product-image or live integrations.
+
+`buildConsumerAndroidRuntime` accepts `targetAbi: "x86_64"` for an emulator or
+Cuttlefish bundle; the default remains `"arm64-v8a"`. The reviewed upstream stager
+selects the matching Bun, musl loader and libraries, and the consumer builder
+checks their target ELF machine and records the ABI in provenance. A supplied
+`bunArchiveFile` uses the selected architecture's verified local archive input.
+The host gateway callback receives `{targetAbi}` as its third argument so it can
+stage ABI-specific dependencies. Hosts must also select that ABI for runtime
+inventory, native document assets and APK packaging. This is bundle integrity
+support; installed execution, live services and image boot remain separate tests.

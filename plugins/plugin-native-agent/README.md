@@ -278,3 +278,12 @@ Hosts that capture an endpoint before request admission must use the snapshot-bo
 `NativeRuntimeSession.request(snapshot, ...)` overload. Capture the snapshot before
 selecting the endpoint; a lifecycle change then rejects transport admission instead
 of allowing a stale endpoint to inherit a newer running epoch.
+
+The runtime inventory stager accepts `targetAbi: "x86_64"`; omission retains
+ARM64. It requires the selected loader and rejects mixed ARM64/x86_64 loaders.
+The Java extractor admits exactly one supported loader in the authenticated
+inventory. `EmbeddedRuntimeLaunch` chooses that loader from the APK's verified
+ABI-specific native directory, and rejects an ambiguous or missing loader. The
+same private extraction, restart and environment isolation paths apply to both
+architectures. A multi-ABI APK needs separately selected inventories; one shared
+inventory must not mix native hashes from different architectures.
