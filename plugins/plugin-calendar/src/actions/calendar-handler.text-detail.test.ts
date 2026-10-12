@@ -213,6 +213,29 @@ describe("parseExplicitLocalDate Intl names", () => {
     }
   });
 
+  it("does not read a weekday out of Chinese week counts and schedule words", () => {
+    for (const text of [
+      "一周日程",
+      "一周五天",
+      "下一周日程",
+      "下周日程",
+      "这周五天都要加班",
+      "两个星期日程",
+    ]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toBeNull();
+    }
+    expect(parseExplicitLocalDate("下周日", ZONE, NOW)).toEqual({
+      year: 2026,
+      month: 10,
+      day: 25,
+    });
+    expect(parseExplicitLocalDate("周日下午", ZONE, NOW)).toEqual({
+      year: 2026,
+      month: 10,
+      day: 18,
+    });
+  });
+
   it("leaves past and every-week Korean and Chinese weekdays unresolved", () => {
     for (const text of [
       "지난 금요일",
