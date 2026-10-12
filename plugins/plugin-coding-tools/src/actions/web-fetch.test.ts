@@ -20,6 +20,12 @@ describe("htmlToReadableText numeric entities", () => {
     ).toBe("&#129; &#141; &#143; &#144; &#157; &#0;");
   });
 
+  it("decodes hex references with an uppercase X marker", () => {
+    expect(htmlToReadableText("<p>&#X27; &#X2019; &#X1F600; &#X80;</p>")).toBe(
+      "' ’ 😀 €",
+    );
+  });
+
   it("keeps astral, surrogate, and ordinary references unchanged in behavior", () => {
     expect(htmlToReadableText("<p>&#128512; &#55296; &#8217; &amp;</p>")).toBe(
       "😀 &#55296; ’ &",

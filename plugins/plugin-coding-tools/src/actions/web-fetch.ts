@@ -40,9 +40,12 @@ const UNASSIGNED_C1_CODES = new Set([0x81, 0x8d, 0x8f, 0x90, 0x9d]);
 
 function decodeHtmlEntity(entity: string): string {
   if (entity.startsWith("#")) {
-    const code = entity.startsWith("#x")
-      ? Number.parseInt(entity.slice(2), 16)
-      : Number.parseInt(entity.slice(1), 10);
+    // The hex marker is case-insensitive in HTML (&#X27; === &#x27;), as both
+    // in-repo reference decoders (plugin-assistant, cloud gmail) accept.
+    const code =
+      entity[1] === "x" || entity[1] === "X"
+        ? Number.parseInt(entity.slice(2), 16)
+        : Number.parseInt(entity.slice(1), 10);
     // Exclude the UTF-16 surrogate range as well as values outside Unicode.
     const isUnicodeScalarValue =
       Number.isInteger(code) &&
@@ -82,14 +85,14 @@ export function htmlToReadableText(html: string): string {
     )
     .replace(/<[^>]+>/g, " ")
     .replace(
-      /&([a-zA-Z][a-zA-Z0-9]+|#[0-9]+|#x[0-9a-fA-F]+);/g,
+      /&([a-zA-Z][a-zA-Z0-9]+|#[0-9]+|#[xX][0-9a-fA-F]+);/g,
       (_m, entity: string) => decodeHtmlEntity(entity),
     );
   const body = normalizeWhitespace(text);
   const normalizedTitle = title
     ? normalizeWhitespace(
         title.replace(
-          /&([a-zA-Z][a-zA-Z0-9]+|#[0-9]+|#x[0-9a-fA-F]+);/g,
+          /&([a-zA-Z][a-zA-Z0-9]+|#[0-9]+|#[xX][0-9a-fA-F]+);/g,
           (_m, entity: string) => decodeHtmlEntity(entity),
         ),
       )
