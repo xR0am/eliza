@@ -715,7 +715,7 @@ export function useChatSend(deps: UseChatSendDeps) {
   const notifyChatSendIdle = useCallback(() => {
     for (const wake of chatSendIdleWaitersRef.current.splice(0)) wake();
   }, []);
-  const pendingActionKeysRef = useRef(new Set<string>());
+  const pendingActionKeysRef = useRef(new Map<string, Promise<boolean>>());
   const admittedSendKeysRef = useRef(new Map<string, number>());
   const sendCancellationGenerationRef = useRef(0);
   const activeChatTurnRef = useRef<ActiveChatTurn | null>(null);
@@ -1132,11 +1132,13 @@ export function useChatSend(deps: UseChatSendDeps) {
       setChatSending(false);
       setChatFirstTokenReceived(false);
       setServerTurnStatus(null);
+      notifyChatSendIdle();
       return restoredQueuedDraft;
     }, [
       chatAbortRef,
       activeConversationIdRef,
       flushStreamingText,
+      notifyChatSendIdle,
       resolveQueuedChatSends,
       setChatFirstTokenReceived,
       setServerTurnStatus,
@@ -2819,9 +2821,12 @@ export function useChatSend(deps: UseChatSendDeps) {
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: conversations omitted to limit rerenders
   const deliverActionMessage = useCallback(
-    async (text: string, options?: Pick<ChatSendTextOptions, "metadata">) => {
+    async (
+      text: string,
+      options?: Pick<ChatSendTextOptions, "metadata">,
+    ): Promise<boolean> => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      if (!trimmed) return false;
       const viewHandoffOwner: ChatViewHandoffOwner = {
         conversationId: null,
         generation: null,
@@ -2833,8 +2838,11 @@ export function useChatSend(deps: UseChatSendDeps) {
       // still choosing the initial conversation. An unavailable restore leaves
       // the action unsent instead of allocating a competing conversation.
       const admissionGeneration = sendCancellationGenerationRef.current;
-      if ((await settleConversationHydrationForSend?.()) === false) return;
-      if (admissionGeneration !== sendCancellationGenerationRef.current) return;
+      if ((await settleConversationHydrationForSend?.()) === false)
+        return false;
+      if (admissionGeneration !== sendCancellationGenerationRef.current)
+        return false;
+      const requestedConversationId = activeConversationIdRef.current;
       // Wait for the current turn instead of discarding the action. The
       // handoff freeze holds it too: a send to the shared agent after its
       // snapshot is lost to the skip-all import (see flushQueuedChatSends).
@@ -2843,8 +2851,12 @@ export function useChatSend(deps: UseChatSendDeps) {
           chatSendIdleWaitersRef.current.push(resolve);
         });
         if (admissionGeneration !== sendCancellationGenerationRef.current)
-          return;
+          return false;
       }
+      // A queued choice belongs to the conversation that admitted it. Do not
+      // deliver it into a different conversation selected while it waited.
+      if (activeConversationIdRef.current !== requestedConversationId)
+        return false;
       chatSendBusyRef.current = true;
       const sendNonce = ++chatSendNonceRef.current;
       let controller: AbortController | null = null;
@@ -2874,7 +2886,7 @@ export function useChatSend(deps: UseChatSendDeps) {
                 actionTitle || t("common.newChat"),
               );
             if (admissionGeneration !== sendCancellationGenerationRef.current)
-              return;
+              return false;
             if (!isConversationRecord(rawConversation)) {
               throw new Error(
                 "Conversation creation returned an invalid payload.",
@@ -2903,7 +2915,7 @@ export function useChatSend(deps: UseChatSendDeps) {
             convRoomId = conversation.roomId;
           } catch {
             if (admissionGeneration !== sendCancellationGenerationRef.current)
-              return;
+              return false;
             // error-policy:J4 surfaced user-facing failure state. An
             // action/inbox send that can't start a conversation must not
             // vanish silently (mirrors the cold-open path in
@@ -2913,7 +2925,7 @@ export function useChatSend(deps: UseChatSendDeps) {
               "error",
               8000,
             );
-            return;
+            return false;
           }
         }
         if (activeConversationIdRef.current === convId) {
@@ -3088,7 +3100,7 @@ export function useChatSend(deps: UseChatSendDeps) {
           const abortError = err as Error;
           if (abortError.name === "AbortError" || controller?.signal.aborted) {
             dropEmptyAssistantPlaceholder(convId, assistantMsgId);
-            return;
+            return true;
           }
           dropEmptyAssistantPlaceholder(convId, assistantMsgId);
           // Surface a status-specific notice so an inbox/connector send that
@@ -3128,6 +3140,7 @@ export function useChatSend(deps: UseChatSendDeps) {
             }
           }
         }
+        return true;
       } finally {
         if (controller && abortServerTurn) {
           controller.signal.removeEventListener("abort", abortServerTurn);
@@ -3173,19 +3186,28 @@ export function useChatSend(deps: UseChatSendDeps) {
     ],
   );
   const sendActionMessage = useCallback(
-    async (text: string, options?: Pick<ChatSendTextOptions, "metadata">) => {
+    async (
+      text: string,
+      options?: Pick<ChatSendTextOptions, "metadata">,
+    ): Promise<boolean> => {
       // A waiting action no longer fails the busy check, so a repeated
       // activation of the same control would start one agent turn each.
-      const actionKey = JSON.stringify([text.trim(), options?.metadata]);
-      if (pendingActionKeysRef.current.has(actionKey)) return;
-      pendingActionKeysRef.current.add(actionKey);
+      const actionKey = JSON.stringify([
+        activeConversationIdRef.current,
+        text.trim(),
+        options?.metadata,
+      ]);
+      const pending = pendingActionKeysRef.current.get(actionKey);
+      if (pending) return pending;
+      const delivery = deliverActionMessage(text, options);
+      pendingActionKeysRef.current.set(actionKey, delivery);
       try {
-        await deliverActionMessage(text, options);
+        return await delivery;
       } finally {
         pendingActionKeysRef.current.delete(actionKey);
       }
     },
-    [deliverActionMessage],
+    [activeConversationIdRef, deliverActionMessage],
   );
   const handleChatStop = useCallback(() => {
     interruptActiveChatPipeline();
