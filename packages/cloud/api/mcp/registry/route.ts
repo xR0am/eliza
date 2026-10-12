@@ -202,9 +202,7 @@ const MCP_REGISTRY: McpRegistryEntry[] = [
     icon: "clock",
     color: "#6366F1",
     toolCount: 1,
-    features: [
-      "get_current_time",
-    ],
+    features: ["get_current_time"],
     pricing: BUILTIN_MCP_PRICING.time,
     x402Enabled: false,
     documentation: "https://docs.elizaos.ai/mcps/time",

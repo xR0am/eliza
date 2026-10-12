@@ -97,9 +97,7 @@ export const INTEGRATION_TRUST: Readonly<Record<string, IntegrationTrust>> =
       authMode: "none",
       domains: [],
       reviewedAt: "2026-08-20",
-      capabilities: [
-        read("get_current_time"),
-      ],
+      capabilities: [read("get_current_time")],
     };
     const weather: IntegrationTrust = {
       publisher: "elizaOS",
