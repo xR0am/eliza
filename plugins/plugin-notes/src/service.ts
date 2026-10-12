@@ -80,10 +80,16 @@ function queryMatches(
     ({ note }) => normalizedLookup(note.title) === target,
   );
   if (exactTitle.length > 0) return exactTitle;
+  const searchable = (note: StickyNote) =>
+    `${reconstructNoteContent(note)} ${note.color}`;
+  // Whole-word hits outrank substring hits ("plan" names "Trip plan", not
+  // "Airplane snacks"); the substring tier stays for scripts without spaces.
+  const wholeWord = indexed.filter(({ note }) =>
+    titleAppearsAsNamedPhrase(searchable(note), value),
+  );
+  if (wholeWord.length > 0) return wholeWord;
   const contained = indexed.filter(({ note }) =>
-    normalizedLookup(`${reconstructNoteContent(note)} ${note.color}`).includes(
-      target,
-    ),
+    normalizedLookup(searchable(note)).includes(target),
   );
   if (contained.length > 0) return contained;
   return indexed.filter(({ note }) =>

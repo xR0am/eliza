@@ -254,6 +254,59 @@ describe("InboxService + InboxRepository — real PGLite", () => {
     });
   });
 
+  it("sends the mailto unsubscribe fields as RFC 6068 defines them", async () => {
+    const send = vi.fn(async () => undefined);
+    const gmail = {
+      requireGmailGrant: async () =>
+        ({
+          id: "grant-1",
+          connectorAccountId: "account-1",
+          capabilities: ["google.gmail.triage"],
+        }) as Awaited<ReturnType<InboxGmailGateway["requireGmailGrant"]>>,
+      searchGmail: async () =>
+        ({
+          syncedAt: "2026-10-11T00:00:00.000Z",
+          messages: [
+            {
+              id: "unsubscribe-message-2",
+              threadId: "unsubscribe-thread-2",
+              from: "List <list@example.com>",
+              fromEmail: "list@example.com",
+              subject: "Weekly list",
+              receivedAt: "2026-10-10T00:00:00.000Z",
+              metadata: {
+                headers: {
+                  // "+" is the character "+", and a field name can have
+                  // capital letters.
+                  "List-Unsubscribe":
+                    "<mailto:leave@lists.example.com?Subject=unsubscribe%20a1B2+c3D4&body=token%3Aq9+Zx>",
+                },
+              },
+            },
+          ],
+        }) as Awaited<ReturnType<InboxGmailGateway["searchGmail"]>>,
+      sendMailtoUnsubscribeEmail: send,
+      createGmailFilterForSender: vi.fn(async () => ({ filterId: "filter-2" })),
+      trashGmailThread: vi.fn(),
+    } satisfies InboxGmailGateway;
+    const unsubscribe = new InboxUnsubscribeService(runtime, { gmail });
+
+    const result = await unsubscribe.unsubscribeEmailSender({
+      senderEmail: "list@example.com",
+      userAuthorization: true,
+    });
+
+    expect(result.record).toMatchObject({
+      method: "mailto",
+      status: "succeeded",
+    });
+    expect(send).toHaveBeenCalledWith("account-1", {
+      recipient: "leave@lists.example.com",
+      subject: "unsubscribe a1B2+c3D4",
+      body: "token:q9+Zx",
+    });
+  });
+
   it("dedups by source_message_id against the real DB on re-triage", async () => {
     const first = await service.triage([
       inbound({ id: "msg-dedup", text: "Can you confirm the meeting?" }),

@@ -50,7 +50,6 @@ export const setFollowupThresholdAction: Action = {
     "CHANGE_FOLLOWUP_INTERVAL",
     "SET_CONTACT_FREQUENCY_DAYS",
     // PRD action-catalog alias.
-    // See packages/docs/action-prd-map.md.
     "FOLLOWUP_CREATE_RULE",
   ],
   description:

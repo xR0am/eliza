@@ -6,6 +6,7 @@ import {
 } from "@elizaos/plugin-google-workspace/gmail-attachments";
 import { gmailThreadSourceLink } from "@elizaos/plugin-google-workspace/gmail-source-link";
 import {
+  decodeEntities,
   extractGmailHtmlLinks,
   gmailHasAttachmentsHint,
   gmailSearchIncludesTrash,
@@ -177,38 +178,8 @@ function normalizeSnippet(value: string | undefined): string {
   return value?.replace(/\s+/g, " ").trim() || "";
 }
 
-function decodeHtmlEntities(value: string): string {
-  const namedEntities: Record<string, string> = {
-    amp: "&",
-    apos: "'",
-    gt: ">",
-    lt: "<",
-    nbsp: " ",
-    quot: '"',
-    "#39": "'",
-  };
-  return value.replace(
-    /&(nbsp|amp|apos|lt|gt|quot|#x[0-9a-f]+|#\d+);/gi,
-    (entity, name: string) => {
-      const key = name.toLowerCase();
-      const named = namedEntities[key];
-      if (named !== undefined) return named;
-      // Gmail HTML writes apostrophes as &#x27;. Named &#39; is already covered.
-      const hex = /^#x([0-9a-f]+)$/i.exec(key);
-      const decimal = hex ? null : /^#(\d+)$/.exec(key);
-      const digits = hex?.[1] ?? decimal?.[1];
-      if (!digits) return entity;
-      const code = Number.parseInt(digits, hex ? 16 : 10);
-      if (!Number.isInteger(code) || code <= 0 || code > 0x10ffff) return entity;
-      if (code >= 0xd800 && code <= 0xdfff) return entity;
-      if (code === 0xa0) return " ";
-      return String.fromCodePoint(code);
-    },
-  );
-}
-
 function htmlToPlainText(value: string): string {
-  return decodeHtmlEntities(
+  return decodeEntities(
     stripHtmlRawTextElements(value)
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<\/(?:p|div|section|article|li|tr|table|h[1-6])>/gi, "\n")

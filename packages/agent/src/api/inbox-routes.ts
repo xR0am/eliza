@@ -493,6 +493,43 @@ async function findAccountSourceByExactId(
   }
   return null;
 }
+/** The connector account a room was created on, as connectors store it. */
+function readRoomConnectorAccountId(
+  room: { metadata?: unknown },
+  source: string,
+): string | undefined {
+  const metadata =
+    room.metadata && typeof room.metadata === "object"
+      ? (room.metadata as Record<string, unknown>)
+      : undefined;
+  const scoped = metadata?.[source];
+  const candidate =
+    metadata?.accountId ??
+    (scoped && typeof scoped === "object"
+      ? (scoped as Record<string, unknown>).accountId
+      : undefined);
+  return typeof candidate === "string" && candidate.trim()
+    ? candidate.trim()
+    : undefined;
+}
+/** Keep a managed room binding even when its account has been removed. */
+async function resolveRoomAccountId(
+  runtime: AgentRuntime,
+  source: string,
+  storedAccountId: string | undefined,
+): Promise<string | undefined> {
+  if (!storedAccountId) return undefined;
+  const provider = normalizeAccountProvider(source);
+  const manager = getConnectorAccountManager(runtime);
+  const managed =
+    manager.listProviders().some((entry) => entry.provider === provider) ||
+    runtimeHasAccountScopedSendHandler(runtime, provider) ||
+    (await manager.listAccounts(provider)).length > 0;
+  // Pass the binding to the existing account validator. A missing account
+  // must not turn a reply into a send from another identity. Legacy sources
+  // without managed accounts keep their existing unscoped handler contract.
+  return managed ? storedAccountId : undefined;
+}
 async function resolveInboxAccountRouting(
   runtime: AgentRuntime,
   source: string,
@@ -2682,13 +2719,33 @@ export async function handleInboxRoute(
     // handler. This boundary authorizes the narrow top-level selector against
     // server-owned room/account records; client-controlled Content.metadata is
     // never promoted into connector routing state.
+    // A reply goes out from the account the room belongs to, so the contact
+    // sees the same identity they wrote to. Managed rooms retain their binding
+    // after account removal; only legacy unscoped sources use source routing.
     let accountRouting: InboxAccountRoutingResolution;
     try {
+      const roomAccountId = await resolveRoomAccountId(
+        runtime,
+        source,
+        readRoomConnectorAccountId(room, trustedRoomSource),
+      );
+      if (accountId && roomAccountId && accountId !== roomAccountId) {
+        helpers.json(
+          res,
+          {
+            error: `This conversation belongs to connector account ${roomAccountId}. Select that account to reply.`,
+            code: "INBOX_CONNECTOR_ACCOUNT_ROOM_MISMATCH",
+            context: { accountId, roomAccountId, roomId, source },
+          },
+          409,
+        );
+        return true;
+      }
       accountRouting = await resolveInboxAccountRouting(
         runtime,
         source,
         callerAuthorization,
-        accountId,
+        accountId ?? roomAccountId,
       );
     } catch (error) {
       // error-policy:J1 HTTP route boundary translates account-registry failures

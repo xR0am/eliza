@@ -5,7 +5,7 @@
  * API keys, sessions, and other auth headers (not browser origin).
  *
  * For first-party flows that need cookies cross-origin, use
- * `getCorsHeaders` in `packages/lib/utils/cors.ts` (origin allowlist +
+ * `getCorsHeaders` in `packages/cloud/shared/src/lib/utils/cors.ts` (origin allowlist +
  * `Access-Control-Allow-Credentials: true`).
  */
 

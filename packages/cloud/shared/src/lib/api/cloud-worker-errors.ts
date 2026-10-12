@@ -1,7 +1,7 @@
 /**
  * Canonical JSON error helpers for the Cloud API Worker (Hono).
  *
- * Shape matches `packages/lib/api/errors.ts` `ApiError.toJSON()`:
+ * Shape matches `packages/cloud/shared/src/lib/api/errors.ts` `ApiError.toJSON()`:
  * { success: false, error: <message>, code: <code>, details?: ... }
  */
 

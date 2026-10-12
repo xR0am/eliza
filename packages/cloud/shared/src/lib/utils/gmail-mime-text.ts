@@ -95,7 +95,7 @@ const entities: Record<string, string> = {
   nbsp: " ",
   "#39": "'",
 };
-function decodeEntities(value: string): string {
+export function decodeEntities(value: string): string {
   return value.replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z0-9]{2,8});/gi, (match, name: string) => {
     const lower = name.toLowerCase();
     if (lower.startsWith("#x") || lower.startsWith("#")) {

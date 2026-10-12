@@ -6606,7 +6606,7 @@ export const messageAction: Action = {
     "CHAT",
     "CHANNEL",
     // PRD action-catalog aliases. These resolve to MESSAGE subactions via
-    // handler argument routing; see packages/docs/action-prd-map.md.
+    // handler argument routing.
     "INBOX_LIST_UNREAD",
     "INBOX_TRIAGE_PRIORITY",
     "INBOX_SUMMARIZE_CHANNEL",

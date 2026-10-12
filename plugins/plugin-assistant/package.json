@@ -58,6 +58,12 @@
       "types": "./dist/actions/context-signal-lexicon.d.ts",
       "import": "./dist/actions/context-signal-lexicon.js",
       "default": "./dist/actions/context-signal-lexicon.js"
+    },
+    "./html-entities": {
+      "eliza-source": "./src/utils/html-entities.ts",
+      "types": "./dist/html-entities.d.ts",
+      "import": "./dist/html-entities.js",
+      "default": "./dist/html-entities.js"
     }
   },
   "files": [

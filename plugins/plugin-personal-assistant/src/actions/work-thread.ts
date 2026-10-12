@@ -331,7 +331,6 @@ export const workThreadAction: Action & {
     "SCHEDULE_THREAD_FOLLOWUP",
     // PRD action-catalog alias. The PRD's "group handoff" maps to thread
     // lifecycle ops (create + attach_source) on WORK_THREAD.
-    // See packages/docs/action-prd-map.md.
     "MESSAGE_CREATE_GROUP_HANDOFF",
   ],
   description:
