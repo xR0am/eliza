@@ -175,3 +175,15 @@ pulls share one delivery. A ten-minute client deadline prevents an expired host
 identity from accidentally starting a new synthesis. Pass an account/playback
 AbortSignal, or call `cancel` on Stop. Never persist the instance or media. The
 client exposes separate original/normalized timing without synthesizing offsets.
+
+`mailboxForAccount({actorId, accountId})` is an opt-in host-only, read-only inbox
+projection (`version: 1`). Here `actorId` is the signed-in owner and `accountId`
+is the confirmed Google grant ID. It shares the credential and Google lifetime
+fences and checks the connected grant before and after each Cloud response.
+It exposes bounded list/search pages, plain-text message details and explicitly
+requested attachments (PDF/plain text/PNG/JPEG/WebP, at most 5 MiB, verified bytes
+and digest). Oversized or malformed values fail rather than truncate. Display all
+returned strings as text; never inject them as HTML. Remote images and HTML are
+not projected, and no mailbox cache or write operations are provided. Consumers
+must separately authorize and implement their native/renderer read bridge; this
+factory does not enable an HTTP route or change task-read authority.
