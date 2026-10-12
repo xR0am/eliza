@@ -387,15 +387,20 @@ function statusMetadata(status: IMessageServiceStatus): Record<string, string | 
 }
 
 function normalizedSearchText(value: string | undefined): string {
+  // Fold accents ("Jose" matches "José") but keep non-Latin letters such as Hangul.
   return (value ?? "")
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^a-z0-9@+._-]+/g, " ")
+    .replace(/[^\p{L}\p{N}@+._-]+/gu, " ")
     .trim();
 }
 
 function matchesQuery(query: string, ...values: Array<string | undefined>): boolean {
+  if (!query.trim()) return true;
   const normalizedQuery = normalizedSearchText(query);
-  if (!normalizedQuery) return true;
+  if (!normalizedQuery) return false;
   const normalizedHandleQuery = normalizedSearchText(normalizeIMessageConnectorHandle(query));
   return values.some((value) => {
     const normalizedValue = normalizedSearchText(value);
