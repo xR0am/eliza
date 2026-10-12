@@ -164,7 +164,7 @@ export class RuntimeDataMutations {
 	): Promise<void> {
 		// Apply secret redaction (same as createMemory) to prevent plaintext secrets
 		const secrets = this.host.getSecretsForRedaction();
-		if (Object.keys(secrets).length > 0 && memory.content.text) {
+		if (memory.content.text) {
 			memory = {
 				...memory,
 				content: {
@@ -299,8 +299,8 @@ export class RuntimeDataMutations {
 	}
 
 	private redactMessageContentForStorage(content: Content): Content {
+		// The pattern sweep runs without configured secrets, as in redactSecrets.
 		const secrets = this.host.getSecretsForRedaction();
-		if (Object.keys(secrets).length === 0) return content;
 		const redact = (value: string | undefined): string | undefined =>
 			typeof value === "string"
 				? redactWithSecrets(value, { secrets, applyPatterns: true })
@@ -499,9 +499,10 @@ export class RuntimeDataMutations {
 		// fallback, so omitted caller identity still produces a scoped source.
 		memory = { ...memory, agentId: memory.agentId ?? this.runtime.agentId };
 
-		// Redact any secrets from memory content before storing
+		// Redact any secrets from memory content before storing. The credential
+		// pattern sweep also runs when the character configures no secrets.
 		const secrets = this.host.getSecretsForRedaction();
-		if (Object.keys(secrets).length > 0 && memory.content.text) {
+		if (memory.content.text) {
 			memory = {
 				...memory,
 				content: {
