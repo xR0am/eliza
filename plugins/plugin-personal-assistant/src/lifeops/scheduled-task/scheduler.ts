@@ -530,19 +530,20 @@ export async function processDueScheduledTasks(
     ownerFacts,
     anchors: getAnchorRegistry(request.runtime),
   };
-  // Indexed pass 1: due-to-fire candidates.
+  // Pass 1: due-to-fire and owner-local re-evaluation candidates.
   //
   // The partial index `idx_life_scheduled_tasks_due` covers
-  // `(agent_id, next_fire_at)` for every status except `dismissed`, so these
-  // queries touch due rows and event-driven rows with NULL instead of
-  // every row owned by the agent. `next_fire_at IS NULL` rows are included
+  // `(agent_id, next_fire_at)` for every status except `dismissed`. The
+  // owner-local JSON predicate can require scanning the agent's rows; these
+  // queries do not guarantee work proportional to due rows alone.
+  // `next_fire_at IS NULL` rows are included
   // in the live slice so event / manual / after_task triggers (which
   // deliberately have no wall-clock fire time) still get a chance at
   // fire-time gates if they're invoked through another path. The
   // authoritative `isScheduledTaskDue` re-evaluates per task below.
   // Owner-local cron also needs evaluation when its saved index is in the
   // future: travel or an owner timezone change can move today's fire earlier.
-  // Fixed-zone cron keeps the indexed path; due evaluation and CAS still own
+  // Fixed-zone cron keeps the saved-time filter; due evaluation and CAS own
   // occurrence admission and prevent repeat dispatch.
   const nowIso = request.now.toISOString();
   const liveCandidates = await repo.listScheduledTasks(request.agentId, {
@@ -550,7 +551,7 @@ export async function processDueScheduledTasks(
     dueAtOrBeforeIso: nowIso,
     reevaluateOwnerLocalCron: true,
   });
-  // Indexed pass 1b: recurrence-refire candidates. A RECURRING task parked in
+  // Pass 1b: recurrence-refire candidates. A RECURRING task parked in
   // `acknowledged` or a terminal-but-refirable status (`completed` /
   // `skipped` / `expired` / `failed` — never `dismissed`) keeps a
   // trigger-derived `next_fire_at` (see `resolveNextFireAt` in the runner);

@@ -239,12 +239,13 @@ export class ScheduledTaskRepository {
        * or whose `next_fire_at IS NULL` (the latter so event/manual/after_task
        * triggers — which deliberately have no wall-clock fire time but may
        * still need a tick pass for completion-timeout handling — remain
-       * visible). The partial index `idx_life_scheduled_tasks_due` is used
-       * when this filter is combined with a status list of
-       * `('scheduled', 'fired')`.
+       * visible). The partial index `idx_life_scheduled_tasks_due` supports
+       * this filter with eligible statuses. Enabling owner-local cron
+       * re-evaluation adds a JSON predicate that can require a scan of the
+       * agent's rows; it does not preserve an indexed-only query plan.
        */
       dueAtOrBeforeIso?: string;
-      /** Owner-local cron times can change after indexing, including during travel. */
+      /** Admit all owner-local cron rows despite future indices; may widen the scan. */
       reevaluateOwnerLocalCron?: boolean;
       /**
        * Restrict to rows with `next_fire_at IS NOT NULL`. Used by tests
