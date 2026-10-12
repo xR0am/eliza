@@ -283,7 +283,12 @@ There are no default command/instrumentation deadlines: callers may supply
 AbortSignal. ADB/AAPT work is cancellable; cleanup ignores the aborted operation
 signal, force-stops owned targets and uses its separate caller deadline. If either
 stop fails, it retains both packages and reports `cleanupDeferred`; recover the
-owned fixture explicitly before another run. Callbacks
+owned fixture explicitly before another run. A failed or cancelled install without
+an acknowledged success also defers cleanup and reports `unacknowledgedInstalls`
+with the expected APK hashes. Android can finish that install after the host ADB
+process exits, so an absent package at cleanup is not proof that the fixture is
+clean. Recover only the exact owned fixture and verified artifact before retrying.
+Callbacks
 receive the signal and must cooperate with cancellation before returning. The
 lease follows the caller environment and remains held for a live process, rather
 than expiring during long instrumentation. Product callbacks own controlled

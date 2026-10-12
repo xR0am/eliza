@@ -75,7 +75,7 @@ if(args.includes('getenforce'))console.log(mode==='permissive'?'Permissive':'Enf
 if(args.includes('packages')&&mode==='appeared'){state.reads=(state.reads||0)+1;if(state.reads===2)state.packages.push('org.example.consumer');publishFixtureState(file,state);}
 if(args.includes('packages')&&!args.includes('--uid'))console.log(state.packages.map(p=>'package:'+p).join('\\n'));
 if(args.includes('resolve-activity'))console.log(args.includes('-p')?'org.stock.home/.Home':state.home);
-if(args[0]==='install'){const id=args.at(-1).includes('companion.apk')?'org.example.companion':args.at(-1).includes('test.apk')?'org.example.consumer.test':'org.example.consumer';state.packages=[...new Set([...state.packages,id])];(state.files??={})[id]=file+'.'+id+'.apk';fs.copyFileSync(args.at(-1),state.files[id]);publishFixtureState(file,state);if(mode==='install-failure'&&id.endsWith('.test'))process.exit(1);console.log('Success');}
+if(args[0]==='install'){if(mode==='install-unacknowledged-absent')process.exit(1);const id=args.at(-1).includes('companion.apk')?'org.example.companion':args.at(-1).includes('test.apk')?'org.example.consumer.test':'org.example.consumer';state.packages=[...new Set([...state.packages,id])];(state.files??={})[id]=file+'.'+id+'.apk';fs.copyFileSync(args.at(-1),state.files[id]);publishFixtureState(file,state);if(mode==='install-failure'&&id.endsWith('.test'))process.exit(1);console.log('Success');}
 if(args.slice(0,3).join(' ')==='shell pm path')console.log('package:/data/'+args.at(-1)+'.apk');
 if(args[0]==='pull'){const id=args[1].slice('/data/'.length,-4);fs.copyFileSync(state.files[id],args[2]);}
 
@@ -218,10 +218,40 @@ for (const mode of [
     const report = JSON.parse(
       fs.readFileSync(path.join(f.options.directory, "verification.json")),
     );
-    assert.equal(report.cleaned, mode !== "cleanup-failure");
+    assert.equal(
+      report.cleaned,
+      !["cleanup-failure", "install-failure"].includes(mode),
+    );
     assert.equal(report.homeUnchanged, mode !== "home-change");
     if (mode === "cleanup-failure") assert.ok(report.cleanupErrors.length > 0);
+    if (mode === "install-failure") {
+      assert.equal(report.cleanupDeferred, true);
+      assert.equal(
+        report.unacknowledgedInstalls[0].packageName,
+        "org.example.consumer.test",
+      );
+      assert.ok(!f.commands().some((c) => c[0] === "uninstall"));
+    }
   });
+test("an unacknowledged install is not clean even when no package is visible yet", async (t) => {
+  const f = fixture(t, "install-unacknowledged-absent");
+  await assert.rejects(runIsolatedAndroidTest(f.options));
+  const report = JSON.parse(
+    fs.readFileSync(path.join(f.options.directory, "verification.json")),
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.state)).packages, []);
+  assert.equal(report.cleaned, false);
+  assert.equal(report.cleanupDeferred, true);
+  assert.deepEqual(report.unacknowledgedInstalls, [
+    {
+      packageName: "org.example.consumer",
+      expectedSha256: createHash("sha256")
+        .update(fs.readFileSync(f.options.variants[0].apk))
+        .digest("hex"),
+    },
+  ]);
+  assert.ok(!f.commands().some((c) => c[0] === "uninstall"));
+});
 test("callback failure cleans owned packages and releases the device lease", async (t) => {
   const f = fixture(t);
   await assert.rejects(

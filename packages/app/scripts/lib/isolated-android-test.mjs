@@ -478,6 +478,7 @@ export async function runIsolatedAndroidTest({
     activeContext,
     scenarioCleanupFailure;
   const owned = new Map();
+  const unacknowledgedInstalls = new Map();
   const installedHash = async (name, command = run) => {
     const lines = (
       await command("shell", "pm", "path", "--user", String(androidUser), name)
@@ -526,6 +527,9 @@ export async function runIsolatedAndroidTest({
         "Installed APK changed before replacement",
       );
     owned.set(name, expectedHash);
+    // Killing the host adb process does not cancel Android's package session.
+    // An absent package during cleanup can still finish installing afterward.
+    unacknowledgedInstalls.set(name, expectedHash);
     assert.match(
       await run(
         "install",
@@ -537,6 +541,7 @@ export async function runIsolatedAndroidTest({
       ),
       /^Success\s*$/m,
     );
+    unacknowledgedInstalls.delete(name);
     assert.equal(
       await installedHash(name),
       expectedHash,
@@ -978,6 +983,17 @@ export async function runIsolatedAndroidTest({
       if (admitted) {
         // Only identities absent from all users at admission are owned by this run.
         report.cleanupErrors = [];
+        if (unacknowledgedInstalls.size) {
+          report.unacknowledgedInstalls = [...unacknowledgedInstalls].map(
+            ([packageName, expectedSha256]) => ({
+              packageName,
+              expectedSha256,
+            }),
+          );
+          report.cleanupErrors.push(
+            "An install was not acknowledged; the device may still commit it. Explicit fixture recovery is required.",
+          );
+        }
         try {
           await restoreScenario();
         } catch {
@@ -1025,7 +1041,8 @@ export async function runIsolatedAndroidTest({
             }
           }
         try {
-          report.cleaned = !(await installed());
+          report.cleaned =
+            !(await installed()) && unacknowledgedInstalls.size === 0;
           report.homeUnchanged = (await home()) === previousHome;
           if (cuttlefish)
             report.browserUnchanged = (await browserRole()) === previousBrowser;
