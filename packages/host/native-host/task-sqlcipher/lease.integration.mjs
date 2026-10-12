@@ -1,6 +1,5 @@
 // Explicit actual-native qualification; missing build artifact fails, never skips.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   chmod,
@@ -21,6 +20,7 @@ import {
   createSqlCipherTaskProvider,
   loadTaskSqlCipher,
 } from "../task-sqlcipher.mjs";
+import { spawnTestRuntime } from "./test-runtime.mjs";
 
 const buildPath = process.env.ELIZA_TASK_SQLCIPHER_BUILD;
 if (!buildPath) throw Error("Explicit native build required");
@@ -43,7 +43,7 @@ const stop = (pid) => {
   }
 };
 async function child(mode, path) {
-  const child = spawn(process.execPath, [worker, mode, buildPath, path], {
+  const child = spawnTestRuntime([worker, mode, buildPath, path], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "",
@@ -172,7 +172,7 @@ test("actual SQLCipher writer lease", async (t) => {
     },
   );
   await t.test(
-    "rename fences old handle while close releases it; symlink and hardlink refused",
+    "rename fences old handle while close releases it; symlink and modes refused",
     async () => {
       const path = join(root, "rename.db");
       const db = await provider().open({ path });
@@ -188,13 +188,33 @@ test("actual SQLCipher writer lease", async (t) => {
       await symlink(lock + ".old", lock);
       await assert.rejects(provider().open({ path }));
       await rm(lock);
-      await link(lock + ".old", lock);
-      await assert.rejects(provider().open({ path }));
-      await rm(lock);
       await writeFile(lock, "", { mode: 0o644 });
+      await chmod(lock, 0o644);
       await assert.rejects(provider().open({ path }));
       await chmod(lock, 0o600);
       (await provider().open({ path })).close();
+    },
+  );
+  await t.test(
+    "native hardlink refusal when the OS permits fixture creation",
+    async (t) => {
+      const path = join(root, "hardlink.db");
+      const lock = `${path}.writer.lock`;
+      const original = `${lock}.original`;
+      await writeFile(original, "", { mode: 0o600 });
+      try {
+        await link(original, lock);
+      } catch (error) {
+        if (error.code !== "EACCES" && error.code !== "EPERM") throw error;
+        console.info(
+          `QUALIFICATION_SKIP native-hardlink-guard: OS refused fixture (${error.code})`,
+        );
+        t.skip(
+          `OS refused hardlink fixture (${error.code}); native hardlink guard not exercised`,
+        );
+        return;
+      }
+      await assert.rejects(provider().open({ path }));
     },
   );
   await t.test(

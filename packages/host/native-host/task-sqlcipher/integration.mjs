@@ -1,6 +1,5 @@
 // Explicit real-native suite. Missing artifact is an error, never a skipped proof.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -19,6 +18,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createSqlCipherTaskProvider } from "../task-sqlcipher.mjs";
 import { openTaskDatabase } from "../task-storage.mjs";
+import { spawnTestRuntime } from "./test-runtime.mjs";
 
 const buildPath = process.env.ELIZA_TASK_SQLCIPHER_BUILD;
 if (!buildPath)
@@ -165,6 +165,7 @@ test("actual SQLCipher task driver", async (t) => {
     async () => {
       const exposed = join(root, "exposed.db");
       await writeFile(exposed, "untouched", { mode: 0o644 });
+      await chmod(exposed, 0o644);
       await assert.rejects(open(exposed), { code: "TASK_STORAGE_UNAVAILABLE" });
       assert.equal(await readFile(exposed, "utf8"), "untouched");
       await rm(exposed);
@@ -185,8 +186,7 @@ test("actual SQLCipher task driver", async (t) => {
     "committed WAL survives process death, uncommitted canary remains private",
     async () => {
       const crashPath = join(root, "crash.db");
-      const child = spawn(
-        process.execPath,
+      const child = spawnTestRuntime(
         [
           join(dirname(fileURLToPath(import.meta.url)), "process-death.mjs"),
           buildPath,
