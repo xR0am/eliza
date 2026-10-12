@@ -13,6 +13,7 @@
 
 import type { IAgentRuntime, Plugin, Provider } from "@elizaos/core";
 import { agentBudgetService } from "../services/agent-budgets";
+import { dailyBudgetRemaining } from "../services/daily-budget-remaining";
 import { organizationsService } from "../services/organizations";
 import { logger } from "../utils/logger";
 
@@ -109,9 +110,10 @@ export const agentCreditsProvider: Provider = {
         const allocated = Number(budget.allocated_budget);
         const spent = Number(budget.spent_budget);
         const available = allocated - spent;
-        const dailyLimit = budget.daily_limit ? Number(budget.daily_limit) : null;
-        const dailySpent = Number(budget.daily_spent);
-        const dailyRemaining = dailyLimit ? dailyLimit - dailySpent : null;
+        const { dailyLimit, dailySpent, dailyRemaining } = dailyBudgetRemaining(
+          budget.daily_limit,
+          budget.daily_spent,
+        );
 
         // Determine effective available (minimum of budget and daily remaining)
         const effectiveAvailable =
