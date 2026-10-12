@@ -149,8 +149,7 @@ export class AWSKMSProvider implements KMSProvider {
       AWSKMSProvider.deprecationWarned = true;
       logger.warn(
         "[AWSKMSProvider] AWS KMS is deprecated and pending removal. " +
-          "Migrate to LocalKMSProvider by setting SECRETS_MASTER_KEY and rotating stored secrets. " +
-          "See packages/cloud/infra/cloud/AWS_RETIREMENT.md (Stage 3).",
+          "Migrate to LocalKMSProvider by setting SECRETS_MASTER_KEY and rotating stored secrets.",
       );
     }
   }
