@@ -45,7 +45,11 @@ import { TwitterInteractionClient } from "../interactions";
 import { TwitterPostClient } from "../post";
 import { TwitterTimelineClient } from "../timeline";
 import type { ITwitterClient, TwitterClientState } from "../types";
-import { splitTweetContent, splitXDirectMessageContent } from "../utils";
+import {
+  fetchMediaData,
+  splitTweetContent,
+  splitXDirectMessageContent,
+} from "../utils";
 import { normalizeXReceiptId } from "../utils/provider-receipt";
 import { getSetting } from "../utils/settings";
 import { getEpochMs } from "../utils/time";
@@ -898,6 +902,14 @@ export class XService extends Service {
         runtime,
         `x:${accountId}:feed:${profile.id}`,
       );
+      const media = content.attachments?.length
+        ? (
+            await fetchMediaData(
+              content.attachments,
+              runtime.fetch ?? undefined,
+            )
+          ).map(({ data, mediaType }) => ({ data, type: mediaType }))
+        : [];
       const chunks = splitTweetContent(text, X_MAX_POST_LENGTH);
       const memories: Memory[] = [];
       let inReplyTo = replyToTweetId;
@@ -911,6 +923,7 @@ export class XService extends Service {
             text: chunk,
             ...(inReplyTo ? { inReplyTo } : {}),
             ...(index === 0 && quotedPostId ? { quotedPostId } : {}),
+            ...(index === 0 && media.length > 0 ? { media } : {}),
           },
           profile,
         );
