@@ -47,6 +47,7 @@ import {
   isNetworkProject,
   type NetworkConsentLedger,
   type NetworkInboundCompliance,
+  networkTakeoverAppliesTo,
   redisNetworkConsentLedger,
   sendWithTwilioReplyFence,
 } from "./network-compliance";
@@ -54,7 +55,6 @@ import {
   type NetworkOpenTurn,
   networkServiceFromEnv,
   runNetworkServiceTurn,
-  takeoverAppliesTo,
 } from "./network-service";
 import type { GatewayRedis } from "./redis";
 import {
@@ -283,7 +283,22 @@ async function sendReplyWithRequiredReceipt(
   text: string,
   deliveryHooks?: TelegramDeliveryHooks,
   mediaUrls?: readonly string[],
-): Promise<string[]> {
+  networkEgress?: {
+    deps: HandlerDeps;
+    project: string;
+    app?: NetworkOpenTurn["app"];
+  },
+): Promise<string[] | false> {
+  if (
+    networkEgress &&
+    (await isNetworkAddressOptedOut(
+      networkConsentLedger(networkEgress.deps),
+      networkEgress.project,
+      event.senderId,
+      networkEgress.app,
+    ))
+  )
+    return false;
   if (!adapter.sendReplyWithReceipt) {
     throw new PlatformDeliveryError(
       `${adapter.platform} adapter does not expose provider receipts`,
@@ -327,8 +342,17 @@ async function sendDirectReply(
   text: string,
   deliveryHooks?: TelegramDeliveryHooks,
   mediaUrls?: readonly string[],
+  networkAdmission?: { app?: NetworkOpenTurn["app"]; compliance?: true },
 ): Promise<void> {
-  if (adapter.platform === "twilio" && isNetworkProject(project)) {
+  const networkScoped =
+    isNetworkProject(project) ||
+    networkAdmission !== undefined ||
+    networkTakeoverAppliesTo(project, event);
+  const networkEgress =
+    networkScoped && !networkAdmission?.compliance
+      ? { deps, project, app: networkAdmission?.app }
+      : undefined;
+  if (adapter.platform === "twilio" && networkScoped) {
     const outcome = await sendWithTwilioReplyFence(
       deps.redis,
       project,
@@ -341,6 +365,7 @@ async function sendDirectReply(
           text,
           deliveryHooks,
           mediaUrls,
+          networkEgress,
         ),
       (error) =>
         error instanceof PlatformDeliveryError &&
@@ -362,6 +387,7 @@ async function sendDirectReply(
     text,
     deliveryHooks,
     mediaUrls,
+    networkEgress,
   );
 }
 
@@ -809,10 +835,7 @@ export async function handleWebhook(
     }
   }
 
-  if (
-    isNetworkProject(project) &&
-    (adapter.platform === "blooio" || adapter.platform === "twilio")
-  ) {
+  if (networkTakeoverAppliesTo(project, event, agentId)) {
     // A retry must retain the exact service request body. This is metadata of
     // the existing authenticated ingress ledger, not a second turn cache.
     const timeKey = `${dedupKey}:received-at`;
@@ -1264,6 +1287,11 @@ async function processMessage(
   // A handled turn is answered here with no model call; an open turn carries
   // the service's member context into the agent turn.
   let networkTurn: NetworkOpenTurn | undefined;
+  const networkEligible = networkTakeoverAppliesTo(
+    project,
+    event,
+    explicitAgentId,
+  );
   const networkService =
     deps.networkService === undefined
       ? networkServiceFromEnv()
@@ -1271,13 +1299,11 @@ async function processMessage(
   const isDirect = !(
     event.chatType === "group" || event.chatType === "supergroup"
   );
-  if (
-    isNetworkProject(project) &&
-    networkService &&
-    isDirect &&
-    !event.membershipChange &&
-    takeoverAppliesTo(event.senderId)
-  ) {
+  if (networkEligible && !networkService)
+    throw new PersonalSharedPreEgressError(
+      "Network takeover authority is not configured",
+    );
+  if (networkEligible && networkService && isDirect) {
     let outcome: Awaited<ReturnType<typeof runNetworkServiceTurn>>;
     try {
       outcome = await runNetworkServiceTurn(
@@ -1300,10 +1326,10 @@ async function processMessage(
       const path = "/api/internal/eliza-app/personal-shared/messages";
       const body = JSON.stringify({
         platform: outcome.request.channel,
-        project: "network",
+        project,
         connectorAccountId: resolveConnectorAccountId(adapter.platform, config),
         phoneNumber: event.senderId,
-        messageId: `${outcome.request.channel}:network:${event.messageId}`,
+        messageId: `${outcome.request.channel}:${project}:${event.messageId}`,
         message: event.text,
         networkHandled: { request: outcome.request, response: outcome.handled },
       });
@@ -1381,7 +1407,7 @@ async function processMessage(
     }
     if (outcome.kind === "open") networkTurn = outcome.turn;
   }
-  if (isNetworkProject(project) && !networkTurn) {
+  if ((isNetworkProject(project) || networkEligible) && !networkTurn) {
     // The Network without a service-owned turn (legacy, or a turn the service
     // ignored): carrier keywords (STOP/HELP/START) and the consent ledger run
     // before any identity, account, or agent work, so an ignored STOP is
@@ -1411,6 +1437,8 @@ async function processMessage(
         project,
         compliance.text,
         deliveryHooks,
+        undefined,
+        { compliance: true },
       );
       logger.info("Network keyword handled", {
         project,
@@ -1475,6 +1503,7 @@ async function processMessage(
         trace.traceId,
         deliveryHooks,
         networkTurn,
+        networkEligible,
       );
       logger.info("Personal Eliza connector message completed", {
         project,
@@ -1520,6 +1549,10 @@ async function processMessage(
           event,
           personalSharedFailureReply(error.failure),
           deliveryHooks,
+          undefined,
+          networkEligible
+            ? { deps, project, app: networkTurn?.app }
+            : undefined,
         );
         return;
       }
@@ -1843,6 +1876,7 @@ async function sendPersonalSharedReply(
   traceId: string,
   deliveryHooks?: TelegramDeliveryHooks,
   networkTurn?: NetworkOpenTurn,
+  networkAdmitted = false,
 ): Promise<PersonalSharedDeliveryTiming> {
   const { cloudBaseUrl, getAuthHeader } = deps;
   const reauth = deps.reacquireAuthHeader ?? reacquireAuthHeader;
@@ -2162,7 +2196,7 @@ async function sendPersonalSharedReply(
   }
   // A STOP that landed while this Network turn was running wins: re-read the
   // ledger immediately before egress so no reply follows the confirmation.
-  if (isNetworkProject(project) && !isGroup) {
+  if ((isNetworkProject(project) || networkAdmitted) && !isGroup) {
     let optedOut: boolean;
     try {
       // An app-scoped START newer than a line-wide STOP reopens that app,
@@ -2464,6 +2498,7 @@ async function sendPersonalSharedReply(
       replyText,
       deliveryHooks,
       replyMediaUrls,
+      networkAdmitted ? { app: networkTurn?.app } : undefined,
     );
   }
   return {
