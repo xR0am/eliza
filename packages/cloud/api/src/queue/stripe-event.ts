@@ -1786,6 +1786,51 @@ function chargePaymentIntentId(charge: Stripe.Charge): string | undefined {
  * past what was already clawed for this payment intent is removed, so multiple
  * partial refunds and re-delivered webhooks are safe.
  */
+/**
+ * Whether this payment intent belongs to a top-up whose credit grant has not
+ * committed yet: a paid Checkout session for an unsettled order or a legacy
+ * pack purchase, a succeeded auto top-up payment intent, or
+ * a succeeded one-time payment intent. Payments that never grant credits
+ * (retired mini-app purchases, subscription invoices) report false.
+ */
+async function topUpGrantPending(paymentIntentId: string): Promise<boolean> {
+  const stripe = requireStripe();
+  const sessions = await stripe.checkout.sessions.list({
+    payment_intent: paymentIntentId,
+    limit: 1,
+  });
+  const session = sessions.data[0];
+  if (session) {
+    if (session.mode !== "payment" || session.payment_status !== "paid")
+      return false;
+    if (retiredMiniappPayment(session.metadata)) return false;
+    const orderId = session.metadata?.checkout_order_id;
+    if (orderId) {
+      const order = await stripeCheckoutOrdersService.get(orderId);
+      return (
+        order !== null &&
+        order.status !== "settled" &&
+        order.status !== "failed"
+      );
+    }
+    const purchaseType = session.metadata?.type;
+    return (
+      (purchaseType === "custom_amount" || purchaseType === "credit_pack") &&
+      !!session.metadata?.organization_id
+    );
+  }
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+  if (paymentIntent.status !== "succeeded") return false;
+  if (retiredMiniappPayment(paymentIntent.metadata)) return false;
+  // A succeeded auto top-up intent is credited by `payment_intent.succeeded`;
+  // a canceled attempt never reaches a succeeded intent.
+  if (paymentIntent.metadata?.auto_top_up_attempt_id) return true;
+  return (
+    paymentIntent.metadata?.type === "one_time" &&
+    !!paymentIntent.metadata?.organization_id
+  );
+}
+
 async function clawbackForReversal(params: {
   paymentIntentId: string | undefined;
   usdReversed: number;
@@ -1801,6 +1846,14 @@ async function clawbackForReversal(params: {
   const grant =
     await creditsService.getTransactionByStripePaymentIntent(paymentIntentId);
   if (!grant) {
+    if (await topUpGrantPending(paymentIntentId)) {
+      // Stripe does not guarantee event ordering: the reversal can arrive
+      // before the event that grants the credits. Retry until the grant
+      // commits instead of acknowledging and leaving the refunded credits.
+      throw new Error(
+        `Credit grant for PI ${paymentIntentId} is not yet available for ${source} ${reference}`,
+      );
+    }
     logger.info(
       `[Stripe Queue] ${source} ${reference}: no credit grant for PI ${paymentIntentId}; nothing to claw back`,
     );
