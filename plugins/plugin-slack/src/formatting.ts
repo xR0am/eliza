@@ -285,12 +285,13 @@ function convertLinks(text: string, codeSink: string[]): string {
  * Holds a bare URL aside as a Slack link token, like convertLinks does for
  * [text](url), so the style passes cannot rewrite `*` or `_` in it
  * (`https://example.com/a*b*c` was sent as `a_b_c`, a different address).
- * Balanced parentheses stay in the URL; trailing punctuation and emphasis
- * closers do not. A URL already inside a `<...>` token is left alone.
+ * Balanced parentheses and `|` (sent as %7C) stay in the URL; trailing
+ * punctuation and emphasis closers do not. A URL already inside a `<...>`
+ * token is left alone.
  */
 function convertBareUrls(text: string, codeSink: string[]): string {
   return text.replace(
-    /(?<![<|\w])https?:\/\/(?:[^\s<>()|]|\([^\s()|]*\))*(?:[^\s<>()|.,;:!?*_~'"]|\([^\s()|]*\))/g,
+    /(?<![<|\w])https?:\/\/(?:[^\s<>()]|\([^\s()]*\))*(?:[^\s<>().,;:!?*_~'"]|\([^\s()]*\))/g,
     (url) =>
       holdAside(guardLinkToken(`<${escapeSlackLinkUrl(url)}>`), codeSink),
   );

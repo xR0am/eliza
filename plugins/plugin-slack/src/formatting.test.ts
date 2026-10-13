@@ -21,6 +21,12 @@ describe("markdownToSlackMrkdwn bare URLs", () => {
     );
   });
 
+  it("keeps a | inside a URL, sent as %7C like a Markdown link", () => {
+    expect(
+      markdownToSlackMrkdwn("See https://example.com/redirect?u=a|b now"),
+    ).toBe("See <https://example.com/redirect?u=a%7Cb> now");
+  });
+
   it("does not change URLs that are already Slack or Markdown links", () => {
     expect(markdownToSlackMrkdwn("<https://example.com/a|guide>")).toBe(
       "<https://example.com/a|guide>",
