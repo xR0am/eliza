@@ -129,7 +129,11 @@ async function updateApp(c: AppContext, verb: "PUT" | "PATCH") {
           404,
         );
       }
-      if (character.user_id !== user.id && !character.is_public) {
+      if (
+        !charactersService.isLinkedCharacterVisible(character, {
+          userId: user.id,
+        })
+      ) {
         return c.json(
           {
             success: false,

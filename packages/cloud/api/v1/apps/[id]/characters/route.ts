@@ -78,11 +78,19 @@ async function __hono_GET(
       });
     }
 
-    // Fetch the character details
+    // Fetch the character details. A linked character is listed only while
+    // the app's organization may still see it: a character that left the
+    // public catalog is not disclosed through a link made while it was public.
     const characters = await Promise.all(
       linkedCharacterIds.map(async (characterId) => {
         const character = await charactersService.getById(characterId);
-        if (!character) return null;
+        if (
+          !character ||
+          !charactersService.isLinkedCharacterVisible(character, {
+            organizationId: app.organization_id,
+          })
+        )
+          return null;
 
         return {
           id: character.id,
@@ -197,7 +205,11 @@ async function __hono_PUT(
         );
       }
       // Only allow linking characters owned by the user or public characters
-      if (character.user_id !== user.id && !character.is_public) {
+      if (
+        !charactersService.isLinkedCharacterVisible(character, {
+          userId: user.id,
+        })
+      ) {
         return Response.json(
           {
             success: false,
