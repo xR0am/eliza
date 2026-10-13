@@ -82,7 +82,11 @@ function isRateLimited(userId: string): boolean {
   const attempts = (pairAttempts.get(userId) ?? []).filter(
     (ts) => ts > windowStart,
   );
-  pairAttempts.set(userId, attempts);
+  if (attempts.length === 0) {
+    pairAttempts.delete(userId);
+  } else {
+    pairAttempts.set(userId, attempts);
+  }
   if (attempts.length >= RATE_LIMIT_MAX_ATTEMPTS) {
     return true;
   }
@@ -412,7 +416,9 @@ export class TelegramOwnerPairingServiceImpl
     }
 
     const message =
-      `Click to log in to Eliza: ${link}\n\n` +
+      `Click to log in to Eliza: ${link}
+
+` +
       "_This link expires in 5 minutes. Do not share it._";
 
     try {
