@@ -920,7 +920,10 @@ export class OnboardingSessionCoordinator {
         if (pathname === "/inspect") {
           const decodedInspect = await decodeRequestJson(request);
           if (!decodedInspect.ok) {
-            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+            return Response.json(
+              { error: "Invalid JSON body" },
+              { status: 400 },
+            );
           }
           const body: unknown = decodedInspect.value;
           const sessionId =
@@ -967,7 +970,10 @@ export class OnboardingSessionCoordinator {
         if (pathname === "/bind") {
           const decodedBind = await decodeRequestJson(request);
           if (!decodedBind.ok) {
-            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+            return Response.json(
+              { error: "Invalid JSON body" },
+              { status: 400 },
+            );
           }
           const body: unknown = decodedBind.value;
           const sessionId =
