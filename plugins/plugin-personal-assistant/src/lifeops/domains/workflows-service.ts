@@ -947,9 +947,15 @@ export class WorkflowsDomain {
             },
       updatedAt: new Date().toISOString(),
     };
+    // A resume anchors the schedule at the resume, like an edit anchors it at
+    // the edit: the cursor kept while paused would otherwise replay every slot
+    // missed in between on the first tick.
+    const resumed =
+      current.status !== "active" && nextDefinition.status === "active";
     if (
       request.triggerType !== undefined ||
       request.schedule !== undefined ||
+      resumed ||
       this.readWorkflowSchedulerState(nextDefinition) === null
     ) {
       nextDefinition = this.initializeWorkflowSchedulerState(nextDefinition);
