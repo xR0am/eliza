@@ -19,6 +19,7 @@ import {
   TtsSynthesisOptions,
 } from "@elizaos/cloud-shared/lib/services/elevenlabs";
 import { drainPcm16ToWav } from "@elizaos/cloud-shared/lib/services/pcm16-wav";
+import { settlementDigest } from "@elizaos/cloud-shared/lib/services/settlement-digest";
 import { recordCustomVoiceUsage } from "@elizaos/cloud-shared/lib/services/tts-custom-voice-usage";
 import {
   fingerprintCloudVoiceSettings,
@@ -663,7 +664,19 @@ async function __hono_POST(c: AppContext) {
     // sends it on BOTH the direct request and the proxy fallback, so a retry
     // after an ambiguous network outcome replays the committed reservation
     // instead of charging the utterance twice. Org-scoped inside reserve().
-    const ttsIdempotencyKey = request.headers.get("Idempotency-Key");
+    // The key is bound to the utterance it names: the same key with another
+    // text, voice, model or format is a new paid request, never a replay.
+    const clientIdempotencyKey = request.headers.get("Idempotency-Key");
+    const ttsIdempotencyKey = clientIdempotencyKey
+      ? `${clientIdempotencyKey}:${settlementDigest({
+          text,
+          voiceId: voiceId ?? null,
+          modelId: modelId ?? null,
+          format: body.format ?? "mp3",
+          withTimestamps: body.withTimestamps === true,
+          synthesis: TtsSynthesisOptions.parse(body),
+        })}`
+      : null;
     const billingContext: BillingContext = {
       organizationId: user.organization_id,
       userId: user.id,
