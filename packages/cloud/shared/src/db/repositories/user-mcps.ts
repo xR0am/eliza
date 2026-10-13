@@ -157,7 +157,7 @@ export const userMcpsRepository = {
   async countPublic(
     options: { category?: string; status?: UserMcp["status"]; search?: string } = {},
   ): Promise<number> {
-    const { category, status = "live", search, excludeOrganizationId } = options;
+    const { category, status = "live", search } = options;
     const conditions = [eq(userMcps.is_public, true), eq(userMcps.status, status)];
     if (category) {
       conditions.push(eq(userMcps.category, category));
