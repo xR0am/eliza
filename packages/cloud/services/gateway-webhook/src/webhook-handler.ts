@@ -58,6 +58,7 @@ import {
 } from "./network-service";
 import type { GatewayRedis } from "./redis";
 import {
+  type AgentReply,
   forwardToServer,
   refreshKedaActivity,
   resolveAgentServer,
@@ -1675,10 +1676,10 @@ async function processMessage(
     });
   });
 
-  let responseText: string;
+  let reply: AgentReply;
   stageStartedAt = Date.now();
   try {
-    responseText = await forwardToServer(
+    reply = await forwardToServer(
       server.serverUrl,
       server.serverName,
       agentId,
@@ -1706,13 +1707,16 @@ async function processMessage(
   }
   const forwardMs = Date.now() - stageStartedAt;
 
-  // An empty responseText is a deliberate no-response from the agent (mute /
-  // shouldRespond=no), not content: forwarding it would make platform adapters
-  // (WhatsApp/Twilio/Telegram) attempt an invalid empty send. Skip the reply so
-  // "agent chose silence" sends nothing, staying distinct from a forward
-  // failure (which returned above) and from a real reply.
+  // A reply with no text and no sendable media is a deliberate no-response
+  // from the agent (mute / shouldRespond=no), not content: forwarding it would
+  // make platform adapters (WhatsApp/Twilio/Telegram) attempt an invalid empty
+  // send. Skip the reply so "agent chose silence" sends nothing, staying
+  // distinct from a forward failure (which returned above) and from a real reply.
+  const mediaUrls = parsePersonalSharedMediaUrls({
+    mediaUrls: reply.mediaUrls,
+  });
   // error-policy:J5 no-op — deliberate agent silence, nothing to deliver.
-  if (responseText.length === 0) {
+  if (reply.text.length === 0 && mediaUrls.length === 0) {
     logger.debug("Agent produced no reply; skipping send", {
       agentId,
       platform: adapter.platform,
@@ -1726,8 +1730,9 @@ async function processMessage(
       adapter,
       config,
       event,
-      responseText,
+      reply.text,
       deliveryHooks,
+      mediaUrls,
     );
     logger.info("Connector message completed", {
       project,
