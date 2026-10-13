@@ -686,10 +686,9 @@ function getPlatformMetadataValidationError(
 }
 
 function clampLimit(value: string | null, fallback = 50): number {
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(1, Math.min(parsed, 100));
+  const parsed = value ? Number(value) : fallback;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, 100);
 }
 
 function parseOffset(value: string | null): number {
