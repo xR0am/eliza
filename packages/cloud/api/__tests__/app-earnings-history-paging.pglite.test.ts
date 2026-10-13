@@ -150,3 +150,9 @@ test("hasMore is false when the page holds the last remaining rows", async () =>
   expect(first.transactions).toHaveLength(10);
   expect(first.pagination.hasMore).toBe(true);
 });
+
+test("limit=0 is the documented empty page and reports nothing more", async () => {
+  const none = await page(0, 0);
+  expect(none.transactions).toEqual([]);
+  expect(none.pagination).toEqual({ limit: 0, offset: 0, hasMore: false });
+});

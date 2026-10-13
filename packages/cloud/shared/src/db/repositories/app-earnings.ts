@@ -98,6 +98,9 @@ export class AppEarningsRepository {
     offset: number = 0,
     type?: string,
   ): Promise<{ transactions: AppEarningsTransaction[]; hasMore: boolean }> {
+    // `limit: 0` is the documented empty page; it asks for nothing and so has
+    // nothing more.
+    if (limit === 0) return { transactions: [], hasMore: false };
     const rows = await dbRead.query.appEarningsTransactions.findMany({
       where: type
         ? and(eq(appEarningsTransactions.app_id, appId), eq(appEarningsTransactions.type, type))
