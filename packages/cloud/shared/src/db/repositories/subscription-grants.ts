@@ -1,0 +1,416 @@
+/**
+ * Redeems Cloud-native subscription grant codes. One primary transaction locks
+ * the organization, then the code row, so concurrent redemptions can neither
+ * exceed a code's redemption limit nor grant one organization twice. A grant
+ * publishes the plan's rate and resource policy for its window, through the
+ * existing organization entitlement projection (organizations without a Stripe
+ * subscription) and non-rollover monthly allowance buckets. A paid
+ * subscription keeps precedence while it is effective.
+ */
+import { ElizaError } from "@elizaos/core";
+import { and, desc, eq, gt, isNull, lte } from "drizzle-orm";
+import { isProductionDeployment } from "../../lib/config/deployment-environment";
+import { getCloudAwareEnv } from "../../lib/runtime/cloud-bindings";
+import { resolveSubscriptionPlanDefinition } from "../../lib/services/subscription-catalog";
+import type { DbTransaction } from "../client";
+import { writeTransaction } from "../helpers";
+import { organizationSubscriptionAuthorities } from "../schemas/billing-subscriptions";
+import {
+  type OrganizationEntitlement,
+  organizationEntitlements,
+} from "../schemas/organization-entitlements";
+import { organizations } from "../schemas/organizations";
+import { subscriptionAllowancePeriods } from "../schemas/subscription-allowance-periods";
+import { subscriptionAllowanceTransactions } from "../schemas/subscription-allowance-transactions";
+import {
+  type SubscriptionGrant,
+  subscriptionGrantCodes,
+  subscriptionGrants,
+} from "../schemas/subscription-grants";
+import { advanceOrganizationPolicyGeneration } from "./organization-policy-generation";
+import { readPostLockDatabaseNow } from "./primary-database-clock";
+import { microsToMoney, moneyToMicros } from "./subscription-funding-reservations";
+
+/** Unknown, expired, disabled and fully redeemed codes share one answer. */
+export const SUBSCRIPTION_GRANT_CODE_INVALID = "SUBSCRIPTION_GRANT_CODE_INVALID";
+/** The organization already holds a grant from another code of the same family. */
+export const SUBSCRIPTION_GRANT_ALREADY_GRANTED = "SUBSCRIPTION_GRANT_ALREADY_GRANTED";
+/** The idempotency key already recorded a different redemption for this organization. */
+export const SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT = "SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT";
+
+const DAY_MS = 86_400_000;
+
+export interface RedeemSubscriptionGrantInput {
+  organizationId: string;
+  userId: string | null;
+  codeHash: string;
+  idempotencyKey: string;
+}
+
+export interface RedeemSubscriptionGrantResult {
+  grant: SubscriptionGrant;
+  replayed: boolean;
+}
+
+function grantError(code: string, message: string, context: Record<string, unknown> = {}): never {
+  throw new ElizaError(message, { code, context });
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Canonical code text: case, spaces and dashes are presentation only, so
+ * `abcd-efgh` and `ABCD EFGH` are the same code. Returns null for text that
+ * cannot be a code, so callers answer with the same generic refusal.
+ */
+export function normalizeSubscriptionGrantCode(code: string): string | null {
+  const normalized = code.toUpperCase().replace(/[\s-]+/g, "");
+  return /^[A-Z0-9]{8,64}$/.test(normalized) ? normalized : null;
+}
+
+/** HMAC-SHA256 of the normalized code under the server pepper, as lowercase hex. */
+export async function hashSubscriptionGrantCode(
+  normalizedCode: string,
+  pepper: string,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(pepper),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(normalizedCode));
+  return Array.from(new Uint8Array(mac), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function addUtcMonths(start: Date, months: number): Date {
+  const year = start.getUTCFullYear();
+  const month = start.getUTCMonth() + months;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(
+    Date.UTC(
+      year,
+      month,
+      Math.min(start.getUTCDate(), lastDay),
+      start.getUTCHours(),
+      start.getUTCMinutes(),
+      start.getUTCSeconds(),
+      start.getUTCMilliseconds(),
+    ),
+  );
+}
+
+/**
+ * Monthly, non-rollover buckets covering the grant window. Each full month
+ * carries the plan's monthly allowance; a final partial month is prorated.
+ */
+export function grantAllowanceSchedule(
+  startsAt: Date,
+  endsAt: Date,
+  monthlyAmountUsd: string,
+): Array<{ periodStart: Date; periodEnd: Date; amount: string }> {
+  const monthly = moneyToMicros(monthlyAmountUsd, "plan.allowance.amountUsd");
+  const schedule: Array<{ periodStart: Date; periodEnd: Date; amount: string }> = [];
+  for (let index = 0; ; index += 1) {
+    const periodStart = addUtcMonths(startsAt, index);
+    if (periodStart >= endsAt) break;
+    const fullEnd = addUtcMonths(startsAt, index + 1);
+    const periodEnd = fullEnd < endsAt ? fullEnd : endsAt;
+    const amount =
+      periodEnd.getTime() === fullEnd.getTime()
+        ? monthly
+        : (monthly * BigInt(periodEnd.getTime() - periodStart.getTime())) /
+          BigInt(fullEnd.getTime() - periodStart.getTime());
+    if (amount > 0n) schedule.push({ periodStart, periodEnd, amount: microsToMoney(amount) });
+  }
+  return schedule;
+}
+
+/** The plan policy a grant publishes; the same catalogue values a paid projection uses. */
+export function grantEntitlementPlanValues(
+  grant: Pick<SubscriptionGrant, "plan_key" | "catalog_version">,
+) {
+  const plan = resolveSubscriptionPlanDefinition(grant.plan_key, grant.catalog_version);
+  return {
+    plan_key: grant.plan_key,
+    catalog_version: grant.catalog_version,
+    completions_rpm: plan.rateLimits.completionsRpm,
+    embeddings_rpm: plan.rateLimits.embeddingsRpm,
+    standard_rpm: plan.rateLimits.standardRpm,
+    strict_rpm: plan.rateLimits.strictRpm,
+    cloud_characters_ceiling: plan.resourceCeilings.cloudCharacters,
+    agent_sandboxes_ceiling: plan.resourceCeilings.agentSandboxes,
+    containers_ceiling: plan.resourceCeilings.containers,
+    storage_gib_ceiling: plan.resourceCeilings.storageGiB,
+    apps_ceiling: plan.resourceCeilings.apps,
+  };
+}
+
+/** The organization's grant whose window contains `now`, latest end first. */
+export async function readActiveSubscriptionGrant(
+  tx: DbTransaction,
+  organizationId: string,
+  now: Date,
+): Promise<SubscriptionGrant | undefined> {
+  const [grant] = await tx
+    .select()
+    .from(subscriptionGrants)
+    .where(
+      and(
+        eq(subscriptionGrants.organization_id, organizationId),
+        lte(subscriptionGrants.starts_at, now),
+        gt(subscriptionGrants.ends_at, now),
+      ),
+    )
+    .orderBy(desc(subscriptionGrants.ends_at))
+    .limit(1);
+  return grant;
+}
+
+export class SubscriptionGrantsRepository {
+  async redeem(input: RedeemSubscriptionGrantInput): Promise<RedeemSubscriptionGrantResult> {
+    return writeTransaction((tx) => this.redeemInTransaction(tx, input));
+  }
+
+  async redeemInTransaction(
+    tx: DbTransaction,
+    input: RedeemSubscriptionGrantInput,
+  ): Promise<RedeemSubscriptionGrantResult> {
+    // Billing lock order: organization first, then the shared code row.
+    const [organization] = await tx
+      .select({
+        id: organizations.id,
+        is_active: organizations.is_active,
+        account_lifecycle_state: organizations.account_lifecycle_state,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, input.organizationId))
+      .for("update");
+    if (
+      !organization ||
+      !organization.is_active ||
+      organization.account_lifecycle_state !== "active"
+    )
+      grantError(
+        "SUBSCRIPTION_GRANT_ORGANIZATION_UNAVAILABLE",
+        "Organization cannot receive a grant",
+        {
+          organizationId: input.organizationId,
+        },
+      );
+
+    const [code] = await tx
+      .select()
+      .from(subscriptionGrantCodes)
+      .where(eq(subscriptionGrantCodes.code_hash, input.codeHash))
+      .for("update");
+    if (!code) grantError(SUBSCRIPTION_GRANT_CODE_INVALID, "Subscription code is not valid");
+
+    const existing = await tx
+      .select()
+      .from(subscriptionGrants)
+      .where(eq(subscriptionGrants.organization_id, input.organizationId));
+    const sameCode = existing.find((grant) => grant.code_id === code.id);
+    if (sameCode) return { grant: sameCode, replayed: true };
+    if (existing.some((grant) => grant.idempotency_key === input.idempotencyKey))
+      grantError(
+        SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT,
+        "Idempotency key was used for a different redemption",
+        { organizationId: input.organizationId },
+      );
+    if (existing.some((grant) => grant.family === code.family))
+      grantError(SUBSCRIPTION_GRANT_ALREADY_GRANTED, "Organization already holds this grant", {
+        organizationId: input.organizationId,
+      });
+
+    const now = await readPostLockDatabaseNow(tx);
+    if (
+      code.disabled_at !== null ||
+      (code.expires_at !== null && code.expires_at <= now) ||
+      code.redeemed_count >= code.max_redemptions
+    )
+      grantError(SUBSCRIPTION_GRANT_CODE_INVALID, "Subscription code is not valid");
+
+    const plan = resolveSubscriptionPlanDefinition(code.plan_key, code.catalog_version);
+    const startsAt = now;
+    const endsAt = new Date(now.getTime() + code.duration_days * DAY_MS);
+    const [grant] = await tx
+      .insert(subscriptionGrants)
+      .values({
+        organization_id: input.organizationId,
+        user_id: input.userId,
+        code_id: code.id,
+        family: code.family,
+        plan_key: code.plan_key,
+        catalog_version: code.catalog_version,
+        idempotency_key: input.idempotencyKey,
+        starts_at: startsAt,
+        ends_at: endsAt,
+        created_at: now,
+      })
+      .returning();
+    if (!grant) throw new Error("Subscription grant insert returned no row");
+    const [counted] = await tx
+      .update(subscriptionGrantCodes)
+      .set({ redeemed_count: code.redeemed_count + 1 })
+      .where(
+        and(
+          eq(subscriptionGrantCodes.id, code.id),
+          eq(subscriptionGrantCodes.redeemed_count, code.redeemed_count),
+        ),
+      )
+      .returning({ id: subscriptionGrantCodes.id });
+    if (!counted) throw new Error("Subscription code redemption count changed under lock");
+
+    await this.grantAllowanceInTransaction(tx, grant, plan.allowance.amountUsd, now);
+    const projected = await this.publishProjectionInTransaction(tx, grant, now);
+    await advanceOrganizationPolicyGeneration(tx, {
+      organizationId: input.organizationId,
+      reason: "entitlement",
+      actor: "system:subscription_grant",
+      change: {
+        grantId: grant.id,
+        planKey: grant.plan_key,
+        endsAt: grant.ends_at.toISOString(),
+        projectionRevision: projected?.projection_revision ?? null,
+      },
+    });
+    return { grant, replayed: false };
+  }
+
+  private async grantAllowanceInTransaction(
+    tx: DbTransaction,
+    grant: SubscriptionGrant,
+    monthlyAmountUsd: string,
+    now: Date,
+  ): Promise<void> {
+    const environment = isProductionDeployment(getCloudAwareEnv()) ? "live" : "test";
+    const schedule = grantAllowanceSchedule(grant.starts_at, grant.ends_at, monthlyAmountUsd);
+    for (const [index, bucket] of schedule.entries()) {
+      const [period] = await tx
+        .insert(subscriptionAllowancePeriods)
+        .values({
+          organization_id: grant.organization_id,
+          subscription_id: null,
+          subscription_revision: null,
+          provider: "eliza",
+          provider_environment: environment,
+          grant_source: "promo_grant",
+          promo_grant_id: grant.id,
+          plan_key: grant.plan_key,
+          catalog_version: grant.catalog_version,
+          period_start: bucket.periodStart,
+          period_end: bucket.periodEnd,
+          expires_at: bucket.periodEnd,
+          granted_amount: bucket.amount,
+          available_amount: bucket.amount,
+        })
+        .returning({ id: subscriptionAllowancePeriods.id });
+      if (!period) throw new Error("Grant allowance insert returned no row");
+      await tx.insert(subscriptionAllowanceTransactions).values({
+        organization_id: grant.organization_id,
+        allowance_period_id: period.id,
+        sequence: 1,
+        kind: "grant",
+        amount: bucket.amount,
+        available_before: "0.000000",
+        available_after: bucket.amount,
+        reserved_before: "0.000000",
+        reserved_after: "0.000000",
+        settled_before: "0.000000",
+        settled_after: "0.000000",
+        expired_before: "0.000000",
+        expired_after: "0.000000",
+        clawed_back_before: "0.000000",
+        clawed_back_after: "0.000000",
+        idempotency_key: `promo_grant:${grant.id}:${index}`,
+        request_digest: await sha256Hex(
+          [
+            "promo_grant",
+            grant.id,
+            String(index),
+            bucket.periodStart.toISOString(),
+            bucket.amount,
+          ].join("\0"),
+        ),
+        metadata: { promoGrantId: grant.id },
+        occurred_at: now,
+      });
+    }
+  }
+
+  /**
+   * An organization without a Stripe subscription has no paid projection to
+   * preserve: the grant becomes its projection for the grant window. An
+   * organization with subscription authority keeps its paid projection; the
+   * policy reader composes the grant once that subscription stops being effective.
+   */
+  private async publishProjectionInTransaction(
+    tx: DbTransaction,
+    grant: SubscriptionGrant,
+    now: Date,
+  ): Promise<OrganizationEntitlement | undefined> {
+    const [association] = await tx
+      .select({ state: organizationSubscriptionAuthorities.state })
+      .from(organizationSubscriptionAuthorities)
+      .where(eq(organizationSubscriptionAuthorities.organization_id, grant.organization_id))
+      .for("update");
+    if (association?.state !== "none") return undefined;
+    const [current] = await tx
+      .select()
+      .from(organizationEntitlements)
+      .where(
+        and(
+          eq(organizationEntitlements.organization_id, grant.organization_id),
+          isNull(organizationEntitlements.billing_scope_id),
+        ),
+      )
+      .for("update");
+    // A longer-running grant projection from another family keeps its window.
+    if (
+      current?.source_grant_id &&
+      current.effective_until !== null &&
+      current.effective_until >= grant.ends_at
+    )
+      return current;
+    const values = {
+      ...grantEntitlementPlanValues(grant),
+      state: "active" as const,
+      access: "granted" as const,
+      entitlement_effective: true,
+      effective_from: grant.starts_at,
+      effective_until: grant.ends_at,
+      source_subscription_id: null,
+      source_subscription_revision: null,
+      source_grant_id: grant.id,
+      source_digest: await sha256Hex(`promo_grant\0${grant.id}`),
+      rebuilt_at: now,
+      updated_at: now,
+    };
+    if (!current) {
+      const [inserted] = await tx
+        .insert(organizationEntitlements)
+        .values({ ...values, organization_id: grant.organization_id, projection_revision: 0 })
+        .returning();
+      return inserted;
+    }
+    const [updated] = await tx
+      .update(organizationEntitlements)
+      .set({ ...values, projection_revision: current.projection_revision + 1 })
+      .where(
+        and(
+          eq(organizationEntitlements.id, current.id),
+          eq(organizationEntitlements.projection_revision, current.projection_revision),
+        ),
+      )
+      .returning();
+    if (!updated) throw new Error("Grant entitlement projection changed under lock");
+    return updated;
+  }
+}
+
+export const subscriptionGrantsRepository = new SubscriptionGrantsRepository();

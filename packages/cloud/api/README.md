@@ -36,6 +36,27 @@ native configuration. Retain the existing S256 grant, inactive exchange, durable
 receipt acknowledgment, self-revocation and account recovery contracts. `cloud:user`
 is the existing broad user/organization capability, not a narrower permission claim.
 
+## Subscription grant codes and entitlements
+
+Grant codes are Cloud-native, not Stripe promotion codes. A redeemed code gives
+the organization its plan (default Plus for 183 days) through the existing
+entitlement and monthly allowance tables, then reverts. An effective paid
+subscription keeps precedence; one grant per organization per code family.
+
+- `POST /api/v1/subscription/redeem` with `{code, idempotencyKey}`, using an API
+  key or a session. Replays return the original grant. Unknown, expired,
+  disabled and used-up codes return one generic 400. Limited per credential and IP.
+- `GET /api/v1/subscription/entitlement` returns `{entitlement}`, a 30-minute
+  ES256 JWS (`typ` `eliza-entitlement+jwt`, `aud` `eliza-alpha-phone`).
+- `GET /api/v1/subscription/entitlement-keys` (public) returns the current and
+  previous public keys. Both entitlement routes return 503 until the
+  `ELIZA_ENTITLEMENT_*` secrets are set; redeem needs
+  `ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER`.
+
+Mint codes with `bun --conditions=eliza-source packages/cloud/scripts/admin/mint-subscription-grant-codes.ts --count N`
+(same `DATABASE_URL` and pepper as the target environment). Codes print once;
+only HMACs are stored. Apply migration `0542_subscription_grant_codes` first.
+
 ## Pending plan-change discovery
 
 `GET /api/v1/subscriptions/plan-change/commands?limit=...` rediscovers the current

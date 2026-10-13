@@ -1,12 +1,16 @@
 /** Resolves organization policy from one primary transaction for observation, inference and resource admission. */
 import { ElizaError } from "@elizaos/core";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { type DbTransaction, dbWrite } from "../../db/client";
 import { readPrimaryOrganizationSubscription } from "../../db/repositories/account-billing-snapshot-subscription";
 import {
   deriveSubscriptionEntitlementValues,
   SUBSCRIPTION_FREE_ENTITLEMENT_VALUES,
 } from "../../db/repositories/subscription-entitlements";
+import {
+  grantEntitlementPlanValues,
+  readActiveSubscriptionGrant,
+} from "../../db/repositories/subscription-grants";
 import {
   billingSubscriptionRevisions,
   billingSubscriptions,
@@ -16,7 +20,12 @@ import { creditTransactions } from "../../db/schemas/credit-transactions";
 import { orgRateLimitOverrides } from "../../db/schemas/org-rate-limit-overrides";
 import { orgStorageQuota } from "../../db/schemas/org-storage-quota";
 import { organizationConfig } from "../../db/schemas/organization-config";
+import {
+  type OrganizationEntitlement,
+  organizationEntitlements,
+} from "../../db/schemas/organization-entitlements";
 import { organizations } from "../../db/schemas/organizations";
+import { subscriptionGrants } from "../../db/schemas/subscription-grants";
 import { getMaxNonTerminalAgentsForOrg } from "../constants/agent-sandbox-quota";
 import { getMaxAppsPerOrg } from "../constants/app-quota";
 import { resolveMaxCloudCharactersForOrg } from "../constants/cloud-character-quota";
@@ -35,8 +44,10 @@ import { withSubscriptionPaymentGrace } from "./subscription-payment-grace";
 
 export interface OrganizationPolicyStamp {
   generation: string;
-  source: "legacy" | "subscription";
+  source: "legacy" | "subscription" | "promo_grant";
   sourceSubscriptionId: string | null;
+  /** The redeemed subscription grant serving a `promo_grant` policy. */
+  sourceGrantId?: string | null;
   sourceRevision: string | null;
   projectionRevision: string | null;
   catalogVersion: string | null;
@@ -195,6 +206,118 @@ const purchasedCreditTierAmount = sql`CASE
   ELSE 0
 END`;
 
+type GrantedPlanValues = Pick<
+  OrganizationEntitlement,
+  | "plan_key"
+  | "catalog_version"
+  | "completions_rpm"
+  | "embeddings_rpm"
+  | "standard_rpm"
+  | "strict_rpm"
+  | "cloud_characters_ceiling"
+  | "agent_sandboxes_ceiling"
+  | "containers_ceiling"
+  | "storage_gib_ceiling"
+  | "apps_ceiling"
+>;
+
+/** Plan-shaped policy shared by paid subscriptions and subscription grants. */
+function entitlementShapedPolicy(
+  organizationId: string,
+  input: {
+    base: Pick<OrganizationQuotaPolicy, "overrides" | "balance">;
+    org: { settings: Parameters<typeof resolveMaxCloudCharactersForOrg>[1] };
+    config: { settings: Parameters<typeof resolveMaxContainersForOrg>[1] } | null | undefined;
+    storage: { bytes_limit: bigint; limit_override_authorized: boolean } | null | undefined;
+    override:
+      | {
+          completions_rpm: number | null;
+          embeddings_rpm: number | null;
+          standard_rpm: number | null;
+          strict_rpm: number | null;
+        }
+      | null
+      | undefined;
+    granted: GrantedPlanValues;
+    authority: OrganizationPolicyStamp;
+    now: Date;
+  },
+): OrganizationQuotaPolicy {
+  const { base, org, config, storage, override, granted, authority, now } = input;
+  const characterOverride = observe(() => resolveMaxCloudCharactersForOrg(0, org.settings));
+  const containerOverride = observe(() => resolveMaxContainersForOrg(0, config?.settings));
+  const tier: OrgTierData = {
+    tierName: granted.plan_key,
+    completionsRpm: override?.completions_rpm ?? granted.completions_rpm,
+    embeddingsRpm: override?.embeddings_rpm ?? granted.embeddings_rpm,
+    standardRpm: override?.standard_rpm ?? granted.standard_rpm,
+    strictRpm: override?.strict_rpm ?? granted.strict_rpm,
+  };
+  if (
+    override &&
+    [
+      override.completions_rpm,
+      override.embeddings_rpm,
+      override.standard_rpm,
+      override.strict_rpm,
+    ].some((value) => value !== null)
+  )
+    tier.tierName = "custom";
+  return {
+    ...base,
+    observedAt: now.toISOString(),
+    authority,
+    tier: observe(() => {
+      if (
+        ![tier.completionsRpm, tier.embeddingsRpm, tier.standardRpm, tier.strictRpm].every(
+          (value) => Number.isSafeInteger(value) && value > 0,
+        )
+      )
+        return unavailable(organizationId, "invalid_rate_override");
+      return tier;
+    }),
+    tierSourceCreditTotal: null,
+    subscriptionFunded: granted.plan_key !== "free",
+    limits: {
+      characters:
+        characterOverride.status === "unavailable"
+          ? characterOverride
+          : limit(
+              characterOverride.value.source === "organization.settings.max_agents"
+                ? characterOverride.value.limit
+                : granted.cloud_characters_ceiling,
+              characterOverride.value.source === "organization.settings.max_agents"
+                ? characterOverride.value.source
+                : "subscription-entitlement",
+            ),
+      nonEagerSandboxes: limit(granted.agent_sandboxes_ceiling, "subscription-entitlement"),
+      sandboxes: limit(granted.agent_sandboxes_ceiling, "subscription-entitlement"),
+      containers:
+        containerOverride.status === "unavailable"
+          ? containerOverride
+          : limit(
+              containerOverride.value.source === "organization_config.settings.max_containers"
+                ? containerOverride.value.limit
+                : granted.containers_ceiling,
+              containerOverride.value.source === "organization_config.settings.max_containers"
+                ? containerOverride.value.source
+                : "subscription-entitlement",
+            ),
+      apps: limit(granted.apps_ceiling, "subscription-entitlement"),
+      storage: limit(
+        storage?.limit_override_authorized
+          ? storage.bytes_limit
+          : granted.storage_gib_ceiling === null
+            ? null
+            : BigInt(granted.storage_gib_ceiling) * 1024n * 1024n * 1024n,
+        storage?.limit_override_authorized
+          ? "authorized-storage-override"
+          : "subscription-entitlement",
+      ),
+      apiKeys: subscriptionApiKeyLimit(granted.plan_key, granted.catalog_version),
+    },
+  };
+}
 export async function readOrganizationQuotaPolicyInTransaction(
   tx: DbTransaction,
   organizationId: string,
@@ -226,6 +349,14 @@ export async function readOrganizationQuotaPolicyInTransaction(
         bytes_limit: orgStorageQuota.bytes_limit,
         limit_override_authorized: orgStorageQuota.limit_override_authorized,
       },
+      // The organization projection carries a subscription grant only for an
+      // organization without Stripe subscription authority.
+      grantProjection: {
+        source_grant_id: organizationEntitlements.source_grant_id,
+        projection_revision: organizationEntitlements.projection_revision,
+        effective_from: organizationEntitlements.effective_from,
+        effective_until: organizationEntitlements.effective_until,
+      },
       // Correlated selectors preserve one policy row per organization. The
       // legacy branch still rejects any persisted subscription, including a
       // terminal one, and sums only net purchased credits (#23019).
@@ -251,6 +382,13 @@ export async function readOrganizationQuotaPolicyInTransaction(
     .leftJoin(orgRateLimitOverrides, eq(orgRateLimitOverrides.organization_id, organizations.id))
     .leftJoin(organizationConfig, eq(organizationConfig.organization_id, organizations.id))
     .leftJoin(orgStorageQuota, eq(orgStorageQuota.organization_id, organizations.id))
+    .leftJoin(
+      organizationEntitlements,
+      and(
+        eq(organizationEntitlements.organization_id, organizations.id),
+        isNull(organizationEntitlements.billing_scope_id),
+      ),
+    )
     .where(eq(organizations.id, organizationId));
   if (!inputs || !inputs.association || inputs.association.state === "unavailable")
     return unavailable(organizationId, "missing_account_authority");
@@ -278,6 +416,49 @@ export async function readOrganizationQuotaPolicyInTransaction(
       return unavailable(organizationId, "missing_legacy_selector");
     const creditTotal = inputs.legacyCreditTotal;
     const now = observedAt ?? new Date(inputs.legacyObservedAt);
+    const projection = inputs.grantProjection;
+    if (
+      projection?.source_grant_id &&
+      projection.effective_until !== null &&
+      projection.effective_from <= now &&
+      now < projection.effective_until
+    ) {
+      const [grant] = await tx
+        .select()
+        .from(subscriptionGrants)
+        .where(
+          and(
+            eq(subscriptionGrants.id, projection.source_grant_id),
+            eq(subscriptionGrants.organization_id, organizationId),
+          ),
+        );
+      if (
+        !grant ||
+        grant.starts_at.getTime() !== projection.effective_from.getTime() ||
+        grant.ends_at.getTime() !== projection.effective_until.getTime()
+      )
+        return unavailable(organizationId, "grant_projection_conflict");
+      return entitlementShapedPolicy(organizationId, {
+        base,
+        org,
+        config,
+        storage,
+        override,
+        granted: grantEntitlementPlanValues(grant),
+        authority: {
+          generation: association.policy_generation.toString(),
+          source: "promo_grant",
+          sourceSubscriptionId: null,
+          sourceRevision: null,
+          projectionRevision: String(projection.projection_revision),
+          catalogVersion: grant.catalog_version,
+          sourceGrantId: grant.id,
+          effectiveFrom: grant.starts_at.toISOString(),
+          effectiveUntil: grant.ends_at.toISOString(),
+        },
+        now,
+      });
+    }
     return {
       ...base,
       observedAt: now.toISOString(),
@@ -377,33 +558,45 @@ export async function readOrganizationQuotaPolicyInTransaction(
       ? paidUntil
       : entitlement.effective_from;
   const grantedUntil = lapsed ? null : paidUntil;
-  const characterOverride = observe(() => resolveMaxCloudCharactersForOrg(0, org.settings));
-  const containerOverride = observe(() => resolveMaxContainersForOrg(0, config?.settings));
-  const tier: OrgTierData = {
-    tierName: granted.plan_key,
-    completionsRpm: override?.completions_rpm ?? granted.completions_rpm,
-    embeddingsRpm: override?.embeddings_rpm ?? granted.embeddings_rpm,
-    standardRpm: override?.standard_rpm ?? granted.standard_rpm,
-    strictRpm: override?.strict_rpm ?? granted.strict_rpm,
-  };
-  if (
-    override &&
-    [
-      override.completions_rpm,
-      override.embeddings_rpm,
-      override.standard_rpm,
-      override.strict_rpm,
-    ].some((value) => value !== null)
-  )
-    tier.tierName = "custom";
+  // A grant serves an organization whose paid subscription is no longer
+  // effective; an effective paid subscription keeps precedence.
+  const promo = lapsed ? await readActiveSubscriptionGrant(tx, organizationId, now) : undefined;
   const [stored] = await tx
     .select({ generation: organizationSubscriptionAuthorities.policy_generation })
     .from(organizationSubscriptionAuthorities)
     .where(eq(organizationSubscriptionAuthorities.organization_id, organizationId));
   if (!stored) return unavailable(organizationId, "missing_policy_generation");
-  return {
-    ...base,
-    observedAt: now.toISOString(),
+  if (promo)
+    return entitlementShapedPolicy(organizationId, {
+      base,
+      org,
+      config,
+      storage,
+      override,
+      granted: grantEntitlementPlanValues(promo),
+      authority: {
+        generation: stored.generation.toString(),
+        source: "promo_grant",
+        sourceSubscriptionId: null,
+        sourceRevision: null,
+        projectionRevision: String(entitlement.projection_revision),
+        catalogVersion: promo.catalog_version,
+        sourceGrantId: promo.id,
+        effectiveFrom: (promo.starts_at > grantedFrom
+          ? promo.starts_at
+          : grantedFrom
+        ).toISOString(),
+        effectiveUntil: promo.ends_at.toISOString(),
+      },
+      now,
+    });
+  return entitlementShapedPolicy(organizationId, {
+    base,
+    org,
+    config,
+    storage,
+    override,
+    granted,
     authority: {
       generation: stored.generation.toString(),
       source: "subscription",
@@ -414,56 +607,8 @@ export async function readOrganizationQuotaPolicyInTransaction(
       effectiveFrom: grantedFrom.toISOString(),
       effectiveUntil: grantedUntil?.toISOString() ?? null,
     },
-    tier: observe(() => {
-      if (
-        ![tier.completionsRpm, tier.embeddingsRpm, tier.standardRpm, tier.strictRpm].every(
-          (value) => Number.isSafeInteger(value) && value > 0,
-        )
-      )
-        return unavailable(organizationId, "invalid_rate_override");
-      return tier;
-    }),
-    tierSourceCreditTotal: null,
-    subscriptionFunded: granted.plan_key !== "free",
-    limits: {
-      characters:
-        characterOverride.status === "unavailable"
-          ? characterOverride
-          : limit(
-              characterOverride.value.source === "organization.settings.max_agents"
-                ? characterOverride.value.limit
-                : granted.cloud_characters_ceiling,
-              characterOverride.value.source === "organization.settings.max_agents"
-                ? characterOverride.value.source
-                : "subscription-entitlement",
-            ),
-      nonEagerSandboxes: limit(granted.agent_sandboxes_ceiling, "subscription-entitlement"),
-      sandboxes: limit(granted.agent_sandboxes_ceiling, "subscription-entitlement"),
-      containers:
-        containerOverride.status === "unavailable"
-          ? containerOverride
-          : limit(
-              containerOverride.value.source === "organization_config.settings.max_containers"
-                ? containerOverride.value.limit
-                : granted.containers_ceiling,
-              containerOverride.value.source === "organization_config.settings.max_containers"
-                ? containerOverride.value.source
-                : "subscription-entitlement",
-            ),
-      apps: limit(granted.apps_ceiling, "subscription-entitlement"),
-      storage: limit(
-        storage?.limit_override_authorized
-          ? storage.bytes_limit
-          : granted.storage_gib_ceiling === null
-            ? null
-            : BigInt(granted.storage_gib_ceiling) * 1024n * 1024n * 1024n,
-        storage?.limit_override_authorized
-          ? "authorized-storage-override"
-          : "subscription-entitlement",
-      ),
-      apiKeys: subscriptionApiKeyLimit(granted.plan_key, granted.catalog_version),
-    },
-  };
+    now,
+  });
 }
 export async function readOrganizationQuotaPolicy(
   organizationId: string,

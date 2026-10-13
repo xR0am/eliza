@@ -133,6 +133,16 @@ on:
         required: false
       OIDC_SIGNING_JWKS:
         required: false
+      ELIZA_ENTITLEMENT_SIGNING_KEY:
+        required: false
+      ELIZA_ENTITLEMENT_SIGNING_KEY_ID:
+        required: false
+      ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY:
+        required: false
+      ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID:
+        required: false
+      ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER:
+        required: false
       OPENAI_API_KEY:
         required: false
       OPENROUTER_API_KEY:
@@ -1428,6 +1438,13 @@ jobs:
           STEWARD_PLATFORM_KEYS: ${{ secrets.STEWARD_PLATFORM_KEYS }}
           STEWARD_TENANT_API_KEY: ${{ secrets.STEWARD_TENANT_API_KEY }}
           OIDC_SIGNING_JWKS: ${{ secrets.OIDC_SIGNING_JWKS }}
+          # Subscription entitlement signing and grant-code pepper. Optional: the
+          # routes fail closed with 503 until configured.
+          ELIZA_ENTITLEMENT_SIGNING_KEY: ${{ secrets.ELIZA_ENTITLEMENT_SIGNING_KEY }}
+          ELIZA_ENTITLEMENT_SIGNING_KEY_ID: ${{ secrets.ELIZA_ENTITLEMENT_SIGNING_KEY_ID }}
+          ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY: ${{ secrets.ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY }}
+          ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID: ${{ secrets.ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID }}
+          ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER: ${{ secrets.ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER }}
           OIDC_CLIENTS: ${{ secrets.OIDC_CLIENTS }}
           ELIZA_APP_WEBHOOK_GATEWAY_URL: ${{ vars.ELIZA_APP_WEBHOOK_GATEWAY_URL }}
           ELIZA_APP_WEBHOOK_GATEWAY_SECRET: ${{ secrets.ELIZA_APP_WEBHOOK_GATEWAY_SECRET }}
@@ -1899,6 +1916,11 @@ jobs:
             STEWARD_PLATFORM_KEYS \
             STEWARD_TENANT_API_KEY \
             OIDC_SIGNING_JWKS \
+            ELIZA_ENTITLEMENT_SIGNING_KEY \
+            ELIZA_ENTITLEMENT_SIGNING_KEY_ID \
+            ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY \
+            ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID \
+            ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER \
             OIDC_CLIENTS \
             GATEWAY_INTERNAL_SECRET \
             ELIZA_APP_WEBHOOK_GATEWAY_SECRET \
