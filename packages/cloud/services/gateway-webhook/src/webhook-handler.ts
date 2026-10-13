@@ -1790,19 +1790,27 @@ function beginTypingFeedback(
   if (adapter.platform === "telegram") {
     return startTypingRefreshLoop(adapter, config, event);
   }
-  adapter.sendTypingIndicator(config, event).catch((err) => {
-    logger.debug("sendTypingIndicator failed", {
-      platform: adapter.platform,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
-  return () => {
-    adapter.stopTypingIndicator?.(config, event).catch((err) => {
-      logger.debug("stopTypingIndicator failed", {
+  const startTyping = adapter
+    .sendTypingIndicator(config, event)
+    .catch((err) => {
+      logger.debug("sendTypingIndicator failed", {
         platform: adapter.platform,
         error: err instanceof Error ? err.message : String(err),
       });
     });
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    // Keep model/reply work independent, but never stop before a delayed start settles.
+    startTyping
+      .then(() => adapter.stopTypingIndicator?.(config, event))
+      .catch((err) => {
+        logger.debug("stopTypingIndicator failed", {
+          platform: adapter.platform,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   };
 }
 
