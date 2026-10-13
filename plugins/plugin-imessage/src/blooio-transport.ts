@@ -70,7 +70,6 @@ export interface BlooioInboundMessage {
   timestamp: number;
   isGroup: boolean;
   replyToMessageId?: string;
-  mediaUrls: string[];
   /** The allowed attachments with the file name Blooio reports, in order. */
   attachments: Array<{ url: string; name?: string }>;
 }
@@ -125,8 +124,7 @@ export function parseBlooioInbound(
         : { url: attachment.url, ...(attachment.name ? { name: attachment.name } : {}) }
     )
     .filter((attachment) => isAllowedBlooioMediaUrl(attachment.url));
-  const mediaUrls = attachments.map((attachment) => attachment.url);
-  if (!(message.text ?? "").trim() && mediaUrls.length === 0) return null;
+  if (!(message.text ?? "").trim() && attachments.length === 0) return null;
   const rawTimestamp = envelope.data.created_at;
   const timestamp = rawTimestamp < 100_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
   return {
@@ -138,7 +136,6 @@ export function parseBlooioInbound(
     timestamp,
     isGroup: message.is_group ?? message.group != null,
     ...(message.reply_to_message_id ? { replyToMessageId: message.reply_to_message_id } : {}),
-    mediaUrls,
     attachments,
   };
 }
