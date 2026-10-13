@@ -49,6 +49,7 @@ export function __resetWebHttpTestOverrides(): void {
 }
 
 export interface GuardedTextHttpOptions {
+  signal?: AbortSignal;
   method?: "GET" | "POST";
   body?: string;
   headers?: Record<string, string>;
@@ -154,6 +155,7 @@ export async function guardedTextHttpRequest(
     ...transport,
     maxRedirects: DEFAULT_MAX_REDIRECTS,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    signal: options.signal,
     init: {
       method: options.method ?? "GET",
       headers,
@@ -176,6 +178,7 @@ export async function guardedTextHttpRequest(
     const text = await readTextWithinLimit(
       guarded.response,
       options.maxBytes ?? DEFAULT_MAX_BYTES,
+      options.signal,
     );
     return {
       ok: guarded.response.ok,

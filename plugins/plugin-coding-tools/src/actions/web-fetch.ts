@@ -7,6 +7,6 @@ export {
   htmlToReadableText,
   isCodingWebFetchEnabled,
 } from "./web-fetch-core.js";
-export const webFetchAction = createWebFetchAction((url) =>
-  guardedTextHttpRequest(url),
+export const webFetchAction = createWebFetchAction((url, signal) =>
+  guardedTextHttpRequest(url, { signal }),
 );
