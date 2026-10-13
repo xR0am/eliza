@@ -81,3 +81,41 @@ test("updateCampaign refuses a date change it cannot push to TikTok", async () =
   expect(result.error).toMatch(/ad group/);
   expect(requests).toEqual([]);
 });
+
+test("a creative for a campaign whose end date has passed is refused before any request", async () => {
+  const requests = captureTikTokRequests();
+
+  const result = await tiktokAdsProvider.createCreative(
+    { accessToken: "fixture-token" },
+    "adv-1",
+    "adv-1/c1",
+    {
+      ...creativeInput,
+      campaignStartDate: new Date("2020-01-01T00:00:00.000Z"),
+      campaignEndDate: new Date("2020-02-01T00:00:00.000Z"),
+    },
+  );
+
+  expect(result.success).toBe(false);
+  expect(result.error).toContain("end date has passed");
+  expect(requests).toEqual([]);
+});
+
+test("an update that bundles dates with a name and budget changes nothing at TikTok", async () => {
+  const requests = captureTikTokRequests();
+
+  const result = await tiktokAdsProvider.updateCampaign(
+    { accessToken: "fixture-token" },
+    "adv-1/c1",
+    {
+      name: "Renamed",
+      budgetAmount: 75,
+      endDate: new Date("2099-12-31T00:00:00.000Z"),
+    },
+  );
+
+  // The service writes the local row only after provider success, so a whole
+  // refusal keeps the stored campaign and TikTok in step.
+  expect(result.success).toBe(false);
+  expect(requests).toEqual([]);
+});

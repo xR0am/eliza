@@ -136,7 +136,8 @@ function tiktokScheduleTime(date: Date): string {
  * TikTok keeps delivery dates on the ad group, not the campaign. A campaign
  * with an end date becomes a bounded `SCHEDULE_START_END` ad group; one without
  * runs `SCHEDULE_FROM_NOW`. The start never lies in the past: an ad group added
- * to a campaign that already started begins now.
+ * to a campaign that already started begins now. The caller refuses a campaign
+ * whose end date has passed, so the end always follows the start.
  */
 function tiktokAdGroupSchedule(
   input: Pick<CreateCreativeInput, "campaignStartDate" | "campaignEndDate">,
@@ -408,6 +409,14 @@ export const tiktokAdsProvider: AdProvider = {
       name: input.name,
     });
     const { advertiserId, campaignId } = splitTikTokCampaignId(accountId, externalCampaignId);
+    const now = new Date();
+    if (input.campaignEndDate && input.campaignEndDate <= now) {
+      // An ad group needs a delivery window in the future; the campaign's has closed.
+      return {
+        success: false,
+        error: "The campaign's end date has passed; extend the campaign before adding a creative",
+      };
+    }
     const primaryMedia = input.media[0];
     if (primaryMedia && !primaryMedia.providerAssetId) {
       return {
@@ -430,7 +439,7 @@ export const tiktokAdsProvider: AdProvider = {
           promotion_type: "WEBSITE",
           placement_type: "PLACEMENT_TYPE_AUTOMATIC",
           budget_mode: "BUDGET_MODE_INFINITE",
-          ...tiktokAdGroupSchedule(input, new Date()),
+          ...tiktokAdGroupSchedule(input, now),
           billing_event: "CPC",
           bid_type: "BID_TYPE_NO_BID",
           operation_status: "DISABLE",
