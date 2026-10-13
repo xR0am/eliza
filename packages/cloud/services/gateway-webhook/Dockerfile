@@ -63,6 +63,7 @@ ARG CORE_DIR
 ARG SDK_DIR
 ARG NETWORK_PLUGIN_DIR
 COPY ${NETWORK_PLUGIN_DIR}/src/backend ${NETWORK_PLUGIN_DIR}/src/backend
+COPY ${NETWORK_PLUGIN_DIR}/src/types.ts ${NETWORK_PLUGIN_DIR}/src/types.ts
 COPY ${COMMON_DIR}/src ${COMMON_DIR}/src
 COPY ${SDK_DIR}/src ${SDK_DIR}/src
 COPY ${CORE_DIR}/src/errors.ts ${CORE_DIR}/src/errors.ts
