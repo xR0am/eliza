@@ -12,11 +12,29 @@ import { createWorkThreadStore } from "./store.js";
  *
  * Returns the reason the follow-up must not fire, or null while it may.
  */
+/**
+ * True only for the follow-ups the WORK_THREAD action schedules: they carry
+ * `metadata.workThreadId` equal to their thread subject. Other packs (the
+ * executive-assistant waiting-on watcher) also schedule follow-ups with
+ * `subject.kind: "thread"`, with ids that are not work-thread rows.
+ */
+export function isWorkThreadFollowup(
+  task: Pick<ScheduledTask, "kind" | "subject" | "metadata">,
+): task is Pick<ScheduledTask, "kind" | "metadata"> & {
+  subject: { kind: "thread"; id: string };
+} {
+  return (
+    task.kind === "followup" &&
+    task.subject?.kind === "thread" &&
+    task.metadata?.workThreadId === task.subject.id
+  );
+}
+
 export async function workThreadFollowupInactiveReason(
   runtime: IAgentRuntime,
-  task: Pick<ScheduledTask, "taskId" | "kind" | "subject">,
+  task: Pick<ScheduledTask, "taskId" | "kind" | "subject" | "metadata">,
 ): Promise<string | null> {
-  if (task.kind !== "followup" || task.subject?.kind !== "thread") return null;
+  if (!isWorkThreadFollowup(task)) return null;
   const thread = await createWorkThreadStore(runtime).get(task.subject.id);
   if (!thread) return "work thread no longer exists";
   if (thread.status === "stopped" || thread.status === "completed") {

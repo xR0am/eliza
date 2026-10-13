@@ -3,7 +3,10 @@ import type {
   ScheduledTask,
   ScheduledTaskFireResult,
 } from "@elizaos/plugin-scheduling";
-import { workThreadFollowupInactiveReason } from "./followup-thread-check.js";
+import {
+  isWorkThreadFollowup,
+  workThreadFollowupInactiveReason,
+} from "./followup-thread-check.js";
 import {
   withWorkThreadOperationLocks,
   workThreadLockKey,
@@ -22,7 +25,7 @@ export async function withWorkThreadFollowupAdmission(
   task: ScheduledTask,
   execute: () => Promise<ScheduledTaskFireResult>,
 ): Promise<ScheduledTaskFireResult> {
-  if (task.kind !== "followup" || task.subject?.kind !== "thread") {
+  if (!isWorkThreadFollowup(task)) {
     return execute();
   }
   return withWorkThreadOperationLocks(

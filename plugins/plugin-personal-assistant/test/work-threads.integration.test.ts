@@ -1966,4 +1966,53 @@ describe("work thread follow-up lifecycle", () => {
     );
     expect(notifications).toHaveLength(1);
   });
+
+  it("delivers a follow-up another pack scheduled with a thread subject that is not a work thread", async () => {
+    const runtime = await createRuntime();
+    const notifications: unknown[] = [];
+    const sink = {
+      serviceType: "notification",
+      capabilityDescription: "Synthetic test notification sink",
+      async notify(input: unknown) {
+        notifications.push(input);
+        return { id: `test-followup-${notifications.length}` };
+      },
+      async stop() {},
+    };
+    runtime.services.set("notification", [sink as unknown as Service]);
+    runtime.registerModel(
+      ModelType.TEXT_LARGE,
+      async () => "Did the vendor answer the quote question?",
+      "test-followup-render",
+    );
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    // The executive-assistant waiting-on watcher schedules follow-ups with
+    // `subject.kind: "thread"` and a stable id from the delegated item, which
+    // is not a work-thread row. No `metadata.workThreadId` marks it.
+    const task = await runner.schedule({
+      kind: "followup",
+      promptInstructions: "Nudge the vendor about the open quote question.",
+      trigger: { kind: "once", atIso: "2026-05-11T18:00:00.000Z" },
+      priority: "medium",
+      respectsGlobalPause: true,
+      source: "default_pack",
+      createdBy: runtime.agentId,
+      ownerVisible: true,
+      subject: { kind: "thread", id: "sent-question:vendor-quote" },
+      metadata: { createdFrom: "executive_assistant_waiting_on" },
+    });
+    const processed = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-11T18:01:00.000Z"),
+      limit: 5,
+    });
+    expect(processed.errors).toEqual([]);
+    expect(processed.fires).toEqual([
+      expect.objectContaining({ taskId: task.taskId, status: "fired" }),
+    ]);
+    expect(notifications).toHaveLength(1);
+  });
 });
