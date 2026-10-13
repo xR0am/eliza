@@ -57,7 +57,8 @@ test("reads the documented report envelope and converts microcurrency spend", as
     },
   });
   // Every requested field is one Reddit accepts; `CONVERSIONS` is not one.
-  expect((bodies[0]?.data as { fields: string[] }).fields).toEqual([
+  const request = bodies[0] as { data: { fields: string[] } };
+  expect(request.data.fields).toEqual([
     "SPEND",
     "IMPRESSIONS",
     "CLICKS",
