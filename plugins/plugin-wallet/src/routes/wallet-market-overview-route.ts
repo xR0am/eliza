@@ -100,7 +100,7 @@ interface PolymarketMarketRecord {
   slug: string | null;
   question: string;
   outcomeLabels: string[];
-  outcomeProbabilities: number[];
+  outcomeProbabilities: (number | null)[];
   volume24hUsd: number;
   totalVolumeUsd: number | null;
   endsAt: string | null;
@@ -256,9 +256,9 @@ function mapPolymarketMarket(input: unknown): PolymarketMarketRecord | null {
   if (!question) return null;
 
   const outcomeLabels = parseStringArray(record.outcomes);
-  const outcomeProbabilities = parseStringArray(record.outcomePrices)
-    .map((value) => clampProbability(numberFromUnknown(value)))
-    .filter((value): value is number => value !== null);
+  const outcomeProbabilities = parseStringArray(record.outcomePrices).map((value) =>
+    clampProbability(numberFromUnknown(value)),
+  );
   const volume24hUsd = numberFromUnknown(record.volume24hr);
 
   if (volume24hUsd === null) return null;
@@ -292,7 +292,7 @@ function highlightedPredictionOutcome(market: PolymarketMarketRecord): {
   let highestIndex = -1;
   let highestProbability = -1;
   for (const [index, probability] of market.outcomeProbabilities.entries()) {
-    if (probability > highestProbability) {
+    if (probability !== null && probability > highestProbability) {
       highestIndex = index;
       highestProbability = probability;
     }
