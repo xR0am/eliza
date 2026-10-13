@@ -121,11 +121,27 @@ export interface CliLoginPollResponse {
   error?: string;
 }
 
+/** The 200 body of `POST /api/v1/eliza/agents/:agentId/pairing-token`: the agent runs and a token was issued. */
 export interface PairingTokenResponse {
   token: string;
   redirectUrl: string;
   expiresIn: number;
 }
+
+/** The 202 body of the same route: the agent is not running; a resume was requested. */
+export interface PairingTokenStarting {
+  agentId: string;
+  status: string;
+  jobId?: string;
+  alreadyInProgress: boolean;
+  /** How long the route asks the caller to wait before asking again. */
+  retryAfterMs: number;
+  message?: string;
+}
+
+export type PairingTokenResult =
+  | ({ kind: "ready" } & PairingTokenResponse)
+  | ({ kind: "starting" } & PairingTokenStarting);
 
 export interface AuthPairResponse {
   message: string;
