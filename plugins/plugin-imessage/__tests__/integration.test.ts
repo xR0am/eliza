@@ -1099,6 +1099,15 @@ describe("normalizeContactHandle", () => {
   it("trims whitespace around the input", () => {
     expect(normalizeContactHandle("  +15551234567  ")).toBe("+15551234567");
   });
+
+  it("keys a contact phone the way the connector keys a chat.db handle", () => {
+    // Apple Contacts often store the country code without "+"; chat.db
+    // handles are E.164. Both must land on the same key.
+    expect(normalizeContactHandle("1 (555) 123-4567")).toBe(formatPhoneNumber("+15551234567"));
+    expect(normalizeContactHandle("1 (555) 123-4567")).toBe("+15551234567");
+    // A national number without a country code keeps its digits.
+    expect(normalizeContactHandle("(555) 987-6543")).toBe("5559876543");
+  });
 });
 
 describe("parseContactsOutput", () => {
@@ -1120,6 +1129,11 @@ describe("parseContactsOutput", () => {
     expect(map.get("+15551234567")?.name).toBe("Alex Chen");
     expect(map.get("mom@example.com")?.name).toBe("Mom");
     expect(map.get("+15550000000")?.name).toBe("Dad");
+  });
+
+  it("resolves a contact stored without the + prefix by its E.164 chat.db handle", () => {
+    const map = parseContactsOutput("phone\t1 (555) 123-4567\tAlex Chen");
+    expect(map.get(normalizeContactHandle("+15551234567"))?.name).toBe("Alex Chen");
   });
 
   it("skips rows with missing handle or name", () => {
