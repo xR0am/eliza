@@ -15,10 +15,16 @@
  */
 
 import type { AgentSandboxStatus } from "../../db/schemas/agent-sandboxes";
+/**
+ * Sandbox states that occupy the organization's ceiling. A `disconnected`
+ * sandbox keeps its container and its node slot (only its bridge stopped
+ * answering; recovery reconnects it in place), so it counts like `running`.
+ */
 export const QUOTA_COUNTED_STATUSES: AgentSandboxStatus[] = [
   "pending",
   "provisioning",
   "running",
+  "disconnected",
   "stopped",
   "sleeping",
 ];
