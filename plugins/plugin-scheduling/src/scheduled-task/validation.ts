@@ -14,7 +14,6 @@ import type { CompletionCheckRegistry } from "./completion-check-registry.js";
 import type { EscalationLadderRegistry } from "./escalation.js";
 import type { TaskGateRegistry } from "./gate-registry.js";
 import { OWNER_LOCAL_TZ } from "./trigger-tz.js";
-import { isOwnerWindowKey } from "./window-bounds.js";
 import {
   type ScheduledTask,
   type ScheduledTaskInput,
@@ -26,6 +25,7 @@ import {
   type ScheduledTaskSubjectKind,
   TASK_EXECUTION_PROFILES,
 } from "./types.js";
+import { isOwnerWindowKey } from "./window-bounds.js";
 
 export class ScheduledTaskValidationError extends Error {
   readonly code = "scheduled_task_validation_failed";
