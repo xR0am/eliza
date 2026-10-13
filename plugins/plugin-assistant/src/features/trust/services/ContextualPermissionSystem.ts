@@ -156,11 +156,15 @@ export class ContextualPermissionSystem {
       },
     );
     if (injectionCheck.detected && injectionCheck.action === "block") {
-      return this.createDecision(request, {
-        allowed: false,
-        method: "denied",
-        reason: `Security block: ${injectionCheck.details}`,
-      }, cacheEpoch);
+      return this.createDecision(
+        request,
+        {
+          allowed: false,
+          method: "denied",
+          reason: `Security block: ${injectionCheck.details}`,
+        },
+        cacheEpoch,
+      );
     }
 
     // Role-based check
@@ -192,11 +196,15 @@ export class ContextualPermissionSystem {
       trustDecision,
       delegationDecision,
     );
-    return this.createDecision(request, {
-      allowed: false,
-      method: "denied",
-      reason,
-    }, cacheEpoch);
+    return this.createDecision(
+      request,
+      {
+        allowed: false,
+        method: "denied",
+        reason,
+      },
+      cacheEpoch,
+    );
   }
 
   private async checkRolePermissions(
