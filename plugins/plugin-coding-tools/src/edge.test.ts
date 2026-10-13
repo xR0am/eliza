@@ -407,6 +407,52 @@ test("Wttr JSON API rejects ambiguous names and invalid coordinate bounds before
   }
 });
 
+test("Wttr named j2 and alternate formats reject ambiguous locations before HTTP", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    throw new Error("Ambiguous Wttr request reached HTTP");
+  });
+  try {
+    for (const query of [
+      "format=j2",
+      "format=j2&format=j1",
+      "format=j1&format=j2",
+      "format=J2",
+      "format=%j2",
+      "",
+    ]) {
+      const out = await call(createWebFetchEdgeAction(), {
+        url: `https://wttr.in/Tokyo${query ? `?${query}` : ""}`,
+      });
+      expect(out?.success).toBe(false);
+      expect(out?.text).toContain("coordinates");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("Wttr coordinate j2 retains direct JSON extraction", async () => {
+  const target = "https://wttr.in/35.6895,139.6917?format=j2";
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response('{"current_condition":[{"temp_C":"22"}]}', {
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  try {
+    const out = await call(createWebFetchEdgeAction(), {
+      url: target,
+      extract: "current_condition.0.temp_C",
+    });
+    expect(out?.success).toBe(true);
+    expect(out?.text).toBe('"22"');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toBe(target);
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
 test("edge explicitly extracts valid text/plain JSON while preserving MIME and invalid JSON text", async () => {
   const fetch = vi.spyOn(globalThis, "fetch");
   try {

@@ -230,7 +230,7 @@ export function createWebFetchAction(
       {
         name: "url",
         description:
-          "Absolute public https URL. Wttr JSON API format=j1 requires latitude,longitude coordinates (for example https://wttr.in/35.6895,139.6917?format=j1), never an ambiguous place name.",
+          "Absolute public https URL. Every Wttr URL requires latitude,longitude coordinates, regardless of output format (for example https://wttr.in/35.6895,139.6917?format=j1), never an ambiguous place name.",
         required: true,
         schema: { type: "string" },
       },
@@ -274,10 +274,7 @@ export function createWebFetchAction(
         const signal = input?.abortSignal ?? input?.signal;
         signal?.throwIfAborted();
         const parsedUrl = new URL(url);
-        if (
-          parsedUrl.hostname.toLowerCase() === "wttr.in" &&
-          parsedUrl.searchParams.get("format") === "j1"
-        ) {
+        if (parsedUrl.hostname.toLowerCase() === "wttr.in") {
           const location = parsedUrl.pathname.slice(1);
           const match = location.match(
             /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/u,
@@ -291,7 +288,7 @@ export function createWebFetchAction(
               {
                 reason: "invalid_param",
                 message:
-                  "Wttr JSON API requires valid latitude,longitude coordinates. Resolve the requested place and retry with coordinates; read nearest_area and observation dates before narrowing JSON extraction.",
+                  "Wttr URLs require valid latitude,longitude coordinates for every output format. Resolve the requested place and retry with coordinates; read nearest_area and observation dates before narrowing JSON extraction.",
               },
               { action: "WEB_FETCH", url },
             );
