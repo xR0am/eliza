@@ -108,4 +108,51 @@ describe("scheduled dispatch relationship context scope", () => {
     } as typeof record);
     expect(mismatch?.relationships).toEqual([]);
   }, 180_000);
+
+  it("refuses a scope that resolves past the lookup boundary instead of trimming it", async () => {
+    const entities = await repo.entityStore(runtime.agentId);
+    const relationships = await repo.relationshipStore(runtime.agentId);
+    const hub = await entities.upsert({
+      type: "person",
+      preferredName: "Hub",
+      identities: [],
+      tags: [],
+      visibility: "owner_agent_admin",
+      state: {},
+    });
+    for (let index = 0; index <= 100; index += 1) {
+      const spoke = await entities.upsert({
+        type: "person",
+        preferredName: `Spoke ${index}`,
+        identities: [],
+        tags: [],
+        visibility: "owner_agent_admin",
+        state: {},
+      });
+      await relationships.upsert({
+        fromEntityId: hub.entityId,
+        toEntityId: spoke.entityId,
+        type: "knows",
+        metadata: {},
+        state: {},
+        evidence: ["seed"],
+        confidence: 0.5,
+        source: "user_chat",
+      });
+    }
+    const record = {
+      taskId: "task-relationship-boundary",
+      firedAtIso: new Date().toISOString(),
+      channelKey: "test",
+      promptInstructions: "Summarize the hub's contacts.",
+      contextRequest: {
+        includeRelationships: { forEntityIds: [hub.entityId] },
+      },
+    } as Parameters<typeof resolveScheduledTaskDispatchContext>[1];
+    await expect(
+      resolveScheduledTaskDispatchContext(runtime, record),
+    ).rejects.toMatchObject({
+      code: "SCHEDULED_DISPATCH_CONTEXT_LIMIT_EXCEEDED",
+    });
+  }, 180_000);
 });
