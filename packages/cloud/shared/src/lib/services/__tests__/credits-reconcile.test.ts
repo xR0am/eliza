@@ -1219,6 +1219,42 @@ describe("CreditsService reservation settlement marker (#11169)", () => {
   );
 
   test(
+    "sweep leaves holds it cannot settle out of later batches so newer holds still settle",
+    async () => {
+      if (!pgliteReady) return;
+      await seedOrg("20");
+      // Three native-storage holds sort first. The reconcile claim refuses rows
+      // that carry `storage_operation_id` (a strong R2 HEAD settles them), so
+      // the generic lane can never settle them.
+      const stuck: string[] = [];
+      for (const hoursAgo of [27, 26, 25]) {
+        stuck.push(
+          await insertReservation(1.0, hoursAgo * 60 * 60 * 1000, true, {
+            storage_operation_id: crypto.randomUUID(),
+            reserved_amount: 1.0,
+          }),
+        );
+      }
+      // One newer hold behind them that the sweep can settle.
+      const fresh = await insertReservation(1.0, 25 * 60 * 1000, true, { estimated_cost: 0.4 });
+
+      const stats = await creditsService.sweepStaleReservations({
+        graceMs: 20 * 60 * 1000,
+        batchSize: 3,
+        maxBatches: 5,
+      });
+
+      expect(stats.capHit).toBe(false);
+      expect(stats.settled).toBe(1);
+      expect(stats.refunds).toBe(1);
+      expect(await getReservationSettledAt(fresh)).toBeTruthy();
+      for (const id of stuck) expect(await getReservationSettledAt(id)).toBeNull();
+      expect(await getBalance()).toBeCloseTo(20.6, 6);
+    },
+    PGLITE_TIMEOUT,
+  );
+
+  test(
     "sweep skips an app-chat hold without a usable base pair instead of guessing",
     async () => {
       if (!pgliteReady) return;
