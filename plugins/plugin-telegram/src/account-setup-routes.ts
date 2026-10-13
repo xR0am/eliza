@@ -423,7 +423,10 @@ async function handleSubmitCode(
   } catch (err) {
     // error-policy:J1 auth route returns a visible setup failure.
     const message = err instanceof Error ? err.message : String(err);
-    if (err instanceof ElizaError && err.code === "TELEGRAM_ACCOUNT_INVALID_INPUT") {
+    if (
+      err instanceof ElizaError &&
+      err.code === "TELEGRAM_ACCOUNT_INVALID_INPUT"
+    ) {
       sendSetupError(res, 400, "bad_request", message);
       return;
     }
