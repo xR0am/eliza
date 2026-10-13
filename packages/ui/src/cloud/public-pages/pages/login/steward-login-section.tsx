@@ -90,7 +90,6 @@ import {
 import { getErrorMessage } from "../../lib/error-message";
 import {
   consumePendingOAuthReturnTo,
-  defaultLoginReturnTo,
   resolveLoginReturnTo,
   storePendingOAuthReturnTo,
 } from "../../lib/login-return-to";
@@ -1484,7 +1483,7 @@ export default function StewardLoginSection({
     toast.success("Signed in!");
     setRedirectTo(
       phoneOnly
-        ? defaultLoginReturnTo()
+        ? resolveLoginReturnTo(searchParams)
         : resolveLoginReturnTo(searchParams, consumePendingOAuthReturnTo()),
     );
     setStep("success");

@@ -13,7 +13,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import {
   afterEach,
   beforeAll,
@@ -76,6 +76,7 @@ vi.mock("../../../sso-bridge/sso-bridge", async (importOriginal) => {
 
 const returnToSpies = vi.hoisted(() => ({
   resolve: vi.fn(),
+  consume: vi.fn(),
 }));
 
 vi.mock(
@@ -188,12 +189,15 @@ vi.mock("../../lib/steward-session", () => ({
     `https://api.example.test${path}`,
 }));
 
-vi.mock("../../lib/login-return-to", () => ({
-  defaultLoginReturnTo: () => "/join",
-  resolveLoginReturnTo: returnToSpies.resolve,
-  consumePendingOAuthReturnTo: () => null,
-  storePendingOAuthReturnTo: () => undefined,
-}));
+vi.mock("../../lib/login-return-to", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../lib/login-return-to")>();
+  return {
+    ...actual,
+    resolveLoginReturnTo: returnToSpies.resolve,
+    consumePendingOAuthReturnTo: returnToSpies.consume,
+  };
+});
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn() },
@@ -210,10 +214,21 @@ function makeJwt(payload: Record<string, unknown>): string {
   return `${encode({ alg: "HS256", typ: "JWT" })}.${encode(payload)}.sig`;
 }
 
+function LoginDestinationProbe() {
+  const location = useLocation();
+  return (
+    <span data-testid="login-destination">
+      {location.pathname}
+      {location.search}
+    </span>
+  );
+}
+
 function renderSection(initialEntry = "/login", phoneOnly = false) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <StewardLoginSection phoneOnly={phoneOnly} />
+      <LoginDestinationProbe />
     </MemoryRouter>,
   );
 }
@@ -226,7 +241,7 @@ async function sendPhoneCode() {
 }
 
 describe("StewardLoginSection phone login", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     authSpies.configurations.length = 0;
     authSpies.smsConfigurations.length = 0;
@@ -272,7 +287,11 @@ describe("StewardLoginSection phone login", () => {
         sessionSpies.write(token);
       },
     );
-    returnToSpies.resolve.mockReturnValue("/dashboard/agents");
+    const returnTo = await vi.importActual<
+      typeof import("../../lib/login-return-to")
+    >("../../lib/login-return-to");
+    returnToSpies.resolve.mockImplementation(returnTo.resolveLoginReturnTo);
+    returnToSpies.consume.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -316,9 +335,41 @@ describe("StewardLoginSection phone login", () => {
         },
       ),
     );
-    expect(returnToSpies.resolve).not.toHaveBeenCalled();
+    expect(returnToSpies.resolve).toHaveBeenCalledWith(
+      expect.any(URLSearchParams),
+    );
+    expect(returnToSpies.consume).not.toHaveBeenCalled();
     expect(sessionSpies.write).toHaveBeenCalledWith("sms-session-token");
   });
+
+  it.each([
+    [
+      "/auth/bridge?state=owned&challenge=owned&returnTo=%2Fjoin",
+      "/auth/bridge?state=owned&challenge=owned&returnTo=%2Fjoin",
+    ],
+    ["https://evil.example/", "/join"],
+    ["//evil.example/", "/join"],
+  ])(
+    "phone-only completion sanitizes its bridge returnTo: %s",
+    async (returnTo, destination) => {
+      renderSection(
+        `/network/sign-in?returnTo=${encodeURIComponent(returnTo)}`,
+        true,
+      );
+      await sendPhoneCode();
+      fireEvent.change(screen.getByLabelText("Six-digit code"), {
+        target: { value: "123456" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("login-destination").textContent).toBe(
+          destination,
+        ),
+      );
+      expect(returnToSpies.consume).not.toHaveBeenCalled();
+      expect(handoffSpies.mint).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["cancel", "unmount"])(
     "does not publish a late verification after %s without a handoff tuple",
