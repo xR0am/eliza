@@ -11,6 +11,7 @@ import { failureResponse } from "@elizaos/cloud-shared/lib/api/cloud-worker-erro
 import { isForbiddenIpAddress } from "@elizaos/cloud-shared/lib/security/outbound-url";
 import { userMcpsService } from "@elizaos/cloud-shared/lib/services/user-mcps";
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
+import { decodeRequestJson } from "@elizaos/cloud-shared/lib/utils/json-parsing";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -103,8 +104,11 @@ app.post("/", async (c) => {
   try {
     const user = await requireUserOrApiKeyWithOrg(c);
 
-    const body = await c.req.json();
-    const validation = createMcpSchema.safeParse(body);
+    const decodedBody = await decodeRequestJson(c.req);
+    if (!decodedBody.ok) {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const validation = createMcpSchema.safeParse(decodedBody.value);
 
     if (!validation.success) {
       return c.json(
