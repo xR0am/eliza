@@ -1715,6 +1715,28 @@ async function processMessage(
   const mediaUrls = parsePersonalSharedMediaUrls({
     mediaUrls: reply.mediaUrls,
   });
+  // Adapters can only pass on public HTTPS links. Inline (data:) or local
+  // attachments are not sent; record that instead of dropping them silently.
+  const undeliverableSchemes = reply.mediaUrls.flatMap((url) => {
+    try {
+      const { protocol } = new URL(url.trim());
+      return protocol === "https:" ? [] : [protocol];
+    } catch {
+      // error-policy:J3 a relative or malformed reference is not a public link.
+      return ["relative"];
+    }
+  });
+  if (undeliverableSchemes.length > 0) {
+    logger.warn(
+      "Agent reply attachments are not public HTTPS links; not sent",
+      {
+        agentId,
+        platform: adapter.platform,
+        count: undeliverableSchemes.length,
+        schemes: [...new Set(undeliverableSchemes)],
+      },
+    );
+  }
   // error-policy:J5 no-op — deliberate agent silence, nothing to deliver.
   if (reply.text.length === 0 && mediaUrls.length === 0) {
     logger.debug("Agent produced no reply; skipping send", {
