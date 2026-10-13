@@ -1,8 +1,7 @@
 /**
- * Regression tests for htmlToReadableText numeric character references.
- * HTML maps &#128;-&#159; through windows-1252 (WHATWG numeric character
- * reference table); the entities decoder applies that table, and the five
- * unassigned C1 slots stay as written.
+ * Canonical Node WEB_FETCH regressions use the genuine Core SSRF guard with
+ * only DNS and HTTP boundaries injected. Cancellation must reach the pinned
+ * transport and streamed body; HTML numeric references keep WHATWG decoding.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -120,4 +119,98 @@ it("Node JSON extraction supports bounded array indexes and refuses unsafe paths
     expect(result?.success).toBe(true);
     expect(result?.text).toBe(expected);
   }
+});
+
+it("Node caller abort reaches the pinned HTTP transport before it settles", async () => {
+  const caller = new AbortController();
+  const reason = new Error("cancel owned Node read");
+  let transportSignal: AbortSignal | null | undefined;
+  let release!: () => void;
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  __setWebHttpLookupFnForTests(async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  __setWebHttpPinnedFetchImplForTests(async ({ init }) => {
+    transportSignal = init.signal;
+    started();
+    return new Promise<Response>((resolve, reject) => {
+      release = () =>
+        resolve(
+          new Response("released", {
+            headers: { "content-type": "text/plain" },
+          }),
+        );
+      init.signal?.addEventListener(
+        "abort",
+        () => reject(init.signal?.reason),
+        { once: true },
+      );
+    });
+  });
+  const pending = webFetchAction.handler({} as never, {} as never, undefined, {
+    parameters: { url: "https://example.com" },
+    abortSignal: caller.signal,
+  } as never);
+  const settled = pending.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  await ready;
+  try {
+    caller.abort(reason);
+    expect(transportSignal?.aborted).toBe(true);
+  } finally {
+    release();
+  }
+  expect(await settled).toEqual({ error: reason });
+});
+
+it("Node caller abort cancels a stalled response body and preserves its reason", async () => {
+  const caller = new AbortController();
+  const reason = new Error("cancel owned Node body");
+  const cancel = vi.fn();
+  let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+  let reading!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+  __setWebHttpLookupFnForTests(async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  __setWebHttpPinnedFetchImplForTests(
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            bodyController = controller;
+            controller.enqueue(new TextEncoder().encode("partial"));
+          },
+          pull() {
+            reading();
+            return new Promise<void>(() => {});
+          },
+          cancel,
+        }),
+        { headers: { "content-type": "text/plain" } },
+      ),
+  );
+  const pending = webFetchAction.handler({} as never, {} as never, undefined, {
+    parameters: { url: "https://example.com" },
+    signal: caller.signal,
+  } as never);
+  const settled = pending.then(
+    (value) => ({ value }),
+    (error: unknown) => ({ error }),
+  );
+  await ready;
+  try {
+    caller.abort(reason);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  } finally {
+    if (!cancel.mock.calls.length) bodyController.close();
+  }
+  expect(await settled).toEqual({ error: reason });
 });
