@@ -84,10 +84,7 @@ function roundMetric(value: number): number {
 }
 
 function assertCampaignBudgetSupported(budgetAmount: number, budgetCredits: number): void {
-  if (
-    budgetAmount < MIN_CAMPAIGN_BUDGET_AMOUNT ||
-    budgetCredits < MIN_CAMPAIGN_BUDGET_AMOUNT
-  ) {
+  if (budgetAmount < MIN_CAMPAIGN_BUDGET_AMOUNT || budgetCredits < MIN_CAMPAIGN_BUDGET_AMOUNT) {
     throw ValidationError(
       `Campaign budget must be at least ${MIN_CAMPAIGN_BUDGET_AMOUNT.toFixed(2)} USD`,
     );
