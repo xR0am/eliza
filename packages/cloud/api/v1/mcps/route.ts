@@ -240,13 +240,13 @@ app.get("/", async (c) => {
       const [ownMcps, publicMcps] = await Promise.all([
         userMcpsService.listByOrganization(user.organization_id, {
           status,
-          limit: Math.ceil(limit / 2),
+          limit: Math.ceil(limit / 2) + offset,
           offset: 0,
         }),
         userMcpsService.listPublic({
           category,
           search,
-          limit: Math.floor(limit / 2),
+          limit: Math.floor(limit / 2) + offset,
           offset: 0,
         }),
       ]);
@@ -257,7 +257,7 @@ app.get("/", async (c) => {
         ...publicMcps
           .filter((m) => !ownIds.has(m.id))
           .map((m) => userMcpsService.toApiMcp(userMcpsService.toPublicMcp(m))),
-      ];
+      ].slice(offset, offset + limit);
     }
 
     return c.json({
