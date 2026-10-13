@@ -27,7 +27,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { logger } from "@elizaos/core";
-import { formatPhoneNumber } from "./types";
+import { formatPhoneNumber } from "./types.js";
 
 const NATIVE_DYLIB_CANDIDATES = [
   process.env.ELIZA_NATIVE_PERMISSIONS_DYLIB ?? "",
