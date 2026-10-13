@@ -8,7 +8,10 @@ const input = {
   text: "synthetic-code",
   idempotencyKey: "stable-attempt",
 };
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 it("retains direct and group delivery wire shapes and requires a provider receipt", async () => {
   const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
     Response.json({ message_id: "provider-id" }, { status: 202 }),
@@ -77,4 +80,103 @@ it("refuses malformed, oversized and missing acceptance receipts", async () => {
     );
     expect((await sendBlooioMessage(input)).success).toBe(false);
   }
+});
+
+function privateFailure(result: Awaited<ReturnType<typeof sendBlooioMessage>>) {
+  expect(result).toEqual({ success: false, error: "Blooio delivery failed" });
+  for (const secret of [input.text, input.to, input.from, input.apiKey])
+    expect(JSON.stringify(result)).not.toContain(secret);
+}
+it("hung receipt body respects the controlled whole-request deadline", async () => {
+  const deadline = new AbortController();
+  const timeout = vi
+    .spyOn(AbortSignal, "timeout")
+    .mockReturnValue(deadline.signal);
+  let bodyEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    bodyEntered = resolve;
+  });
+  const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    pull() {
+      if (stream.locked) bodyEntered();
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(stream)),
+  );
+  const result = sendBlooioMessage(input);
+  await entered;
+  deadline.abort(new Error(`${input.text} ${input.to} ${input.apiKey}`));
+  privateFailure(await result);
+  expect(timeout).toHaveBeenCalledWith(30000);
+});
+it("a never-resolving stream cancellation cannot block rejecting oversized evidence", async () => {
+  const cancel = vi.fn(() => new Promise<void>(() => {}));
+  const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(16385));
+    },
+    cancel,
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(stream)),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      sendBlooioMessage(input),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Receipt rejection blocked on cancellation")),
+          100,
+        );
+      }),
+    ]);
+    privateFailure(result);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+it("receipt limit counts cumulative chunks even when each chunk is within the limit", async () => {
+  const encoded = new TextEncoder().encode(
+    JSON.stringify({
+      id: "valid-provider-id",
+      note: `${input.text} ${input.to} ${input.apiKey} ${"x".repeat(20000)}`,
+    }),
+  );
+  const chunks = [
+    encoded.subarray(0, 8000),
+    encoded.subarray(8000, 16000),
+    encoded.subarray(16000),
+  ];
+  expect(chunks.every((chunk) => chunk.byteLength <= 16384)).toBe(true);
+  const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(stream)),
+  );
+  privateFailure(await sendBlooioMessage(input));
+});
+it("invalid UTF-8 cannot be repaired into an accepted JSON receipt", async () => {
+  const prefix = new TextEncoder().encode(
+    `{"id":"valid-provider-id","note":"${input.text} ${input.to} ${input.apiKey} `,
+  );
+  const suffix = new TextEncoder().encode('"}');
+  const bytes = new Uint8Array([...prefix, 0xc3, 0x28, ...suffix]);
+  expect(JSON.parse(new TextDecoder().decode(bytes)).id).toBe(
+    "valid-provider-id",
+  );
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(bytes)),
+  );
+  privateFailure(await sendBlooioMessage(input));
 });
