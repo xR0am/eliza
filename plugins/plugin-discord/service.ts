@@ -1146,6 +1146,28 @@ export class DiscordService extends Service implements IDiscordService {
 		);
 	}
 
+	/**
+	 * A send that names only a room (triggers, task progress, planner follow-ups)
+	 * answers on the bot that received that room's messages. Inbound Discord
+	 * connections record the account on the room's world.
+	 */
+	private async resolveAccountIdForTarget(
+		runtime: IAgentRuntime,
+		target: TargetInfo,
+	): Promise<string> {
+		const explicit = accountIdFromRecord(target);
+		if (explicit || !target.roomId) {
+			return this.resolveAccountIdFromTarget(target);
+		}
+		const room = await runtime.getRoom(target.roomId);
+		const world = room?.worldId ? await runtime.getWorld(room.worldId) : null;
+		return normalizeAccountId(
+			accountIdFromRecord(room?.metadata) ??
+				accountIdFromRecord(world?.metadata) ??
+				this.defaultAccountId,
+		);
+	}
+
 	public getDefaultAccountId(): string {
 		return this.defaultAccountId;
 	}
@@ -2005,11 +2027,12 @@ export class DiscordService extends Service implements IDiscordService {
 		let providerSendFailure: unknown;
 		let providerAcceptedAt: number | undefined;
 		// Resolve the connector account this outbound message must use.
-		// Priority: explicit target.accountId > this service instance's default.
-		// `Content.metadata` is intentionally NOT consulted because it may be
-		// user-supplied per the MessageMetadata contract — actions thread the
-		// trusted inbound `Memory.metadata.accountId` into `target.accountId`.
-		const accountId = this.resolveAccountIdFromTarget(target);
+		// Priority: explicit target.accountId > the target room's account >
+		// this service instance's default. `Content.metadata` is intentionally
+		// NOT consulted because it may be user-supplied per the MessageMetadata
+		// contract — actions thread the trusted inbound
+		// `Memory.metadata.accountId` into `target.accountId`.
+		const accountId = await this.resolveAccountIdForTarget(runtime, target);
 		const state = this.getAccountState(accountId);
 		const client = state?.client ?? null;
 		if (!client?.isReady()) {
