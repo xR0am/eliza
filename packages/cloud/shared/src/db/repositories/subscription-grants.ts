@@ -29,6 +29,8 @@ import {
 } from "../schemas/subscription-grants";
 import { advanceOrganizationPolicyGeneration } from "./organization-policy-generation";
 import { readPostLockDatabaseNow } from "./primary-database-clock";
+import { subscriptionAllowanceRepository } from "./subscription-allowance";
+import { SUBSCRIPTION_FREE_ENTITLEMENT_VALUES } from "./subscription-entitlements";
 import { microsToMoney, moneyToMicros } from "./subscription-funding-reservations";
 
 /** Unknown, expired, disabled and fully redeemed codes share one answer. */
@@ -37,6 +39,10 @@ export const SUBSCRIPTION_GRANT_CODE_INVALID = "SUBSCRIPTION_GRANT_CODE_INVALID"
 export const SUBSCRIPTION_GRANT_ALREADY_GRANTED = "SUBSCRIPTION_GRANT_ALREADY_GRANTED";
 /** The idempotency key already recorded a different redemption for this organization. */
 export const SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT = "SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT";
+/** No grant has the requested id. */
+export const SUBSCRIPTION_GRANT_NOT_FOUND = "SUBSCRIPTION_GRANT_NOT_FOUND";
+/** Minted codes are 16 Crockford base32 characters (80 bits); shorter text is never a code. */
+export const SUBSCRIPTION_GRANT_CODE_MIN_LENGTH = 16;
 
 const DAY_MS = 86_400_000;
 
@@ -63,12 +69,20 @@ async function sha256Hex(value: string): Promise<string> {
 
 /**
  * Canonical code text: case, spaces and dashes are presentation only, so
- * `abcd-efgh` and `ABCD EFGH` are the same code. Returns null for text that
- * cannot be a code, so callers answer with the same generic refusal.
+ * `abcd-efgh` and `ABCD EFGH` are the same code. Crockford base32 read
+ * aliases apply (O is 0; I and L are 1); minted codes never contain those
+ * letters. Returns null for text that cannot be a code, so callers answer
+ * with the same generic refusal.
  */
 export function normalizeSubscriptionGrantCode(code: string): string | null {
-  const normalized = code.toUpperCase().replace(/[\s-]+/g, "");
-  return /^[A-Z0-9]{8,64}$/.test(normalized) ? normalized : null;
+  const normalized = code
+    .toUpperCase()
+    .replace(/[\s-]+/g, "")
+    .replace(/O/g, "0")
+    .replace(/[IL]/g, "1");
+  return new RegExp(`^[A-Z0-9]{${SUBSCRIPTION_GRANT_CODE_MIN_LENGTH},64}$`).test(normalized)
+    ? normalized
+    : null;
 }
 
 /** HMAC-SHA256 of the normalized code under the server pepper, as lowercase hex. */
@@ -150,7 +164,7 @@ export function grantEntitlementPlanValues(
   };
 }
 
-/** The organization's grant whose window contains `now`, latest end first. */
+/** The organization's unrevoked grant whose window contains `now`, latest end first. */
 export async function readActiveSubscriptionGrant(
   tx: DbTransaction,
   organizationId: string,
@@ -162,6 +176,7 @@ export async function readActiveSubscriptionGrant(
     .where(
       and(
         eq(subscriptionGrants.organization_id, organizationId),
+        isNull(subscriptionGrants.revoked_at),
         lte(subscriptionGrants.starts_at, now),
         gt(subscriptionGrants.ends_at, now),
       ),
@@ -214,8 +229,21 @@ export class SubscriptionGrantsRepository {
       .select()
       .from(subscriptionGrants)
       .where(eq(subscriptionGrants.organization_id, input.organizationId));
+    // A replay of this organization's own redemption answers first, even after
+    // the code is disabled or used up.
     const sameCode = existing.find((grant) => grant.code_id === code.id);
     if (sameCode) return { grant: sameCode, replayed: true };
+
+    // Any code that is not redeemable now gets the generic answer before the
+    // family and idempotency checks, so those answers cannot confirm that a
+    // disabled, expired or used-up code exists.
+    const now = await readPostLockDatabaseNow(tx);
+    if (
+      code.disabled_at !== null ||
+      (code.expires_at !== null && code.expires_at <= now) ||
+      code.redeemed_count >= code.max_redemptions
+    )
+      grantError(SUBSCRIPTION_GRANT_CODE_INVALID, "Subscription code is not valid");
     if (existing.some((grant) => grant.idempotency_key === input.idempotencyKey))
       grantError(
         SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT,
@@ -226,14 +254,6 @@ export class SubscriptionGrantsRepository {
       grantError(SUBSCRIPTION_GRANT_ALREADY_GRANTED, "Organization already holds this grant", {
         organizationId: input.organizationId,
       });
-
-    const now = await readPostLockDatabaseNow(tx);
-    if (
-      code.disabled_at !== null ||
-      (code.expires_at !== null && code.expires_at <= now) ||
-      code.redeemed_count >= code.max_redemptions
-    )
-      grantError(SUBSCRIPTION_GRANT_CODE_INVALID, "Subscription code is not valid");
 
     const plan = resolveSubscriptionPlanDefinition(code.plan_key, code.catalog_version);
     const startsAt = now;
@@ -377,7 +397,7 @@ export class SubscriptionGrantsRepository {
       current.effective_until >= grant.ends_at
     )
       return current;
-    const values = {
+    return this.writeProjectionInTransaction(tx, grant.organization_id, current, {
       ...grantEntitlementPlanValues(grant),
       state: "active" as const,
       access: "granted" as const,
@@ -390,11 +410,22 @@ export class SubscriptionGrantsRepository {
       source_digest: await sha256Hex(`promo_grant\0${grant.id}`),
       rebuilt_at: now,
       updated_at: now,
-    };
+    });
+  }
+
+  private async writeProjectionInTransaction(
+    tx: DbTransaction,
+    organizationId: string,
+    current: OrganizationEntitlement | undefined,
+    values: Omit<
+      typeof organizationEntitlements.$inferInsert,
+      "organization_id" | "projection_revision"
+    >,
+  ): Promise<OrganizationEntitlement | undefined> {
     if (!current) {
       const [inserted] = await tx
         .insert(organizationEntitlements)
-        .values({ ...values, organization_id: grant.organization_id, projection_revision: 0 })
+        .values({ ...values, organization_id: organizationId, projection_revision: 0 })
         .returning();
       return inserted;
     }
@@ -411,6 +442,146 @@ export class SubscriptionGrantsRepository {
     if (!updated) throw new Error("Grant entitlement projection changed under lock");
     return updated;
   }
+
+  async revoke(input: RevokeSubscriptionGrantInput): Promise<RevokeSubscriptionGrantResult> {
+    return writeTransaction((tx) => this.revokeInTransaction(tx, input));
+  }
+
+  /**
+   * Ends a grant at once (support revocation). In one transaction: marks the
+   * grant revoked, retires its open allowance buckets, moves a projection that
+   * names the grant to the organization's next active grant or back to free,
+   * and advances the policy generation. A revoked grant keeps the
+   * organization's slot in its code family. Revoking twice is a no-op.
+   */
+  async revokeInTransaction(
+    tx: DbTransaction,
+    input: RevokeSubscriptionGrantInput,
+  ): Promise<RevokeSubscriptionGrantResult> {
+    const reason = input.reason.trim();
+    if (reason.length < 1 || reason.length > 500)
+      throw new Error("Revocation reason must be 1 to 500 characters");
+    const [target] = await tx
+      .select({ organization_id: subscriptionGrants.organization_id })
+      .from(subscriptionGrants)
+      .where(eq(subscriptionGrants.id, input.grantId));
+    if (!target)
+      grantError(SUBSCRIPTION_GRANT_NOT_FOUND, "Subscription grant does not exist", {
+        grantId: input.grantId,
+      });
+    const organizationId = target.organization_id;
+    // Billing lock order: organization first, then its grant rows.
+    await tx
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .for("update");
+    const [grant] = await tx
+      .select()
+      .from(subscriptionGrants)
+      .where(eq(subscriptionGrants.id, input.grantId))
+      .for("update");
+    if (!grant) throw new Error("Subscription grant disappeared under lock");
+    if (grant.revoked_at !== null) return { grant, revoked: false, retiredPeriods: 0 };
+
+    const now = await readPostLockDatabaseNow(tx);
+    const [revoked] = await tx
+      .update(subscriptionGrants)
+      .set({ revoked_at: now, revoked_reason: reason })
+      .where(and(eq(subscriptionGrants.id, grant.id), isNull(subscriptionGrants.revoked_at)))
+      .returning();
+    if (!revoked) throw new Error("Subscription grant revocation lost under lock");
+
+    const open = await tx
+      .select({ id: subscriptionAllowancePeriods.id })
+      .from(subscriptionAllowancePeriods)
+      .where(
+        and(
+          eq(subscriptionAllowancePeriods.organization_id, organizationId),
+          eq(subscriptionAllowancePeriods.promo_grant_id, grant.id),
+          eq(subscriptionAllowancePeriods.state, "open"),
+        ),
+      );
+    let retiredPeriods = 0;
+    for (const period of open) {
+      const result = await subscriptionAllowanceRepository.retirePeriodInTransaction(tx, {
+        organizationId,
+        periodId: period.id,
+        reason: "grant_revoked",
+      });
+      if (result.retired) retiredPeriods += 1;
+    }
+
+    const [association] = await tx
+      .select({ state: organizationSubscriptionAuthorities.state })
+      .from(organizationSubscriptionAuthorities)
+      .where(eq(organizationSubscriptionAuthorities.organization_id, organizationId))
+      .for("update");
+    let projectionRevision: number | null = null;
+    if (association?.state === "none") {
+      const [current] = await tx
+        .select()
+        .from(organizationEntitlements)
+        .where(
+          and(
+            eq(organizationEntitlements.organization_id, organizationId),
+            isNull(organizationEntitlements.billing_scope_id),
+          ),
+        )
+        .for("update");
+      if (current?.source_grant_id === grant.id) {
+        const next = await readActiveSubscriptionGrant(tx, organizationId, now);
+        const projected = await this.writeProjectionInTransaction(
+          tx,
+          organizationId,
+          current,
+          next
+            ? {
+                ...grantEntitlementPlanValues(next),
+                state: "active",
+                access: "granted",
+                entitlement_effective: true,
+                effective_from: next.starts_at,
+                effective_until: next.ends_at,
+                source_subscription_id: null,
+                source_subscription_revision: null,
+                source_grant_id: next.id,
+                source_digest: await sha256Hex(`promo_grant\0${next.id}`),
+                rebuilt_at: now,
+                updated_at: now,
+              }
+            : {
+                ...SUBSCRIPTION_FREE_ENTITLEMENT_VALUES,
+                access: "granted",
+                effective_from: now,
+                source_digest: await sha256Hex(`promo_grant_revoked\0${grant.id}`),
+                rebuilt_at: now,
+                updated_at: now,
+              },
+        );
+        projectionRevision = projected?.projection_revision ?? null;
+      }
+    }
+    await advanceOrganizationPolicyGeneration(tx, {
+      organizationId,
+      reason: "entitlement",
+      actor: "system:subscription_grant_revocation",
+      change: { grantId: grant.id, revokedAt: now.toISOString(), projectionRevision },
+    });
+    return { grant: revoked, revoked: true, retiredPeriods };
+  }
+}
+
+export interface RevokeSubscriptionGrantInput {
+  grantId: string;
+  reason: string;
+}
+
+export interface RevokeSubscriptionGrantResult {
+  grant: SubscriptionGrant;
+  /** False when the grant was already revoked. */
+  revoked: boolean;
+  retiredPeriods: number;
 }
 
 export const subscriptionGrantsRepository = new SubscriptionGrantsRepository();

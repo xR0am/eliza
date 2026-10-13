@@ -27,7 +27,8 @@ export function generateSubscriptionGrantCode(
 ): string {
   const characters: string[] = [];
   const bytes = random(new Uint8Array(GROUPS * GROUP_LENGTH));
-  for (const byte of bytes) characters.push(ALPHABET.charAt(byte % ALPHABET.length));
+  for (const byte of bytes)
+    characters.push(ALPHABET.charAt(byte % ALPHABET.length));
   const groups: string[] = [];
   for (let index = 0; index < GROUPS; index += 1)
     groups.push(

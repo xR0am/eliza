@@ -2,7 +2,8 @@
  * GET /api/v1/subscription/entitlement-keys (public)
  * Returns `{ keys: [P-256 public JWK] }` for verifying subscription
  * entitlements: the current signing key and, during rotation, the previous
- * one. Never private material. Fails closed with 503 while unconfigured.
+ * key and a next key published before it signs. Never private material.
+ * Fails closed with 503 while unconfigured.
  */
 
 import {
@@ -10,6 +11,7 @@ import {
   rateLimit,
 } from "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare";
 import {
+  ENTITLEMENT_KEYS_MAX_AGE_SECONDS,
   EntitlementSigningUnavailableError,
   publishedEntitlementKeys,
 } from "@elizaos/cloud-shared/lib/services/subscription-entitlement-token";
@@ -31,7 +33,9 @@ export function createSubscriptionEntitlementKeysRoute(
   app.get("/", rateLimit(RateLimitPresets.AGGRESSIVE), async (c) => {
     try {
       const { keys } = await dependencies.keys();
-      return c.json({ keys }, 200, { "Cache-Control": "public, max-age=300" });
+      return c.json({ keys }, 200, {
+        "Cache-Control": `public, max-age=${ENTITLEMENT_KEYS_MAX_AGE_SECONDS}`,
+      });
     } catch (error) {
       if (!(error instanceof EntitlementSigningUnavailableError)) throw error;
       logger.error(

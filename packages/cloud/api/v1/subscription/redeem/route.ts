@@ -7,7 +7,9 @@
  * browser session. Body: `{ code, idempotencyKey }`. Unknown, expired,
  * disabled and fully redeemed codes share one generic 400 answer; a replay of
  * the same code for the same organization returns the original grant.
- * Limits: per credential and per IP, bounded locally if Redis is unavailable.
+ * Limits: per credential and per IP, in counters of their own (never shared
+ * with other routes), bounded locally if Redis is unavailable. Codes are
+ * 16 Crockford base32 characters (80 bits), so the limits are defense in depth.
  */
 
 import { requireUserOrApiKeyWithOrg } from "@elizaos/cloud-shared/auth";
@@ -23,7 +25,9 @@ import {
 } from "@elizaos/cloud-shared/db/repositories/subscription-grants";
 import { ApiError } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import {
+  getDefaultKey,
   getIpKey,
+  type RateLimitDependencies,
   rateLimit,
 } from "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare";
 import { getCloudAwareEnv } from "@elizaos/cloud-shared/lib/runtime/cloud-bindings";
@@ -44,7 +48,8 @@ const NO_STORE = { "Cache-Control": "no-store" } as const;
 const WINDOW_MS = 15 * 60_000;
 /** A device redeems once; retries replay. These bound guessing, not normal use. */
 export const REDEEM_LIMIT_PER_CREDENTIAL = 5;
-export const REDEEM_LIMIT_PER_IP = 20;
+/** Many phones can share one carrier-grade NAT address on activation day. */
+export const REDEEM_LIMIT_PER_IP = 60;
 
 const bodySchema = z
   .object({
@@ -66,6 +71,8 @@ export interface SubscriptionRedeemRouteDependencies {
     input: RedeemSubscriptionGrantInput,
   ): Promise<RedeemSubscriptionGrantResult>;
   summary(organizationId: string): Promise<EntitlementPlanSummary>;
+  /** Test hook: the Redis client the limiters use. */
+  rateLimit?: RateLimitDependencies;
 }
 
 const defaultDependencies: SubscriptionRedeemRouteDependencies = {
@@ -83,22 +90,34 @@ export function createSubscriptionRedeemRoute(
 
   app.use(
     "*",
-    rateLimit({
-      windowMs: WINDOW_MS,
-      maxRequests: REDEEM_LIMIT_PER_IP,
-      keyGenerator: (c) => `subscription-redeem:${getIpKey(c)}`,
-      localLease: false,
-      redisUnavailableFallback: { namespace: "subscription-redeem-ip" },
-    }),
+    rateLimit(
+      {
+        windowMs: WINDOW_MS,
+        maxRequests: REDEEM_LIMIT_PER_IP,
+        keyGenerator: (c) => `subscription-redeem:${getIpKey(c)}`,
+        localLease: false,
+        redisUnavailableFallback: { namespace: "subscription-redeem-ip" },
+      },
+      undefined,
+      dependencies.rateLimit,
+    ),
   );
   app.use(
     "*",
-    rateLimit({
-      windowMs: WINDOW_MS,
-      maxRequests: REDEEM_LIMIT_PER_CREDENTIAL,
-      localLease: false,
-      redisUnavailableFallback: { namespace: "subscription-redeem-credential" },
-    }),
+    rateLimit(
+      {
+        windowMs: WINDOW_MS,
+        maxRequests: REDEEM_LIMIT_PER_CREDENTIAL,
+        // Own counter: the default key is shared by every STANDARD route.
+        keyGenerator: (c) => `subscription-redeem:${getDefaultKey(c)}`,
+        localLease: false,
+        redisUnavailableFallback: {
+          namespace: "subscription-redeem-credential",
+        },
+      },
+      undefined,
+      dependencies.rateLimit,
+    ),
   );
 
   app.post("/", async (c) => {
@@ -171,7 +190,17 @@ export function createSubscriptionRedeemRoute(
         codeHash,
         idempotencyKey: parsed.data.idempotencyKey,
       });
-      const summary = await dependencies.summary(user.organization_id);
+      // The grant is committed. A failed summary read must not report the
+      // redemption as failed; the client can read the entitlement route.
+      let summary: EntitlementPlanSummary | null = null;
+      try {
+        summary = await dependencies.summary(user.organization_id);
+      } catch (error) {
+        logger.warn("[SubscriptionRedeem] Entitlement summary read failed", {
+          organizationId: user.organization_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return c.json(
         {
           success: true as const,
@@ -181,8 +210,12 @@ export function createSubscriptionRedeemRoute(
             planKey: result.grant.plan_key,
             startsAt: result.grant.starts_at.toISOString(),
             endsAt: result.grant.ends_at.toISOString(),
+            revoked: result.grant.revoked_at !== null,
+            // An effective paid plan keeps precedence; the grant serves only
+            // inside its window after the paid plan stops serving.
+            paidPlanTakesPrecedence: summary?.source === "subscription",
           },
-          entitlement: {
+          entitlement: summary && {
             plan: summary.plan,
             source: summary.source,
             effectiveUntil: summary.effectiveUntil?.toISOString() ?? null,

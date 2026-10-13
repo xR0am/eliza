@@ -34,6 +34,7 @@ import {
 import { organizations } from "../schemas/organizations";
 import { subscriptionAllowancePeriods } from "../schemas/subscription-allowance-periods";
 import { subscriptionAllowanceTransactions } from "../schemas/subscription-allowance-transactions";
+import { subscriptionGrants } from "../schemas/subscription-grants";
 import { readPostLockDatabaseNow } from "./primary-database-clock";
 import {
   type BillingFundingScope,
@@ -54,7 +55,9 @@ export type AllowancePeriodRetirementReason =
   | "period_ended"
   | "subscription_terminal"
   /** A subscription-grant bucket overlapped by a newly paid subscription period. */
-  | "superseded_by_paid";
+  | "superseded_by_paid"
+  /** A bucket of a subscription grant that support revoked. */
+  | "grant_revoked";
 
 export interface AllowancePeriodExpirySweepStats {
   scanned: number;
@@ -569,6 +572,20 @@ export class SubscriptionAllowanceRepository {
     } else if (input.reason === "superseded_by_paid") {
       if (period.grant_source !== "promo_grant" || billingScope)
         conflict("Only a subscription-grant bucket can be superseded", { periodId: period.id });
+    } else if (input.reason === "grant_revoked") {
+      if (period.grant_source !== "promo_grant" || billingScope || period.promo_grant_id === null)
+        conflict("Only a subscription-grant bucket can be revoked", { periodId: period.id });
+      const [grant] = await tx
+        .select({ revoked_at: subscriptionGrants.revoked_at })
+        .from(subscriptionGrants)
+        .where(
+          and(
+            eq(subscriptionGrants.id, period.promo_grant_id),
+            eq(subscriptionGrants.organization_id, input.organizationId),
+          ),
+        );
+      if (!grant || grant.revoked_at === null)
+        conflict("Allowance source grant is not revoked", { periodId: period.id });
     } else {
       if (period.subscription_id === null)
         conflict("Allowance source subscription is not terminal", { periodId: period.id });

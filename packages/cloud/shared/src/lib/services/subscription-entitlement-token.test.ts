@@ -63,11 +63,13 @@ async function clientVerify(token: string, keys: JsonWebKey[]) {
 
 let current: { privateKey: string; publicKey: string };
 let previous: { privateKey: string; publicKey: string };
+let next: { privateKey: string; publicKey: string };
 
 beforeEach(async () => {
   __resetEntitlementSigningCacheForTests();
   current ??= await generateKey();
   previous ??= await generateKey();
+  next ??= await generateKey();
 });
 
 function env(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
@@ -177,14 +179,54 @@ describe("subscription entitlement JWS", () => {
     ).rejects.toThrow("unknown-key");
   });
 
+  test("a next key is published before it signs, so cached key sets verify its first tokens", async () => {
+    const prePublished = env({
+      ELIZA_ENTITLEMENT_NEXT_PUBLIC_KEY: next.publicKey,
+      ELIZA_ENTITLEMENT_NEXT_KEY_ID: "ent-next",
+    });
+    // A client caches this set before the rotation.
+    const cached = (await publishedEntitlementKeys(prePublished)).keys;
+    expect(cached.map((key) => key.kid)).toEqual(["ent-2026-10", "ent-next"]);
+    const stillCurrent = await signSubscriptionEntitlement(
+      { userId: USER, organizationId: ORG, summary: activeGrant },
+      prePublished,
+    );
+    expect(decode(stillCurrent.split(".")[0]!).kid).toBe("ent-2026-10");
+    __resetEntitlementSigningCacheForTests();
+    const rotated = env({
+      ELIZA_ENTITLEMENT_SIGNING_KEY: next.privateKey,
+      ELIZA_ENTITLEMENT_SIGNING_KEY_ID: "ent-next",
+      ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY: current.publicKey,
+      ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID: "ent-2026-10",
+    });
+    const first = await signSubscriptionEntitlement(
+      { userId: USER, organizationId: ORG, summary: activeGrant },
+      rotated,
+    );
+    expect((await clientVerify(first, cached as JsonWebKey[])).header.kid).toBe("ent-next");
+  });
+
+  test("a token never outlives the plan window it reports", async () => {
+    const now = Date.parse("2027-04-13T23:59:30Z");
+    const token = await signSubscriptionEntitlement(
+      { userId: USER, organizationId: ORG, summary: activeGrant, now },
+      env(),
+    );
+    const claims = decode(token.split(".")[1]!);
+    expect(claims.exp).toBe(Date.parse("2027-04-14T00:00:00Z") / 1000);
+    expect(claims.exp as number).toBeGreaterThan(claims.iat as number);
+  });
+
   test("fails closed without complete signing configuration", async () => {
     for (const overrides of [
       { ELIZA_ENTITLEMENT_SIGNING_KEY: undefined },
       { ELIZA_ENTITLEMENT_SIGNING_KEY_ID: undefined },
       { ELIZA_ENTITLEMENT_ISSUER: undefined },
       { ELIZA_ENTITLEMENT_ISSUER: "https://api.eliza.app/v1" },
-      { ELIZA_ENTITLEMENT_SIGNING_KEY: "bm90IGEga2V5" },
+      // Base64 text that is not key material, built at runtime.
+      { ELIZA_ENTITLEMENT_SIGNING_KEY: Buffer.from("not a key").toString("base64") },
       { ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID: "ent-old" },
+      { ELIZA_ENTITLEMENT_NEXT_KEY_ID: "ent-next" },
       {
         ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY: previous.publicKey,
         ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID: "ent-2026-10",

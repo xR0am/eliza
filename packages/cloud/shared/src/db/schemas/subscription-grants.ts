@@ -54,6 +54,9 @@ export const subscriptionGrants = pgTable(
     starts_at: timestamp("starts_at", { withTimezone: true }).notNull(),
     ends_at: timestamp("ends_at", { withTimezone: true }).notNull(),
     created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Set once by support revocation; a revoked grant no longer serves. */
+    revoked_at: timestamp("revoked_at", { withTimezone: true }),
+    revoked_reason: text("revoked_reason"),
   },
   (table) => ({
     org_family_unique: unique("subscription_grants_org_family_idx").on(
@@ -69,6 +72,10 @@ export const subscriptionGrants = pgTable(
     window_check: check(
       "subscription_grants_window_check",
       sql`${table.ends_at} > ${table.starts_at}`,
+    ),
+    revocation_check: check(
+      "subscription_grants_revocation_check",
+      sql`(${table.revoked_at} IS NULL) = (${table.revoked_reason} IS NULL)`,
     ),
   }),
 );

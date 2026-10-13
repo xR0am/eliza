@@ -22,6 +22,8 @@ let database: typeof import("../client");
 let grants: typeof import("./subscription-grants");
 let policyModule: typeof import("../../lib/services/organization-quota-policy");
 let eligibility: typeof import("./subscription-allowance-eligibility");
+let freeValues: typeof import("./subscription-entitlements");
+let entitlementToken: typeof import("../../lib/services/subscription-entitlement-token");
 
 async function exec(query: string): Promise<void> {
   await database.getPgliteClientForTests().exec(query);
@@ -60,14 +62,26 @@ async function redeem(
   organizationId: string,
   code: string,
   idempotencyKey = `key-${code.replace(/\W/g, "")}-${organizationId}`,
+  userId: string = USER,
 ) {
   const normalized = grants.normalizeSubscriptionGrantCode(code);
   return grants.subscriptionGrantsRepository.redeem({
     organizationId,
-    userId: USER,
+    userId,
     codeHash: await grants.hashSubscriptionGrantCode(normalized ?? code, PEPPER),
     idempotencyKey,
   });
+}
+
+/** SET clause for the free values a terminal revision derives (source ids kept). */
+function freeProjectionSql(): string {
+  return Object.entries(freeValues.SUBSCRIPTION_FREE_ENTITLEMENT_VALUES)
+    .filter(([column]) => !column.startsWith("source_"))
+    .map(
+      ([column, value]) =>
+        `${column} = ${value === null ? "NULL" : typeof value === "string" ? `'${value}'` : String(value)}`,
+    )
+    .join(", ");
 }
 
 async function policyAt(organizationId: string, at?: Date) {
@@ -98,6 +112,8 @@ beforeAll(async () => {
   grants = await import("./subscription-grants");
   policyModule = await import("../../lib/services/organization-quota-policy");
   eligibility = await import("./subscription-allowance-eligibility");
+  freeValues = await import("./subscription-entitlements");
+  entitlementToken = await import("../../lib/services/subscription-entitlement-token");
 });
 
 afterAll(async () => {
@@ -270,6 +286,171 @@ describe("subscription grant redemption", () => {
     expect(lapsed.authority).toMatchObject({ source: "promo_grant", sourceGrantId: grant.id });
     expect(lapsed.subscriptionFunded).toBe(true);
     expect((await allowanceAt(PAID_ORG, now))?.promo_grant_id).toBe(grant.id);
+  });
+
+  for (const [revision, status] of [
+    [2, "canceled"],
+    [3, "incomplete_expired"],
+  ] as const)
+    test(`a ${status} subscription (projected as free) is served by the active grant`, async () => {
+      // The subscription ends during the grant window: the projection becomes
+      // the free values a terminal revision derives.
+      await exec(`INSERT INTO billing_subscription_revisions(organization_id, subscription_id, revision, source, provider_environment, stripe_customer_id, stripe_subscription_id, stripe_subscription_item_id, plan_key, catalog_version, status, current_period_start, current_period_end, cancel_at_period_end, ended_at, provider_object_digest)
+        VALUES('${PAID_ORG}', '${PAID_SUB}', ${revision}, 'webhook', 'test', 'cus_snapshot', 'sub_snapshot', 'si_snapshot', 'plus_monthly', 'v1', '${status}', '2026-08-01Z', '2026-09-01Z', false, '2026-09-01Z', '${"c".repeat(64)}');
+        UPDATE billing_subscriptions SET status = '${status}', lifecycle_revision = ${revision}, provider_object_digest = '${"c".repeat(64)}' WHERE id = '${PAID_SUB}';
+        UPDATE organization_entitlements SET ${freeProjectionSql()}, effective_from = '2026-09-01Z',
+          source_subscription_revision = ${revision}, source_digest = '${"c".repeat(64)}',
+          projection_revision = projection_revision + 1
+        WHERE organization_id = '${PAID_ORG}' AND billing_scope_id IS NULL;`);
+      const [grant] = await rows<{ id: string; starts_at: Date }>(
+        `SELECT id, starts_at FROM subscription_grants WHERE organization_id = '${PAID_ORG}'`,
+      );
+      const policy = await policyAt(PAID_ORG);
+      expect(policy.authority).toMatchObject({ source: "promo_grant", sourceGrantId: grant!.id });
+      expect(policy.subscriptionFunded).toBe(true);
+      expect(policyModule.requireOrganizationRateTier(policy).tierName).toBe("plus_monthly");
+      expect((await allowanceAt(PAID_ORG, new Date()))?.promo_grant_id).toBe(grant!.id);
+      const summary = await entitlementToken.readOrganizationEntitlementSummary(PAID_ORG);
+      expect(summary).toMatchObject({
+        source: "grant",
+        plan: { id: "plus_monthly", status: "active" },
+      });
+    });
+
+  test("revoking the grant of a canceled subscriber serves the free plan", async () => {
+    const [grant] = await rows<{ id: string }>(
+      `SELECT id FROM subscription_grants WHERE organization_id = '${PAID_ORG}'`,
+    );
+    await grants.subscriptionGrantsRepository.revoke({ grantId: grant!.id, reason: "support" });
+    const policy = await policyAt(PAID_ORG);
+    expect(policy.authority.source).toBe("subscription");
+    expect(policy.subscriptionFunded).toBe(false);
+    expect(await allowanceAt(PAID_ORG, new Date())).toBeUndefined();
+    expect((await entitlementToken.readOrganizationEntitlementSummary(PAID_ORG)).plan.status).toBe(
+      "canceled",
+    );
+  });
+});
+
+describe("subscription grant code validity before family checks", () => {
+  test("an organization holding a grant gets the generic refusal for a code that is not redeemable", async () => {
+    const org = await newOrg();
+    await newCode("AAAA-BBBB-CCCC-0011");
+    await newCode("AAAA-BBBB-CCCC-0012", { disabled: true });
+    await newCode("AAAA-BBBB-CCCC-0013", { expiresAt: "2020-01-01T00:00:00Z" });
+    await newCode("AAAA-BBBB-CCCC-0014", { max: 2 });
+    await redeem(org, "AAAA-BBBB-CCCC-0011");
+    for (const code of ["AAAA-BBBB-CCCC-0012", "AAAA-BBBB-CCCC-0013", "ZZZZ-ZZZZ-ZZZZ-ZZZY"])
+      await expect(redeem(org, code)).rejects.toMatchObject({
+        code: grants.SUBSCRIPTION_GRANT_CODE_INVALID,
+      });
+    // Only a redeemable code reaches the family answer.
+    await expect(redeem(org, "AAAA-BBBB-CCCC-0014")).rejects.toMatchObject({
+      code: grants.SUBSCRIPTION_GRANT_ALREADY_GRANTED,
+    });
+  });
+});
+
+describe("subscription grant records and account deletion", () => {
+  test("deleting the redeeming user keeps the grant and clears its user", async () => {
+    const user = "63000000-0000-4000-8000-000000000099";
+    await exec(`INSERT INTO users(id) VALUES ('${user}')`);
+    const org = await newOrg();
+    await newCode("AAAA-BBBB-CCCC-0021");
+    const { grant } = await redeem(org, "AAAA-BBBB-CCCC-0021", undefined, user);
+    expect(grant.user_id).toBe(user);
+    await exec(`DELETE FROM users WHERE id = '${user}'`);
+    const [kept] = await rows<{ user_id: string | null; ends_at: Date }>(
+      `SELECT user_id, ends_at FROM subscription_grants WHERE id = '${grant.id}'`,
+    );
+    expect(kept!.user_id).toBeNull();
+    expect(new Date(kept!.ends_at).getTime()).toBe(grant.ends_at.getTime());
+    // The organization keeps its grant service after the user is gone.
+    expect((await policyAt(org)).authority.source).toBe("promo_grant");
+  });
+
+  test("grant terms stay immutable and grant rows cannot be deleted", async () => {
+    const org = await newOrg();
+    await newCode("AAAA-BBBB-CCCC-0022");
+    const { grant } = await redeem(org, "AAAA-BBBB-CCCC-0022");
+    await expect(
+      exec(
+        `UPDATE subscription_grants SET ends_at = ends_at + interval '1 day' WHERE id = '${grant.id}'`,
+      ),
+    ).rejects.toThrow(/immutable/);
+    await expect(
+      exec(`UPDATE subscription_grants SET user_id = '${PAID_ORG}' WHERE id = '${grant.id}'`),
+    ).rejects.toThrow();
+    await expect(exec(`DELETE FROM subscription_grants WHERE id = '${grant.id}'`)).rejects.toThrow(
+      /cannot be deleted/,
+    );
+  });
+});
+
+describe("subscription grant revocation", () => {
+  test("a revoked grant stops serving at once and its buckets are retired", async () => {
+    const org = await newOrg();
+    await newCode("AAAA-BBBB-CCCC-0031", { max: 3 });
+    await newCode("AAAA-BBBB-CCCC-0032", { max: 3 });
+    const { grant } = await redeem(org, "AAAA-BBBB-CCCC-0031");
+    const during = await policyAt(org);
+    expect(during.authority.source).toBe("promo_grant");
+
+    const result = await grants.subscriptionGrantsRepository.revoke({
+      grantId: grant.id,
+      reason: "leaked batch",
+    });
+    expect(result.revoked).toBe(true);
+    expect(result.retiredPeriods).toBe(7);
+    expect(result.grant.revoked_at).not.toBeNull();
+
+    const after = await policyAt(org);
+    expect(after.authority.source).toBe("legacy");
+    expect(after.subscriptionFunded).toBe(false);
+    expect(after.authority.generation).not.toBe(during.authority.generation);
+    expect(await allowanceAt(org, new Date())).toBeUndefined();
+    const [projection] = await rows<{
+      plan_key: string;
+      state: string;
+      source_grant_id: string | null;
+    }>(
+      `SELECT plan_key, state, source_grant_id FROM organization_entitlements WHERE organization_id = '${org}' AND billing_scope_id IS NULL`,
+    );
+    expect(projection).toEqual({ plan_key: "free", state: "free", source_grant_id: null });
+    const open = await rows<{ count: number }>(
+      `SELECT count(*)::int AS count FROM subscription_allowance_periods WHERE promo_grant_id = '${grant.id}' AND state = 'open'`,
+    );
+    expect(open[0]!.count).toBe(0);
+    const summary = await entitlementToken.readOrganizationEntitlementSummary(org);
+    expect(summary.plan.status).toBe("none");
+
+    // Revoking again is a no-op; a revoked grant keeps the family slot; a
+    // replay of the same code reports the revoked grant.
+    expect(
+      (await grants.subscriptionGrantsRepository.revoke({ grantId: grant.id, reason: "again" }))
+        .revoked,
+    ).toBe(false);
+    await expect(redeem(org, "AAAA-BBBB-CCCC-0032")).rejects.toMatchObject({
+      code: grants.SUBSCRIPTION_GRANT_ALREADY_GRANTED,
+    });
+    const replay = await redeem(org, "AAAA-BBBB-CCCC-0031");
+    expect(replay.replayed).toBe(true);
+    expect(replay.grant.revoked_at).not.toBeNull();
+    // Revocation is one way.
+    await expect(
+      exec(
+        `UPDATE subscription_grants SET revoked_at = NULL, revoked_reason = NULL WHERE id = '${grant.id}'`,
+      ),
+    ).rejects.toThrow(/immutable/);
+  });
+
+  test("an unknown grant id is a typed error", async () => {
+    await expect(
+      grants.subscriptionGrantsRepository.revoke({
+        grantId: "65000000-0000-4000-8000-000000000000",
+        reason: "test",
+      }),
+    ).rejects.toMatchObject({ code: grants.SUBSCRIPTION_GRANT_NOT_FOUND });
   });
 });
 

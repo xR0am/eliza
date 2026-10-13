@@ -9,7 +9,14 @@
  *   ELIZA_ENTITLEMENT_SIGNING_KEY_ID         kid of that key
  *   ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY    optional base64 SPKI public key kept published after rotation
  *   ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID        kid of the previous key (set together with the key)
+ *   ELIZA_ENTITLEMENT_NEXT_PUBLIC_KEY        optional base64 SPKI public key published before it signs
+ *   ELIZA_ENTITLEMENT_NEXT_KEY_ID            kid of the next key (set together with the key)
  *   ELIZA_ENTITLEMENT_ISSUER                 exact API origin clients expect as `iss`
+ *
+ * Rotation: (1) publish the new public key as NEXT and wait longer than the
+ * key-set cache (ENTITLEMENT_KEYS_MAX_AGE_SECONDS); (2) make it the signing key
+ * and move the old public key to PREVIOUS, clearing NEXT; (3) clear PREVIOUS
+ * after the old tokens expire (ENTITLEMENT_LIFETIME_SECONDS).
  */
 import { eq } from "drizzle-orm";
 import { exportJWK, importPKCS8, importSPKI, type JWK, SignJWT } from "jose";
@@ -28,7 +35,8 @@ export const ENTITLEMENT_TYPE = "eliza-entitlement+jwt";
 export const ENTITLEMENT_AUDIENCE = "eliza-alpha-phone";
 /** Client ceiling is 60 minutes; Cloud issues well inside it. */
 export const ENTITLEMENT_LIFETIME_SECONDS = 30 * 60;
-const MIN_LIFETIME_SECONDS = 60;
+/** Cache lifetime of the published key set (GET /entitlement-keys). */
+export const ENTITLEMENT_KEYS_MAX_AGE_SECONDS = 60;
 const KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
 export type EntitlementPlanStatus = "active" | "trialing" | "past_due" | "canceled" | "none";
@@ -96,6 +104,8 @@ export async function loadEntitlementSigningConfig(
   const kid = env.ELIZA_ENTITLEMENT_SIGNING_KEY_ID;
   const previousKey = env.ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY;
   const previousKid = env.ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID;
+  const nextKey = env.ELIZA_ENTITLEMENT_NEXT_PUBLIC_KEY;
+  const nextKid = env.ELIZA_ENTITLEMENT_NEXT_KEY_ID;
   const issuer = requiredIssuer(env.ELIZA_ENTITLEMENT_ISSUER);
   if (!privateKey || !kid)
     throw new EntitlementSigningUnavailableError("Entitlement signing key is not configured");
@@ -107,7 +117,21 @@ export async function loadEntitlementSigningConfig(
     );
   if (previousKid && (!KEY_ID_PATTERN.test(previousKid) || previousKid === kid))
     throw new EntitlementSigningUnavailableError("ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID is invalid");
-  const source = [issuer, kid, privateKey, previousKid ?? "", previousKey ?? ""].join("\0");
+  if (Boolean(nextKey) !== Boolean(nextKid))
+    throw new EntitlementSigningUnavailableError(
+      "Next entitlement key and key id must be set together",
+    );
+  if (nextKid && (!KEY_ID_PATTERN.test(nextKid) || nextKid === kid || nextKid === previousKid))
+    throw new EntitlementSigningUnavailableError("ELIZA_ENTITLEMENT_NEXT_KEY_ID is invalid");
+  const source = [
+    issuer,
+    kid,
+    privateKey,
+    previousKid ?? "",
+    previousKey ?? "",
+    nextKid ?? "",
+    nextKey ?? "",
+  ].join("\0");
   if (cachedConfig?.source === source) return cachedConfig.config;
   let config: SigningConfig;
   try {
@@ -121,6 +145,13 @@ export async function loadEntitlementSigningConfig(
       });
       keys.push(publicJwk(await exportJWK(previous), previousKid));
     }
+    // Published ahead of its first signature, so cached key sets already hold it.
+    if (nextKey && nextKid) {
+      const next = await importSPKI(decodePem(nextKey, "PUBLIC"), "ES256", {
+        extractable: true,
+      });
+      keys.push(publicJwk(await exportJWK(next), nextKid));
+    }
     config = { issuer, kid, privateKey: signing, keys };
   } catch (error) {
     if (error instanceof EntitlementSigningUnavailableError) throw error;
@@ -131,7 +162,7 @@ export async function loadEntitlementSigningConfig(
   return config;
 }
 
-/** Public verification keys: the current key first, then the previous key during rotation. */
+/** Public verification keys: the current key first, then the previous and next keys during rotation. */
 export async function publishedEntitlementKeys(
   env: NodeJS.ProcessEnv = getCloudAwareEnv(),
 ): Promise<{ keys: JWK[] }> {
@@ -253,6 +284,9 @@ export async function readAllowanceExhaustion(
         false,
         policy,
       );
+      // A bucket that still has allowance did not cause the refusal: the
+      // request estimate exceeded allowance plus credits.
+      if (period && Number(period.available_amount) > 0) return null;
       const until = policy.authority.effectiveUntil;
       return { resetsAt: period?.expires_at ?? (until ? new Date(until) : null) };
     },
@@ -276,11 +310,13 @@ export async function signSubscriptionEntitlement(
   const config = await loadEntitlementSigningConfig(env);
   const iat = Math.floor((input.now ?? Date.now()) / 1000);
   let exp = iat + ENTITLEMENT_LIFETIME_SECONDS;
-  // Expire with the plan window so a client sees a plan change promptly.
+  // Expire with the plan window so a client sees a plan change promptly. The
+  // token never outlives the window it reports (one second is the floor, so
+  // exp stays after iat).
   const until = input.summary.effectiveUntil
     ? Math.floor(input.summary.effectiveUntil.getTime() / 1000)
     : null;
-  if (until !== null && until < exp) exp = Math.max(until, iat + MIN_LIFETIME_SECONDS);
+  if (until !== null && until < exp) exp = Math.max(until, iat + 1);
   const rfa = iat + Math.floor((exp - iat) / 2);
   const claims: Record<string, unknown> = {
     org: input.organizationId ?? undefined,

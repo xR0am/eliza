@@ -468,6 +468,9 @@ TUNNEL_AUTH_KEY_COST_USD = "0.01"
 #   ELIZA_ENTITLEMENT_PREVIOUS_PUBLIC_KEY / ELIZA_ENTITLEMENT_PREVIOUS_KEY_ID
 #                                      Optional: base64 SPKI public key and kid of the
 #                                      previous key, still published after a rotation.
+#   ELIZA_ENTITLEMENT_NEXT_PUBLIC_KEY / ELIZA_ENTITLEMENT_NEXT_KEY_ID
+#                                      Optional: base64 SPKI public key and kid of the
+#                                      next key, published before it signs (rotation step 1).
 #   ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER  HMAC pepper for subscription grant code
 #                                      hashes (>= 32 chars). POST /api/v1/subscription/redeem
 #                                      returns 503 while unset. Changing it invalidates

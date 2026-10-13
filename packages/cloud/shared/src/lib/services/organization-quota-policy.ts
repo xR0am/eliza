@@ -438,26 +438,28 @@ export async function readOrganizationQuotaPolicyInTransaction(
         grant.ends_at.getTime() !== projection.effective_until.getTime()
       )
         return unavailable(organizationId, "grant_projection_conflict");
-      return entitlementShapedPolicy(organizationId, {
-        base,
-        org,
-        config,
-        storage,
-        override,
-        granted: grantEntitlementPlanValues(grant),
-        authority: {
-          generation: association.policy_generation.toString(),
-          source: "promo_grant",
-          sourceSubscriptionId: null,
-          sourceRevision: null,
-          projectionRevision: String(projection.projection_revision),
-          catalogVersion: grant.catalog_version,
-          sourceGrantId: grant.id,
-          effectiveFrom: grant.starts_at.toISOString(),
-          effectiveUntil: grant.ends_at.toISOString(),
-        },
-        now,
-      });
+      // A revoked grant stops serving at once, even before its projection is rewritten.
+      if (grant.revoked_at === null)
+        return entitlementShapedPolicy(organizationId, {
+          base,
+          org,
+          config,
+          storage,
+          override,
+          granted: grantEntitlementPlanValues(grant),
+          authority: {
+            generation: association.policy_generation.toString(),
+            source: "promo_grant",
+            sourceSubscriptionId: null,
+            sourceRevision: null,
+            projectionRevision: String(projection.projection_revision),
+            catalogVersion: grant.catalog_version,
+            sourceGrantId: grant.id,
+            effectiveFrom: grant.starts_at.toISOString(),
+            effectiveUntil: grant.ends_at.toISOString(),
+          },
+          now,
+        });
     }
     return {
       ...base,
@@ -558,9 +560,12 @@ export async function readOrganizationQuotaPolicyInTransaction(
       ? paidUntil
       : entitlement.effective_from;
   const grantedUntil = lapsed ? null : paidUntil;
-  // A grant serves an organization whose paid subscription is no longer
-  // effective; an effective paid subscription keeps precedence.
-  const promo = lapsed ? await readActiveSubscriptionGrant(tx, organizationId, now) : undefined;
+  // A grant serves an organization whose subscription does not serve a paid
+  // plan now: a lapsed period, a non-effective dunning state, or a canceled or
+  // incomplete_expired subscription (projected as free). An effective paid
+  // subscription keeps precedence.
+  const servedFree = lapsed || entitlement.plan_key === "free";
+  const promo = servedFree ? await readActiveSubscriptionGrant(tx, organizationId, now) : undefined;
   const [stored] = await tx
     .select({ generation: organizationSubscriptionAuthorities.policy_generation })
     .from(organizationSubscriptionAuthorities)

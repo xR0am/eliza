@@ -31,7 +31,15 @@ CREATE TABLE subscription_grants (
   starts_at timestamptz NOT NULL,
   ends_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  -- Support revocation (for example a leaked or resold batch). A revoked grant
+  -- stops serving at once and keeps the organization's slot in its family.
+  revoked_at timestamptz,
+  revoked_reason text,
   CONSTRAINT subscription_grants_window_check CHECK (ends_at > starts_at),
+  CONSTRAINT subscription_grants_revocation_check CHECK (
+    (revoked_at IS NULL) = (revoked_reason IS NULL)
+    AND (revoked_reason IS NULL OR length(btrim(revoked_reason)) BETWEEN 1 AND 500)
+  ),
   -- One free grant per organization for each code family.
   CONSTRAINT subscription_grants_org_family_idx UNIQUE (organization_id, family),
   CONSTRAINT subscription_grants_id_org_idx UNIQUE (id, organization_id)
@@ -41,12 +49,19 @@ CREATE INDEX subscription_grants_org_window_idx ON subscription_grants (organiza
 --> statement-breakpoint
 CREATE INDEX subscription_grants_code_idx ON subscription_grants (code_id);
 --> statement-breakpoint
+-- Grant terms are immutable. Two one-way changes are allowed: user_id becomes
+-- NULL (the ON DELETE SET NULL action when the redeeming user is deleted), and
+-- revoked_at/revoked_reason are set once.
 CREATE FUNCTION guard_subscription_grant_record() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'Subscription grant history cannot be deleted';
   END IF;
-  IF TG_OP = 'UPDATE' THEN
+  IF (to_jsonb(NEW) - 'user_id' - 'revoked_at' - 'revoked_reason')
+       IS DISTINCT FROM (to_jsonb(OLD) - 'user_id' - 'revoked_at' - 'revoked_reason')
+     OR (NEW.user_id IS DISTINCT FROM OLD.user_id AND NEW.user_id IS NOT NULL)
+     OR (OLD.revoked_at IS NOT NULL AND (NEW.revoked_at IS DISTINCT FROM OLD.revoked_at
+       OR NEW.revoked_reason IS DISTINCT FROM OLD.revoked_reason)) THEN
     RAISE EXCEPTION 'Subscription grant terms are immutable';
   END IF;
   RETURN NEW;

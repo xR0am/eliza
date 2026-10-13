@@ -11,11 +11,17 @@ import {
 } from "@elizaos/cloud-shared/db/repositories/subscription-grants";
 import type { SubscriptionGrant } from "@elizaos/cloud-shared/db/schemas/subscription-grants";
 import { AuthenticationError } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
+import type { CompatibleRedis } from "@elizaos/cloud-shared/lib/cache/redis-factory";
+import {
+  RateLimitPresets,
+  rateLimit,
+} from "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare";
 import {
   type EntitlementPlanSummary,
   EntitlementSigningUnavailableError,
 } from "@elizaos/cloud-shared/lib/services/subscription-entitlement-token";
 import { ElizaError } from "@elizaos/core";
+import { Hono } from "hono";
 import { isPublicPath } from "../src/middleware/auth";
 import { createSubscriptionEntitlementRoute } from "../v1/subscription/entitlement/route";
 import { createSubscriptionEntitlementKeysRoute } from "../v1/subscription/entitlement-keys/route";
@@ -42,6 +48,8 @@ const GRANT: SubscriptionGrant = {
   starts_at: new Date("2026-10-13T00:00:00Z"),
   ends_at: new Date("2027-04-14T00:00:00Z"),
   created_at: new Date("2026-10-13T00:00:00Z"),
+  revoked_at: null,
+  revoked_reason: null,
 };
 const SUMMARY: EntitlementPlanSummary = {
   plan: { id: "plus_monthly", name: "Plus", status: "active" },
@@ -119,6 +127,8 @@ describe("POST /api/v1/subscription/redeem", () => {
         planKey: "plus_monthly",
         startsAt: "2026-10-13T00:00:00.000Z",
         endsAt: "2027-04-14T00:00:00.000Z",
+        revoked: false,
+        paidPlanTakesPrecedence: false,
       },
       entitlement: {
         plan: { id: "plus_monthly", name: "Plus", status: "active" },
@@ -151,6 +161,115 @@ describe("POST /api/v1/subscription/redeem", () => {
     });
     const [first, second] = deps.calls as Array<{ codeHash: string }>;
     expect(first!.codeHash).toBe(second!.codeHash);
+  });
+
+  test("Crockford read aliases (O for 0, I and L for 1) hash as the minted code", async () => {
+    const deps = redeemDeps();
+    const app = createSubscriptionRedeemRoute(deps);
+    await post(app, {
+      code: "0011-ABCD-EFGH-JKMN",
+      idempotencyKey: "phone-install-1",
+    });
+    await post(app, {
+      code: "oOiL-abcd-efgh-jkmn",
+      idempotencyKey: "phone-install-1",
+    });
+    const [minted, typed] = deps.calls as Array<{ codeHash: string }>;
+    expect(typed!.codeHash).toBe(minted!.codeHash);
+  });
+
+  test("text shorter than a minted code is refused without a lookup", async () => {
+    const deps = redeemDeps();
+    const res = await post(createSubscriptionRedeemRoute(deps), {
+      code: "ABCD-EFGH-JKMN",
+      idempotencyKey: "phone-install-1",
+    });
+    expect(res.status).toBe(400);
+    expect(await bodyOf(res)).toMatchObject({
+      code: "invalid_subscription_code",
+    });
+    expect(deps.calls).toHaveLength(0);
+  });
+
+  test("a committed grant answers 200 even when the summary read fails", async () => {
+    const res = await post(
+      createSubscriptionRedeemRoute(
+        redeemDeps({
+          summary: async () => {
+            throw new Error("replica unavailable");
+          },
+        }),
+      ),
+      { code: "ABCD-EFGH-JKMN-PQRS", idempotencyKey: "phone-install-1" },
+    );
+    expect(res.status).toBe(200);
+    expect(await bodyOf(res)).toMatchObject({
+      success: true,
+      grant: { id: GRANT.id, revoked: false },
+      entitlement: null,
+    });
+  });
+
+  test("the credential limit has its own counter, not the shared STANDARD one", async () => {
+    // Minimal in-memory Redis with the commands the limiter uses.
+    const counts = new Map<string, number>();
+    const ttls = new Map<string, number>();
+    const redis = {
+      pipeline() {
+        const ops: Array<() => number> = [];
+        const pipeline = {
+          incr(key: string) {
+            ops.push(() => {
+              const next = (counts.get(key) ?? 0) + 1;
+              counts.set(key, next);
+              return next;
+            });
+            return pipeline;
+          },
+          pttl(key: string) {
+            ops.push(() => ttls.get(key) ?? -1);
+            return pipeline;
+          },
+          async exec() {
+            return ops.map((op) => op());
+          },
+        };
+        return pipeline;
+      },
+      async pexpire(key: string, ms: number) {
+        ttls.set(key, ms);
+        return 1;
+      },
+    } as unknown as CompatibleRedis;
+    const rateLimitDeps = { buildRedisClient: () => redis };
+    const standard = new Hono();
+    standard.use(
+      "*",
+      rateLimit(RateLimitPresets.STANDARD, undefined, rateLimitDeps),
+    );
+    standard.get("/", (c) => c.json({ ok: true }));
+    const authorization = `Bearer eliza_test_key_${credentialCounter}`;
+    // The phone's sign-in calls several STANDARD routes with the same key first.
+    for (let index = 0; index < REDEEM_LIMIT_PER_CREDENTIAL + 3; index += 1)
+      expect(
+        (await standard.request("/", { headers: { authorization } }, ENV))
+          .status,
+      ).toBe(200);
+    const sharedKeys = [...counts.keys()];
+    const deps = redeemDeps({ rateLimit: rateLimitDeps });
+    const res = await post(createSubscriptionRedeemRoute(deps), {
+      code: "ABCD-EFGH-JKMN-PQRS",
+      idempotencyKey: "phone-install-1",
+    });
+    expect(res.status).toBe(200);
+    // Redeem neither counted against nor re-armed the shared counter's window.
+    for (const key of sharedKeys) {
+      expect(counts.get(key)).toBe(REDEEM_LIMIT_PER_CREDENTIAL + 3);
+      expect(ttls.get(key)).toBe(RateLimitPresets.STANDARD.windowMs);
+    }
+    expect(
+      [...counts.keys()].filter((key) => key.includes("subscription-redeem")),
+    ).toHaveLength(2);
   });
 
   test("a replay returns the original grant", async () => {
