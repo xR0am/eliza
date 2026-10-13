@@ -28,12 +28,14 @@ it("keeps world roles, reply threads and user relationships through a transfer",
     const owner = stringToUuid("transfer-owner");
     const friend = stringToUuid("transfer-friend");
     const outsider = stringToUuid("transfer-outsider");
+    const contact = stringToUuid("transfer-contact");
     const worldId = stringToUuid("transfer-world");
     const roomId = stringToUuid("transfer-room");
     await adapter.createEntities([
       { id: owner, agentId, names: ["Owner"] } as Entity,
       { id: friend, agentId, names: ["Friend"] } as Entity,
       { id: outsider, agentId, names: ["Outsider"] } as Entity,
+      { id: contact, agentId, names: ["Contact"] } as Entity,
     ]);
     await adapter.createWorlds([
       {
@@ -59,7 +61,7 @@ it("keeps world roles, reply threads and user relationships through a transfer",
     ]);
     await adapter.createRoomParticipants([owner, friend], roomId);
     await adapter.createRelationships([
-      { sourceEntityId: owner, targetEntityId: friend, tags: ["colleague"] },
+      { sourceEntityId: owner, targetEntityId: contact, tags: ["colleague"] },
     ]);
     const firstId = stringToUuid("transfer-message-1");
     await adapter.createMemories([
@@ -129,6 +131,9 @@ it("keeps world roles, reply threads and user relationships through a transfer",
       expect(entities.some((entity) => entity.names.includes("Outsider"))).toBe(
         false,
       );
+      expect(entities.some((entity) => entity.names.includes("Contact"))).toBe(
+        false,
+      );
       expect(newOutsider).not.toBe(outsider);
       expect(world.metadata?.roles?.[newOutsider]).toBe("ADMIN");
 
@@ -149,7 +154,13 @@ it("keeps world roles, reply threads and user relationships through a transfer",
       });
       expect(
         relationships.map((row) => [row.sourceEntityId, row.targetEntityId]),
-      ).toEqual([[newOwner, newFriend]]);
+      ).toHaveLength(1);
+      const importedContact = await db.getEntitiesByIds([
+        relationships[0].targetEntityId,
+      ]);
+      expect(importedContact[0]?.names).toContain("Contact");
+      expect(importedContact[0]?.id).not.toBe(contact);
+      expect(relationships[0].sourceEntityId).toBe(newOwner);
     });
   } finally {
     await source.cleanup();

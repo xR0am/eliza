@@ -909,6 +909,37 @@ async function extractAgentData(
     }
   }
 
+  // Relationships may point at a user who is not a room participant or a
+  // metadata subject. Export that endpoint too so import never mints a
+  // relationship to a random, nonexistent entity.
+  const relationships = await db.getRelationships({
+    entityIds: [agentId, ...entityMap.keys()] as UUID[],
+  });
+  const relationshipEntityIds = new Set<string>();
+  for (const relationship of relationships) {
+    relationshipEntityIds.add(relationship.sourceEntityId);
+    relationshipEntityIds.add(relationship.targetEntityId);
+  }
+  const missingRelationshipEntityIds = [...relationshipEntityIds].filter(
+    (entityId) => !entityMap.has(entityId),
+  );
+  if (missingRelationshipEntityIds.length > 0) {
+    const relationshipEntities = await db.getEntitiesByIds(
+      missingRelationshipEntityIds as UUID[],
+    );
+    for (const entity of relationshipEntities) {
+      if (entity.id) entityMap.set(entity.id, entity);
+    }
+    const unresolvedRelationshipEntityIds = missingRelationshipEntityIds.filter(
+      (entityId) => !entityMap.has(entityId),
+    );
+    if (unresolvedRelationshipEntityIds.length > 0) {
+      throw new AgentExportError(
+        `Relationships reference entities that cannot be exported: ${unresolvedRelationshipEntityIds.join(", ")}`,
+      );
+    }
+  }
+
   const entities = Array.from(entityMap.values());
   logger.info(
     `[agent-export] Found ${entities.length} entities, ${participantRecords.length} participant records`,
@@ -963,14 +994,24 @@ async function extractAgentData(
     }
   }
 
+  const danglingReplyIds = new Set<string>();
+  for (const memory of allMemories) {
+    const inReplyTo = memory.content?.inReplyTo;
+    if (typeof inReplyTo === "string" && !memoryIdSet.has(inReplyTo)) {
+      danglingReplyIds.add(inReplyTo);
+    }
+  }
+  if (danglingReplyIds.size > 0) {
+    throw new AgentExportError(
+      `Messages reference memory ids that cannot be exported: ${[...danglingReplyIds].join(", ")}`,
+    );
+  }
+
   logger.info(`[agent-export] Found ${allMemories.length} memories`);
 
   // 7. Relationships. The reflection evaluator records relationships between
   // the agent's users as well, so every row touching an exported entity is
   // carried, not only the rows that touch the agent.
-  const relationships = await db.getRelationships({
-    entityIds: [agentId, ...entityMap.keys()] as UUID[],
-  });
   logger.info(`[agent-export] Found ${relationships.length} relationships`);
 
   // 8. Tasks
