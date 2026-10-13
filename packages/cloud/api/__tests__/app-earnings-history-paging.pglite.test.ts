@@ -86,14 +86,12 @@ beforeAll(async () => {
   await dbWrite
     .insert(organizations)
     .values({ id: ORG, name: "Earnings org", slug: "earnings-org" });
-  await dbWrite
-    .insert(users)
-    .values({
-      id: USER,
-      organization_id: ORG,
-      steward_user_id: "steward",
-      email: "o@example.test",
-    });
+  await dbWrite.insert(users).values({
+    id: USER,
+    organization_id: ORG,
+    steward_user_id: "steward",
+    email: "o@example.test",
+  });
   await dbWrite.insert(apps).values({
     id: APP,
     name: "Earnings app",
