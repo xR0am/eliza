@@ -19,7 +19,11 @@ const TEMPLATE_REPO = process.env.GITHUB_TEMPLATE_REPO || "eliza-cloud-apps/clou
 // Retry configuration
 const MAX_RETRIES = 3;
 const INITIAL_DELAY_MS = 1000;
-/** Longest wait honoured from a `Retry-After` / `x-ratelimit-reset` answer. */
+/**
+ * Longest wait this caller sleeps. A stated rate-limit wait above it is not
+ * retried: the request is not replayed before GitHub's window, and the caller
+ * receives GitHub's rate-limit error with the wait still in its headers.
+ */
 const MAX_DELAY_MS = 60_000;
 
 // Singleton Octokit instance
@@ -74,11 +78,13 @@ function rateLimitRetryAfter(error: unknown, nowMs: number): string | null {
 
 /**
  * Retry wrapper for GitHub calls. A 429, or a 403 that carries a rate-limit
- * wait, is retried after the wait GitHub states (docs: "Exceeding the rate
- * limit", `retry-after` or `x-ratelimit-reset`). A 5xx or a dropped
- * connection is retried with exponential backoff unless the policy forbids
- * replaying an unknown outcome. A 403 without a stated wait (missing scope,
- * SAML) and every other 4xx are not retried.
+ * wait, is retried after exactly the wait GitHub states (docs: "Exceeding the
+ * rate limit", `retry-after` or `x-ratelimit-reset`) when that wait is at most
+ * MAX_DELAY_MS; a longer stated wait is never shortened, so the call is not
+ * retried and GitHub's error is thrown. A 5xx or a dropped connection is
+ * retried with exponential backoff unless the policy forbids replaying an
+ * unknown outcome. A 403 without a stated wait (missing scope, SAML) and every
+ * other 4xx are not retried.
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,
@@ -105,10 +111,19 @@ export async function withRetry<T>(
         const delay = computeBackoffMs({
           attempt,
           baseDelayMs: INITIAL_DELAY_MS,
-          capMs: MAX_DELAY_MS,
+          // The stated wait is read in full; the bound is applied below.
+          capMs: rateLimited ? Number.POSITIVE_INFINITY : MAX_DELAY_MS,
           retryAfter: rateLimited ? retryAfter : null,
           random: deps.random,
         });
+        if (delay > MAX_DELAY_MS) {
+          logger.warn(`GitHub API ${context} is rate limited beyond the retry bound; not retried`, {
+            status,
+            statedWaitMs: delay,
+            maxDelayMs: MAX_DELAY_MS,
+          });
+          throw error;
+        }
         logger.warn(`GitHub API ${context} failed, retrying in ${delay}ms`, {
           attempt: attempt + 1,
           maxRetries: MAX_RETRIES,

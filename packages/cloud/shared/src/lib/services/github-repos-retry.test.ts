@@ -121,6 +121,46 @@ test("a 403 with a reset time waits until the reset; one without a wait is not r
   expect(sleeps).toEqual([]);
 });
 
+test("a stated wait above the bound is not shortened: the call is not retried", async () => {
+  sleeps.length = 0;
+  let attempts = 0;
+  await expect(
+    withRetry(
+      async () => {
+        attempts++;
+        throw requestError(429, { "retry-after": "120" });
+      },
+      "bounded",
+      {},
+      deps,
+    ),
+  ).rejects.toMatchObject({ status: 429, response: { headers: { "retry-after": "120" } } });
+  expect(attempts).toBe(1);
+  expect(sleeps).toEqual([]);
+});
+
+test("a reset time above the bound is not shortened either", async () => {
+  sleeps.length = 0;
+  let attempts = 0;
+  const resetAt = Math.floor(Date.now() / 1000) + 600;
+  await expect(
+    withRetry(
+      async () => {
+        attempts++;
+        throw requestError(403, {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": String(resetAt),
+        });
+      },
+      "bounded-reset",
+      {},
+      deps,
+    ),
+  ).rejects.toMatchObject({ status: 403 });
+  expect(attempts).toBe(1);
+  expect(sleeps).toEqual([]);
+});
+
 test("getRepoInfo retries a 429 through the real Octokit path", async () => {
   scripts.get = [
     async () => {
