@@ -47,9 +47,7 @@ export async function getRecentIncidents(
   const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
   const conditions: SQL[] = [gt(securityIncidents.timestamp, cutoff)];
   if (roomId) {
-    conditions.push(
-      sql`${securityIncidents.context}->>'roomId' = ${roomId}`,
-    );
+    conditions.push(sql`${securityIncidents.context}->>'roomId' = ${roomId}`);
   }
   const rows: Array<Record<string, unknown>> = await db
     .select()
