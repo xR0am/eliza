@@ -114,3 +114,51 @@ test("without a range the adapter reads the last seven days on whole hours", asy
   expect(end.getTime() - start.getTime()).toBe(7 * DAY_MS);
   expect(end.getTime()).toBeGreaterThanOrEqual(before - (before % (60 * 60 * 1000)));
 });
+
+test("an empty range sends no request and reports nothing spent", async () => {
+  const urls = captureStatsRequests();
+  const at = new Date("2026-10-01T10:17:33.000Z");
+
+  const result = await xTwitterAdsProvider.getCampaignMetrics(credentials, "acct-1/c-1/li-1", {
+    start: at,
+    end: at,
+  });
+
+  expect(urls).toHaveLength(0);
+  expect(result).toEqual({
+    success: true,
+    metrics: { spend: 0, impressions: 0, clicks: 0, conversions: 0, ctr: 0, cpc: 0, cpm: 0 },
+  });
+});
+
+test("a seven-day range off the hour never produces a window over seven days", async () => {
+  const urls = captureStatsRequests();
+  const start = new Date("2026-10-01T10:17:33.000Z");
+  const end = new Date(start.getTime() + 7 * DAY_MS);
+
+  await xTwitterAdsProvider.getCampaignMetrics(credentials, "acct-1/c-1/li-1", { start, end });
+
+  const windows = urls.map(window);
+  expect(windows.map(({ start: from, end: to }) => [from.toISOString(), to.toISOString()])).toEqual(
+    [
+      ["2026-10-01T10:00:00.000Z", "2026-10-08T10:00:00.000Z"],
+      ["2026-10-08T10:00:00.000Z", "2026-10-08T11:00:00.000Z"],
+    ],
+  );
+  for (const { start: from, end: to } of windows) {
+    expect(to.getTime() - from.getTime()).toBeLessThanOrEqual(7 * DAY_MS);
+  }
+});
+
+test("a range inside one hour is read as that whole hour", async () => {
+  const urls = captureStatsRequests();
+
+  await xTwitterAdsProvider.getCampaignMetrics(credentials, "acct-1/c-1/li-1", {
+    start: new Date("2026-10-01T10:17:33.000Z"),
+    end: new Date("2026-10-01T10:40:00.000Z"),
+  });
+
+  expect(urls).toHaveLength(1);
+  expect(urls[0]?.searchParams.get("start_time")).toBe("2026-10-01T10:00:00Z");
+  expect(urls[0]?.searchParams.get("end_time")).toBe("2026-10-01T11:00:00Z");
+});

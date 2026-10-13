@@ -202,9 +202,12 @@ function ceilToHour(date: Date): Date {
 /**
  * Contiguous windows covering `[start, end)` the way `GET stats/accounts/:id`
  * accepts them: boundaries on whole hours, the end exclusive, and no window
- * longer than seven days.
+ * longer than seven days. The endpoint only reports whole hours, so a partial
+ * hour at either edge is read as the hour that contains it; an empty range
+ * needs no request.
  */
 function xStatsWindows(start: Date, end: Date): Array<{ start: Date; end: Date }> {
+  if (end <= start) return [];
   const last = ceilToHour(end);
   const windows: Array<{ start: Date; end: Date }> = [];
   for (let from = floorToHour(start); from < last; ) {
