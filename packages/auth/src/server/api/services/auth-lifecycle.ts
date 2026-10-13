@@ -1,3 +1,7 @@
+import { buildPhoneAuthProvidersFromEnvironment } from "../../auth/phone-provider";
+
+export { buildTwilioVerifyProviderFromEnvironment } from "../../auth/phone-provider";
+
 /** Owns login stores and configuration-dependent providers across runtime restarts. */
 import { randomBytes } from "node:crypto";
 import { ElizaError, logger } from "@elizaos/core";
@@ -12,10 +16,8 @@ import {
   isDevSecretAllowed,
   isSmsDestinationAllowed,
   type MagicLinkTemplateData,
-  type ManagedSmsOtpProvider,
   MemoryBackend,
   MockEmailProvider,
-  MockSmsProvider,
   magicLinkTemplateValues,
   type OtpTemplateData,
   otpTemplateValues,
@@ -25,15 +27,12 @@ import {
   renderCustomTemplate,
   SmsChallengeInProgressError,
   SmsDestinationNotAllowedError,
-  type SmsProvider,
   SmsSendBudgetExceededError,
   SmsVerificationNotAttemptedError,
   type StoreBackend,
   signAccessToken,
   smsSendGlobalMaxPerHour,
   TokenStore,
-  TwilioSmsProvider,
-  TwilioVerifyProvider,
 } from "../../auth/index.ts";
 import { revocationStore } from "../../auth/revocation";
 import {
@@ -911,30 +910,10 @@ export function invalidateEmailAuthForTenant(tenantId: string): void {
 export function getPhoneAuth(): PhoneAuth {
   if (_phoneAuth) return _phoneAuth;
 
-  let provider: SmsProvider | undefined;
-  let managedProvider: ManagedSmsOtpProvider | undefined;
-  if (
-    process.env.SMS_PROVIDER === "mock" &&
-    process.env.NODE_ENV !== "production"
-  ) {
-    provider = new MockSmsProvider();
-  } else {
-    managedProvider = buildTwilioVerifyProviderFromEnvironment();
-    if (
-      !managedProvider &&
-      process.env.TWILIO_ACCOUNT_SID &&
-      process.env.TWILIO_AUTH_TOKEN &&
-      process.env.TWILIO_FROM
-    ) {
-      provider = new TwilioSmsProvider({
-        accountSid: process.env.TWILIO_ACCOUNT_SID,
-        authToken: process.env.TWILIO_AUTH_TOKEN,
-        from: process.env.TWILIO_FROM,
-      });
-    } else if (!managedProvider && process.env.NODE_ENV === "production") {
-      throw new Error("SMS provider not configured");
-    }
-  }
+  const { provider, managedProvider } =
+    buildPhoneAuthProvidersFromEnvironment();
+  if (!provider && !managedProvider && process.env.NODE_ENV === "production")
+    throw new Error("SMS provider not configured");
 
   _phoneAuth = new PhoneAuth({
     provider,
@@ -974,21 +953,6 @@ async function guardSmsSend(phone: string): Promise<void> {
     );
     throw new SmsSendBudgetExceededError(budget.retryAfterSecs);
   }
-}
-
-export function buildTwilioVerifyProviderFromEnvironment(
-  env: NodeJS.ProcessEnv = process.env,
-): TwilioVerifyProvider | undefined {
-  const verifyConfigured =
-    env.TWILIO_VERIFY_SERVICE_SID !== undefined ||
-    env.TWILIO_VERIFY_TOKEN_TTL_SECONDS !== undefined;
-  if (!verifyConfigured) return undefined;
-  return new TwilioVerifyProvider({
-    accountSid: env.TWILIO_ACCOUNT_SID ?? "",
-    authToken: env.TWILIO_AUTH_TOKEN ?? "",
-    serviceSid: env.TWILIO_VERIFY_SERVICE_SID ?? "",
-    tokenTtlSeconds: Number(env.TWILIO_VERIFY_TOKEN_TTL_SECONDS),
-  });
 }
 
 const OAUTH_REDIRECT_ALLOWLIST_ENV_KEYS = [

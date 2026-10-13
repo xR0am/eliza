@@ -4,10 +4,9 @@
 
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { IMessageSendResult } from "./types.js";
 
-const BLOOIO_MESSAGES_URL = "https://api.blooio.com/v4/messages";
-const BLOOIO_CHATS_URL = "https://api.blooio.com/v4/chats";
+export { sendBlooioMessage } from "@elizaos/host/blooio-transport";
+
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 const BLOOIO_MEDIA_DOMAINS = [
   "blooio.com",
@@ -133,61 +132,4 @@ export function parseBlooioInbound(
     ...(message.reply_to_message_id ? { replyToMessageId: message.reply_to_message_id } : {}),
     mediaUrls,
   };
-}
-
-export async function sendBlooioMessage(input: {
-  apiKey: string;
-  from: string;
-  to: string;
-  text: string;
-  idempotencyKey: string;
-}): Promise<IMessageSendResult> {
-  const chatId = input.to.startsWith("chat_id:") ? input.to.slice("chat_id:".length) : null;
-  const url = chatId
-    ? `${BLOOIO_CHATS_URL}/${encodeURIComponent(chatId)}/messages`
-    : BLOOIO_MESSAGES_URL;
-  const requestBody = chatId
-    ? { text: input.text }
-    : { to: input.to, from: input.from, text: input.text };
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${input.apiKey}`,
-        "Content-Type": "application/json",
-        "Idempotency-Key": input.idempotencyKey,
-      },
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(30_000),
-    });
-  } catch (error) {
-    // error-policy:J1 provider transport failures become explicit delivery failures.
-    return {
-      success: false,
-      error: `Blooio request failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  const body = await response.text();
-  if (!response.ok) {
-    return { success: false, error: `Blooio rejected delivery (${response.status})` };
-  }
-  let receipt: unknown;
-  try {
-    receipt = JSON.parse(body);
-  } catch {
-    // error-policy:J3 an accepted response without a stable receipt is uncertain, not success.
-    return { success: false, error: "Blooio accepted delivery without a valid receipt" };
-  }
-  const record = receipt && typeof receipt === "object" ? (receipt as Record<string, unknown>) : {};
-  const messageId =
-    typeof record.id === "string"
-      ? record.id
-      : typeof record.message_id === "string"
-        ? record.message_id
-        : undefined;
-  if (!messageId?.trim()) {
-    return { success: false, error: "Blooio accepted delivery without a message id" };
-  }
-  return { success: true, messageId: messageId.trim(), chatId: chatId ?? input.to };
 }
