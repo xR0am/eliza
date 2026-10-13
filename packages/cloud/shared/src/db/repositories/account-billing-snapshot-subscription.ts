@@ -105,6 +105,7 @@ export async function readPrimaryOrganizationSubscription(
   if (
     periods.some(
       (period) =>
+        period.subscription_revision === null ||
         !Number.isSafeInteger(period.subscription_revision) ||
         period.subscription_revision > subscription.lifecycle_revision,
     )

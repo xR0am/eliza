@@ -64,3 +64,25 @@ export async function installBillingCommandEvidenceTestColumns(
     );
   }
 }
+
+/**
+ * Installs the subscription-grant tables and columns (0542) once in a fixture
+ * built from selected billing migrations, so Drizzle reads of the shared
+ * entitlement and allowance tables see the production column set.
+ */
+export async function installSubscriptionGrantTestSchema(
+  execute: (statement: string) => Promise<unknown>,
+): Promise<void> {
+  const migration = await readFile(
+    new URL("../db/migrations/0542_subscription_grant_codes.sql", import.meta.url),
+    "utf8",
+  );
+  const statements = migration
+    .split("--> statement-breakpoint")
+    .map((statement) => statement.trim())
+    .filter(Boolean)
+    .map((statement) => `EXECUTE $grant_statement$${statement}$grant_statement$;`);
+  await execute(
+    `DO $install_grants$ BEGIN IF to_regclass('subscription_grants') IS NULL THEN ${statements.join("\n")} END IF; END $install_grants$`,
+  );
+}

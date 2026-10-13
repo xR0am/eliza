@@ -24,12 +24,12 @@ export interface AccountDeletionForeignKeyDescriptor {
   onDelete: string;
 }
 /**
- * SHA-256 of the 277 sorted direct user/organization FK descriptors, each
+ * SHA-256 of the 279 sorted direct user/organization FK descriptors, each
  * serialized as `source|columns|target|targetColumns|onDelete` and joined with
  * `\n` (see `serializeDescriptor`). Recompute when the FK inventory changes.
  */
 export const ACCOUNT_DELETION_FOREIGN_KEY_SNAPSHOT_SHA256 =
-  "8a9bf17aa942aa36fabd907fc66bed724e82251c6995378194b676075f374a02";
+  "7e7631c8a05aab391a6cfd16b7ed0ce7d9209c372e842b2de81468ca94a202bc";
 
 function serializeDescriptor(descriptor: AccountDeletionForeignKeyDescriptor): string {
   return [
@@ -212,6 +212,9 @@ const RETAINED_AUDIT_TABLES = new Set([
   "stripe_customer_legacy_quarantines",
   "subscription_allowance_periods",
   "subscription_allowance_transactions",
+  // Redeemed grant codes are billing evidence: the organization keeps its rows
+  // (like paid allowance history) and the redeeming user is cleared (SET NULL).
+  "subscription_grants",
   "token_redemptions",
   "usage_records",
   "user_mcps",

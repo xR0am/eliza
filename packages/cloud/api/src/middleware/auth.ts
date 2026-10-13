@@ -243,6 +243,14 @@ export function isPublicPath(pathname: string, method = "GET"): boolean {
   ) {
     return true;
   }
+  // Public ES256 verification keys for subscription entitlements; no account state.
+  if (
+    (method === "GET" || method === "HEAD") &&
+    (pathname === "/api/v1/subscription/entitlement-keys" ||
+      pathname === "/api/v1/subscription/entitlement-keys/")
+  ) {
+    return true;
+  }
   // Fixed-copy return page for shared subscription checkout links; it reads no account state.
   if (
     (method === "GET" || method === "HEAD") &&

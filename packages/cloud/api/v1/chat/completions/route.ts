@@ -2081,14 +2081,36 @@ export async function handleChatCompletionsPOST(
       }
       if (error instanceof InsufficientCreditsError) {
         const creditKind = useMonetizedAppBilling ? "cloud credits" : "credits";
+        // A plan subscriber (paid or grant) has spent its period allowance and
+        // credit: name that state and when the allowance resets. Status and
+        // type stay 402 / insufficient_quota for existing OpenAI-style clients.
+        const exhaustion = useMonetizedAppBilling
+          ? null
+          : await import(
+              "@elizaos/cloud-shared/lib/services/subscription-entitlement-token"
+            )
+              .then(({ readAllowanceExhaustion }) =>
+                readAllowanceExhaustion(user.organization_id),
+              )
+              .catch(() => null);
         return addCorsHeaders(
           Response.json(
             {
-              error: {
-                message: `Insufficient ${creditKind}. Required: $${error.required.toFixed(4)}`,
-                type: "insufficient_quota",
-                code: "insufficient_credits",
-              },
+              error: exhaustion
+                ? {
+                    message:
+                      "Plan allowance is used up for this period. Nothing is purchased automatically.",
+                    type: "insufficient_quota",
+                    code: "allowance_exhausted",
+                    ...(exhaustion.resetsAt && {
+                      resetsAt: exhaustion.resetsAt.toISOString(),
+                    }),
+                  }
+                : {
+                    message: `Insufficient ${creditKind}. Required: $${error.required.toFixed(4)}`,
+                    type: "insufficient_quota",
+                    code: "insufficient_credits",
+                  },
             },
             { status: 402 },
           ),
