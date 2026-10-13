@@ -71,6 +71,8 @@ export interface BlooioInboundMessage {
   isGroup: boolean;
   replyToMessageId?: string;
   mediaUrls: string[];
+  /** The allowed attachments with the file name Blooio reports, in order. */
+  attachments: Array<{ url: string; name?: string }>;
 }
 
 export function verifyBlooioSignature(
@@ -116,9 +118,14 @@ export function parseBlooioInbound(
   if (message.channel_id !== expectedChannelId) return null;
   const messageId = message.message_id ?? message.id;
   if (!messageId) return null;
-  const mediaUrls = (message.attachments ?? [])
-    .map((attachment) => (typeof attachment === "string" ? attachment : attachment.url))
-    .filter(isAllowedBlooioMediaUrl);
+  const attachments = (message.attachments ?? [])
+    .map((attachment) =>
+      typeof attachment === "string"
+        ? { url: attachment }
+        : { url: attachment.url, ...(attachment.name ? { name: attachment.name } : {}) }
+    )
+    .filter((attachment) => isAllowedBlooioMediaUrl(attachment.url));
+  const mediaUrls = attachments.map((attachment) => attachment.url);
   if (!(message.text ?? "").trim() && mediaUrls.length === 0) return null;
   const rawTimestamp = envelope.data.created_at;
   const timestamp = rawTimestamp < 100_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
@@ -132,6 +139,7 @@ export function parseBlooioInbound(
     isGroup: message.is_group ?? message.group != null,
     ...(message.reply_to_message_id ? { replyToMessageId: message.reply_to_message_id } : {}),
     mediaUrls,
+    attachments,
   };
 }
 
