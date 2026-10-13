@@ -152,3 +152,209 @@ test("caller cancellation is preserved and does not dispatch", async () => {
     fetch.mockRestore();
   }
 });
+
+test("trusted API origin uses one no-store GET and the canonical JSON extraction", async () => {
+  const target = "https://wttr.in/35.6895,139.6917?format=j1";
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input, init) => {
+      expect(input).toBe(target);
+      expect(init).toMatchObject({
+        method: "GET",
+        redirect: "manual",
+        cache: "no-store",
+      });
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      return Response.json({
+        current_condition: [{ temp_C: "22", observation_time: "02:00 AM" }],
+        nearest_area: [{ areaName: [{ value: "Tokyo" }] }],
+        weather: [{ date: "2026-10-13" }],
+      });
+    });
+  try {
+    const out = await call(createWebFetchEdgeAction(), {
+      url: target,
+      extract: "current_condition",
+    });
+    expect(out?.success).toBe(true);
+    expect(JSON.parse(out?.text ?? "null")).toEqual([
+      { temp_C: "22", observation_time: "02:00 AM" },
+    ]);
+    expect(out?.data).toMatchObject({
+      action: "WEB_FETCH",
+      url: target,
+      final_url: target,
+      status: 200,
+      content_type: "application/json",
+      kind: "json",
+      truncated: false,
+    });
+    expect(out?.data?.provider).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("only exact trusted origins use HTTP and no public URL can smuggle credentials or ports", async () => {
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(Response.json({ bitcoin: { usd: 1 } }));
+  try {
+    const action = createWebFetchEdgeAction();
+    const target =
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd";
+    expect(
+      (await call(action, { url: target, extract: "bitcoin.usd" }))?.text,
+    ).toBe("1");
+    expect(fetch.mock.calls[0][0]).toBe(target);
+    for (const target of [
+      "https://wttr.in:8443/Tokyo",
+      "https://user:pass@wttr.in/Tokyo",
+      "https://wttr.in/Tokyo?api_key=secret",
+      "http://wttr.in/Tokyo",
+    ])
+      expect((await call(action, { url: target }))?.success).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("trusted API redirects and binary responses fail without following or MCP fallback", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  try {
+    for (const response of [
+      new Response("redirect", {
+        status: 302,
+        headers: { Location: "https://127.0.0.1/private" },
+      }),
+      new Response("binary", {
+        headers: { "content-type": "application/octet-stream" },
+      }),
+    ]) {
+      fetch.mockResolvedValueOnce(response);
+      expect(
+        (
+          await call(createWebFetchEdgeAction(), {
+            url: "https://wttr.in/Tokyo?format=j1",
+          })
+        )?.success,
+      ).toBe(false);
+    }
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(
+      fetch.mock.calls.every(([input]) =>
+        String(input).startsWith("https://wttr.in/"),
+      ),
+    ).toBe(true);
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("trusted API oversized and invalid UTF-8 bodies are rejected whole", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  try {
+    for (const body of [new Uint8Array(262145), new Uint8Array([0xc3, 0x28])]) {
+      fetch.mockResolvedValueOnce(
+        new Response(body, { headers: { "content-type": "application/json" } }),
+      );
+      expect(
+        (
+          await call(createWebFetchEdgeAction(), {
+            url: "https://wttr.in/Tokyo?format=j1",
+          })
+        )?.success,
+      ).toBe(false);
+    }
+    expect(fetch).toHaveBeenCalledTimes(2);
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("trusted API caller cancellation cancels a stalled body and never retries", async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    return new Response(
+      new ReadableStream({
+        start() {
+          queueMicrotask(() => controller.abort(new Error("caller cancelled")));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    await expect(
+      call(createWebFetchEdgeAction(), {
+        url: "https://wttr.in/Tokyo?format=j1",
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("caller cancelled");
+    expect(cancelled).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("trusted API deadline cancels a stalled body without a provider retry", async () => {
+  vi.useFakeTimers();
+  let cancelled = false;
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    ),
+  );
+  try {
+    const pending = call(createWebFetchEdgeAction(), {
+      url: "https://wttr.in/Tokyo?format=j1",
+    });
+    await vi.advanceTimersByTimeAsync(15000);
+    expect((await pending)?.success).toBe(false);
+    expect(cancelled).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    fetch.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+test("trusted API oversized body fails promptly even when cancellation never settles", async () => {
+  let cancelStarted = false;
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(262145));
+        },
+        cancel() {
+          cancelStarted = true;
+          return new Promise<void>(() => {});
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    ),
+  );
+  try {
+    const result = await call(createWebFetchEdgeAction(), {
+      url: "https://wttr.in/Tokyo?format=j1",
+    });
+    expect(result?.success).toBe(false);
+    expect(cancelStarted).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    fetch.mockRestore();
+  }
+}, 1000);
