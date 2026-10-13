@@ -108,6 +108,7 @@ const IDEMPOTENT_SUBACTIONS: ReadonlySet<BrowserWorkspaceSubaction> = new Set([
   "errors",
   "network",
   "diff",
+  "wait",
 ]);
 
 /**
