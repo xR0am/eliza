@@ -1076,22 +1076,34 @@ export interface CreateAgentRequest {
 /** Body of `POST /api/v1/eliza/agents`; every agent field lives under `data`. */
 export interface CreateAgentResponse {
   success: boolean;
-  /** False when the organization already had this agent and it was returned as is. */
-  created: boolean;
-  /** Set when the agent runs on the shared runtime instead of its own server. */
-  source?: "shared_runtime";
+  /**
+   * False when the organization already had this agent and it was returned
+   * as is. Absent on the bodies served from the warm pool.
+   */
+  created?: boolean;
+  /** Set when the agent did not get its own fresh server: the shared runtime or the warm pool served it. */
+  source?: "shared_runtime" | "warm_pool" | "warm_pool_recovery";
   message?: string;
   data?: {
     id: string;
     agentId?: string;
     agentName: string | null;
-    status: import("./types.cloud-api.js").AgentSandboxStatus | string;
+    /** The sandbox status, or the provisioning job's status on the 202 body. */
+    status:
+      | import("./types.cloud-api.js").AgentSandboxStatus
+      | JobStatus["status"];
     executionTier?: string;
     jobId?: string;
     estimatedCompletionAt?: string | null;
     createdAt?: string;
-    /** The agent's REST base when it runs on the shared runtime. */
+    /** The agent's REST base when it runs on the shared runtime or the warm pool. */
     webUiUrl?: string;
+  };
+  /** Present on the 202 body when a provisioning job was enqueued. */
+  polling?: {
+    endpoint: string;
+    intervalMs: number;
+    expectedDurationMs?: number;
   };
 }
 
@@ -1111,6 +1123,7 @@ export interface AgentLifecycleResponse {
   message?: string;
   /** Provision only: "shared_runtime", "warm_pool" or "warm_pool_recovery". */
   source?: string;
+  /** The 2xx body; a non-2xx body is `{ success: false, error }` and the client throws it. */
   data: {
     /** The agent id on the job-enqueuing bodies. */
     agentId?: string;

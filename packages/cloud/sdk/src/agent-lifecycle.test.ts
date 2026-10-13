@@ -56,10 +56,74 @@ test("createAgent reports whether the agent was created or reused", async () => 
     agentName: "Ops",
   });
 
-  const created: boolean = response.created;
+  const created: boolean | undefined = response.created;
   expect(created).toBe(false);
   expect(response.data?.id).toBe("agent-1");
   expect(response.data?.executionTier).toBe("shared");
+});
+
+/** Exact 201 body of `POST /api/v1/eliza/agents` when a warm-pool agent was claimed: no `created`. */
+const warmPoolCreateBody = {
+  success: true,
+  source: "warm_pool",
+  data: {
+    id: "agent-2",
+    agentName: "Ops",
+    status: "running",
+    webUiUrl: "http://cloud.test/api/v1/eliza/agents/agent-2",
+    createdAt: "2026-10-01T00:00:00.000Z",
+    executionTier: "dedicated",
+  },
+};
+
+/** Exact 202 body of `POST /api/v1/eliza/agents` when a provisioning job was enqueued. */
+const asyncCreateBody = {
+  success: true,
+  created: true,
+  data: {
+    id: "agent-3",
+    agentId: "agent-3",
+    agentName: "Ops",
+    status: "pending",
+    jobId: "job-3",
+    estimatedCompletionAt: null,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    executionTier: "dedicated",
+  },
+  polling: {
+    endpoint: "/api/v1/jobs/job-3",
+    intervalMs: 5000,
+    expectedDurationMs: 90000,
+  },
+};
+
+test("createAgent served from the warm pool names its source and has no created flag", async () => {
+  const response = await clientReturning(warmPoolCreateBody, 201).createAgent({
+    agentName: "Ops",
+  });
+
+  const source:
+    | "shared_runtime"
+    | "warm_pool"
+    | "warm_pool_recovery"
+    | undefined = response.source;
+  expect(source).toBe("warm_pool");
+  expect(response.created).toBeUndefined();
+  expect(response.data?.webUiUrl).toBe(
+    "http://cloud.test/api/v1/eliza/agents/agent-2",
+  );
+});
+
+test("createAgent names the job to poll when provisioning was enqueued", async () => {
+  const response = await clientReturning(asyncCreateBody, 202).createAgent({
+    agentName: "Ops",
+  });
+
+  expect(response.data?.jobId).toBe("job-3");
+  const status: string | undefined = response.data?.status;
+  expect(status).toBe("pending");
+  expect(response.polling?.endpoint).toBe("/api/v1/jobs/job-3");
+  expect(response.polling?.expectedDurationMs).toBe(90000);
 });
 
 /** Exact 200 body of `POST /api/v1/eliza/agents/:agentId/provision` for an agent already on the shared runtime. */
