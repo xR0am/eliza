@@ -327,9 +327,33 @@ export async function resolveScheduledTaskDispatchContext(
       );
     }
     const requestedIds = request.includeRelationships.relationshipIds;
+    // The scope goes into the store query. A plain list orders by last update
+    // and applies its limit before any filter, so an edge for the requested
+    // entity would fall out behind more recently updated edges with no signal.
+    const scopedTypes = request.includeRelationships.types?.length
+      ? request.includeRelationships.types
+      : undefined;
+    const scopedEntityIds = request.includeRelationships.forEntityIds ?? [];
+    const listScoped = async () => {
+      const pages = await Promise.all(
+        scopedEntityIds.length
+          ? scopedEntityIds.flatMap((entityId) => [
+              store.list({ fromEntityId: entityId, type: scopedTypes }),
+              store.list({ toEntityId: entityId, type: scopedTypes }),
+            ])
+          : [store.list({ type: scopedTypes })],
+      );
+      const byId = new Map<string, (typeof pages)[number][number]>();
+      for (const page of pages) {
+        for (const relationship of page) {
+          byId.set(relationship.relationshipId, relationship);
+        }
+      }
+      return [...byId.values()];
+    };
     const candidates = requestedIds?.length
       ? await Promise.all(requestedIds.map((id) => store.get(id)))
-      : await store.list({ limit: 100 });
+      : await listScoped();
     if (requestedIds?.length && candidates.some((value) => value === null)) {
       throw contextError(
         "A requested relationship is unavailable for scheduled dispatch context.",
