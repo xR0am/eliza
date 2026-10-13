@@ -105,7 +105,6 @@ function lockKeysForOperations(
   return [...keys].sort();
 }
 
-
 async function withThreadOperationConcurrency<T>(
   operation: () => Promise<T>,
 ): Promise<T> {

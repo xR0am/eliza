@@ -1506,12 +1506,7 @@ function buildLifeOpsRunnerDeps(
 
     executionBoundary: (task, execute) =>
       withWorkThreadFollowupAdmission(opts.runtime, task, () =>
-        withFamilyScheduledExecution(
-          opts.runtime,
-          task,
-          execute,
-          opts.agentId,
-        ),
+        withFamilyScheduledExecution(opts.runtime, task, execute, opts.agentId),
       ),
     logStore: stores.logStore,
     gates,
