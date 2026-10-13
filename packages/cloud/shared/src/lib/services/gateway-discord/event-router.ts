@@ -562,8 +562,13 @@ async function sendToRuntime(
     runtime,
     message: userMessage,
     callback: async (content: Content) => {
-      if (content.text) {
-        responseText = content.text;
+      // Discord embeds an HTTPS link to an image or file, so attachments the
+      // agent produced travel as links after the text.
+      const reply = [content.text?.trim(), ...httpsAttachmentLinks(content)]
+        .filter(Boolean)
+        .join("\n");
+      if (reply) {
+        responseText = reply;
         // Create response memory
         const responseMemory: Memory = {
           id: createUniqueUuid(runtime, userMessage.id as UUID),
@@ -595,6 +600,18 @@ async function sendToRuntime(
     },
   });
   return responseText;
+}
+function httpsAttachmentLinks(content: Content): string[] {
+  const links = (content.attachments ?? []).flatMap((attachment) => {
+    try {
+      const url = new URL(attachment.url);
+      return url.protocol === "https:" ? [url.toString()] : [];
+    } catch {
+      // error-policy:J3 a malformed attachment reference has no link to send.
+      return [];
+    }
+  });
+  return [...new Set(links)].filter((link) => !content.text?.includes(link));
 }
 /**
  * Send a response message back to Discord with rate limiting.
