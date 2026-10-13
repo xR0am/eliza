@@ -593,7 +593,8 @@ export class FormService extends Service {
     }
 
     // Get old value for history
-    const oldValue = session.fields[field]?.value;
+    const oldState = session.fields[field];
+    const oldValue = oldState?.value;
 
     value = this.normalizeBuiltinDateValue(value, control);
 
@@ -620,7 +621,15 @@ export class FormService extends Service {
     // so undoing it clears the field instead of reverting an older change.
     const historyEntry: FieldHistoryEntry = {
       field,
-      ...(oldValue !== undefined ? { oldValue } : {}),
+      ...(oldState && oldValue !== undefined
+        ? {
+            oldValue,
+            oldStatus: oldState.status,
+            ...(oldState.confidence !== undefined
+              ? { oldConfidence: oldState.confidence }
+              : {}),
+          }
+        : {}),
       newValue: value,
       timestamp: now,
     };
@@ -695,13 +704,34 @@ export class FormService extends Service {
       return null;
     }
 
-    // Restore the old value
+    // Restore the old value as it was. An answer that failed validation or
+    // still awaited confirmation must not come back as filled: the agent
+    // stopped asking for it, submit then threw on the invalid value, and an
+    // unconfirmed value was submitted without the confirmation step.
     if (lastChange.oldValue !== undefined) {
+      const control = form.controls.find((c) => c.key === lastChange.field);
+      const validation = control
+        ? validateField(
+            lastChange.oldValue,
+            control,
+            this.getControlType(control.type),
+          )
+        : undefined;
+      let status: FieldState["status"] = "filled";
+      if (validation && !validation.valid) {
+        status = "invalid";
+      } else if (lastChange.oldStatus === "uncertain") {
+        status = "uncertain";
+      }
       session.fields[lastChange.field] = {
-        status: "filled",
+        status,
         value: lastChange.oldValue,
+        ...(lastChange.oldConfidence !== undefined
+          ? { confidence: lastChange.oldConfidence }
+          : {}),
         source: "correction",
         updatedAt: Date.now(),
+        ...(status === "invalid" ? { error: validation?.error } : {}),
       };
     } else {
       session.fields[lastChange.field] = { status: "empty" };
