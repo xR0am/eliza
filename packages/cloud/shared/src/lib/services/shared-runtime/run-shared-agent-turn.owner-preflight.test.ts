@@ -1,4 +1,4 @@
-/** Actual public runtime and capture buffer; only the anonymous HTTP boundary is mocked. */
+/** Actual public runtime, Core, SDK and capture buffer; external HTTP is deterministic. */
 import { expect, spyOn, test } from "bun:test";
 import { ChannelType } from "@elizaos/core/protocol";
 import { runSharedAgentTurn } from "./run-shared-agent-turn";
@@ -18,14 +18,93 @@ test("actual public preflight capture retains refused provider evidence and isol
     ],
   };
   let publicCalls = 0;
+  let modelCalls = 0;
+  let handlerCalls = 0;
+  let evaluationCalls = 0;
   const attemptedHttpUrls: string[] = [];
   const unexpectedHttpUrls: string[] = [];
   const http = spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-    const target = String(url);
+    const target = url instanceof Request ? url.url : String(url);
     attemptedHttpUrls.push(target);
+    const request = JSON.parse(String(init?.body));
+    if (target === "https://api.cerebras.ai/v1/chat/completions") {
+      modelCalls++;
+      expect(request.model).toBe("zai-glm-4.7");
+      if (!request.tools) {
+        evaluationCalls++;
+        return Response.json({
+          id: `public-capture-evaluation-${evaluationCalls}`,
+          object: "chat.completion",
+          created: 1,
+          model: request.model,
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: JSON.stringify({
+                  decision: "FINISH",
+                  success: false,
+                  thought: "",
+                  messageToUser: "I couldn't verify the current BTC price.",
+                  replyEffectStatus: "non_applied",
+                  requestFullyCovered: true,
+                }),
+              },
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+      }
+      expect(
+        request.tools.some(
+          (tool: { function?: { name?: string } }) => tool.function?.name === "HANDLE_RESPONSE",
+        ),
+      ).toBe(true);
+      handlerCalls++;
+      return Response.json({
+        id: `public-capture-fixture-${modelCalls}`,
+        object: "chat.completion",
+        created: 1,
+        model: request.model,
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: `handler-${modelCalls}`,
+                  type: "function",
+                  function: {
+                    name: "HANDLE_RESPONSE",
+                    arguments: JSON.stringify({
+                      shouldRespond: "RESPOND",
+                      contexts: ["simple"],
+                      intents: [],
+                      replyText: "I couldn't verify the current BTC price.",
+                      replyEffectStatus: "none",
+                      candidateActionNames: [],
+                      facts: [],
+                      relationships: [],
+                      topics: [],
+                      addressedTo: [],
+                      emotion: "none",
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }
     if (target !== "https://search.parallel.ai/mcp") unexpectedHttpUrls.push(target);
     expect(target).toBe("https://search.parallel.ai/mcp");
-    const request = JSON.parse(String(init?.body));
     expect(request.params.name).toBe("web_search");
     publicCalls++;
     return Response.json({
@@ -66,6 +145,7 @@ test("actual public preflight capture retains refused provider evidence and isol
       ...input,
       ownerCapture: capture,
     });
+
     const events = capture
       .snapshot()
       .events.filter((event) => event.kind === "preflight")
@@ -100,14 +180,21 @@ test("actual public preflight capture retains refused provider evidence and isol
     expect(unchanged.reply).toBe(normal.reply);
     expect(unchanged.degraded).toBe(normal.degraded);
     expect(publicCalls).toBe(2);
+    expect(modelCalls).toBe(4);
+    expect(handlerCalls).toBe(2);
+    expect(evaluationCalls).toBe(2);
+    expect(normal.degraded).toBe(false);
+    expect(normal.responded).toBe(true);
     expect(attemptedHttpUrls).toEqual([
       "https://search.parallel.ai/mcp",
+      ...Array(2).fill("https://api.cerebras.ai/v1/chat/completions"),
       "https://search.parallel.ai/mcp",
+      ...Array(2).fill("https://api.cerebras.ai/v1/chat/completions"),
     ]);
     expect(unexpectedHttpUrls).toEqual([]);
     expect(
-      attemptedHttpUrls.filter((url) => url !== "https://search.parallel.ai/mcp"),
-    ).toHaveLength(0);
+      attemptedHttpUrls.filter((url) => url === "https://api.cerebras.ai/v1/chat/completions"),
+    ).toHaveLength(4);
   } finally {
     http.mockRestore();
     if (priorKey === undefined) delete process.env.CEREBRAS_API_KEY;
