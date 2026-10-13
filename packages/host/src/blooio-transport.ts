@@ -19,7 +19,7 @@ async function readReceipt(
   )
     throw new Error("Invalid receipt");
   const reader = response.body.getReader();
-  let rejectAbort!: (reason: unknown) => void;
+  let rejectAbort: (reason: unknown) => void;
   const aborted = new Promise<never>((_resolve, reject) => {
     rejectAbort = reject;
   });
