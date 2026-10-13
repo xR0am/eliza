@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CreateCampaignSchema, UpdateCampaignSchema } from "./schemas"
+import { CreateCampaignSchema, UpdateCampaignSchema } from "./schemas";
 import { calculateSpendCredits } from "./types";
 
 test("credits for a campaign budget are the amount the ledger stores (two decimals)", () => {

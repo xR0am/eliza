@@ -1,6 +1,6 @@
 /** Validates advertising service inputs shared by API routes and providers. */
 import { z } from "zod";
-import { MIN_CAMPAIGN_BUDGET_AMOUNT } from "./types"
+import { MIN_CAMPAIGN_BUDGET_AMOUNT } from "./types";
 
 export const AdPlatformSchema = z.enum([
   "meta",

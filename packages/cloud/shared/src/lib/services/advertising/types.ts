@@ -513,7 +513,7 @@ export const AD_CREDIT_RATES = {
   detailedAnalytics: 0.1,
 } as const;
 
-export const MIN_CAMPAIGN_BUDGET_AMOUNT = 0.01
+export const MIN_CAMPAIGN_BUDGET_AMOUNT = 0.01;
 
 /**
  * Credits held for a campaign budget, in the two-decimal quantum the
