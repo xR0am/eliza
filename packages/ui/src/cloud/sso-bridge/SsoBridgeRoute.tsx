@@ -146,9 +146,9 @@ async function runMintLegOperation(
   const phoneEntry = returnTo === "/network/sign-in";
   const finalReturnTo = phoneEntry ? "/join" : returnTo;
   if (phoneEntry || !hasHydratableStewardToken()) {
-    // No session exists here to share. Login stays on the host the user
-    // started on (#19214): return straight to the paired app origin's own
-    // login with the sanitized destination, never this origin's /login.
+    // Bare Network entry requires fresh phone verification, even with a
+    // cached account. Login stays on the host the user started on (#19214):
+    // use the paired app's entry, never this origin's /login.
     return {
       kind: "redirect",
       url: phoneEntry
