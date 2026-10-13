@@ -105,14 +105,15 @@ export async function createViewAssetHost() {
     throw new Error("Missing HTTP address");
   const origin = `http://127.0.0.1:${address.port}`;
   const graphView = getView(runtime, "graph");
-  if (!graphView?.frameUrl) throw new Error("Missing graph view frame URL");
+  const frameUrl = graphView?.frameUrl;
+  if (!frameUrl) throw new Error("Missing graph view frame URL");
   return {
     dir,
     runtime,
     plugin,
     origin,
     requests,
-    url: () => new URL(graphView.frameUrl, origin),
+    url: () => new URL(frameUrl, origin),
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
