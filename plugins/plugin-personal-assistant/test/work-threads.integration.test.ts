@@ -1455,8 +1455,24 @@ describe("work thread follow-up lifecycle", () => {
     expect(processed.fires.map((fire) => fire.taskId)).toEqual([secondTaskId]);
     expect(notifications).toHaveLength(1);
   });
-  it("keeps a thread active when its follow-up cannot be removed on stop", async () => {
+  it("reports a follow-up its stop could not remove, and the follow-up never fires", async () => {
     const runtime = await createRuntime();
+    const notifications: unknown[] = [];
+    const sink = {
+      serviceType: "notification",
+      capabilityDescription: "Synthetic test notification sink",
+      async notify(input: unknown) {
+        notifications.push(input);
+        return { id: `test-followup-${notifications.length}` };
+      },
+      async stop() {},
+    };
+    runtime.services.set("notification", [sink as unknown as Service]);
+    runtime.registerModel(
+      ModelType.TEXT_LARGE,
+      async () => "Which visa document is next?",
+      "test-followup-render",
+    );
     const store = createWorkThreadStore(runtime);
     const runner = getScheduledTaskRunner(runtime, {
       agentId: runtime.agentId,
@@ -1488,32 +1504,97 @@ describe("work thread follow-up lifecycle", () => {
         { type: "stop", workThreadId: thread.id },
       ]),
     ).rejects.toMatchObject({
-      code: "WORK_THREAD_FOLLOWUP_REMOVE_FAILED",
-      context: { workThreadId: thread.id, taskId },
+      code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+      context: { workThreadId: thread.id, taskId, status: "stopped" },
     });
-    expect(await store.get(thread.id)).toMatchObject({
-      status: thread.status,
-      currentScheduledTaskId: taskId,
-    });
-    expect(
-      (await runner.list({ kind: "followup" })).map((task) => task.taskId),
-    ).toContain(taskId);
     remove.mockRestore();
-    const stopped = await runThreadAction(
-      runtime,
-      message(runtime, roomId, "stop this"),
-      [{ type: "stop", workThreadId: thread.id }],
-    );
-    expect(operationResults(stopped)).toMatchObject([
-      { success: true, type: "stop", status: "stopped" },
-    ]);
+    // The owner's stop is durable; the task row outlived it.
     expect(await store.get(thread.id)).toMatchObject({
       status: "stopped",
       currentScheduledTaskId: null,
     });
     expect(
       (await runner.list({ kind: "followup" })).map((task) => task.taskId),
-    ).not.toContain(taskId);
+    ).toContain(taskId);
+    // The leftover task cannot notify: its gate reads the thread status.
+    const processed = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-11T18:01:00.000Z"),
+      limit: 5,
+    });
+    expect(processed.errors).toEqual([]);
+    expect(processed.fires).toEqual([
+      expect.objectContaining({ taskId, status: "skipped" }),
+    ]);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("changes nothing when a stop cannot commit the thread", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    const roomId = stringToUuid("followup-stop-conflict-room");
+    const thread = await store.create({
+      title: "Vendor quote",
+      summary: "Chase the vendor quote.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const chased = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up on the quote"),
+      [
+        {
+          type: "schedule_followup",
+          workThreadId: thread.id,
+          instruction: "Ask for the quote.",
+          trigger: { kind: "once", atIso: "2026-05-11T18:00:00.000Z" },
+        },
+      ],
+    );
+    const taskId = operationResults(chased)[0].taskId as string;
+    const remove = vi.spyOn(runner, "remove");
+    // Every optimistic attempt loses to an owner edit.
+    const original = LifeOpsRepository.prototype.upsertWorkThread;
+    vi.spyOn(
+      LifeOpsRepository.prototype,
+      "upsertWorkThread",
+    ).mockImplementation(async function (
+      this: LifeOpsRepository,
+      agentId,
+      next,
+      options,
+    ) {
+      if (next.id === thread.id && next.status === "stopped") {
+        const current = await store.get(thread.id);
+        if (!current) throw new Error("Fixture thread disappeared");
+        await original.call(
+          this,
+          agentId,
+          {
+            ...current,
+            summary: `Owner edit ${current.version}`,
+            version: current.version + 1,
+          },
+          { expectedVersion: current.version },
+        );
+      }
+      return original.call(this, agentId, next, options);
+    });
+    await expect(
+      runThreadAction(runtime, message(runtime, roomId, "stop this"), [
+        { type: "stop", workThreadId: thread.id },
+      ]),
+    ).rejects.toThrow();
+    expect(remove).not.toHaveBeenCalled();
+    const unchanged = await store.get(thread.id);
+    expect(unchanged?.status).toBe(thread.status);
+    expect(unchanged?.currentScheduledTaskId).toBe(taskId);
+    expect(
+      (await runner.list({ kind: "followup" })).map((task) => task.taskId),
+    ).toContain(taskId);
   });
 
   it("names a replaced follow-up that cannot be removed for reconciliation", async () => {

@@ -21,6 +21,7 @@ import {
 import { hasLifeOpsAccess } from "../lifeops/access.js";
 import { getScheduledTaskRunner } from "../lifeops/scheduled-task/service.js";
 import { OptimisticLockError, withOptimisticRetry } from "../lifeops/sql.js";
+import { WORK_THREAD_ACTIVE_GATE } from "../lifeops/work-threads/followup-gate.js";
 import {
   createWorkThreadStore,
   type ThreadSourceRef,
@@ -780,6 +781,7 @@ export const workThreadAction: Action & {
                   createdBy: runtime.agentId,
                   ownerVisible: true,
                   subject: { kind: "thread", id: workThreadId },
+                  shouldFire: { gates: [{ kind: WORK_THREAD_ACTIVE_GATE }] },
                   ...(roomId
                     ? {
                         output: {
@@ -892,34 +894,14 @@ export const workThreadAction: Action & {
             if (status) {
               // A stopped or completed thread has no further work: its
               // pending follow-up must not fire. Waiting keeps the nudge.
-              // Remove the task before the status commits: if removal fails
-              // the thread stays active with its follow-up and the owner can
-              // repeat the request; a task already gone is not an error.
+              // The thread commits first (the owner's intent is durable and
+              // the follow-up's gate denies it from here on); the task row
+              // is then removed, and a removal that cannot be confirmed
+              // names the task that still needs reconciliation.
               const releasedTaskId =
                 isTerminalThreadStatus(status) && current.currentScheduledTaskId
                   ? current.currentScheduledTaskId
                   : null;
-              if (releasedTaskId) {
-                try {
-                  const runner = getScheduledTaskRunner(runtime, {
-                    agentId: runtime.agentId,
-                  });
-                  if (typeof runner.remove !== "function")
-                    throw new ElizaError("Follow-up removal is unavailable", {
-                      code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
-                    });
-                  await runner.remove(releasedTaskId);
-                } catch (cleanupError) {
-                  throw new ElizaError(
-                    "Follow-up could not be removed; the work thread stays active",
-                    {
-                      code: "WORK_THREAD_FOLLOWUP_REMOVE_FAILED",
-                      cause: cleanupError,
-                      context: { workThreadId, taskId: releasedTaskId },
-                    },
-                  );
-                }
-              }
               await updateMutableThread(workThreadId, {
                 status,
                 ...(releasedTaskId
@@ -936,6 +918,27 @@ export const workThreadAction: Action & {
                       : "completed",
                 reason: operation.reason,
               });
+              if (releasedTaskId) {
+                try {
+                  const runner = getScheduledTaskRunner(runtime, {
+                    agentId: runtime.agentId,
+                  });
+                  if (typeof runner.remove !== "function")
+                    throw new ElizaError("Follow-up removal is unavailable", {
+                      code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
+                    });
+                  await runner.remove(releasedTaskId);
+                } catch (cleanupError) {
+                  throw new ElizaError(
+                    "Thread ended but its follow-up is still scheduled and requires reconciliation",
+                    {
+                      code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+                      cause: cleanupError,
+                      context: { workThreadId, taskId: releasedTaskId, status },
+                    },
+                  );
+                }
+              }
               results.push({ success: true, type, workThreadId, status });
             }
           }
