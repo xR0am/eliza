@@ -347,7 +347,9 @@ export class DiscordTriageAdapter extends BaseMessageAdapter {
 			request: draft,
 			channelId,
 			accountId,
-			...(original ? { replyToExternalMessageId: original.externalId } : {}),
+			...(original?.externalId
+				? { replyToExternalMessageId: original.externalId }
+				: {}),
 			preview,
 		});
 		return { draftId, preview };
