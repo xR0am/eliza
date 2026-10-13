@@ -659,7 +659,7 @@ export async function handleToolCall(
         );
       }
       if (asGenerativeCacheApiError(error)) {
-        return mcpAuthError(c, error, rpcId);
+        return mcpAuthError(c, error, rpcId ?? null);
       }
       logger.error("[Agent MCP] Error generating response", {
         error: error instanceof Error ? error.message : "Unknown error",
