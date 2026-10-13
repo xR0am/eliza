@@ -11,6 +11,7 @@ import type {
   BatcherResult,
   ResolvedSection,
 } from "../../types/prompt-batcher.ts";
+import { BatcherDisposedError } from "../../types/prompt-batcher.ts";
 import { PromptBatcher } from "./batcher";
 import type { DispatchOutcome } from "./shared";
 
@@ -160,6 +161,74 @@ describe("PromptBatcher recurring loop and cache behavior", () => {
 
     expect(batcher.getSectionCountForAffinity("autonomy")).toBe(1);
     expect(drainRows()).toBe(1);
+  });
+
+  test("a drain ensure queued before dispose creates no task after it", async () => {
+    const { runtime, tasks } = makeRuntime();
+    const dispatcher = makeDispatcher();
+    const createTask = runtime.createTask;
+    let createsAfterDispose = 0;
+    let disposed = false;
+    runtime.createTask = async (task: Record<string, unknown>) => {
+      if (disposed) createsAfterDispose += 1;
+      return createTask(task);
+    };
+    const batcher = new PromptBatcher(runtime, dispatcher as never, SETTINGS);
+    await ready();
+
+    // The ensure is queued by addSection(); dispose() lands before it runs.
+    const pending = batcher.addSection({
+      id: "autonomy",
+      frequency: "recurring",
+      affinityKey: "autonomy",
+      contextBuilder: async () => "drain context",
+      preamble: "Drain buffered messages.",
+      schema: [{ field: "value", type: "string", required: true }],
+      onResult: () => {},
+    });
+    disposed = true;
+    batcher.dispose();
+    await expect(pending).rejects.toBeInstanceOf(BatcherDisposedError);
+    await wait(20);
+
+    expect(createsAfterDispose).toBe(0);
+    expect(tasks.filter((task) => task.name === "BATCHER_DRAIN")).toHaveLength(
+      0,
+    );
+  });
+
+  test("a drain whose start is in flight at dispose is torn down, not kept", async () => {
+    const { runtime, tasks } = makeRuntime();
+    const dispatcher = makeDispatcher();
+    let releaseCreate: () => void = () => {};
+    const createTask = runtime.createTask;
+    runtime.createTask = async (task: Record<string, unknown>) => {
+      await new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      return createTask(task);
+    };
+    const batcher = new PromptBatcher(runtime, dispatcher as never, SETTINGS);
+    await ready();
+
+    const pending = batcher.addSection({
+      id: "autonomy",
+      frequency: "recurring",
+      affinityKey: "autonomy",
+      contextBuilder: async () => "drain context",
+      preamble: "Drain buffered messages.",
+      schema: [{ field: "value", type: "string", required: true }],
+      onResult: () => {},
+    });
+    await wait(20); // start() is now waiting on createTask
+    batcher.dispose();
+    await expect(pending).rejects.toBeInstanceOf(BatcherDisposedError);
+    releaseCreate();
+    await wait(20);
+
+    expect(tasks.filter((task) => task.name === "BATCHER_DRAIN")).toHaveLength(
+      0,
+    );
   });
 
   test("preserves a message appended while a drain is in flight", async () => {

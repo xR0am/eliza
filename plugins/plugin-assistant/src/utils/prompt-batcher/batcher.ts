@@ -554,7 +554,10 @@ export class PromptBatcher {
    */
   private _ensureAffinityDrain(affinityKey: string): Promise<void> {
     return this._queueAffinityDrainOp(affinityKey, async () => {
-      if (this.affinityDrains.has(affinityKey)) {
+      // A queued ensure that runs after dispose() must not create a task row
+      // for a batcher that is gone; the same holds if dispose() lands while
+      // the start is in flight, so the just-started drain is torn down.
+      if (this.disposed || this.affinityDrains.has(affinityKey)) {
         return;
       }
       if (
@@ -575,6 +578,10 @@ export class PromptBatcher {
         interval,
       );
       await drain.start(this.runtime);
+      if (this.disposed) {
+        await drain.dispose(this.runtime);
+        return;
+      }
       this.affinityDrains.set(affinityKey, drain);
     });
   }
