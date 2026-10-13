@@ -807,7 +807,7 @@ export class XService extends Service {
   }
 
   async sendDirectMessageForAccount(
-    accountId: string,
+    accountId: string | undefined,
     params: { participantId: string; text: string },
   ): Promise<{
     ok: true;
@@ -841,7 +841,7 @@ export class XService extends Service {
   }
 
   async fetchDirectMessagesForAccount(
-    accountId: string,
+    accountId: string | undefined,
     params: { participantId?: string; limit?: number } = {},
   ): Promise<Memory[]> {
     const runtime = this.runtime;
@@ -862,6 +862,7 @@ export class XService extends Service {
       {
         runtime,
         source: "x",
+        ...(accountId ? { accountId } : {}),
         target,
       } as MessageConnectorQueryContext,
       {
