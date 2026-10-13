@@ -131,7 +131,7 @@ it("lists every stored fact in the activity timeline with an honest total", asyn
           text:
             index === 0 ? "oldest fact: allergic to peanuts" : `fact ${index}`,
         },
-        metadata: { type: "fact", confidence: 0.9 },
+        metadata: { type: "custom", confidence: 0.9 },
       },
     })),
   );
