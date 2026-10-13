@@ -305,6 +305,99 @@ test("a dispute with nothing left to claw back reinstates nothing", async () => 
   ]);
 });
 
+test("a partial refund then a dispute for the remainder claws back the whole grant", async () => {
+  const buyer = await purchase({
+    credits: "500",
+    cents: 10000,
+    balance: "500",
+  });
+  const chargeId = `ch_${randomUUID()}`;
+  expect(
+    await processStripeEvent(
+      refundEvent(chargeId, 2000, buyer.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(await balance(buyer.org)).toBe(400);
+  expect(
+    await processStripeEvent(
+      disputeEvent(
+        "charge.dispute.funds_withdrawn",
+        `dp_${randomUUID()}`,
+        8000,
+        buyer.paymentIntentId,
+      ),
+    ),
+  ).toBe("ack");
+  expect(await balance(buyer.org)).toBe(0);
+  expect(await ledger(buyer.org)).toEqual([
+    ["credit", 500],
+    ["clawback", -100],
+    ["clawback", -400],
+  ]);
+  expect(await holdRows(buyer.org)).toEqual([]);
+});
+
+test("a dispute then a refund of the undisputed remainder claws back the whole grant", async () => {
+  const buyer = await purchase({
+    credits: "500",
+    cents: 10000,
+    balance: "500",
+  });
+  expect(
+    await processStripeEvent(
+      disputeEvent(
+        "charge.dispute.funds_withdrawn",
+        `dp_${randomUUID()}`,
+        8000,
+        buyer.paymentIntentId,
+      ),
+    ),
+  ).toBe("ack");
+  expect(await balance(buyer.org)).toBe(100);
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 2000, buyer.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(await balance(buyer.org)).toBe(0);
+  expect(await ledger(buyer.org)).toEqual([
+    ["credit", 500],
+    ["clawback", -400],
+    ["clawback", -100],
+  ]);
+});
+
+test("a full refund after a lost full dispute does not claw back twice", async () => {
+  const buyer = await purchase({
+    credits: "500",
+    cents: 10000,
+    balance: "500",
+  });
+  const disputeId = `dp_${randomUUID()}`;
+  for (const type of [
+    "charge.dispute.funds_withdrawn",
+    "charge.dispute.closed",
+  ] as const) {
+    expect(
+      await processStripeEvent(
+        disputeEvent(type, disputeId, 10000, buyer.paymentIntentId),
+      ),
+    ).toBe("ack");
+  }
+  expect(await balance(buyer.org)).toBe(0);
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 10000, buyer.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(await balance(buyer.org)).toBe(0);
+  expect(await ledger(buyer.org)).toEqual([
+    ["credit", 500],
+    ["clawback", -500],
+  ]);
+  expect(await holdRows(buyer.org)).toEqual([]);
+});
+
 function refundEvent(
   chargeId: string,
   amountRefundedCents: number,
