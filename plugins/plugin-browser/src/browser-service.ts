@@ -542,7 +542,9 @@ export class BrowserService extends Service {
           // error-policy:J2 preserve native failures and prevent uncertain effects from being replayed.
           if (
             isBrowserDispatchFailure(error) ||
-            isIdempotentBrowserSubaction(command.subaction)
+            isIdempotentBrowserSubaction(command.subaction, {
+              script: command.script,
+            })
           )
             throw error;
           throw new BrowserDispatchFailure(
