@@ -37,7 +37,9 @@ function makeRuntime() {
       deleteCache: async (key: string): Promise<void> => {
         cache.delete(key);
       },
-      getTasksByName: async () => tasks,
+      // A snapshot, as a database read is: a caller must not see rows another
+      // caller inserts after its own read.
+      getTasksByName: async () => [...tasks],
       createTask: async (task: Record<string, unknown>) => {
         const id = `00000000-0000-0000-0000-${String(tasks.length + 1).padStart(
           12,
@@ -132,6 +134,34 @@ function makeMessage(index: number): Memory {
 }
 
 describe("PromptBatcher recurring loop and cache behavior", () => {
+  test("keeps one BATCHER_DRAIN row when a section is removed and re-added in the same tick", async () => {
+    const { runtime, tasks } = makeRuntime();
+    const dispatcher = makeDispatcher();
+    const batcher = new PromptBatcher(runtime, dispatcher as never, SETTINGS);
+    await ready();
+    const section = {
+      minCycleMs: 0,
+      contextBuilder: async () => "drain context",
+      preamble: "Drain buffered messages.",
+      schema: [{ field: "value", type: "string", required: true }],
+      onResult: () => {},
+    };
+    const drainRows = () =>
+      tasks.filter((task) => task.name === "BATCHER_DRAIN").length;
+
+    batcher.think("autonomy", section);
+    await wait(20);
+    expect(drainRows()).toBe(1);
+
+    // The autonomy interval change re-registers the section at once.
+    batcher.removeSection("autonomy");
+    batcher.think("autonomy", section);
+    await wait(20);
+
+    expect(batcher.getSectionCountForAffinity("autonomy")).toBe(1);
+    expect(drainRows()).toBe(1);
+  });
+
   test("preserves a message appended while a drain is in flight", async () => {
     const { runtime } = makeRuntime();
     const dispatcher = makeDispatcher();
