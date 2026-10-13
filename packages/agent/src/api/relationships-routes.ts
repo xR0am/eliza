@@ -170,6 +170,14 @@ async function listActivityFacts(runtime: IAgentRuntime): Promise<Memory[]> {
   for (;;) {
     const remaining = ACTIVITY_FACT_MAX_SCAN_ROWS - facts.length;
     if (remaining <= 0) {
+      const page = await runtime.getMemories({
+        agentId: runtime.agentId,
+        tableName: "facts",
+        limit: 1,
+        cursor,
+        includeEmbedding: false,
+      })
+      if (page.length === 0) return facts
       throw new ElizaError(
         "Relationships activity exceeded its bounded fact scan before completing the timeline",
         {
