@@ -1,23 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import {
-  coordinatorFetch,
-  SHARED_RUNTIME_TURN_DEADLINE_MS,
-} from "./coordinator-fetch";
+import { coordinatorFetch, SHARED_RUNTIME_TURN_DEADLINE_MS } from "./coordinator-fetch";
 
 test("late inference headers survive the control budget while control reads remain bounded", async () => {
   const realTimer = globalThis.setTimeout;
   const deadlines: number[] = [];
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
-    callback,
-    delay,
-    ...args
-  ) => {
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
     deadlines.push(Number(delay));
-    return realTimer(
-      callback,
-      delay === 75_000 ? 100 : delay === 10_000 ? 5 : delay,
-      ...args,
-    );
+    return realTimer(callback, delay === 75_000 ? 100 : delay === 10_000 ? 5 : delay, ...args);
   }) as typeof setTimeout);
   const stub = {
     fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -48,16 +37,8 @@ test("late inference headers survive the control budget while control reads rema
 
 test("inference deadline is finite and caller cancellation wins", async () => {
   const realTimer = globalThis.setTimeout;
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
-    callback,
-    delay,
-    ...args
-  ) =>
-    realTimer(
-      callback,
-      delay === 75_000 ? 10 : delay,
-      ...args,
-    )) as typeof setTimeout);
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) =>
+    realTimer(callback, delay === 75_000 ? 10 : delay, ...args)) as typeof setTimeout);
   const stub = {
     fetch: (_input: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {

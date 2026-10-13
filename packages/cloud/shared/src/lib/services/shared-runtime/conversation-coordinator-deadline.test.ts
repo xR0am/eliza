@@ -4,17 +4,9 @@ import { coordinateSharedBridge } from "./conversation-coordinator";
 test("non-streaming inference survives the control deadline but control reads retain it", async () => {
   const realSetTimeout = globalThis.setTimeout;
   const deadlines: number[] = [];
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
-    callback,
-    delay,
-    ...args
-  ) => {
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
     deadlines.push(Number(delay));
-    return realSetTimeout(
-      callback,
-      delay === 75_000 ? 100 : delay === 10_000 ? 5 : delay,
-      ...args,
-    );
+    return realSetTimeout(callback, delay === 75_000 ? 100 : delay === 10_000 ? 5 : delay, ...args);
   }) as typeof setTimeout);
   const namespace = {
     getByName: () => ({
@@ -60,11 +52,7 @@ test("non-streaming inference survives the control deadline but control reads re
 test("non-streaming inference keeps caller cancellation and a finite turn deadline", async () => {
   const realSetTimeout = globalThis.setTimeout;
   const deadlines: number[] = [];
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
-    callback,
-    delay,
-    ...args
-  ) => {
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
     deadlines.push(Number(delay));
     return realSetTimeout(callback, delay === 75_000 ? 10 : delay, ...args);
   }) as typeof setTimeout);
@@ -74,8 +62,7 @@ test("non-streaming inference keeps caller cancellation and a finite turn deadli
       fetch: (_input: RequestInfo | URL, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal;
-          if (!signal)
-            throw new Error("Expected bounded caller-composed signal");
+          if (!signal) throw new Error("Expected bounded caller-composed signal");
           signals.push(signal);
           signal.addEventListener("abort", () => reject(signal.reason), {
             once: true,
