@@ -815,4 +815,82 @@ describe("canonical provenance envelope", () => {
 		const data = result.data as { results?: Array<{ text: string }> };
 		expect(data.results?.map((r) => r.text)).toEqual(["Deploy note closest."]);
 	});
+
+	it("keeps the widened window's ranking when a refill re-ranks earlier rows", async () => {
+		const harness = track(await createTestRuntimeWithModelProvider({}));
+		const { runtime } = harness;
+		const roomId = id("reranked-refill-room");
+		const requester = id("reranked-refill-requester");
+		await createRoom(runtime, roomId, ChannelType.DM, [requester]);
+		const queryEmbedding = new Array<number>(384).fill(0);
+		queryEmbedding[0] = 1;
+		const similarTo = (cosine: number): number[] => {
+			const embedding = new Array<number>(384).fill(0);
+			embedding[0] = cosine;
+			embedding[1] = Math.sqrt(1 - cosine * cosine);
+			return embedding;
+		};
+		const stored = (
+			name: string,
+			createdAt: number,
+			cosine: number,
+			text: string,
+		): Memory =>
+			messageMemory({
+				id: id(`reranked-refill-${name}`),
+				agentId: runtime.agentId,
+				roomId,
+				entityId: requester,
+				createdAt,
+				embedding: similarTo(cosine),
+				content: { text },
+				metadata: { messageIdFull: `discord-message-${name}` },
+			});
+		// Vector order: the closest vector is a row without the query terms,
+		// then ten rows that provenance validation withholds (no connector
+		// account), then the only row that matches the query text. limit 1
+		// asks for 11 rows, so the first window holds one eligible row and a
+		// second, wider round brings in the text match, which the adapter's
+		// BM25 rerank puts first.
+		const nearest = stored("nearest", 1_700_000_020_000, 0.99, "Ship notice.");
+		const withheld = Array.from({ length: 10 }, (_, index) => {
+			const memory = stored(
+				`withheld-${index}`,
+				1_700_000_010_000 + index,
+				0.95 - index * 0.02,
+				"Lunch plans.",
+			);
+			delete (memory.metadata as Record<string, unknown>).accountId;
+			return memory;
+		});
+		const textMatch = stored("match", 1_700_000_000_000, 0.65, "Deploy note.");
+		for (const memory of [nearest, ...withheld, textMatch]) {
+			await runtime.createMemory(memory, "messages", false);
+		}
+		vi.spyOn(runtime, "useModel").mockResolvedValue(queryEmbedding as never);
+		const searchSpy = vi.spyOn(runtime, "searchMemories");
+
+		const request = messageMemory({
+			id: id("reranked-refill-request"),
+			agentId: runtime.agentId,
+			roomId,
+			entityId: requester,
+			content: { text: "Find the deploy note", source: "client_chat" },
+		});
+		await attestDeliveryAudienceFromCanonicalRoom(runtime, request);
+		const result = await messageAction.handler(
+			runtime,
+			request,
+			undefined,
+			{ parameters: { action: "search", query: "deploy note", limit: 1 } },
+			undefined,
+			undefined,
+		);
+		if (!result) throw new Error("MESSAGE handler returned no result");
+
+		expect(searchSpy).toHaveBeenCalledTimes(2);
+		expect(result.success).toBe(true);
+		const data = result.data as { results?: Array<{ text: string }> };
+		expect(data.results?.map((r) => r.text)).toEqual(["Deploy note."]);
+	});
 });

@@ -746,10 +746,9 @@ export async function searchCanonicalConversationMemories(
 	const normalizedSource = input.source
 		? normalizeConnectorSource(input.source)
 		: undefined;
-	const allCandidates: Memory[] = [];
+	let allCandidates: Memory[] = [];
 	const excludedRooms = new Set(input.excludeRoomIds);
 	let candidateWindowComplete = true;
-	const seenIds = new Set<string>();
 	let roundCount = initialCount;
 
 	for (;;) {
@@ -794,15 +793,24 @@ export async function searchCanonicalConversationMemories(
 			candidateWindowComplete = false;
 		}
 
-		// Deduplicate against what we already have and accumulate.
+		// A wider round re-ranks its whole window (the SQL adapter reranks each
+		// window with BM25), so its order is the relevance order: put this
+		// round's rows first and keep rows only earlier rounds returned behind.
+		const roundIds = new Set<string>();
+		const ranked: Memory[] = [];
 		for (const mem of roundCandidates) {
 			// Enforce exclusions even for an adapter that ignores the optional filter.
 			if (excludedRooms.has(mem.roomId)) continue;
 			const memId = mem.id?.toString();
-			if (memId && seenIds.has(memId)) continue;
-			if (memId) seenIds.add(memId);
-			allCandidates.push(mem);
+			if (memId && roundIds.has(memId)) continue;
+			if (memId) roundIds.add(memId);
+			ranked.push(mem);
 		}
+		for (const mem of allCandidates) {
+			const memId = mem.id?.toString();
+			if (!memId || !roundIds.has(memId)) ranked.push(mem);
+		}
+		allCandidates = ranked;
 
 		// Limited searches need intermediate eligibility checks to know when
 		// to stop. Complete recall validates once after exhausting the adapter.
