@@ -110,7 +110,6 @@ import {
   getLocalDateKey,
   getZonedDateParts,
 } from "../time.js";
-import { registerWorkThreadActiveGate } from "../work-threads/followup-gate.js";
 import {
   behaviouralBaselineFromProfile,
   readActivityProfile,
@@ -1443,7 +1442,6 @@ function buildLifeOpsRunnerDeps(
   // fallbacks (which stay resolvable when PA is absent, e.g. plugin-health
   // standalone tests).
   registerActivityProfileGates(opts.runtime, gates);
-  registerWorkThreadActiveGate(opts.runtime, gates);
   registerModelMomentCheckGate(opts.runtime, gates);
   registerHouseholdGrantExpiryWarningGate(
     new HouseholdCoordinationRepository(opts.runtime, opts.agentId),

@@ -53,6 +53,7 @@ import {
   resolveOwnerFactStore,
 } from "../owner/fact-store.js";
 import { LifeOpsRepository } from "../repository.js";
+import { workThreadFollowupInactiveReason } from "../work-threads/followup-thread-check.js";
 import { readScheduledTaskChatDeliveryBinding } from "./delivery-binding.js";
 import {
   applyReminderIntensityToNoReplyPolicy,
@@ -705,6 +706,28 @@ export async function processDueScheduledTasks(
     const decision = await isScheduledTaskDue(task, dueContext);
     if (!decision.due) continue;
     try {
+      // A thread follow-up is derived from its thread: once the thread is
+      // stopped or completed the task must not notify, whether or not its
+      // removal in the thread action succeeded or the task predates that
+      // cleanup. Dismissed rows never refire.
+      const inactiveReason = await workThreadFollowupInactiveReason(
+        request.runtime,
+        task,
+      );
+      if (inactiveReason) {
+        const dismissed = await runner.apply(task.taskId, "dismiss", {
+          reason: inactiveReason,
+        });
+        result.fires.push({
+          taskId: task.taskId,
+          status: dismissed.state.status,
+          reason: inactiveReason,
+          ...(decision.occurrenceAtIso
+            ? { occurrenceAtIso: decision.occurrenceAtIso }
+            : {}),
+        });
+        continue;
+      }
       const fireResult = await runner.fireWithResult(task.taskId, {
         cause: "automatic",
         allowTerminalRefire: isRecurringTrigger(task.trigger),

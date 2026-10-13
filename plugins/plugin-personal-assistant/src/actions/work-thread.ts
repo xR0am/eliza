@@ -21,7 +21,6 @@ import {
 import { hasLifeOpsAccess } from "../lifeops/access.js";
 import { getScheduledTaskRunner } from "../lifeops/scheduled-task/service.js";
 import { OptimisticLockError, withOptimisticRetry } from "../lifeops/sql.js";
-import { WORK_THREAD_ACTIVE_GATE } from "../lifeops/work-threads/followup-gate.js";
 import {
   createWorkThreadStore,
   type ThreadSourceRef,
@@ -781,7 +780,6 @@ export const workThreadAction: Action & {
                   createdBy: runtime.agentId,
                   ownerVisible: true,
                   subject: { kind: "thread", id: workThreadId },
-                  shouldFire: { gates: [{ kind: WORK_THREAD_ACTIVE_GATE }] },
                   ...(roomId
                     ? {
                         output: {
@@ -894,10 +892,11 @@ export const workThreadAction: Action & {
             if (status) {
               // A stopped or completed thread has no further work: its
               // pending follow-up must not fire. Waiting keeps the nudge.
-              // The thread commits first (the owner's intent is durable and
-              // the follow-up's gate denies it from here on); the task row
-              // is then removed, and a removal that cannot be confirmed
-              // names the task that still needs reconciliation.
+              // The thread commits first (the owner's intent is durable, and
+              // the scheduler tick dismisses a follow-up whose thread ended
+              // before it fires); the task row is then removed, and a
+              // removal that cannot be confirmed names the task that still
+              // needs reconciliation.
               const releasedTaskId =
                 isTerminalThreadStatus(status) && current.currentScheduledTaskId
                   ? current.currentScheduledTaskId
