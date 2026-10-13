@@ -22,16 +22,16 @@ import { hasLifeOpsAccess } from "../lifeops/access.js";
 import { getScheduledTaskRunner } from "../lifeops/scheduled-task/service.js";
 import { OptimisticLockError, withOptimisticRetry } from "../lifeops/sql.js";
 import {
-  withWorkThreadOperationLocks,
-  workThreadLockKey,
-} from "../lifeops/work-threads/operation-lock.js";
-import {
   createWorkThreadStore,
   type ThreadSourceRef,
   type UpdateWorkThreadInput,
   type WorkThread,
   type WorkThreadStatus,
 } from "../lifeops/work-threads/index.js";
+import {
+  withWorkThreadOperationLocks,
+  workThreadLockKey,
+} from "../lifeops/work-threads/operation-lock.js";
 
 /**
  * Build a stable idempotency key for a merge attempt. Same (turn, target,
