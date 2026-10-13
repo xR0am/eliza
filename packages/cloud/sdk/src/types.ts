@@ -1073,6 +1073,30 @@ export interface CreateAgentRequest {
   autoProvision?: boolean;
 }
 
+/** Body for `PATCH /api/v1/eliza/agents/:agentId`: the route changes only the name and config. */
+export interface UpdateAgentRequest {
+  agentName?: string;
+  agentConfig?: Record<string, unknown>;
+}
+
+/** Body for `PATCH /api/v1/eliza/agents/:agentId/environment`. */
+export interface UpdateAgentEnvironmentRequest {
+  environmentVars: Record<string, string>;
+}
+
+export interface UpdateAgentEnvironmentResponse {
+  success: boolean;
+  data?: {
+    agentId: string;
+    updatedKeys: string[];
+    removedKeys: string[];
+    status: string;
+    executionTier: string;
+    needsRestart: boolean;
+  };
+  error?: string;
+}
+
 export interface CreateAgentResponse {
   success: boolean;
   data?: {
