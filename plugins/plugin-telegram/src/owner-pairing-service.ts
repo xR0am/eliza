@@ -103,7 +103,10 @@ function isRateLimited(userId: string): boolean {
   if (attempts.length >= RATE_LIMIT_MAX_ATTEMPTS) {
     return true;
   }
-  if (!pairAttempts.has(userId) && pairAttempts.size >= MAX_TRACKED_PAIR_USERS) {
+  if (
+    !pairAttempts.has(userId) &&
+    pairAttempts.size >= MAX_TRACKED_PAIR_USERS
+  ) {
     return true;
   }
   attempts.push(now);
@@ -432,9 +435,7 @@ export class TelegramOwnerPairingServiceImpl
     }
 
     const message =
-      `Click to log in to Eliza: ${link}
-
-` +
+      `Click to log in to Eliza: ${link}\n\n` +
       "_This link expires in 5 minutes. Do not share it._";
 
     try {
