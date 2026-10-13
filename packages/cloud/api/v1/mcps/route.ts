@@ -237,27 +237,39 @@ app.get("/", async (c) => {
       );
       mcps = ownMcps.map((m) => userMcpsService.toApiMcp(m));
     } else {
-      const [ownMcps, publicMcps] = await Promise.all([
-        userMcpsService.listByOrganization(user.organization_id, {
-          status,
-          limit: Math.ceil(limit / 2) + offset,
-          offset: 0,
-        }),
-        userMcpsService.listPublic({
-          category,
-          search,
-          limit: Math.floor(limit / 2) + offset,
-          offset: 0,
-        }),
-      ]);
+      const ownCount = await userMcpsService.countByOrganization(
+        user.organization_id,
+        { status },
+      );
+      const ownPageStart = Math.min(offset, ownCount);
+      const ownPageLimit = Math.min(limit, ownCount - ownPageStart);
+      const ownMcps =
+        ownPageLimit > 0
+          ? await userMcpsService.listByOrganization(user.organization_id, {
+              status,
+              limit: ownPageLimit,
+              offset: ownPageStart,
+            })
+          : [];
+      const publicLimit = limit - ownMcps.length;
+      const publicOffset = Math.max(offset - ownCount, 0);
+      const publicMcps =
+        publicLimit > 0
+          ? await userMcpsService.listPublic({
+              category,
+              search,
+              limit: publicLimit,
+              offset: publicOffset,
+              excludeOrganizationId: user.organization_id,
+            })
+          : [];
 
-      const ownIds = new Set(ownMcps.map((m) => m.id));
       mcps = [
         ...ownMcps.map((m) => userMcpsService.toApiMcp(m)),
-        ...publicMcps
-          .filter((m) => !ownIds.has(m.id))
-          .map((m) => userMcpsService.toApiMcp(userMcpsService.toPublicMcp(m))),
-      ].slice(offset, offset + limit);
+        ...publicMcps.map((m) =>
+          userMcpsService.toApiMcp(userMcpsService.toPublicMcp(m)),
+        ),
+      ];
     }
 
     return c.json({
