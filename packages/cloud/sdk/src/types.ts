@@ -1073,27 +1073,47 @@ export interface CreateAgentRequest {
   autoProvision?: boolean;
 }
 
+/** Body of `POST /api/v1/eliza/agents`; every agent field lives under `data`. */
 export interface CreateAgentResponse {
   success: boolean;
+  /** False when the organization already had this agent and it was returned as is. */
+  created: boolean;
+  /** Set when the agent runs on the shared runtime instead of its own server. */
+  source?: "shared_runtime";
+  message?: string;
   data?: {
     id: string;
     agentId?: string;
     agentName: string | null;
-    status: import("./types.cloud-api.js").AgentSandboxStatus;
+    status: import("./types.cloud-api.js").AgentSandboxStatus | string;
     executionTier?: string;
     jobId?: string;
+    estimatedCompletionAt?: string | null;
     createdAt?: string;
+    /** The agent's REST base when it runs on the shared runtime. */
+    webUiUrl?: string;
   };
-  id?: string;
-  agentId?: string;
-  jobId?: string;
-  executionTier?: string;
 }
 
-export interface AgentLifecycleResponse extends Record<string, unknown> {
-  success?: boolean;
-  data?: JsonObject;
-  jobId?: string;
+/**
+ * Body of the agent delete, provision, suspend and resume routes. The job
+ * to poll is `data.jobId`; `polling.endpoint` names the job route.
+ */
+export interface AgentLifecycleResponse {
+  success: boolean;
+  /** False when an identical job was already in progress. */
+  created?: boolean;
+  alreadyInProgress?: boolean;
+  message?: string;
+  data: {
+    agentId: string;
+    action?: string;
+    jobId?: string;
+    status?: string;
+    previousStatus?: string;
+    message?: string;
+  };
+  polling?: { endpoint: string; intervalMs: number };
 }
 
 export type SnapshotType = "manual" | "auto" | "pre-eviction";
