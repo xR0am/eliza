@@ -306,6 +306,12 @@ export interface CreateCreativeInput {
   instagramActorId?: string;
   tiktokIdentityId?: string;
   tiktokIdentityType?: string;
+  /**
+   * Delivery window of the stored campaign, set by the advertising service.
+   * TikTok keeps the schedule on the ad group, so the adapter needs it here.
+   */
+  campaignStartDate?: Date;
+  campaignEndDate?: Date;
 }
 
 export interface UpdateCreativeInput {

@@ -1284,7 +1284,7 @@ class AdvertisingService {
   ): Promise<AdCampaign> {
     // No ad-platform adapter applies bid-control changes to a live campaign
     // (Meta bid controls live on the ad set created with the campaign;
-    // Google/TikTok updates only push name/budget/dates). Reject explicitly
+    // Google updates only push name/budget/dates, TikTok name/budget). Reject explicitly
     // instead of persisting local metadata the platform never receives.
     if (input.bidStrategy !== undefined || input.optimizationGoal !== undefined) {
       throw ValidationError(
@@ -2196,7 +2196,11 @@ class AdvertisingService {
           credentials,
           account.external_account_id,
           campaign.external_campaign_id,
-          preparedInput,
+          {
+            ...preparedInput,
+            campaignStartDate: campaign.start_date ?? undefined,
+            campaignEndDate: campaign.end_date ?? undefined,
+          },
         );
 
         if (result.success && result.externalCreativeId) {
