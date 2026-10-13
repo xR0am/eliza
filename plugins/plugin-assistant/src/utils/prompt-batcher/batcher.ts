@@ -139,7 +139,7 @@ export class PromptBatcher {
         if (pending && !pending.resolved) {
           pending.resolved = true;
           pending.deferred.reject(error);
-          this.pendingResults.delete(normalized.id);
+          this.removeSection(normalized.id);
         }
         this.runtime.logger.error(
           {
