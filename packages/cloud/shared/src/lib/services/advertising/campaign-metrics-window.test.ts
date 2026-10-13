@@ -19,9 +19,10 @@ const campaign = {
   total_conversions: 0,
 };
 const updates: unknown[] = [];
+const account = { id: "account-1", platform: "meta", status: "active" };
 mock.module("../../../db/repositories", () => ({
   adAccountsRepository: {
-    findById: async () => ({ id: "account-1", platform: "meta", status: "active" }),
+    findById: async () => account,
   },
   adCampaignsRepository: {
     findById: async () => campaign,
@@ -44,6 +45,9 @@ const spies: ReturnType<typeof spyOn>[] = [];
 afterEach(() => {
   for (const spy of spies.splice(0)) spy.mockRestore();
   updates.length = 0;
+  account.platform = "meta";
+  campaign.start_date = new Date("2026-06-01T00:00:00.000Z");
+  campaign.external_campaign_id = "acct/ext-1";
 });
 
 function stubProvider() {
@@ -102,4 +106,62 @@ test("a windowed read passes the window through and leaves the stored totals alo
   expect(metrics.spend).toBe(42.5);
   expect(ranges).toEqual([window]);
   expect(updates).toEqual([]);
+});
+
+test("an X campaign older than seven days refreshes its lifetime totals through the real adapter", async () => {
+  process.env.X_ADS_CONSUMER_KEY = "consumer-key";
+  process.env.X_ADS_CONSUMER_SECRET = "consumer-secret";
+  account.platform = "x-twitter";
+  // X ids are account/campaign/line-item.
+  campaign.external_campaign_id = "acct-1/c-1/li-1";
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  campaign.start_date = new Date(Date.now() - 134 * DAY_MS);
+  spies.push(
+    spyOn(
+      advertisingService as unknown as { getCredentials: () => Promise<unknown> },
+      "getCredentials",
+    ).mockResolvedValue({ accessToken: "access-token", refreshToken: "token-secret" }),
+  );
+  const statsUrls: URL[] = [];
+  spies.push(
+    spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      statsUrls.push(new URL(String(input)));
+      return Response.json({
+        data: [
+          {
+            id: "li-1",
+            id_data: [
+              {
+                metrics: {
+                  impressions: [100],
+                  clicks: [4],
+                  billed_charge_local_micro: [2_500_000],
+                },
+              },
+            ],
+          },
+        ],
+      });
+    }),
+  );
+
+  const metrics = await advertisingService.getCampaignMetrics("campaign-1", "org-1");
+
+  // 134 days of lifetime -> 20 stats requests of at most seven days each.
+  expect(statsUrls).toHaveLength(20);
+  for (const url of statsUrls) {
+    const from = new Date(url.searchParams.get("start_time") ?? "");
+    const to = new Date(url.searchParams.get("end_time") ?? "");
+    expect(to.getTime() - from.getTime()).toBeLessThanOrEqual(7 * DAY_MS);
+    expect(
+      from.getUTCMinutes() + from.getUTCSeconds() + to.getUTCMinutes() + to.getUTCSeconds(),
+    ).toBe(0);
+  }
+  expect(metrics.spend).toBe(50);
+  expect(updates).toEqual([
+    [
+      "campaign-1",
+      { totalSpend: "50", totalImpressions: 2000, totalClicks: 80, totalConversions: 0 },
+    ],
+  ]);
 });
