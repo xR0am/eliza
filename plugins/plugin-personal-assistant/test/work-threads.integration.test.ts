@@ -1348,3 +1348,111 @@ describe("LifeOps work threads", () => {
     expect(providerAfterStop.text).not.toContain(sharedBudgetId);
   });
 });
+
+describe("work thread follow-up lifecycle", () => {
+  it("drops the follow-up a reschedule replaces and the one a stop leaves behind", async () => {
+    const runtime = await createRuntime();
+    const notifications: unknown[] = [];
+    const sink = {
+      serviceType: "notification",
+      capabilityDescription: "Synthetic test notification sink",
+      async notify(input: unknown) {
+        notifications.push(input);
+        return { id: `test-followup-${notifications.length}` };
+      },
+      async stop() {},
+    };
+    runtime.services.set("notification", [sink as unknown as Service]);
+    runtime.registerModel(
+      ModelType.TEXT_LARGE,
+      async () => "Which visa document is next?",
+      "test-followup-render",
+    );
+    const store = createWorkThreadStore(runtime);
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    const roomId = stringToUuid("followup-lifecycle-room");
+    const followup = (atIso: string) => ({
+      type: "schedule_followup",
+      instruction: "Ask for the passport scan.",
+      trigger: { kind: "once", atIso },
+    });
+    const scheduledFollowups = async () =>
+      (await runner.list({ kind: "followup" })).filter(
+        (task) => task.state.status === "scheduled",
+      );
+
+    const rescheduled = await store.create({
+      title: "Visa documents",
+      summary: "Collect the visa documents.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const first = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up on the visa documents"),
+      [
+        {
+          ...followup("2026-05-11T18:00:00.000Z"),
+          workThreadId: rescheduled.id,
+        },
+      ],
+    );
+    const firstTaskId = operationResults(first)[0].taskId as string;
+    const second = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "actually, follow up tomorrow instead"),
+      [
+        {
+          ...followup("2026-05-12T18:00:00.000Z"),
+          workThreadId: rescheduled.id,
+        },
+      ],
+    );
+    const secondTaskId = operationResults(second)[0].taskId as string;
+    expect(secondTaskId).not.toBe(firstTaskId);
+    expect((await scheduledFollowups()).map((task) => task.taskId)).toEqual([
+      secondTaskId,
+    ]);
+    expect((await store.get(rescheduled.id))?.currentScheduledTaskId).toBe(
+      secondTaskId,
+    );
+
+    const stopped = await store.create({
+      title: "Vendor quote",
+      summary: "Chase the vendor quote.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const chased = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up on the quote"),
+      [{ ...followup("2026-05-11T18:00:00.000Z"), workThreadId: stopped.id }],
+    );
+    const stoppedTaskId = operationResults(chased)[0].taskId as string;
+    const stop = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "stop chasing the quote"),
+      [{ type: "stop", workThreadId: stopped.id }],
+    );
+    expect(operationResults(stop)).toMatchObject([
+      { success: true, type: "stop", status: "stopped" },
+    ]);
+    expect(await store.get(stopped.id)).toMatchObject({
+      status: "stopped",
+      currentScheduledTaskId: null,
+    });
+    expect(
+      (await runner.list({ kind: "followup" })).map((task) => task.taskId),
+    ).not.toContain(stoppedTaskId);
+
+    const processed = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-12T18:01:00.000Z"),
+      limit: 5,
+    });
+    expect(processed.errors).toEqual([]);
+    expect(processed.fires.map((fire) => fire.taskId)).toEqual([secondTaskId]);
+    expect(notifications).toHaveLength(1);
+  });
+});

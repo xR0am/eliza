@@ -809,13 +809,23 @@ export const workThreadAction: Action & {
                 });
                 continue;
               }
+              // The link is taken under the thread lock, so this snapshot
+              // names the follow-up this one replaces.
+              const supersededTaskId =
+                current.currentScheduledTaskId &&
+                current.currentScheduledTaskId !== task.taskId
+                  ? current.currentScheduledTaskId
+                  : null;
               try {
                 // Retry the link only: rescheduling here would create another task.
                 await updateMutableThread(workThreadId, {
                   currentScheduledTaskId: task.taskId,
                   eventType: "followup_scheduled",
                   reason: operation.reason,
-                  detail: { taskId: task.taskId },
+                  detail: {
+                    taskId: task.taskId,
+                    ...(supersededTaskId ? { supersededTaskId } : {}),
+                  },
                 });
               } catch (error) {
                 try {
@@ -843,6 +853,9 @@ export const workThreadAction: Action & {
                 }
                 throw error;
               }
+              // Link first, then drop the follow-up it replaces: a crash in
+              // between leaves the old follow-up live, never none.
+              if (supersededTaskId) await runner.remove?.(supersededTaskId);
               results.push({
                 success: true,
                 type,
@@ -854,8 +867,20 @@ export const workThreadAction: Action & {
 
             const status = statusForOperation(type);
             if (status) {
+              // A stopped or completed thread has no further work: its
+              // pending follow-up must not fire. Waiting keeps the nudge.
+              const releasedTaskId =
+                isTerminalThreadStatus(status) && current.currentScheduledTaskId
+                  ? current.currentScheduledTaskId
+                  : null;
               await updateMutableThread(workThreadId, {
                 status,
+                ...(releasedTaskId
+                  ? {
+                      currentScheduledTaskId: null,
+                      detail: { removedTaskId: releasedTaskId },
+                    }
+                  : {}),
                 eventType:
                   type === "stop"
                     ? "stopped"
@@ -864,6 +889,10 @@ export const workThreadAction: Action & {
                       : "completed",
                 reason: operation.reason,
               });
+              if (releasedTaskId)
+                await getScheduledTaskRunner(runtime, {
+                  agentId: runtime.agentId,
+                }).remove?.(releasedTaskId);
               results.push({ success: true, type, workThreadId, status });
             }
           }
