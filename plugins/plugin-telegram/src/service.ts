@@ -2646,7 +2646,8 @@ export class TelegramService extends Service {
     params: MessageConnectorCreateThreadParams,
   ): Promise<ThreadHandle> {
     const target = params.target as AccountScopedTargetInfo;
-    const accountId = target.accountId ?? this.defaultAccountId;
+    // Same account choice as send, edit and react: the room's bot owns the chat.
+    const accountId = await this.resolveAccountIdForTarget(runtime, target);
     const bot = this.getAccountState(accountId)?.bot ?? this.bot;
     if (!bot) {
       throw new Error("Telegram bot is not available — cannot create thread");
@@ -2675,11 +2676,11 @@ export class TelegramService extends Service {
 
   /** Post `params.content` into a forum topic created by createConnectorThread. */
   public async postToConnectorThread(
-    _runtime: IAgentRuntime,
+    runtime: IAgentRuntime,
     params: MessageConnectorPostToThreadParams,
   ): Promise<Memory | undefined> {
     const target = params.target as AccountScopedTargetInfo;
-    const accountId = target.accountId ?? this.defaultAccountId;
+    const accountId = await this.resolveAccountIdForTarget(runtime, target);
     const bot = this.getAccountState(accountId)?.bot ?? this.bot;
     if (!bot) {
       throw new Error("Telegram bot is not available — cannot post to thread");
