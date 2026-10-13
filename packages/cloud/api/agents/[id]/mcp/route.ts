@@ -398,7 +398,7 @@ export async function handleToolCall(
     settings: Record<string, unknown>;
   },
   params: Record<string, unknown>,
-  rpcId: string | number | null,
+  rpcId: string | number | null | undefined,
   authUser: {
     id: string;
     organization_id: string;
