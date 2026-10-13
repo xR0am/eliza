@@ -10,8 +10,8 @@ import { organizationCreditsToLegacyMcpPoints } from "@elizaos/cloud-shared/bill
 import { failureResponse } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import { isForbiddenIpAddress } from "@elizaos/cloud-shared/lib/security/outbound-url";
 import { userMcpsService } from "@elizaos/cloud-shared/lib/services/user-mcps";
-import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import { decodeRequestJson } from "@elizaos/cloud-shared/lib/utils/json-parsing";
+import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
 import { z } from "zod";
