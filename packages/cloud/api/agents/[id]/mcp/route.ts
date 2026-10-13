@@ -353,7 +353,7 @@ app.post("/", async (c) => {
         // The handler must settle its admission handoff before the using scope
         // checks a terminal exit, so this intentionally awaits before return.
         return respond(
-          await handleToolCall(c, character, params ?? {}, rpcId, {
+          await handleToolCall(c, character, params ?? {}, rpcId ?? null, {
             id: caller.user.id,
             organization_id: caller.user.organization_id,
             apiKeyId: caller.apiKeyId,
