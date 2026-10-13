@@ -60,3 +60,15 @@ test("a 200 answer is reported as ready with the token", async () => {
   expect(result.redirectUrl).toBe("https://agent.example/ui?token=pair-token");
   expect(result.expiresIn).toBe(60);
 });
+
+test("a bare 200 body from an older deployment is still reported as ready", async () => {
+  const result = await clientReturning(
+    readyBody.data,
+    200,
+  ).getAgentPairingToken("agent-1");
+
+  expect(result.kind).toBe("ready");
+  if (result.kind !== "ready") throw new Error("expected a ready result");
+  expect(result.token).toBe("pair-token");
+  expect(result.expiresIn).toBe(60);
+});
