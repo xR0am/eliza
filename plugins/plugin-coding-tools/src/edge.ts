@@ -99,8 +99,8 @@ export function createWebFetchEdgeAction() {
     contexts: ["web", "general"],
     contextGate: { anyOf: ["web", "general"] },
     routingHint:
-      "Read one specific public HTTPS URL, including a known public JSON API -> WEB_FETCH; discover unknown URLs -> WEB_SEARCH.",
+      "Read ONE known or constructable public HTTPS URL or JSON API -> WEB_FETCH; spot crypto price -> https://api.coingecko.com/api/v3/simple/price?ids=<coin>&vs_currencies=usd; current weather -> https://wttr.in/<city>?format=j1; discover unknown URLs -> WEB_SEARCH.",
     description:
-      "Read one public HTTPS URL through an anonymous provider. Returns source-bound extracted content; it is not a direct origin HTTP response or a guarantee of freshness. JSON paths are not applied to provider extracts. Private addresses, credentials and sensitive query parameters are rejected.",
+      "Read one public HTTPS URL through an anonymous provider. Prefer a known public API URL over search snippets for requested current numeric values. Returns source-bound extracted content; it is not a direct origin HTTP response or a guarantee of freshness. JSON paths are not applied to provider extracts. Private addresses, credentials and sensitive query parameters are rejected.",
   });
 }
