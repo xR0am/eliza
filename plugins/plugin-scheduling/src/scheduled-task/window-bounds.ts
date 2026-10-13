@@ -123,14 +123,26 @@ export function resolveOwnerWindowSegments(
 }
 
 /** Valid window keys for during_window triggers. */
-export const OWNER_WINDOW_KEYS = new Set([
+export type OwnerWindowKey =
+  | "morning"
+  | "afternoon"
+  | "evening"
+  | "night"
+  | "morning_or_night"
+  | "morning_or_evening";
+
+export const OWNER_WINDOW_KEYS = new Set<OwnerWindowKey>([
   "morning",
   "afternoon",
   "evening",
   "night",
   "morning_or_night",
   "morning_or_evening",
-] as const);
+]);
+
+export function isOwnerWindowKey(value: string): value is OwnerWindowKey {
+  return OWNER_WINDOW_KEYS.has(value as OwnerWindowKey);
+}
 
 export function formatLocalHHMM(minuteOfDay: number): string {
   const hours = Math.floor(minuteOfDay / 60);
