@@ -936,8 +936,12 @@ async function extractAgentData(
 
   logger.info(`[agent-export] Found ${allMemories.length} memories`);
 
-  // 7. Relationships
-  const relationships = await db.getRelationships({ entityIds: [agentId] });
+  // 7. Relationships. The reflection evaluator records relationships between
+  // the agent's users as well, so every row touching an exported entity is
+  // carried, not only the rows that touch the agent.
+  const relationships = await db.getRelationships({
+    entityIds: [agentId, ...entityMap.keys()] as UUID[],
+  });
   logger.info(`[agent-export] Found ${relationships.length} relationships`);
 
   // 8. Tasks
@@ -1025,6 +1029,34 @@ function createIdRemapper(
     const newId = crypto.randomUUID();
     map.set(oldId, newId);
     return newId;
+  };
+}
+
+/** World metadata with its owner and role entity ids remapped to the imported entities. */
+function remapWorldMetadata(
+  metadata: NonNullable<World["metadata"]>,
+  remap: (oldId: string) => string,
+): NonNullable<World["metadata"]> {
+  return {
+    ...metadata,
+    ...(metadata.ownership
+      ? {
+          ownership: {
+            ...metadata.ownership,
+            ownerId: remap(metadata.ownership.ownerId),
+          },
+        }
+      : {}),
+    ...(metadata.roles
+      ? {
+          roles: Object.fromEntries(
+            Object.entries(metadata.roles).map(([entityId, role]) => [
+              remap(entityId),
+              role,
+            ]),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -1189,13 +1221,17 @@ async function restoreAgentDataInScope(
     `[agent-import] Created agent record${payload.characterConfig ? " (merged with characterConfig)" : ""}`,
   );
 
-  // 2. Create worlds
+  // 2. Create worlds. Ownership and roles name entities by id, so they follow
+  // the entities' new ids; otherwise the owner's role reads as GUEST.
   let worldsImported = 0;
   for (const world of worlds) {
     const newWorld: World = {
       ...world,
       id: remap(world.id) as UUID,
       agentId: newAgentId as UUID,
+      ...(world.metadata
+        ? { metadata: remapWorldMetadata(world.metadata, remap) }
+        : {}),
     };
     await db.createWorlds([newWorld]);
     worldsImported++;
@@ -1285,6 +1321,15 @@ async function restoreAgentDataInScope(
       ...(mem.entityId ? { entityId: remap(mem.entityId) as UUID } : {}),
       ...(mem.roomId ? { roomId: remap(mem.roomId) as UUID } : {}),
       ...(mem.worldId ? { worldId: remap(mem.worldId) as UUID } : {}),
+      // A reply names the message it answers; the thread must survive.
+      ...(typeof mem.content?.inReplyTo === "string"
+        ? {
+            content: {
+              ...mem.content,
+              inReplyTo: remap(mem.content.inReplyTo) as UUID,
+            },
+          }
+        : {}),
       ...(fragment !== undefined
         ? {
             metadata: withFragmentDocumentId(
