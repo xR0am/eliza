@@ -48,12 +48,14 @@ test("journal capture is consent and owner scoped, pseudonymous and restart dura
     { sequence: 2, at: 30, kind: "pause" },
     { sequence: 3, at: 45, kind: "complete" },
   ];
+  // Only `get` and `run`, like the encrypted task driver.
   const db = {
       prepare: () => ({
-        all: (who) => {
+        get: (who) => {
           assert.equal(who, ownerKey);
-          return [{ id: "raw-task-secret" }];
+          return { ids: JSON.stringify(["raw-task-secret"]) };
         },
+        run: () => {},
       }),
     },
     tasks = {
