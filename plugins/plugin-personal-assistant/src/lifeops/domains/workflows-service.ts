@@ -947,11 +947,17 @@ export class WorkflowsDomain {
             },
       updatedAt: new Date().toISOString(),
     };
-    // A resume anchors the schedule at the resume, like an edit anchors it at
-    // the edit: the cursor kept while paused would otherwise replay every slot
-    // missed in between on the first tick.
+    // A resume anchors a recurring schedule at the resume, like an edit
+    // anchors it at the edit: the cursor kept while paused would otherwise
+    // replay every slot missed in between on the first tick. A one-shot
+    // schedule keeps its cursor: re-seeding would re-arm a slot that already
+    // ran. Event and manual triggers have no slot to anchor.
     const resumed =
-      current.status !== "active" && nextDefinition.status === "active";
+      current.status !== "active" &&
+      nextDefinition.status === "active" &&
+      nextDefinition.triggerType === "schedule" &&
+      nextDefinition.schedule.kind !== "once" &&
+      nextDefinition.schedule.kind !== "manual";
     if (
       request.triggerType !== undefined ||
       request.schedule !== undefined ||
