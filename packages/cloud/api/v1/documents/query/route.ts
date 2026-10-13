@@ -20,6 +20,9 @@ interface DocumentQueryBody {
   characterId?: string;
 }
 
+/** Rows read from the document repository per round trip while scoring a scope. */
+const DOCUMENT_PAGE = 200;
+
 const app = new Hono<AppEnv>();
 
 app.use("*", rateLimit(RateLimitPresets.STANDARD));
@@ -44,8 +47,15 @@ app.post("/", async (c) => {
     if (scope instanceof Response) return scope;
 
     const limit = Math.min(Math.max(body.limit ?? 5, 1), 25);
-    const documents = await listDocumentRecords(scope, 200, 0);
-    const results = documents
+    // Every document in the scope is scored: the match is decided here, not
+    // by the repository, so a newest-first page would hide older documents.
+    const documents = [];
+    for (let offset = 0; ; offset += DOCUMENT_PAGE) {
+      const page = await listDocumentRecords(scope, DOCUMENT_PAGE, offset);
+      documents.push(...page);
+      if (page.length < DOCUMENT_PAGE) break;
+    }
+    const matches = documents
       .map((doc) => ({
         id: doc.id,
         content: doc.content.text,
@@ -53,13 +63,12 @@ app.post("/", async (c) => {
         metadata: doc.metadata,
       }))
       .filter((result) => result.similarity > 0)
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
+      .sort((a, b) => b.similarity - a.similarity);
 
     return c.json({
       success: true,
-      results,
-      total: results.length,
+      results: matches.slice(0, limit),
+      total: matches.length,
     });
   } catch (error) {
     return failureResponse(c, error);
