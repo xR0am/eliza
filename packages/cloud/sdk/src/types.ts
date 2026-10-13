@@ -1096,8 +1096,12 @@ export interface CreateAgentResponse {
 }
 
 /**
- * Body of the agent delete, provision, suspend and resume routes. The job
- * to poll is `data.jobId`; `polling.endpoint` names the job route.
+ * Body of the agent delete, provision, suspend and resume routes. When a
+ * job was enqueued, `data.jobId` is the job to poll and `polling.endpoint`
+ * names the job route. Provision answers without a job when the agent is
+ * already available (shared runtime, warm pool): then `data.id`,
+ * `data.agentName`, `data.status` and `data.webUiUrl` describe the agent and
+ * `source` says which path served it.
  */
 export interface AgentLifecycleResponse {
   success: boolean;
@@ -1105,15 +1109,28 @@ export interface AgentLifecycleResponse {
   created?: boolean;
   alreadyInProgress?: boolean;
   message?: string;
+  /** Provision only: "shared_runtime", "warm_pool" or "warm_pool_recovery". */
+  source?: string;
   data: {
-    agentId: string;
+    /** The agent id on the job-enqueuing bodies. */
+    agentId?: string;
+    /** The agent id on provision's immediate bodies. */
+    id?: string;
+    agentName?: string | null;
     action?: string;
     jobId?: string;
     status?: string;
     previousStatus?: string;
+    executionTier?: string;
+    estimatedCompletionAt?: string | null;
+    webUiUrl?: string | null;
     message?: string;
   };
-  polling?: { endpoint: string; intervalMs: number };
+  polling?: {
+    endpoint: string;
+    intervalMs: number;
+    expectedDurationMs?: number;
+  };
 }
 
 export type SnapshotType = "manual" | "auto" | "pre-eviction";
