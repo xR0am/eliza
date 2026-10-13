@@ -28,7 +28,10 @@ import { CODING_TOOLS_CONTEXTS } from "../types.js";
  * when the action was registered or invoked through another path.
  */
 export function isCodingWebFetchEnabled(): boolean {
-  const raw = process.env.ELIZA_WEB_FETCH?.trim().toLowerCase();
+  const raw =
+    typeof process === "undefined"
+      ? undefined
+      : process.env.ELIZA_WEB_FETCH?.trim().toLowerCase();
   return !(raw === "0" || raw === "false" || raw === "off");
 }
 

@@ -33,6 +33,30 @@ const envelope = (source = url) => ({
     ],
   },
 });
+test("canonical edge action runs without a Node process global", async () => {
+  const action = createWebFetchAction(async () => ({
+    ok: true,
+    status: 200,
+    url,
+    contentType: "text/plain",
+    text: "public result",
+    truncated: false,
+  }));
+  if (!action.validate)
+    throw new Error("Canonical WEB_FETCH validation missing");
+  let validation: ReturnType<NonNullable<typeof action.validate>>;
+  let result: ReturnType<typeof call>;
+  vi.stubGlobal("process", undefined);
+  try {
+    validation = action.validate({} as never, {} as never);
+    result = call(action, { url });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  const [enabled, response] = await Promise.all([validation, result]);
+  expect(enabled).toBe(true);
+  expect(response?.text).toBe("public result");
+});
 test("canonical factory retains Node direct JSON extraction and original metadata", async () => {
   const action = createWebFetchAction(async () => ({
     ok: true,
