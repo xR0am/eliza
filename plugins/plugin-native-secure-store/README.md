@@ -41,8 +41,9 @@ These are native APIs; they are not registered Capacitor methods. Hosts retain
 picker UI, signer trust, permission declarations and release/debug policy, and
 must preserve deployed aliases, AAD and filenames when adopting them. Custody
 uses Android API 26+; browser structure parsing requires API 28+. Production
-password keys must require device authentication. The unauthenticated constructor
-mode is only for host-restricted synthetic tests. Autofill metadata key strings
+password keys use device authentication by default. The explicit Android 15+
+device-unlocked policy below is a separate custody version. The unauthenticated
+constructor mode is only for host-restricted synthetic tests. Autofill metadata key strings
 retain their existing browser wire protocol identifiers.
 
 
@@ -93,8 +94,13 @@ slot name. Preserve all deployed identities when adopting this helper. It does
 not share the single-file `RuntimeCredentialStore` frame. A process-wide lock
 covers cold key creation, reads, writes, removal and compare-and-exchange across
 instances; writers in separate Android processes need separate coordination.
+A size refusal throws `JsonCredentialSlots.CapacityException` before any byte
+is written. A host that lowers a slot limit can pass a second, retained limit for
+data that an older limit admitted. That slot stays readable, and a write that
+does not make it larger is accepted until it fits the new limit again.
 The device suite checks old-frame compatibility, backup recovery, tampering,
-byte limits, concurrent cold writes and competing admissions with synthetic JSON.
+byte limits, lowered limits, concurrent cold writes and competing admissions
+with synthetic JSON.
 
 `CredentialAccessSession.currentTicket()` binds queued work to the grant that admitted it.
 Check `authenticated(ticket)` before use. `lock(ticket)` cancels only that owner; an old
@@ -140,3 +146,27 @@ or device-unlocked claim. A wrapped key does not prove that database files, WAL,
 backups, logs, outcomes, or evidence are encrypted. Device instrumentation covers
 real Keystore persistence, owner isolation, concurrent creation, stale deletion,
 and corruption; compile-only results are not device proof.
+
+`KeyPolicy.deviceUnlocked(context)` is an explicit Android 15+ alternative for a
+new custody version. It checks the OS user/device lock and requires a configured
+screen lock on every native read/write. Its separate Keystore key has
+`unlockedDeviceRequired` without an app authentication window. Earlier Android
+versions are refused because of the [documented platform issues](https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec.Builder#setUnlockedDeviceRequired(boolean)).
+Reserve a new alias and no-backup directory; existing authentication-bound aliases
+are refused under this policy. An encrypted versioned provenance marker binds
+the alias and AAD to the native creation path; existing keys cannot acquire a
+marker. Missing, corrupt or copied markers are refused. This is provenance within
+trusted native code, not independent Keystore attestation: KeyInfo does not expose
+unlockedDeviceRequired. A crash after key creation but before marker commit leaves
+the new slot unavailable and the old vault intact for explicit recovery. The
+default and legacy policies are unchanged.
+
+`oldStore.migrateToDeviceUnlocked(newStore)` copies one authenticated snapshot,
+including IDs/timestamps, through native memory into the new encrypted vault.
+It verifies readback and retains the original file/key. Retry accepts an identical
+snapshot; a different or corrupt target is refused, never overwritten. The host
+must serialize its writer and durably select the new custody version only after
+success. This API does not select a host version, remove the old vault, or alter
+UI/fill grants. An absent source is an empty snapshot and needs no secret
+authentication. Host migration recovery, process death/reboot and physical device
+qualification remain separate requirements.

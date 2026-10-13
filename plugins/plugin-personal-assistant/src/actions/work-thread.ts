@@ -12,7 +12,7 @@ import type {
   IAgentRuntime,
   Memory,
 } from "@elizaos/core";
-import { getActionReplyOwner, Semaphore } from "@elizaos/core";
+import { ElizaError, getActionReplyOwner, Semaphore } from "@elizaos/core";
 import {
   type ScheduledTask,
   type ScheduledTaskTrigger,
@@ -24,6 +24,7 @@ import { OptimisticLockError, withOptimisticRetry } from "../lifeops/sql.js";
 import {
   createWorkThreadStore,
   type ThreadSourceRef,
+  type UpdateWorkThreadInput,
   type WorkThread,
   type WorkThreadStatus,
 } from "../lifeops/work-threads/index.js";
@@ -443,6 +444,35 @@ export const workThreadAction: Action & {
           const store = createWorkThreadStore(runtime);
           const roomId =
             typeof message.roomId === "string" ? message.roomId : null;
+          const updateMutableThread = (
+            workThreadId: string,
+            input: UpdateWorkThreadInput,
+          ) =>
+            withOptimisticRetry(async () => {
+              const current = await store.get(workThreadId);
+              if (!current)
+                throw new ElizaError("Work thread no longer exists", {
+                  code: "WORK_THREAD_NOT_FOUND",
+                });
+              if (isTerminalThreadStatus(current.status))
+                throw new ElizaError("Work thread is no longer active", {
+                  code: "WORK_THREAD_NOT_ACTIVE",
+                });
+              if (!hasCurrentMutableRef(current, roomId))
+                throw new ElizaError(
+                  "Work thread is no longer mutable from this channel",
+                  { code: "WORK_THREAD_READ_ONLY" },
+                );
+              const updated = await store.update(workThreadId, {
+                ...input,
+                expectedVersion: current.version,
+              });
+              if (!updated)
+                throw new ElizaError("Work thread no longer exists", {
+                  code: "WORK_THREAD_NOT_FOUND",
+                });
+              return updated;
+            });
           const sourceRef = sourceRefFromMessage(message);
           const results: Array<Record<string, unknown>> = [];
 
@@ -563,9 +593,9 @@ export const workThreadAction: Action & {
                 });
                 continue;
               }
-              await store.update(workThreadId, {
+              await updateMutableThread(workThreadId, {
                 currentPlanSummary: instruction,
-                summary: operation.summary ?? current.summary,
+                summary: operation.summary,
                 lastMessageMemoryId:
                   typeof message.id === "string" ? message.id : null,
                 eventType: "steered",
@@ -779,12 +809,40 @@ export const workThreadAction: Action & {
                 });
                 continue;
               }
-              await store.update(workThreadId, {
-                currentScheduledTaskId: task.taskId,
-                eventType: "followup_scheduled",
-                reason: operation.reason,
-                detail: { taskId: task.taskId },
-              });
+              try {
+                // Retry the link only: rescheduling here would create another task.
+                await updateMutableThread(workThreadId, {
+                  currentScheduledTaskId: task.taskId,
+                  eventType: "followup_scheduled",
+                  reason: operation.reason,
+                  detail: { taskId: task.taskId },
+                });
+              } catch (error) {
+                try {
+                  // An event write can fail after the link committed. Keep that
+                  // recorded task; otherwise remove the unlinked durable effect.
+                  const persisted = await store.get(workThreadId);
+                  if (
+                    persisted?.currentScheduledTaskId !== task.taskId &&
+                    !(await runner.remove?.(task.taskId))
+                  ) {
+                    throw new ElizaError(
+                      "Follow-up removal could not be confirmed",
+                      { code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED" },
+                    );
+                  }
+                } catch (cleanupError) {
+                  throw new ElizaError(
+                    "Follow-up link failed and its task requires reconciliation",
+                    {
+                      code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+                      cause: new AggregateError([error, cleanupError]),
+                      context: { workThreadId, taskId: task.taskId },
+                    },
+                  );
+                }
+                throw error;
+              }
               results.push({
                 success: true,
                 type,
@@ -796,7 +854,7 @@ export const workThreadAction: Action & {
 
             const status = statusForOperation(type);
             if (status) {
-              await store.update(workThreadId, {
+              await updateMutableThread(workThreadId, {
                 status,
                 eventType:
                   type === "stop"

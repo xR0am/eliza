@@ -26,7 +26,11 @@ import { workThreadAction } from "../src/actions/work-thread.ts";
 import { LifeOpsRepository } from "../src/lifeops/repository.ts";
 import { registerLifeOpsScheduledTaskRunnerDeps } from "../src/lifeops/scheduled-task/runtime-wiring.js";
 import { processDueScheduledTasks } from "../src/lifeops/scheduled-task/scheduler.ts";
-import { ScheduledTaskRunnerService } from "../src/lifeops/scheduled-task/service.js";
+import {
+  getScheduledTaskRunner,
+  ScheduledTaskRunnerService,
+} from "../src/lifeops/scheduled-task/service.js";
+import { executeRawSql, sqlQuote } from "../src/lifeops/sql.js";
 import {
   type ThreadOp,
   threadOpsFieldEvaluator,
@@ -204,6 +208,309 @@ async function applyThreadOpsField(
 }
 
 describe("LifeOps work threads", () => {
+  it.each([false, true, "remove fails", "remove unavailable"])(
+    "links one follow-up or removes it after exhausted owner conflicts (%s)",
+    async (exhaust) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("followup-conflict-room");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Original summary",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const original = LifeOpsRepository.prototype.upsertWorkThread;
+      let conflicts = 0;
+      vi.spyOn(
+        LifeOpsRepository.prototype,
+        "upsertWorkThread",
+      ).mockImplementation(async function (
+        this: LifeOpsRepository,
+        agentId,
+        next,
+        options,
+      ) {
+        if (
+          next.id === thread.id &&
+          next.currentScheduledTaskId &&
+          (exhaust || conflicts === 0)
+        ) {
+          conflicts++;
+          const current = await store.get(thread.id);
+          if (!current) throw new Error("Fixture thread disappeared");
+          await original.call(
+            this,
+            agentId,
+            {
+              ...current,
+              summary: `Owner edit ${conflicts}`,
+              version: current.version + 1,
+            },
+            { expectedVersion: current.version },
+          );
+        }
+        return original.call(this, agentId, next, options);
+      });
+      const runner = getScheduledTaskRunner(runtime, {
+        agentId: runtime.agentId,
+      });
+      if (exhaust === "remove fails")
+        vi.spyOn(runner, "remove").mockResolvedValue(false);
+      if (exhaust === "remove unavailable")
+        Object.defineProperty(runner, "remove", {
+          value: undefined,
+          configurable: true,
+        });
+      const action = runThreadAction(
+        runtime,
+        message(runtime, roomId, "Follow up on the report"),
+        [
+          {
+            type: "schedule_followup",
+            workThreadId: thread.id,
+            instruction: "Check the report",
+            trigger: { kind: "manual" },
+          },
+        ],
+      );
+      if (typeof exhaust === "string")
+        await expect(action).rejects.toMatchObject({
+          code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+          context: { workThreadId: thread.id },
+          cause: expect.objectContaining({
+            errors: expect.arrayContaining([
+              expect.objectContaining({
+                code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
+              }),
+            ]),
+          }),
+        });
+      else if (exhaust) await expect(action).rejects.toThrow();
+      else expect((await action).success).toBe(true);
+      const tasks = await getScheduledTaskRunner(runtime, {
+        agentId: runtime.agentId,
+      }).list({ kind: "followup" });
+      const final = await store.get(thread.id);
+      expect(final?.summary).toBe(`Owner edit ${conflicts}`);
+      if (exhaust) {
+        expect(tasks).toHaveLength(typeof exhaust === "string" ? 1 : 0);
+        expect(final?.currentScheduledTaskId ?? null).toBeNull();
+        expect(conflicts).toBe(3);
+      } else {
+        expect(tasks).toHaveLength(1);
+        expect(final?.currentScheduledTaskId).toBe(tasks[0].taskId);
+        expect(conflicts).toBe(1);
+      }
+    },
+  );
+
+  it.each(["mark_waiting", "mark_completed"] as const)(
+    "does not overwrite an owner stop with a stale %s request",
+    async (type) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("status-owner-stop-race");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Report",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const originalGet = LifeOpsRepository.prototype.getWorkThread;
+      let changed = false;
+      vi.spyOn(LifeOpsRepository.prototype, "getWorkThread").mockImplementation(
+        async function (this: LifeOpsRepository, agentId, id) {
+          const snapshot = await originalGet.call(this, agentId, id);
+          if (id === thread.id && snapshot && !changed) {
+            changed = true;
+            await this.upsertWorkThread(
+              agentId,
+              {
+                ...snapshot,
+                status: "stopped",
+                version: snapshot.version + 1,
+              },
+              { expectedVersion: snapshot.version },
+            );
+          }
+          return snapshot;
+        },
+      );
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "Update thread"), [
+          { type, workThreadId: thread.id },
+        ]),
+      ).rejects.toMatchObject({ code: "WORK_THREAD_NOT_ACTIVE" });
+      expect(await store.get(thread.id)).toMatchObject({
+        status: "stopped",
+        version: thread.version + 1,
+      });
+    },
+  );
+
+  it("keeps an already linked follow-up when its event write fails", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const roomId = stringToUuid("followup-event-failure");
+    const thread = await store.create({
+      title: "Check report",
+      summary: "Report",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const original = LifeOpsRepository.prototype.appendWorkThreadEvent;
+    vi.spyOn(
+      LifeOpsRepository.prototype,
+      "appendWorkThreadEvent",
+    ).mockImplementation(async function (this: LifeOpsRepository, event) {
+      if (
+        event.workThreadId === thread.id &&
+        event.type === "followup_scheduled"
+      )
+        throw new Error("event write failed");
+      return original.call(this, event);
+    });
+    await expect(
+      runThreadAction(runtime, message(runtime, roomId, "Follow up"), [
+        {
+          type: "schedule_followup",
+          workThreadId: thread.id,
+          instruction: "Check report",
+          trigger: { kind: "manual" },
+        },
+      ]),
+    ).rejects.toThrow("event write failed");
+    const tasks = await getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    }).list({ kind: "followup" });
+    expect(tasks).toHaveLength(1);
+    expect((await store.get(thread.id))?.currentScheduledTaskId).toBe(
+      tasks[0].taskId,
+    );
+  });
+
+  it.each(["stopped", "deleted"])(
+    "does not link a follow-up after the owner %s the thread",
+    async (change) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("followup-owner-terminal");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Report",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const original = LifeOpsRepository.prototype.upsertWorkThread;
+      let changed = false;
+      vi.spyOn(
+        LifeOpsRepository.prototype,
+        "upsertWorkThread",
+      ).mockImplementation(async function (
+        this: LifeOpsRepository,
+        agentId,
+        next,
+        options,
+      ) {
+        if (next.id === thread.id && next.currentScheduledTaskId && !changed) {
+          changed = true;
+          if (change === "deleted")
+            await executeRawSql(
+              runtime,
+              `DELETE FROM app_lifeops.life_work_threads WHERE id = ${sqlQuote(thread.id)} AND agent_id = ${sqlQuote(runtime.agentId)}`,
+            );
+          else
+            await original.call(
+              this,
+              agentId,
+              { ...thread, status: "stopped", version: thread.version + 1 },
+              { expectedVersion: thread.version },
+            );
+        }
+        return original.call(this, agentId, next, options);
+      });
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "Follow up"), [
+          {
+            type: "schedule_followup",
+            workThreadId: thread.id,
+            instruction: "Check report",
+            trigger: { kind: "manual" },
+          },
+        ]),
+      ).rejects.toMatchObject({
+        code:
+          change === "deleted"
+            ? "WORK_THREAD_NOT_FOUND"
+            : "WORK_THREAD_NOT_ACTIVE",
+      });
+      expect(
+        await getScheduledTaskRunner(runtime, {
+          agentId: runtime.agentId,
+        }).list({ kind: "followup" }),
+      ).toHaveLength(0);
+      if (change === "deleted") expect(await store.get(thread.id)).toBeNull();
+      else
+        expect(await store.get(thread.id)).toMatchObject({
+          status: "stopped",
+          currentScheduledTaskId: null,
+        });
+    },
+  );
+
+  it("preserves an owner summary when a steer retries its version conflict", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const roomId = stringToUuid("steer-conflict-room");
+    const thread = await store.create({
+      title: "Check report",
+      summary: "Original summary",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const original = LifeOpsRepository.prototype.upsertWorkThread;
+    let conflicts = 0;
+    vi.spyOn(
+      LifeOpsRepository.prototype,
+      "upsertWorkThread",
+    ).mockImplementation(async function (
+      this: LifeOpsRepository,
+      agentId,
+      next,
+      options,
+    ) {
+      if (next.id === thread.id && conflicts === 0) {
+        conflicts++;
+        const current = await store.get(thread.id);
+        if (!current) throw new Error("Fixture thread disappeared");
+        await original.call(
+          this,
+          agentId,
+          {
+            ...current,
+            summary: "Owner revised summary",
+            version: current.version + 1,
+          },
+          { expectedVersion: current.version },
+        );
+      }
+      return original.call(this, agentId, next, options);
+    });
+    const result = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "Update the plan"),
+      [
+        {
+          type: "steer",
+          workThreadId: thread.id,
+          instruction: "Use the revised plan",
+        },
+      ],
+    );
+    expect(result.success).toBe(true);
+    expect(await store.get(thread.id)).toMatchObject({
+      summary: "Owner revised summary",
+      currentPlanSummary: "Use the revised plan",
+      version: 3,
+    });
+  });
+
   it.each([undefined, "Explicit merged summary"])(
     "retries a merge after an owner edit with summary %s",
     async (summary) => {
