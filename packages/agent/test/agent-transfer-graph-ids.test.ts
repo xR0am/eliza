@@ -27,11 +27,13 @@ it("keeps world roles, reply threads and user relationships through a transfer",
     const agentId = source.runtime.agentId;
     const owner = stringToUuid("transfer-owner");
     const friend = stringToUuid("transfer-friend");
+    const outsider = stringToUuid("transfer-outsider");
     const worldId = stringToUuid("transfer-world");
     const roomId = stringToUuid("transfer-room");
     await adapter.createEntities([
       { id: owner, agentId, names: ["Owner"] } as Entity,
       { id: friend, agentId, names: ["Friend"] } as Entity,
+      { id: outsider, agentId, names: ["Outsider"] } as Entity,
     ]);
     await adapter.createWorlds([
       {
@@ -41,7 +43,7 @@ it("keeps world roles, reply threads and user relationships through a transfer",
         serverId: worldId,
         metadata: {
           ownership: { ownerId: owner },
-          roles: { [owner]: "OWNER", [friend]: "ADMIN" },
+          roles: { [owner]: "OWNER", [friend]: "USER", [outsider]: "ADMIN" },
         },
       } as World,
     ]);
@@ -110,12 +112,25 @@ it("keeps world roles, reply threads and user relationships through a transfer",
       if (!newOwner || !newFriend) throw new Error("imported entities missing");
       expect(newOwner).not.toBe(owner);
 
+      const importedRoleIds = Object.keys(world.metadata?.roles ?? {}) as UUID[];
+      const importedRoleEntities = await db.getEntitiesByIds(importedRoleIds);
+      const newOutsider = importedRoleEntities.find((entity) =>
+        entity.names.includes("Outsider"),
+      )?.id;
+      if (!newOutsider) throw new Error("metadata-only entity missing");
+
       // Ownership and roles name the imported entities, not the source ids.
       expect(world.metadata?.ownership?.ownerId).toBe(newOwner);
       expect(world.metadata?.roles).toEqual({
         [newOwner]: "OWNER",
-        [newFriend]: "ADMIN",
+        [newFriend]: "USER",
+        [newOutsider]: "ADMIN",
       });
+      expect(entities.some((entity) => entity.names.includes("Outsider"))).toBe(
+        false,
+      );
+      expect(newOutsider).not.toBe(outsider);
+      expect(world.metadata?.roles?.[newOutsider]).toBe("ADMIN");
 
       // The reply names the imported first message.
       const messages = await db.getMemories({

@@ -880,6 +880,35 @@ async function extractAgentData(
     }
   }
 
+  // World metadata can reference entities that never joined one of the
+  // exported rooms. Include those entities before collecting their components
+  // and relationships, and fail explicitly if the reference is stale instead
+  // of importing a world with a dangling owner or role id.
+  const metadataEntityIds = new Set<string>();
+  for (const world of agentWorlds) {
+    const ownerId = world.metadata?.ownership?.ownerId;
+    if (ownerId) metadataEntityIds.add(ownerId);
+    for (const entityId of Object.keys(world.metadata?.roles ?? {})) {
+      metadataEntityIds.add(entityId);
+    }
+  }
+  if (metadataEntityIds.size > 0) {
+    const metadataEntities = await db.getEntitiesByIds(
+      [...metadataEntityIds] as UUID[],
+    );
+    for (const entity of metadataEntities) {
+      if (entity.id) entityMap.set(entity.id, entity);
+    }
+    const missingEntityIds = [...metadataEntityIds].filter(
+      (entityId) => !entityMap.has(entityId),
+    );
+    if (missingEntityIds.length > 0) {
+      throw new AgentExportError(
+        `World metadata references entities that cannot be exported: ${missingEntityIds.join(", ")}`,
+      );
+    }
+  }
+
   const entities = Array.from(entityMap.values());
   logger.info(
     `[agent-export] Found ${entities.length} entities, ${participantRecords.length} participant records`,
