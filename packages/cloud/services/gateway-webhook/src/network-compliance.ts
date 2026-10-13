@@ -2,8 +2,8 @@
  * Carrier keyword handling (STOP / START / HELP), the consent ledger, and the
  * Twilio reply idempotency fence for The Network's `network` project.
  *
- * Everything here is gated on `project === "network"`; Eliza projects never
- * reach it, so their behaviour is unchanged.
+ * The Network project and explicitly admitted Shared phone senders use this
+ * ledger. Other Shared traffic keeps its existing behavior.
  *
  * Rules (ported from the Network messaging prototype, CTIA conventions):
  *  - Exact keyword match after normalization ("stop", "STOP!", " Stop. "),
@@ -24,6 +24,57 @@ export const NETWORK_PROJECT = "network";
 
 export function isNetworkProject(project: string | undefined | null): boolean {
   return project?.trim().toLowerCase() === NETWORK_PROJECT;
+}
+
+/**
+ * Staged rollout: NETWORK_TAKEOVER_ALLOWLIST (comma-separated E.164 numbers).
+ * When set, only these senders take the service path; everyone else keeps the
+ * legacy path. Unset = every sender (full takeover).
+ */
+export function takeoverAppliesTo(
+  sender: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.NETWORK_TAKEOVER_ALLOWLIST?.trim();
+  if (!raw) return true;
+  const allowed = new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  return allowed.has(sender.trim());
+}
+
+/** Shared takeover is opt-in for one existing project and a non-empty owned sender allowlist. */
+export function networkTakeoverAppliesTo(
+  project: string,
+  event: Pick<
+    ChatEvent,
+    "platform" | "senderId" | "chatType" | "membershipChange"
+  >,
+  explicitAgentId?: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (
+    env.NETWORK_TAKEOVER !== "1" ||
+    explicitAgentId ||
+    event.membershipChange ||
+    (event.platform !== "blooio" && event.platform !== "twilio") ||
+    event.chatType === "group" ||
+    event.chatType === "supergroup"
+  )
+    return false;
+  if (isNetworkProject(project)) return takeoverAppliesTo(event.senderId, env);
+  const sharedProject = env.NETWORK_SHARED_PROJECT?.trim();
+  const canonicalProject = env.ELIZA_APP_WEBHOOK_PROJECT?.trim() || "eliza-app";
+  return (
+    !!sharedProject &&
+    sharedProject === canonicalProject &&
+    project === sharedProject &&
+    !!env.NETWORK_TAKEOVER_ALLOWLIST?.trim() &&
+    takeoverAppliesTo(event.senderId, env)
+  );
 }
 
 export const STOP_WORDS = [
@@ -233,7 +284,10 @@ export async function handleNetworkInboundCompliance(
   event: ChatEvent,
   now: () => Date = () => new Date(),
 ): Promise<NetworkInboundCompliance> {
-  if (!isNetworkProject(project) || event.membershipChange) {
+  if (
+    (!isNetworkProject(project) && !networkTakeoverAppliesTo(project, event)) ||
+    event.membershipChange
+  ) {
     return { kind: "continue" };
   }
   const isGroup = event.chatType === "group" || event.chatType === "supergroup";
@@ -282,9 +336,9 @@ export async function sendWithTwilioReplyFence(
   redis: GatewayRedis,
   project: string,
   messageId: string,
-  send: () => Promise<string[]>,
+  send: () => Promise<string[] | false>,
   isExplicitRejection: (error: unknown) => boolean,
-): Promise<"sent" | "replayed"> {
+): Promise<"sent" | "replayed" | "suppressed"> {
   const key = `reply:twilio:${project}:${messageId}`;
   const claimed = await redis.set(key, "indeterminate", {
     nx: true,
@@ -292,7 +346,11 @@ export async function sendWithTwilioReplyFence(
   });
   if (claimed === null) return "replayed";
   try {
-    const providerMessageIds = (await send()) ?? [];
+    const providerMessageIds = await send();
+    if (providerMessageIds === false) {
+      await redis.set(key, "suppressed", { ex: REPLY_FENCE_TTL_SECONDS });
+      return "suppressed";
+    }
     await redis.set(
       key,
       JSON.stringify({ state: "complete", providerMessageIds }),
