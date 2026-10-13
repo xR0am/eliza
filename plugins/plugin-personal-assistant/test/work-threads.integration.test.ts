@@ -1677,8 +1677,24 @@ describe("work thread follow-up lifecycle", () => {
     ).toContain(taskId);
   });
 
-  it("names a replaced follow-up that cannot be removed for reconciliation", async () => {
+  it("names a replaced follow-up that cannot be removed for reconciliation, and only the replacement delivers", async () => {
     const runtime = await createRuntime();
+    const notifications: unknown[] = [];
+    const sink = {
+      serviceType: "notification",
+      capabilityDescription: "Synthetic test notification sink",
+      async notify(input: unknown) {
+        notifications.push(input);
+        return { id: `test-followup-${notifications.length}` };
+      },
+      async stop() {},
+    };
+    runtime.services.set("notification", [sink as unknown as Service]);
+    runtime.registerModel(
+      ModelType.TEXT_LARGE,
+      async () => "Which visa document is next?",
+      "test-followup-render",
+    );
     const store = createWorkThreadStore(runtime);
     const runner = getScheduledTaskRunner(runtime, {
       agentId: runtime.agentId,
@@ -1720,5 +1736,21 @@ describe("work thread follow-up lifecycle", () => {
     );
     expect(scheduled).toContain(firstTaskId);
     expect(scheduled).toContain(linked?.currentScheduledTaskId);
+    // Both are due: the replaced task is dismissed, only the current one fires.
+    const processed = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-12T18:01:00.000Z"),
+      limit: 5,
+    });
+    expect(processed.errors).toEqual([]);
+    expect(processed.fires.map((fire) => [fire.taskId, fire.status])).toEqual(
+      expect.arrayContaining([
+        [firstTaskId, "dismissed"],
+        [linked?.currentScheduledTaskId, "fired"],
+      ]),
+    );
+    expect(processed.fires).toHaveLength(2);
+    expect(notifications).toHaveLength(1);
   });
 });
