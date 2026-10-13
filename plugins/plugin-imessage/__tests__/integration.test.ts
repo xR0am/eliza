@@ -560,6 +560,7 @@ describe("chatDbMessageToPublicShape", () => {
       chatId: "iMessage;-;+15551234567",
       timestamp: 1_700_000_000_000,
       isFromMe: false,
+      chatType: "direct",
       hasAttachments: true,
       attachmentPaths: ["/tmp/image.png"],
     });

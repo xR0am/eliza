@@ -108,6 +108,8 @@ export interface IMessageMessage {
   hasAttachments: boolean;
   /** Attachment paths */
   attachmentPaths?: string[];
+  /** Chat kind from chat.db (`chat_style`); AppleScript rows do not carry it. */
+  chatType?: IMessageChatType;
 }
 
 export interface IMessageListMessagesOptions {
