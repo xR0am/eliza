@@ -441,14 +441,17 @@ export async function writeStoredStewardToken(token: string): Promise<void> {
  * so a refresh response that arrives after logout cannot resurrect the session.
  */
 export async function replaceStoredStewardTokenIfCurrent(
-  expectedToken: string,
+  expectedToken: string | null,
   token: string,
+  options?: { signal?: AbortSignal; beforePublish?: () => void },
 ): Promise<boolean> {
   if (typeof window === "undefined") return false;
   return serializeStewardTokenMutation(async () => {
     const current = readStoredStewardToken();
-    if (current !== expectedToken) return false;
+    if (options?.signal?.aborted || current !== expectedToken) return false;
     await persistStoredStewardToken(token, configuredLoopbackStewardScope());
+    if (options?.signal?.aborted) return false;
+    options?.beforePublish?.();
     if (current !== token) dispatchStewardSessionChange("present");
     return true;
   });
