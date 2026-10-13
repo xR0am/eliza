@@ -34,9 +34,9 @@ import {
   hasStewardAuthedCookie,
   peekStewardOAuthState,
   readStoredStewardToken,
+  STEWARD_SESSION_CHANGE_EVENT,
   type StewardOAuthProvider,
   StewardSessionError,
-  STEWARD_SESSION_CHANGE_EVENT,
   writeStoredStewardToken,
 } from "@elizaos/plugin-elizacloud/steward-session-client";
 

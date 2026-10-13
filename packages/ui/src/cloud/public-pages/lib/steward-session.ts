@@ -10,8 +10,8 @@
 
 import {
   clearStoredStewardToken,
-  replaceStoredStewardTokenIfCurrent,
   readStoredStewardToken,
+  replaceStoredStewardTokenIfCurrent,
   STEWARD_NONCE_EXCHANGE_ENDPOINT,
   STEWARD_REFRESH_ENDPOINT,
   STEWARD_SESSION_ENDPOINT,
