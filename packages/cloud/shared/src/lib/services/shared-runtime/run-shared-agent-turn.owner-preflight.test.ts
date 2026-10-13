@@ -2,10 +2,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { ChannelType } from "@elizaos/core/protocol";
 import { runSharedAgentTurn } from "./run-shared-agent-turn";
-import {
-  createOwnerCaptureBuffer,
-  type OwnerModelCapture,
-} from "./shared-owner-model-capture";
+import { createOwnerCaptureBuffer, type OwnerModelCapture } from "./shared-owner-model-capture";
 
 test("actual public preflight capture retains refused provider evidence and isolates observer failure", async () => {
   const priorKey = process.env.CEREBRAS_API_KEY;
@@ -23,25 +20,22 @@ test("actual public preflight capture retains refused provider evidence and isol
   let publicCalls = 0;
   const attemptedHttpUrls: string[] = [];
   const unexpectedHttpUrls: string[] = [];
-  const http = spyOn(globalThis, "fetch").mockImplementation(
-    async (url, init) => {
-      const target = String(url);
-      attemptedHttpUrls.push(target);
-      if (target !== "https://search.parallel.ai/mcp")
-        unexpectedHttpUrls.push(target);
-      expect(target).toBe("https://search.parallel.ai/mcp");
-      const request = JSON.parse(String(init?.body));
-      expect(request.params.name).toBe("web_search");
-      publicCalls++;
-      return Response.json({
-        jsonrpc: "2.0",
-        id: request.id,
-        result: {
-          content: [{ type: "text", text: JSON.stringify(providerPayload) }],
-        },
-      });
-    },
-  );
+  const http = spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+    const target = String(url);
+    attemptedHttpUrls.push(target);
+    if (target !== "https://search.parallel.ai/mcp") unexpectedHttpUrls.push(target);
+    expect(target).toBe("https://search.parallel.ai/mcp");
+    const request = JSON.parse(String(init?.body));
+    expect(request.params.name).toBe("web_search");
+    publicCalls++;
+    return Response.json({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: {
+        content: [{ type: "text", text: JSON.stringify(providerPayload) }],
+      },
+    });
+  });
   const capture = createOwnerCaptureBuffer(
     {
       organizationId: "11111111-1111-4111-a111-111111111111",
@@ -84,10 +78,7 @@ test("actual public preflight capture retains refused provider evidence and isol
             result: { success: boolean; text: string };
           },
       );
-    expect(events.map((event) => event.stage)).toEqual([
-      "provider-result",
-      "authority-result",
-    ]);
+    expect(events.map((event) => event.stage)).toEqual(["provider-result", "authority-result"]);
     expect(events[0].result.success).toBe(true);
     expect(JSON.parse(events[0].result.text)).toEqual(providerPayload);
     expect(events[1].result.success).toBe(false);
@@ -115,9 +106,7 @@ test("actual public preflight capture retains refused provider evidence and isol
     ]);
     expect(unexpectedHttpUrls).toEqual([]);
     expect(
-      attemptedHttpUrls.filter(
-        (url) => url !== "https://search.parallel.ai/mcp",
-      ),
+      attemptedHttpUrls.filter((url) => url !== "https://search.parallel.ai/mcp"),
     ).toHaveLength(0);
   } finally {
     http.mockRestore();
