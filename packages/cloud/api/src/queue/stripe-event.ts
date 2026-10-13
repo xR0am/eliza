@@ -1789,7 +1789,7 @@ function chargePaymentIntentId(charge: Stripe.Charge): string | undefined {
 /**
  * Whether this payment intent belongs to a top-up whose credit grant has not
  * committed yet: a paid Checkout session for an unsettled order or a legacy
- * pack purchase, a succeeded auto top-up payment intent, or
+ * custom-amount purchase, a succeeded auto top-up payment intent, or
  * a succeeded one-time payment intent. Payments that never grant credits
  * (retired mini-app purchases, subscription invoices) report false.
  */
@@ -1813,9 +1813,11 @@ async function topUpGrantPending(paymentIntentId: string): Promise<boolean> {
         order.status !== "failed"
       );
     }
-    const purchaseType = session.metadata?.type;
+    // Of the legacy session shapes only `custom_amount` still settles a grant;
+    // a legacy `credit_pack` session is quarantined by `settleLegacy` and
+    // never grants, so its reversal has nothing to wait for.
     return (
-      (purchaseType === "custom_amount" || purchaseType === "credit_pack") &&
+      session.metadata?.type === "custom_amount" &&
       !!session.metadata?.organization_id
     );
   }

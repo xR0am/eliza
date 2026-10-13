@@ -251,6 +251,27 @@ test("a dispute delivered before the checkout grant is retried", async () => {
   expect(await ledger(order.org)).toEqual([]);
 });
 
+test("a refund for a legacy credit-pack session, which is quarantined and never grants, is acknowledged", async () => {
+  const org = randomUUID();
+  const paymentIntentId = `pi_${org.replaceAll("-", "")}`;
+  sessions.set(paymentIntentId, {
+    id: `cs_${org.replaceAll("-", "")}`,
+    object: "checkout.session",
+    mode: "payment",
+    payment_status: "paid",
+    payment_intent: paymentIntentId,
+    amount_total: 1000,
+    currency: "usd",
+    customer: "cus_buyer",
+    metadata: { type: "credit_pack", organization_id: org, credits: "10" },
+  });
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 1000, paymentIntentId),
+    ),
+  ).toBe("ack");
+});
+
 test("a refund for a payment that never grants credits is still acknowledged", async () => {
   const paymentIntentId = `pi_${randomUUID().replaceAll("-", "")}`;
   expect(
