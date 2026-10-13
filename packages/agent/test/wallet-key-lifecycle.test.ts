@@ -354,7 +354,7 @@ it.each(["import", "provision"])(
       );
       expect(warm.status).toBe(200);
       const request = (privateKey: string) =>
-        fetch(`http://127.0.0.1:${server!.port}/api/wallet/import`, {
+        fetch(`http://127.0.0.1:${server.port}/api/wallet/import`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,

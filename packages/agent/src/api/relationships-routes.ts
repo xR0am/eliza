@@ -176,8 +176,9 @@ async function listActivityFacts(runtime: IAgentRuntime): Promise<Memory[]> {
         limit: 1,
         cursor,
         includeEmbedding: false,
-      })
-      if (page.length === 0) return facts
+        orderDirection: "desc",
+      });
+      if (page.length === 0) return facts;
       throw new ElizaError(
         "Relationships activity exceeded its bounded fact scan before completing the timeline",
         {
@@ -196,6 +197,7 @@ async function listActivityFacts(runtime: IAgentRuntime): Promise<Memory[]> {
       limit: queryLimit,
       cursor,
       includeEmbedding: false,
+      orderDirection: "desc",
     });
     for (const fact of page) {
       if (!fact.id) {
