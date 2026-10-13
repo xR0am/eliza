@@ -245,8 +245,11 @@ async function fail(
 /** Runs the same public-read implementation used by the registered action. */
 export async function runWebSearchEdge(
     query: string,
-    options: { numResults?: number; signal?: AbortSignal } = {}
+    options: { numResults?: number; signal?: AbortSignal; provider?: "default" | "fallback" } = {}
 ): Promise<ActionResult> {
+    options.signal?.throwIfAborted();
+    if (options.provider !== undefined && options.provider !== "default")
+        return await fail("The alternate search provider requires a host-authorized runner.");
     return runWebSearchWith(
         query,
         (value) => searchKeylessWeb(value, { signal: options.signal }),
@@ -321,10 +324,10 @@ export async function runWebSearchWith(
 
 export type WebSearchEdgeRunner = (
     query: string,
-    options?: { numResults?: number; signal?: AbortSignal }
+    options?: { numResults?: number; signal?: AbortSignal; provider?: "default" | "fallback" }
 ) => Promise<ActionResult>;
 
-function createWebSearchEdgeAction(runner: WebSearchEdgeRunner): Action {
+function createWebSearchEdgeAction(runner: WebSearchEdgeRunner, fallbackEnabled = false): Action {
     return {
         name: "WEB_SEARCH",
         similes: ["SEARCH_WEB", "WEB_QUERY", "FIND_ONLINE", "SEARCH_INTERNET"],
@@ -340,6 +343,17 @@ function createWebSearchEdgeAction(runner: WebSearchEdgeRunner): Action {
                 required: true,
                 schema: { type: "string" },
             },
+            ...(fallbackEnabled
+                ? [
+                      {
+                          name: "provider",
+                          description:
+                              "Use default free search first. Choose fallback only for the host-authorized alternate search. The host owns query scope and spending limits; do not repeat a denied fallback.",
+                          required: false,
+                          schema: { type: "string", enum: ["default", "fallback"] },
+                      },
+                  ]
+                : []),
         ],
         validate: async () => true,
         handler: async (
@@ -359,7 +373,18 @@ function createWebSearchEdgeAction(runner: WebSearchEdgeRunner): Action {
                     : undefined;
             const signal = candidateSignal instanceof AbortSignal ? candidateSignal : undefined;
             signal?.throwIfAborted();
-            const result = await runner(query, { signal });
+            const provider = parameters.provider;
+            if (provider !== undefined && provider !== "default" && provider !== "fallback")
+                return await fail("The requested search provider is not supported.", callback);
+            if (provider === "fallback" && !fallbackEnabled)
+                return await fail(
+                    "The alternate search provider is not available for this turn.",
+                    callback
+                );
+            const result = await runner(query, {
+                signal,
+                ...(provider === "fallback" ? { provider } : {}),
+            });
             signal?.throwIfAborted();
             if (result.success !== true && result.text) {
                 await callback?.({ text: result.text });
@@ -372,11 +397,14 @@ function createWebSearchEdgeAction(runner: WebSearchEdgeRunner): Action {
 export const webSearchEdgeAction: Action = createWebSearchEdgeAction(runWebSearchEdge);
 
 /** Creates an edge plugin whose runner may reuse a server-owned read receipt. */
-export function createWebSearchEdgePlugin(runner: WebSearchEdgeRunner = runWebSearchEdge): Plugin {
+export function createWebSearchEdgePlugin(
+    runner: WebSearchEdgeRunner = runWebSearchEdge,
+    options: { fallbackEnabled?: boolean } = {}
+): Plugin {
     return {
         name: "web-search-edge",
         description: "Credential-free, public, read-only web search for edge runtimes.",
-        actions: [createWebSearchEdgeAction(runner)],
+        actions: [createWebSearchEdgeAction(runner, options.fallbackEnabled === true)],
     };
 }
 
