@@ -14,6 +14,7 @@ import type { CompletionCheckRegistry } from "./completion-check-registry.js";
 import type { EscalationLadderRegistry } from "./escalation.js";
 import type { TaskGateRegistry } from "./gate-registry.js";
 import { OWNER_LOCAL_TZ } from "./trigger-tz.js";
+import { OWNER_WINDOW_KEYS } from "./window-bounds.js";
 import {
   type ScheduledTask,
   type ScheduledTaskInput,
@@ -205,6 +206,10 @@ function validateTrigger(
     case "during_window":
       if (!isNonEmptyString(trigger.windowKey)) {
         issues.push(`${path}.trigger.windowKey must be a non-empty string`);
+      } else if (!OWNER_WINDOW_KEYS.has(trigger.windowKey)) {
+        issues.push(
+          `${path}.trigger.windowKey must be one of: morning, afternoon, evening, night, morning_or_night, morning_or_evening`,
+        );
       }
       break;
     case "event":

@@ -122,6 +122,16 @@ export function resolveOwnerWindowSegments(
   return windows[windowKey] ?? [];
 }
 
+/** Valid window keys for during_window triggers. */
+export const OWNER_WINDOW_KEYS = new Set([
+  "morning",
+  "afternoon",
+  "evening",
+  "night",
+  "morning_or_night",
+  "morning_or_evening",
+] as const);
+
 export function formatLocalHHMM(minuteOfDay: number): string {
   const hours = Math.floor(minuteOfDay / 60);
   const minutes = minuteOfDay % 60;
