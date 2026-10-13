@@ -14,6 +14,7 @@ import {
   API_ENDPOINTS,
   type ApiEndpoint,
   type EndpointPricing,
+  formatEndpointPrice,
   generateOpenAPISpec,
   generateOpenAPIYAML,
   getAvailableCategories,
@@ -102,15 +103,6 @@ function getMethodColor(method: string) {
     default:
       return "bg-white/10 text-white/60";
   }
-}
-
-function formatPrice(pricing: ApiEndpoint["pricing"]) {
-  if (!pricing) return null;
-  if (pricing.isFree) return "Free";
-  if (pricing.isVariable && pricing.estimatedRange) {
-    return `$${pricing.estimatedRange.min.toFixed(3)} - $${pricing.estimatedRange.max.toFixed(2)}`;
-  }
-  return `$${pricing.cost.toFixed(pricing.cost < 0.01 ? 4 : 2)}`;
 }
 
 function getPricingIcon(pricing: ApiEndpoint["pricing"]) {
@@ -278,7 +270,7 @@ export function ApiExplorerSurface() {
                     )}
                   >
                     {getPricingIcon(selectedEndpoint.pricing)}
-                    <span>{formatPrice(selectedEndpoint.pricing)}</span>
+                    <span>{formatEndpointPrice(selectedEndpoint.pricing)}</span>
                     {!selectedEndpoint.pricing.isFree && (
                       <span className="opacity-70">
                         /{selectedEndpoint.pricing.unit}
