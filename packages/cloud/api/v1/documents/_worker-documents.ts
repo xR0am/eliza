@@ -163,6 +163,15 @@ export async function listDocumentRecords(
   return memories.map(toDocumentRecord);
 }
 
+/** Number of documents in the scope, over the same filter `listDocumentRecords` pages. */
+export async function countDocumentRecords(scope: DocumentScope) {
+  return memoriesRepository.countByType(
+    scope.agentId,
+    "documents",
+    scope.roomId,
+  );
+}
+
 export async function createDocumentRecord(
   user: AuthedUser,
   scope: DocumentScope,
