@@ -120,6 +120,7 @@ import {
   type GetX402PaymentRequestResponse,
   type HttpMethod,
   type JobStatus,
+  type JobStatusResponse,
   type JsonObject,
   type LinkAffiliateRequest,
   type LinkAffiliateResponse,
@@ -1758,7 +1759,7 @@ export class ElizaCloudClient {
   getJob(
     jobId: string,
     options?: Pick<CloudRequestOptions, "signal" | "timeoutMs">,
-  ): Promise<JobStatus> {
+  ): Promise<JobStatusResponse> {
     return this.requestData(
       "GET",
       `/api/v1/jobs/${encodePathParam(jobId)}`,
@@ -1770,14 +1771,15 @@ export class ElizaCloudClient {
     jobId: string,
     options: { timeoutMs?: number; intervalMs?: number } = {},
   ): Promise<JobStatus> {
-    return pollUntil({
+    const response = await pollUntil({
       read: (requestOptions) => this.getJob(jobId, requestOptions),
-      isComplete: (job) =>
-        job.status === "completed" || job.status === "failed",
+      isComplete: ({ data }) =>
+        data.status === "completed" || data.status === "failed",
       timeoutMs: options.timeoutMs ?? 120_000,
       intervalMs: options.intervalMs ?? 2_000,
       timeoutMessage: `Timed out waiting for Eliza Cloud job ${jobId}`,
     });
+    return response.data;
   }
 
   getUser(): Promise<UserProfileResponse> {

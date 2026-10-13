@@ -1164,11 +1164,28 @@ export interface PollGatewayRelayResponse {
   };
 }
 
+/** One row of `GET /api/v1/jobs/:jobId`, as the route serializes it. */
 export interface JobStatus {
   id: string;
+  type: string;
   status: "pending" | "in_progress" | "completed" | "failed" | string;
   result?: JsonValue;
-  error?: string;
+  error?: string | null;
+  attempts: number;
+  maxAttempts: number;
+  estimatedCompletionAt: string | null;
+  scheduledFor: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The envelope `GET /api/v1/jobs/:jobId` returns; `polling` tells a client whether to keep asking. */
+export interface JobStatusResponse {
+  success: true;
+  data: JobStatus;
+  polling: { intervalMs?: number; shouldContinue: boolean };
 }
 
 export interface ApiKeySummary {
