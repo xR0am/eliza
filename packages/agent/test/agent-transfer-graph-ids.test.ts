@@ -114,7 +114,9 @@ it("keeps world roles, reply threads and user relationships through a transfer",
       if (!newOwner || !newFriend) throw new Error("imported entities missing");
       expect(newOwner).not.toBe(owner);
 
-      const importedRoleIds = Object.keys(world.metadata?.roles ?? {}) as UUID[];
+      const importedRoleIds = Object.keys(
+        world.metadata?.roles ?? {},
+      ) as UUID[];
       const importedRoleEntities = await db.getEntitiesByIds(importedRoleIds);
       const newOutsider = importedRoleEntities.find((entity) =>
         entity.names.includes("Outsider"),

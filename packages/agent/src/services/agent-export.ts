@@ -893,9 +893,9 @@ async function extractAgentData(
     }
   }
   if (metadataEntityIds.size > 0) {
-    const metadataEntities = await db.getEntitiesByIds(
-      [...metadataEntityIds] as UUID[],
-    );
+    const metadataEntities = await db.getEntitiesByIds([
+      ...metadataEntityIds,
+    ] as UUID[]);
     for (const entity of metadataEntities) {
       if (entity.id) entityMap.set(entity.id, entity);
     }
