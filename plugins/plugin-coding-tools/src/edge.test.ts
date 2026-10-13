@@ -444,3 +444,31 @@ test("edge explicitly extracts valid text/plain JSON while preserving MIME and i
     fetch.mockRestore();
   }
 });
+
+test("edge JSON extraction accepts observed bracket syntax without unsafe traversal", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  const body =
+    '{"current_condition":[{"temp_C":"24"}],"nearest_area":[{"name":"Tokyo"}]}';
+  try {
+    for (const [extract, expected] of [
+      ["current_condition[0]", '{"temp_C":"24"}'],
+      ["current_condition[0].temp_C", '"24"'],
+      ["current_condition[0].__proto__", body],
+      ['nearest_area["0"]', body],
+      ["nearest_area[0][0]", body],
+    ]) {
+      fetch.mockResolvedValueOnce(
+        new Response(body, { headers: { "content-type": "text/plain" } }),
+      );
+      const out = await call(createWebFetchEdgeAction(), {
+        url: "https://wttr.in/35.6895,139.6917?format=j1",
+        extract,
+      });
+      expect(out?.success).toBe(true);
+      expect(out?.text).toBe(expected);
+      expect(out?.data?.content_type).toBe("text/plain");
+    }
+  } finally {
+    fetch.mockRestore();
+  }
+});

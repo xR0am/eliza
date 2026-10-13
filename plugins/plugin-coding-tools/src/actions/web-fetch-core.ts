@@ -112,21 +112,35 @@ const MAX_JSON_EXTRACT_SEGMENT_LENGTH = 256;
 function resolveJsonPath(root: unknown, path: string): unknown {
   if (path.length === 0 || path.length > MAX_JSON_EXTRACT_PATH_LENGTH)
     return undefined;
-  const segments = path.split(".");
-  if (segments.length === 0 || segments.length > MAX_JSON_EXTRACT_DEPTH)
-    return undefined;
+  const segments: { key: string; arrayIndex: boolean }[] = [];
+  for (const [position, part] of path.split(".").entries()) {
+    const match = /^([^.[\]]*)((?:\[(?:0|[1-9]\d*)\])*)$/.exec(part);
+    if (!match || (!match[1] && (position !== 0 || !match[2])))
+      return undefined;
+    if (match[1]) segments.push({ key: match[1], arrayIndex: false });
+    for (const index of match[2].matchAll(/\[(\d+)\]/g)) {
+      if (!Number.isSafeInteger(Number(index[1]))) return undefined;
+      segments.push({ key: index[1], arrayIndex: true });
+    }
+    if (segments.length > MAX_JSON_EXTRACT_DEPTH) return undefined;
+  }
   let current = root;
-  for (const segment of segments) {
+  for (const { key, arrayIndex } of segments) {
     if (
-      segment.length === 0 ||
-      segment.length > MAX_JSON_EXTRACT_SEGMENT_LENGTH
+      key.length === 0 ||
+      key.length > MAX_JSON_EXTRACT_SEGMENT_LENGTH ||
+      key === "__proto__" ||
+      key === "prototype" ||
+      key === "constructor" ||
+      (arrayIndex && !Array.isArray(current))
     )
       return undefined;
     if (current === null || typeof current !== "object") return undefined;
     let descriptor: PropertyDescriptor | undefined;
     try {
-      descriptor = Object.getOwnPropertyDescriptor(current as object, segment);
+      descriptor = Object.getOwnPropertyDescriptor(current as object, key);
     } catch {
+      // error-policy:J3 Untrusted path traversal cannot invoke object accessors.
       return undefined;
     }
     if (!descriptor || !("value" in descriptor)) return undefined;
@@ -222,7 +236,8 @@ export function createWebFetchAction(
       },
       {
         name: "extract",
-        description: "Optional dotted JSON path when the response is JSON.",
+        description:
+          "Optional JSON path using dotted properties and numeric array indexes (for example current_condition[0].temp_C).",
         required: false,
         schema: { type: "string" },
       },

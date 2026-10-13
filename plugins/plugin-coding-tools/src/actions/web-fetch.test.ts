@@ -83,3 +83,41 @@ it("Node extracts explicitly requested text/plain JSON and preserves actual MIME
     content_type: "text/plain; charset=utf-8",
   });
 });
+
+it("Node JSON extraction supports bounded array indexes and refuses unsafe paths", async () => {
+  const body =
+    '{"current_condition":[{"temp_C":"24"}],"nested":[[{"value":7}]],"__proto__":{"secret":1}}';
+  __setWebHttpLookupFnForTests(async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  __setWebHttpPinnedFetchImplForTests(
+    async () =>
+      new Response(body, {
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  for (const [extract, expected] of [
+    ["current_condition[0].temp_C", '"24"'],
+    ["nested[0][0].value", "7"],
+    ["current_condition.0.temp_C", '"24"'],
+    ...[
+      "current_condition[-1]",
+      "current_condition[01]",
+      "current_condition[0]oops",
+      "current_condition.[0]",
+      "current_condition[1]",
+      "current_condition[9007199254740992]",
+      "__proto__.secret",
+      "constructor.name",
+      "current_condition[0].constructor",
+      `nested${"[0]".repeat(16)}`,
+    ].map((path) => [path, body]),
+  ]) {
+    const result = await runFetch({
+      url: "https://example.com/weather",
+      extract,
+    });
+    expect(result?.success).toBe(true);
+    expect(result?.text).toBe(expected);
+  }
+});
