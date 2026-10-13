@@ -179,18 +179,34 @@ export class McpService extends Service {
     return s && typeof s === "object" && "servers" in s ? (s as McpSettings) : undefined;
   }
   // ─── Connection Management ─────────────────────────────────────────────────
+  /**
+   * Builds (or rebuilds) one server's connection.
+   *
+   * `disconnect` drops this server's `ConnectionState`, so the retry ladder in
+   * `handleDisconnect` only survives when the caller asks for it: a reconnect
+   * passes `preserveReconnectAttempts` so the count keeps climbing toward
+   * `MAX_RECONNECT_ATTEMPTS` and the backoff keeps doubling, while a fresh
+   * connect, a key rotation, or an operator-driven `restartConnection` starts
+   * a fresh ladder. The count is reset to 0 below on every successful connect,
+   * so a server that comes back is never penalised for an earlier outage.
+   */
   private async connect(
     name: string,
     config: McpServerConfig,
     options?: {
       skipActionRegistration?: boolean;
+      preserveReconnectAttempts?: boolean;
     },
   ): Promise<void> {
+    const carriedReconnectAttempts = options?.preserveReconnectAttempts
+      ? (this.connectionStates.get(name)?.reconnectAttempts ?? 0)
+      : 0;
     await this.disconnect(name);
     const state: ConnectionState = {
       status: "connecting",
-      reconnectAttempts: 0,
+      reconnectAttempts: carriedReconnectAttempts,
       consecutivePingFailures: 0,
+      config: JSON.stringify(config),
     };
     this.connectionStates.set(name, state);
     try {
@@ -371,13 +387,19 @@ export class McpService extends Service {
     const delay = INITIAL_RETRY_DELAY * BACKOFF_MULTIPLIER ** state.reconnectAttempts;
     state.reconnectTimeout = setTimeout(async () => {
       state.reconnectAttempts++;
-      const config = this.connections.get(name)?.server.config;
-      if (config) {
-        try {
-          await this.connect(name, JSON.parse(config));
-        } catch (e) {
-          this.handleDisconnect(name, e);
-        }
+      // Reconnect from the config kept on the ConnectionState, never from
+      // `this.connections.get(name)`: `connect` begins by calling `disconnect`,
+      // which removes the live McpConnection. When a retry's transport build
+      // throws before the connection is re-added, the map entry stays gone, so
+      // a map lookup would read undefined and the ladder would silently die
+      // after a single failed attempt instead of climbing to
+      // MAX_RECONNECT_ATTEMPTS.
+      try {
+        await this.connect(name, JSON.parse(state.config), {
+          preserveReconnectAttempts: true,
+        });
+      } catch (e) {
+        this.handleDisconnect(name, e);
       }
     }, delay);
   }
