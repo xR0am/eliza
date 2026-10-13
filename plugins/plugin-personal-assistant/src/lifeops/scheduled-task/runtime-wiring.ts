@@ -92,6 +92,7 @@ import {
   getFamilyWorkflowRuntimeService,
 } from "../family-workflows/index.js";
 import { withFamilyScheduledExecution } from "../family-workflows/scheduled-execution.js";
+import { withWorkThreadFollowupAdmission } from "../work-threads/followup-admission.js";
 import { createFamilySchedulingStores } from "../family-workflows/scheduled-store.js";
 import { purgeFamilyBackupCleanup } from "../family-workflows/workspace-deletion.js";
 import { registerHouseholdGrantExpiryWarningGate } from "../household/grant-expiry-warning.js";
@@ -1504,7 +1505,14 @@ function buildLifeOpsRunnerDeps(
     },
 
     executionBoundary: (task, execute) =>
-      withFamilyScheduledExecution(opts.runtime, task, execute, opts.agentId),
+      withWorkThreadFollowupAdmission(opts.runtime, task, () =>
+        withFamilyScheduledExecution(
+          opts.runtime,
+          task,
+          execute,
+          opts.agentId,
+        ),
+      ),
     logStore: stores.logStore,
     gates,
     completionChecks,

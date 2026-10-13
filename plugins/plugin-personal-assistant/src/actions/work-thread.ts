@@ -22,6 +22,10 @@ import { hasLifeOpsAccess } from "../lifeops/access.js";
 import { getScheduledTaskRunner } from "../lifeops/scheduled-task/service.js";
 import { OptimisticLockError, withOptimisticRetry } from "../lifeops/sql.js";
 import {
+  withWorkThreadOperationLocks,
+  workThreadLockKey,
+} from "../lifeops/work-threads/operation-lock.js";
+import {
   createWorkThreadStore,
   type ThreadSourceRef,
   type UpdateWorkThreadInput,
@@ -76,7 +80,6 @@ const MAX_CONCURRENT_THREAD_CONTROL_OPERATIONS = 4;
 const workThreadOperationSemaphore = new Semaphore(
   MAX_CONCURRENT_THREAD_CONTROL_OPERATIONS,
 );
-const workThreadOperationQueues = new Map<string, Promise<void>>();
 
 function lockKeysForOperations(
   operations: readonly ThreadOperation[],
@@ -91,49 +94,17 @@ function lockKeysForOperations(
       typeof operation.workThreadId === "string" &&
       operation.workThreadId.trim().length > 0
     ) {
-      keys.add(`thread:${operation.workThreadId.trim()}`);
+      keys.add(workThreadLockKey(operation.workThreadId.trim()));
     }
     for (const sourceWorkThreadId of normalizeSourceWorkThreadIds(
       operation.sourceWorkThreadIds,
     )) {
-      keys.add(`thread:${sourceWorkThreadId}`);
+      keys.add(workThreadLockKey(sourceWorkThreadId));
     }
   }
   return [...keys].sort();
 }
 
-async function withThreadOperationLocks<T>(
-  keys: readonly string[],
-  operation: () => Promise<T>,
-): Promise<T> {
-  if (keys.length === 0) {
-    return operation();
-  }
-  const releases: Array<() => void> = [];
-  for (const key of keys) {
-    const previous = workThreadOperationQueues.get(key) ?? Promise.resolve();
-    let releaseCurrent = () => {};
-    const current = new Promise<void>((resolve) => {
-      releaseCurrent = resolve;
-    });
-    const tail = previous.then(() => current);
-    workThreadOperationQueues.set(key, tail);
-    await previous;
-    releases.push(() => {
-      releaseCurrent();
-      if (workThreadOperationQueues.get(key) === tail) {
-        workThreadOperationQueues.delete(key);
-      }
-    });
-  }
-  try {
-    return await operation();
-  } finally {
-    for (const release of releases.reverse()) {
-      release();
-    }
-  }
-}
 
 async function withThreadOperationConcurrency<T>(
   operation: () => Promise<T>,
@@ -438,7 +409,7 @@ export const workThreadAction: Action & {
     }
 
     return withThreadOperationConcurrency(() =>
-      withThreadOperationLocks(
+      withWorkThreadOperationLocks(
         lockKeysForOperations(operations, message),
         async () => {
           const store = createWorkThreadStore(runtime);

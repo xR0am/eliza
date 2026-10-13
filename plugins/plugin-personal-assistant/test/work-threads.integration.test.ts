@@ -41,6 +41,30 @@ import { createMockedTestRuntime } from "./support/helpers/mock-runtime.ts";
 
 let cleanupRuntime: (() => Promise<void>) | undefined;
 
+// Runs once after the scheduler's first thread read returns "active", before
+// the claim, so a thread change can land exactly in that window.
+let afterThreadCheck: (() => Promise<void>) | null = null;
+vi.mock(
+  "../src/lifeops/work-threads/followup-thread-check.ts",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("../src/lifeops/work-threads/followup-thread-check.ts")
+      >();
+    const workThreadFollowupInactiveReason: typeof actual.workThreadFollowupInactiveReason =
+      async (runtime, task) => {
+        const reason = await actual.workThreadFollowupInactiveReason(
+          runtime,
+          task,
+        );
+        const hook = afterThreadCheck;
+        if (hook && reason === null) await hook();
+        return reason;
+      };
+    return { ...actual, workThreadFollowupInactiveReason };
+  },
+);
+
 vi.setConfig({ testTimeout: 120_000 });
 
 afterEach(async () => {
@@ -1751,6 +1775,195 @@ describe("work thread follow-up lifecycle", () => {
       ]),
     );
     expect(processed.fires).toHaveLength(2);
+    expect(notifications).toHaveLength(1);
+  });
+  it("skips a follow-up whose thread was stopped between the tick's read and the claim", async () => {
+    const runtime = await createRuntime();
+    const notifications: unknown[] = [];
+    const sink = {
+      serviceType: "notification",
+      capabilityDescription: "Synthetic test notification sink",
+      async notify(input: unknown) {
+        notifications.push(input);
+        return { id: `test-followup-${notifications.length}` };
+      },
+      async stop() {},
+    };
+    runtime.services.set("notification", [sink as unknown as Service]);
+    runtime.registerModel(
+      ModelType.TEXT_LARGE,
+      async () => "Which visa document is next?",
+      "test-followup-render",
+    );
+    const store = createWorkThreadStore(runtime);
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    const roomId = stringToUuid("followup-stop-race-room");
+    const thread = await store.create({
+      title: "Vendor quote",
+      summary: "Chase the vendor quote.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const chased = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up on the quote"),
+      [
+        {
+          type: "schedule_followup",
+          workThreadId: thread.id,
+          instruction: "Ask for the quote.",
+          trigger: { kind: "once", atIso: "2026-05-11T18:00:00.000Z" },
+        },
+      ],
+    );
+    const taskId = operationResults(chased)[0].taskId as string;
+    // Removal fails, so the task row survives the stop and only the thread
+    // state can keep it from notifying.
+    vi.spyOn(runner, "remove").mockRejectedValue(
+      new Error("task store offline"),
+    );
+    // The stop commits after the tick has read the thread as active and
+    // before it claims the task.
+    afterThreadCheck = async () => {
+      afterThreadCheck = null;
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "stop this"), [
+          { type: "stop", workThreadId: thread.id },
+        ]),
+      ).rejects.toMatchObject({
+        code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+      });
+    };
+    const processed = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-11T18:01:00.000Z"),
+      limit: 5,
+    });
+    expect(afterThreadCheck).toBeNull();
+    expect(processed.errors).toEqual([]);
+    expect(processed.fires).toEqual([
+      expect.objectContaining({
+        taskId,
+        status: "scheduled",
+        reason: "work thread is stopped",
+      }),
+    ]);
+    expect(notifications).toHaveLength(0);
+    expect(
+      (await runner.list({ kind: "followup" })).find(
+        (task) => task.taskId === taskId,
+      )?.state.status,
+    ).toBe("scheduled");
+    // The next tick dismisses the leftover row for good.
+    const again = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-11T18:02:00.000Z"),
+      limit: 5,
+    });
+    expect(again.fires).toEqual([
+      expect.objectContaining({ taskId, status: "dismissed" }),
+    ]);
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("delivers only the replacement when a follow-up is rescheduled between the tick's read and the claim", async () => {
+    const runtime = await createRuntime();
+    const notifications: unknown[] = [];
+    const sink = {
+      serviceType: "notification",
+      capabilityDescription: "Synthetic test notification sink",
+      async notify(input: unknown) {
+        notifications.push(input);
+        return { id: `test-followup-${notifications.length}` };
+      },
+      async stop() {},
+    };
+    runtime.services.set("notification", [sink as unknown as Service]);
+    runtime.registerModel(
+      ModelType.TEXT_LARGE,
+      async () => "Which visa document is next?",
+      "test-followup-render",
+    );
+    const store = createWorkThreadStore(runtime);
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    const roomId = stringToUuid("followup-replace-race-room");
+    const thread = await store.create({
+      title: "Vendor quote",
+      summary: "Chase the vendor quote.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const first = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up on the quote"),
+      [
+        {
+          type: "schedule_followup",
+          workThreadId: thread.id,
+          instruction: "Ask for the quote.",
+          trigger: { kind: "once", atIso: "2026-05-11T18:00:00.000Z" },
+        },
+      ],
+    );
+    const firstTaskId = operationResults(first)[0].taskId as string;
+    vi.spyOn(runner, "remove").mockRejectedValue(
+      new Error("task store offline"),
+    );
+    let secondTaskId = "";
+    afterThreadCheck = async () => {
+      afterThreadCheck = null;
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "ask again sooner"), [
+          {
+            type: "schedule_followup",
+            workThreadId: thread.id,
+            instruction: "Ask for the quote again.",
+            trigger: { kind: "once", atIso: "2026-05-11T18:00:30.000Z" },
+          },
+        ]),
+      ).rejects.toMatchObject({
+        code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+      });
+      secondTaskId = (await store.get(thread.id))?.currentScheduledTaskId ?? "";
+    };
+    const processed = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-11T18:01:00.000Z"),
+      limit: 5,
+    });
+    expect(afterThreadCheck).toBeNull();
+    expect(secondTaskId).not.toBe("");
+    expect(processed.errors).toEqual([]);
+    // The replaced follow-up is not claimed; the replacement was created after
+    // this tick listed its due tasks, so it fires on the next tick.
+    expect(processed.fires).toEqual([
+      expect.objectContaining({
+        taskId: firstTaskId,
+        status: "scheduled",
+        reason: "work thread follow-up was replaced",
+      }),
+    ]);
+    expect(notifications).toHaveLength(0);
+    const next = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-11T18:02:00.000Z"),
+      limit: 5,
+    });
+    expect(next.errors).toEqual([]);
+    expect(
+      new Map(next.fires.map((fire) => [fire.taskId, fire.status])),
+    ).toEqual(
+      new Map([
+        [firstTaskId, "dismissed"],
+        [secondTaskId, "fired"],
+      ]),
+    );
     expect(notifications).toHaveLength(1);
   });
 });
