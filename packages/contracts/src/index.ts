@@ -88,6 +88,7 @@ export {
   defaultEntityTypeRegistry,
   EntityTypeRegistry,
   normalizeEntityConnectorAccountId,
+  normalizeEntityIdentityHandle,
   SELF_ENTITY_ID,
 } from "./knowledge-graph/entity-types.js";
 export type {

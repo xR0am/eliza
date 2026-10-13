@@ -792,6 +792,43 @@ describe("EntityStore", () => {
     );
     expect(result.entity.state.lastObservedAt).toBe(T1);
   });
+  it("matches a saved @handle with an observation that carries no @ prefix", async () => {
+    const { store } = createHarness();
+    await store.upsert({
+      entityId: "ent-alice",
+      type: "person",
+      preferredName: "Alice",
+      identities: [
+        identity({
+          platform: "telegram",
+          handle: "@alice",
+          evidence: ["contact"],
+          confidence: 1,
+        }),
+      ],
+      tags: [],
+      visibility: "owner_agent_admin",
+      state: {},
+    });
+    vi.setSystemTime(new Date(T1));
+    const result = await store.observeIdentity({
+      platform: "telegram",
+      handle: "alice",
+      evidence: ["message"],
+      confidence: AUTO_MERGE_CONFIDENCE_THRESHOLD,
+    });
+    expect(result.conflict).toBeUndefined();
+    expect(result.mergedFrom).toEqual(["ent-alice"]);
+    expect(result.entity.entityId).toBe("ent-alice");
+    // One identity, folded, not a second row for the bare handle.
+    expect(result.entity.identities).toHaveLength(1);
+    expect(result.entity.identities[0]?.evidence).toEqual([
+      "contact",
+      "message",
+    ]);
+    expect(result.entity.state.lastObservedAt).toBe(T1);
+  });
+
   it("returns a conflict for a single low-confidence candidate without writing the observation", async () => {
     const { store } = createHarness();
     await store.upsert({
