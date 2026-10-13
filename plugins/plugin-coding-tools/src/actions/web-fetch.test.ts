@@ -4,8 +4,23 @@
  * reference table); the entities decoder applies that table, and the five
  * unassigned C1 slots stay as written.
  */
-import { describe, expect, it } from "vitest";
-import { htmlToReadableText } from "./web-fetch.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  __resetWebHttpTestOverrides,
+  __setWebHttpFetchImplForTests,
+  __setWebHttpLookupFnForTests,
+  __setWebHttpPinnedFetchImplForTests,
+} from "../lib/web-http.js";
+import { htmlToReadableText, webFetchAction } from "./web-fetch.ts";
+
+afterEach(() => __resetWebHttpTestOverrides());
+async function runFetch(parameters: Record<string, string>) {
+  if (!webFetchAction.handler)
+    throw new Error("Missing canonical fetch handler");
+  return webFetchAction.handler({} as never, {} as never, undefined, {
+    parameters,
+  } as never);
+}
 
 describe("htmlToReadableText numeric entities", () => {
   it("decodes C1 numeric references through windows-1252", () => {
@@ -30,5 +45,41 @@ describe("htmlToReadableText numeric entities", () => {
     expect(htmlToReadableText("<p>&#128512; &#55296; &#8217; &amp;</p>")).toBe(
       "😀 &#55296; ’ &",
     );
+  });
+});
+
+it("Node rejects ambiguous Wttr JSON names before HTTP", async () => {
+  const fetch = vi.fn();
+  __setWebHttpFetchImplForTests(fetch);
+  for (const location of ["Tokyo", "91,139", "35,-181"]) {
+    const result = await runFetch({
+      url: `https://wttr.in/${location}?format=j1`,
+    });
+    expect(result?.success).toBe(false);
+    expect(result?.text).toContain("coordinates");
+  }
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("Node extracts explicitly requested text/plain JSON and preserves actual MIME", async () => {
+  __setWebHttpLookupFnForTests(async () => [
+    { address: "93.184.216.34", family: 4 },
+  ]);
+  __setWebHttpPinnedFetchImplForTests(
+    async () =>
+      new Response(
+        '{"current_condition":[{"temp_C":"22"}],"nearest_area":[{"name":"Tokyo"}]}',
+        { headers: { "content-type": "text/plain; charset=utf-8" } },
+      ),
+  );
+  const result = await runFetch({
+    url: "https://wttr.in/35.6895,139.6917?format=j1",
+    extract: "current_condition",
+  });
+  expect(result?.success).toBe(true);
+  expect(result?.text).toBe('[{"temp_C":"22"}]');
+  expect(result?.data).toMatchObject({
+    kind: "json",
+    content_type: "text/plain; charset=utf-8",
   });
 });

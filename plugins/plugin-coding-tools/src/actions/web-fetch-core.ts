@@ -144,7 +144,8 @@ function extractBody(
   }
   if (
     type.includes("json") ||
-    (!type && (trimmed.startsWith("{") || trimmed.startsWith("[")))
+    ((!type || Boolean(extract)) &&
+      (trimmed.startsWith("{") || trimmed.startsWith("[")))
   ) {
     try {
       const parsed = JSON.parse(body) as unknown;
@@ -205,13 +206,14 @@ export function createWebFetchAction(
     roleGate: { minRole: "ADMIN" },
     similes: ["LOOKUP_WEB", "WEB_LOOKUP", "FETCH_URL", "HTTP_GET", "GET_URL"],
     routingHint:
-      "fetch ONE specific URL, JSON API, or data file whose address you have or can construct exactly -> WEB_FETCH; this is the exact-and-fresh path for live NOW-values: spot crypto price -> https://api.coingecko.com/api/v3/simple/price?ids=<coin>&vs_currencies=usd, current weather -> https://wttr.in/<city>?format=j1; to discover pages with no constructable URL -> WEB_SEARCH",
+      "fetch ONE specific URL, JSON API, or data file whose address you have or can construct exactly -> WEB_FETCH; this is the exact-and-fresh path for live NOW-values: spot crypto price -> https://api.coingecko.com/api/v3/simple/price?ids=<coin>&vs_currencies=usd, current weather -> https://wttr.in/<latitude>,<longitude>?format=j1 (example Tokyo city: 35.6895,139.6917); read nearest_area and observation dates before using extract=current_condition; to discover pages with no constructable URL -> WEB_SEARCH",
     description:
       "Fetch one specific public HTTPS URL and return readable text. Supports HTML extraction, JSON, and plain text. Prefer this over WEB_SEARCH for live NOW-values (spot prices, exchange rates, current weather) by constructing the live API URL yourself. Blocks private/internal hosts, redirects to private/internal hosts, non-HTTPS URLs, binary content, oversized reads, and timeouts.",
     parameters: [
       {
         name: "url",
-        description: "Absolute public https URL to fetch.",
+        description:
+          "Absolute public https URL. Wttr JSON API format=j1 requires latitude,longitude coordinates (for example https://wttr.in/35.6895,139.6917?format=j1), never an ambiguous place name.",
         required: true,
         schema: { type: "string" },
       },
@@ -253,6 +255,30 @@ export function createWebFetchAction(
             : undefined;
         const signal = input?.abortSignal ?? input?.signal;
         signal?.throwIfAborted();
+        const parsedUrl = new URL(url);
+        if (
+          parsedUrl.hostname.toLowerCase() === "wttr.in" &&
+          parsedUrl.searchParams.get("format") === "j1"
+        ) {
+          const location = parsedUrl.pathname.slice(1);
+          const match = location.match(
+            /^(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/u,
+          );
+          if (
+            !match ||
+            Math.abs(Number(match[1])) > 90 ||
+            Math.abs(Number(match[2])) > 180
+          ) {
+            return failureToActionResult(
+              {
+                reason: "invalid_param",
+                message:
+                  "Wttr JSON API requires valid latitude,longitude coordinates. Resolve the requested place and retry with coordinates; read nearest_area and observation dates before narrowing JSON extraction.",
+              },
+              { action: "WEB_FETCH", url },
+            );
+          }
+        }
         const response = await reader(url, signal);
         signal?.throwIfAborted();
         if (response.kind === "provider-extract")

@@ -237,7 +237,7 @@ test("trusted API redirects and binary responses fail without following or MCP f
       expect(
         (
           await call(createWebFetchEdgeAction(), {
-            url: "https://wttr.in/Tokyo?format=j1",
+            url: "https://wttr.in/35.6895,139.6917?format=j1",
           })
         )?.success,
       ).toBe(false);
@@ -263,7 +263,7 @@ test("trusted API oversized and invalid UTF-8 bodies are rejected whole", async 
       expect(
         (
           await call(createWebFetchEdgeAction(), {
-            url: "https://wttr.in/Tokyo?format=j1",
+            url: "https://wttr.in/35.6895,139.6917?format=j1",
           })
         )?.success,
       ).toBe(false);
@@ -293,7 +293,7 @@ test("trusted API caller cancellation cancels a stalled body and never retries",
   try {
     await expect(
       call(createWebFetchEdgeAction(), {
-        url: "https://wttr.in/Tokyo?format=j1",
+        url: "https://wttr.in/35.6895,139.6917?format=j1",
         signal: controller.signal,
       }),
     ).rejects.toThrow("caller cancelled");
@@ -319,7 +319,7 @@ test("trusted API deadline cancels a stalled body without a provider retry", asy
   );
   try {
     const pending = call(createWebFetchEdgeAction(), {
-      url: "https://wttr.in/Tokyo?format=j1",
+      url: "https://wttr.in/35.6895,139.6917?format=j1",
     });
     await vi.advanceTimersByTimeAsync(15000);
     expect((await pending)?.success).toBe(false);
@@ -349,7 +349,7 @@ test("trusted API oversized body fails promptly even when cancellation never set
   );
   try {
     const result = await call(createWebFetchEdgeAction(), {
-      url: "https://wttr.in/Tokyo?format=j1",
+      url: "https://wttr.in/35.6895,139.6917?format=j1",
     });
     expect(result?.success).toBe(false);
     expect(cancelStarted).toBe(true);
@@ -358,3 +358,65 @@ test("trusted API oversized body fails promptly even when cancellation never set
     fetch.mockRestore();
   }
 }, 1000);
+
+test("Wttr JSON API rejects ambiguous names and invalid coordinate bounds before HTTP", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  try {
+    for (const path of [
+      "Tokyo",
+      "Tokyo,Japan",
+      "91,139",
+      "35,181",
+      "NaN,139",
+      "35.6",
+      "35.6,139.7/extra",
+    ]) {
+      const out = await call(createWebFetchEdgeAction(), {
+        url: `https://wttr.in/${path}?format=j1`,
+      });
+      expect(out?.success).toBe(false);
+      expect(out?.text).toContain("coordinates");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  } finally {
+    fetch.mockRestore();
+  }
+});
+
+test("edge explicitly extracts valid text/plain JSON while preserving MIME and invalid JSON text", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  try {
+    fetch.mockResolvedValueOnce(
+      new Response(
+        '{"current_condition":[{"temp_C":"22"}],"nearest_area":[{"name":"Tokyo"}]}',
+        { headers: { "content-type": "text/plain; charset=utf-8" } },
+      ),
+    );
+    const out = await call(createWebFetchEdgeAction(), {
+      url: "https://wttr.in/35.6895,139.6917?format=j1",
+      extract: "current_condition",
+    });
+    expect(out?.text).toBe('[{"temp_C":"22"}]');
+    expect(out?.data).toMatchObject({
+      kind: "json",
+      content_type: "text/plain; charset=utf-8",
+    });
+    expect(out?.text).not.toContain("nearest_area");
+    expect(out?.data?.nearest_area).toBeUndefined();
+    expect(out?.data?.observationDate).toBeUndefined();
+    fetch.mockResolvedValueOnce(
+      new Response("{not JSON", { headers: { "content-type": "text/plain" } }),
+    );
+    const invalid = await call(createWebFetchEdgeAction(), {
+      url: "https://wttr.in/35.6895,139.6917?format=j1",
+      extract: "current_condition",
+    });
+    expect(invalid?.text).toBe("{not JSON");
+    expect(invalid?.data).toMatchObject({
+      kind: "text",
+      content_type: "text/plain",
+    });
+  } finally {
+    fetch.mockRestore();
+  }
+});
