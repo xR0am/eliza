@@ -1455,4 +1455,109 @@ describe("work thread follow-up lifecycle", () => {
     expect(processed.fires.map((fire) => fire.taskId)).toEqual([secondTaskId]);
     expect(notifications).toHaveLength(1);
   });
+  it("keeps a thread active when its follow-up cannot be removed on stop", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    const roomId = stringToUuid("followup-remove-fails-room");
+    const thread = await store.create({
+      title: "Vendor quote",
+      summary: "Chase the vendor quote.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const chased = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up on the quote"),
+      [
+        {
+          type: "schedule_followup",
+          workThreadId: thread.id,
+          instruction: "Ask for the quote.",
+          trigger: { kind: "once", atIso: "2026-05-11T18:00:00.000Z" },
+        },
+      ],
+    );
+    const taskId = operationResults(chased)[0].taskId as string;
+    const remove = vi
+      .spyOn(runner, "remove")
+      .mockRejectedValue(new Error("task store offline"));
+    await expect(
+      runThreadAction(runtime, message(runtime, roomId, "stop this"), [
+        { type: "stop", workThreadId: thread.id },
+      ]),
+    ).rejects.toMatchObject({
+      code: "WORK_THREAD_FOLLOWUP_REMOVE_FAILED",
+      context: { workThreadId: thread.id, taskId },
+    });
+    expect(await store.get(thread.id)).toMatchObject({
+      status: thread.status,
+      currentScheduledTaskId: taskId,
+    });
+    expect(
+      (await runner.list({ kind: "followup" })).map((task) => task.taskId),
+    ).toContain(taskId);
+    remove.mockRestore();
+    const stopped = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "stop this"),
+      [{ type: "stop", workThreadId: thread.id }],
+    );
+    expect(operationResults(stopped)).toMatchObject([
+      { success: true, type: "stop", status: "stopped" },
+    ]);
+    expect(await store.get(thread.id)).toMatchObject({
+      status: "stopped",
+      currentScheduledTaskId: null,
+    });
+    expect(
+      (await runner.list({ kind: "followup" })).map((task) => task.taskId),
+    ).not.toContain(taskId);
+  });
+
+  it("names a replaced follow-up that cannot be removed for reconciliation", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const runner = getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    });
+    const roomId = stringToUuid("followup-replace-remove-fails-room");
+    const thread = await store.create({
+      title: "Visa documents",
+      summary: "Collect the visa documents.",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const followup = (atIso: string) => ({
+      type: "schedule_followup",
+      workThreadId: thread.id,
+      instruction: "Ask for the passport scan.",
+      trigger: { kind: "once", atIso },
+    });
+    const first = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "follow up"),
+      [followup("2026-05-11T18:00:00.000Z")],
+    );
+    const firstTaskId = operationResults(first)[0].taskId as string;
+    vi.spyOn(runner, "remove").mockRejectedValue(
+      new Error("task store offline"),
+    );
+    await expect(
+      runThreadAction(runtime, message(runtime, roomId, "tomorrow instead"), [
+        followup("2026-05-12T18:00:00.000Z"),
+      ]),
+    ).rejects.toMatchObject({
+      code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+      context: { workThreadId: thread.id, taskId: firstTaskId },
+    });
+    const linked = await store.get(thread.id);
+    expect(linked?.currentScheduledTaskId).toBeTruthy();
+    expect(linked?.currentScheduledTaskId).not.toBe(firstTaskId);
+    const scheduled = (await runner.list({ kind: "followup" })).map(
+      (task) => task.taskId,
+    );
+    expect(scheduled).toContain(firstTaskId);
+    expect(scheduled).toContain(linked?.currentScheduledTaskId);
+  });
 });

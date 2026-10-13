@@ -854,8 +854,31 @@ export const workThreadAction: Action & {
                 throw error;
               }
               // Link first, then drop the follow-up it replaces: a crash in
-              // between leaves the old follow-up live, never none.
-              if (supersededTaskId) await runner.remove?.(supersededTaskId);
+              // between leaves the old follow-up live, never none. The link
+              // is committed; a removal that cannot be confirmed names the
+              // task that still needs reconciliation.
+              if (supersededTaskId) {
+                try {
+                  if (typeof runner.remove !== "function")
+                    throw new ElizaError("Follow-up removal is unavailable", {
+                      code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
+                    });
+                  await runner.remove(supersededTaskId);
+                } catch (cleanupError) {
+                  throw new ElizaError(
+                    "Replaced follow-up is still scheduled and requires reconciliation",
+                    {
+                      code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+                      cause: cleanupError,
+                      context: {
+                        workThreadId,
+                        taskId: supersededTaskId,
+                        currentTaskId: task.taskId,
+                      },
+                    },
+                  );
+                }
+              }
               results.push({
                 success: true,
                 type,
@@ -869,10 +892,34 @@ export const workThreadAction: Action & {
             if (status) {
               // A stopped or completed thread has no further work: its
               // pending follow-up must not fire. Waiting keeps the nudge.
+              // Remove the task before the status commits: if removal fails
+              // the thread stays active with its follow-up and the owner can
+              // repeat the request; a task already gone is not an error.
               const releasedTaskId =
                 isTerminalThreadStatus(status) && current.currentScheduledTaskId
                   ? current.currentScheduledTaskId
                   : null;
+              if (releasedTaskId) {
+                try {
+                  const runner = getScheduledTaskRunner(runtime, {
+                    agentId: runtime.agentId,
+                  });
+                  if (typeof runner.remove !== "function")
+                    throw new ElizaError("Follow-up removal is unavailable", {
+                      code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
+                    });
+                  await runner.remove(releasedTaskId);
+                } catch (cleanupError) {
+                  throw new ElizaError(
+                    "Follow-up could not be removed; the work thread stays active",
+                    {
+                      code: "WORK_THREAD_FOLLOWUP_REMOVE_FAILED",
+                      cause: cleanupError,
+                      context: { workThreadId, taskId: releasedTaskId },
+                    },
+                  );
+                }
+              }
               await updateMutableThread(workThreadId, {
                 status,
                 ...(releasedTaskId
@@ -889,10 +936,6 @@ export const workThreadAction: Action & {
                       : "completed",
                 reason: operation.reason,
               });
-              if (releasedTaskId)
-                await getScheduledTaskRunner(runtime, {
-                  agentId: runtime.agentId,
-                }).remove?.(releasedTaskId);
               results.push({ success: true, type, workThreadId, status });
             }
           }
