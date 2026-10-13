@@ -15,7 +15,13 @@ describe("isIdempotentBrowserSubaction", () => {
   });
 
   it("keeps the read-only browser subactions classified as idempotent", () => {
-    for (const subaction of ["list", "state", "get", "snapshot", "inspect"] as const) {
+    for (const subaction of [
+      "list",
+      "state",
+      "get",
+      "snapshot",
+      "inspect",
+    ] as const) {
       expect(isIdempotentBrowserSubaction(subaction)).toBe(true);
     }
   });
