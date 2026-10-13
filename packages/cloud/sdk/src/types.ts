@@ -1079,9 +1079,9 @@ export interface UpdateAgentRequest {
   agentConfig?: Record<string, unknown>;
 }
 
-/** Body for `PATCH /api/v1/eliza/agents/:agentId/environment`. */
+/** Body for `PATCH /api/v1/eliza/agents/:agentId/environment`; a `null` value removes that variable. */
 export interface UpdateAgentEnvironmentRequest {
-  environmentVars: Record<string, string>;
+  environmentVars: Record<string, string | null>;
 }
 
 export interface UpdateAgentEnvironmentResponse {

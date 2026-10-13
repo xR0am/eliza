@@ -79,3 +79,28 @@ test("updateAgentEnvironment sends the variables to the environment route", asyn
   expect(response.data?.updatedKeys).toEqual(["OPENAI_API_KEY"]);
   expect(response.data?.needsRestart).toBe(true);
 });
+
+test("updateAgentEnvironment sends null to remove a variable and reports it removed", async () => {
+  const captured: Captured[] = [];
+  const client = clientCapturing(captured, {
+    success: true,
+    data: {
+      agentId: "agent-1",
+      updatedKeys: [],
+      removedKeys: ["OPENAI_API_KEY"],
+      status: "stopped",
+      executionTier: "shared",
+      needsRestart: false,
+    },
+  });
+
+  const response = await client.updateAgentEnvironment("agent-1", {
+    environmentVars: { OPENAI_API_KEY: null },
+  });
+
+  expect(captured[0]?.body).toEqual({
+    environmentVars: { OPENAI_API_KEY: null },
+  });
+  expect(response.data?.removedKeys).toEqual(["OPENAI_API_KEY"]);
+  expect(response.data?.updatedKeys).toEqual([]);
+});
