@@ -624,16 +624,24 @@ export class EntityStore {
         let confidence = 0;
         let safeToSend = false;
         if (query.identity) {
+          const queryIdentity = query.identity;
+          const platformKey = queryIdentity.platform.trim().toLowerCase();
+          const handleKey = normalizeEntityIdentityHandle(
+            queryIdentity.platform,
+            queryIdentity.handle,
+          );
+          const accountKey = normalizeEntityConnectorAccountId(
+            queryIdentity.connectorAccountId,
+          );
           const match = entity.identities.find(
             (identity) =>
-              identity.platform.toLowerCase() ===
-                query.identity?.platform.toLowerCase() &&
+              identity.platform.trim().toLowerCase() === platformKey &&
               normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
-                normalizeEntityConnectorAccountId(
-                  query.identity.connectorAccountId,
-                ) &&
-              identity.handle.toLowerCase() ===
-                query.identity.handle.toLowerCase(),
+                accountKey &&
+              normalizeEntityIdentityHandle(
+                identity.platform,
+                identity.handle,
+              ) === handleKey,
           );
           if (match) {
             confidence = match.confidence;

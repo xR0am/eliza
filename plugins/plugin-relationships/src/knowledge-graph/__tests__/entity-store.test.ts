@@ -929,6 +929,36 @@ describe("EntityStore", () => {
       evidence: [],
     });
   });
+  it("resolves a saved @handle from a bare-handle query with the matched confidence and verified flag", async () => {
+    const { store } = createHarness();
+    await store.upsert({
+      entityId: "ent-priya",
+      type: "person",
+      preferredName: "Priya",
+      identities: [
+        identity({
+          platform: "telegram",
+          handle: "@priyam",
+          confidence: 0.9,
+          verified: true,
+          evidence: ["contact"],
+        }),
+      ],
+      tags: [],
+      visibility: "owner_agent_admin",
+      state: {},
+    });
+    const candidates = await store.resolve({
+      identity: { platform: "telegram", handle: "priyam" },
+    });
+    expect(candidates.map((row) => row.entity.entityId)).toEqual(["ent-priya"]);
+    expect(candidates[0]).toMatchObject({
+      confidence: 0.9,
+      evidence: ["contact"],
+      safeToSend: true,
+    });
+  });
+
   it("resolves identity matches case-insensitively, ranks by identity confidence, and uses the matched verified flag for safeToSend", async () => {
     const { store } = createHarness();
     await store.upsert({
