@@ -6,7 +6,7 @@
  */
 
 import type { IAgentRuntime, Memory, UUID } from "@elizaos/core";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type {
   BatcherResult,
   ResolvedSection,
@@ -289,6 +289,81 @@ describe("PromptBatcher recurring loop and cache behavior", () => {
     expect(delivered[0]?.fields.value).toBe(
       "generated:autonomy:Agent Name: Batcher Test\n\nloop=1",
     );
+  });
+
+  test("waits for failed affinity cleanup before exposing a retry", async () => {
+    const { runtime, tasks } = makeRuntime();
+    const dispatcher = makeDispatcher();
+    const batcher = new PromptBatcher(runtime, dispatcher as never, SETTINGS);
+    await ready();
+
+    let signalDeleteEntered!: () => void;
+    const deleteEntered = new Promise<void>((resolve) => {
+      signalDeleteEntered = resolve;
+    });
+    let releaseDelete!: () => void;
+    const deleteGate = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    const deleteTask = runtime.deleteTask;
+    runtime.deleteTask = async (id) => {
+      signalDeleteEntered();
+      await deleteGate;
+      await deleteTask(id);
+    };
+
+    let failUpdate = true;
+    const updateTask = runtime.updateTask;
+    runtime.updateTask = async (id, patch) => {
+      if (failUpdate) {
+        failUpdate = false;
+        throw new Error("late sync failure");
+      }
+      await updateTask(id, patch);
+    };
+
+    let intervalCalls = 0;
+    vi.spyOn(batcher, "getIdealTickInterval").mockImplementation(() => {
+      intervalCalls += 1;
+      return intervalCalls === 1 ? SETTINGS.maxDrainIntervalMs : 25;
+    });
+
+    const section = {
+      id: "late-sync-retry",
+      frequency: "recurring" as const,
+      affinityKey: "race",
+      minCycleMs: 25,
+      priority: "background" as const,
+      preamble: "Retry after cleanup.",
+      contextBuilder: () => "retry context",
+      schema: [{ field: "value", type: "string", required: true }],
+    };
+    const failed = batcher.addSection(section);
+    let rejectedBeforeCleanup = false;
+    const observedFailure = failed.catch(() => {
+      rejectedBeforeCleanup = true;
+    });
+
+    await deleteEntered;
+    await wait(0);
+    expect(rejectedBeforeCleanup).toBe(false);
+
+    releaseDelete();
+    await expect(failed).rejects.toThrow("late sync failure");
+    await observedFailure;
+
+    const retried = batcher.addSection(section);
+    await ready();
+    expect(tasks).toHaveLength(1);
+
+    await batcher.drainAffinityGroup("race");
+    await expect(retried).resolves.toMatchObject({
+      fields: {
+        value:
+          "generated:late-sync-retry:Agent Name: Batcher Test\n\nretry context",
+      },
+    });
+    expect(tasks).toHaveLength(1);
   });
 
   test("once sections reuse fresh cache without another model dispatch", async () => {

@@ -128,7 +128,7 @@ export class PromptBatcher {
     const affinityKey = normalized.affinityKey ?? "default";
     void this._ensureAffinityDrain(affinityKey)
       .then(() => this._syncAffinityTask(affinityKey))
-      .catch((error) => {
+      .catch(async (error) => {
         // error-policy:J1 Drain setup is the asynchronous boundary for this
         // request; reject its pending result and report the scheduler failure.
         this.runtime.reportError("PromptBatcher.ensureAffinityDrain", error, {
@@ -138,8 +138,16 @@ export class PromptBatcher {
         const pending = this.pendingResults.get(normalized.id);
         if (pending && !pending.resolved) {
           pending.resolved = true;
+          try {
+            await this._removeSectionAndWait(normalized.id);
+          } catch (cleanupError) {
+            this.runtime.reportError(
+              "PromptBatcher.removeSectionAfterSyncFailure",
+              cleanupError,
+              { sectionId: normalized.id },
+            );
+          }
           pending.deferred.reject(error);
-          this.removeSection(normalized.id);
         }
         this.runtime.logger.error(
           {
@@ -179,15 +187,23 @@ export class PromptBatcher {
   }
 
   removeSection(id: string): void {
+    void this._removeSectionAndWait(id).catch((error) => {
+      this.runtime.reportError("PromptBatcher.removeSection", error, {
+        sectionId: id,
+      });
+    });
+  }
+
+  private async _removeSectionAndWait(id: string): Promise<void> {
     const section = this.sections.get(id);
     const affinityKey = section?.affinityKey ?? "default";
     this.sections.delete(id);
     this.pendingResults.delete(id);
     this.lastRunAt.delete(id);
     if (this.getSectionCountForAffinity(affinityKey) === 0) {
-      void this._removeAffinityTask(affinityKey);
+      await this._removeAffinityTask(affinityKey);
     } else {
-      void this._syncAffinityTask(affinityKey);
+      await this._syncAffinityTask(affinityKey);
     }
   }
 
