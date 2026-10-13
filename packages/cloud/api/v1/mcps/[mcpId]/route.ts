@@ -15,8 +15,8 @@ import { organizationCreditsToLegacyMcpPoints } from "@elizaos/cloud-shared/bill
 import { requireAuthOrApiKeyWithOrg } from "@elizaos/cloud-shared/lib/auth";
 import { CreatorMonetizationRetiredError } from "@elizaos/cloud-shared/lib/services/creator-monetization-retirement";
 import { userMcpsService } from "@elizaos/cloud-shared/lib/services/user-mcps";
-import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import { decodeRequestJson } from "@elizaos/cloud-shared/lib/utils/json-parsing";
+import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import { z } from "zod";
 
 // ============================================================================
