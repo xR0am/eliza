@@ -5,7 +5,7 @@
  */
 
 import type { UUID } from "@elizaos/core";
-import { and, desc, eq, gt, or, sql, type SQL } from "drizzle-orm";
+import { type SQL, and, desc, eq, gt, or, sql } from "drizzle-orm";
 import {
   behavioralProfiles,
   identityLinks,
