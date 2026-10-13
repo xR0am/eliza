@@ -83,6 +83,13 @@ const ChatArgumentsSchema = z.object({
 
 const app = new Hono<AppEnv>();
 
+export function respondMcpResponse(
+  response: Response,
+  isNotification: boolean,
+) {
+  return isNotification ? new Response(null, { status: 202 }) : response;
+}
+
 function mcpAuthError(
   c: AppContext,
   error: unknown,
@@ -211,6 +218,7 @@ app.get("/", rateLimit(RateLimitPresets.STANDARD), async (c) => {
 app.post("/", async (c) => {
   const id = c.req.param("id");
   const executionCtx = getGenerativeExecutionContext(c);
+  let isNotification = false;
   try {
     const caller = await requireGenerativeRouteCaller(c, {
       compatibility: "hono",
@@ -303,9 +311,9 @@ app.post("/", async (c) => {
     }
 
     const { method, params, id: rpcId } = validation.data;
-    const isNotification = rpcId === undefined;
+    isNotification = rpcId === undefined;
     const respond = (response: Response) =>
-      isNotification ? new Response(null, { status: 202 }) : response;
+      respondMcpResponse(response, isNotification);
     switch (method) {
       case "initialize":
         return respond(
@@ -380,7 +388,7 @@ app.post("/", async (c) => {
         );
     }
   } catch (error) {
-    return mcpAuthError(c, error, null);
+    return respondMcpResponse(mcpAuthError(c, error, null), isNotification);
   }
 });
 
