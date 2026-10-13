@@ -2,8 +2,9 @@
  * Undo through the form evaluator on a real AgentRuntime and PGlite adapter.
  * Undo puts the previous answer back as it was: an answer that failed
  * validation stays invalid and an unconfirmed answer stays uncertain, so the
- * agent asks again or confirms it instead of submitting it. No live model is
- * used; the evaluator processors receive the parsed model output directly.
+ * agent asks again or confirms it instead of submitting it. A ready form that
+ * undo leaves incomplete goes back to active. No live model is used; the
+ * evaluator processors receive the parsed model output directly.
  */
 import assert from "node:assert/strict";
 import {
@@ -162,7 +163,9 @@ describe("form undo through the evaluator", () => {
       value: "ann@example",
       error: "Email must be a valid email address",
     });
+    expect(session.status).toBe("active");
     const context = await modelContext(roomId);
+    expect(context.status).toBe("active");
     expect(context.required_missing.map((f: { key: string }) => f.key)).toEqual(
       ["email"],
     );
@@ -181,6 +184,9 @@ describe("form undo through the evaluator", () => {
     await turn(roomId, "Actually it's Rob", "fill_form", [
       { field: "name", value: "Rob", confidence: 0.95, isCorrection: true },
     ]);
+    expect((await service.getActiveSession(entityId, roomId))?.status).toBe(
+      "ready",
+    );
 
     await turn(roomId, "Undo", "undo");
 
@@ -191,7 +197,9 @@ describe("form undo through the evaluator", () => {
       value: "Bob",
       confidence: 0.5,
     });
+    expect(session.status).toBe("active");
     const context = await modelContext(roomId);
+    expect(context.status).toBe("active");
     expect(context.instruction).toBe('Ask user to confirm "Name" = "Bob".');
     await expect(turn(roomId, "Submit", "submit")).rejects.toThrow(
       "Not all required fields are filled",
@@ -220,6 +228,7 @@ describe("form undo through the evaluator", () => {
       confidence: 0.95,
     });
     expect(session.status).toBe("ready");
+    expect((await modelContext(roomId)).status).toBe("ready");
     await turn(roomId, "Submit", "submit");
     const submissions = await service.getSubmissions(entityId, "contact");
     expect(
@@ -227,5 +236,30 @@ describe("form undo through the evaluator", () => {
         .filter((s) => s.sessionId === session.id)
         .map((s) => s.values),
     ).toEqual([{ name: "Ann", email: "ann@example.com" }]);
+  }, 60_000);
+
+  it("reopens a ready form when undo clears the answer that completed it", async () => {
+    const roomId = await openForm("first-answer");
+    await turn(roomId, "I'm Cleo", "fill_form", [
+      { field: "name", value: "Cleo", confidence: 0.95 },
+    ]);
+    await turn(roomId, "cleo@example.com", "fill_form", [
+      { field: "email", value: "cleo@example.com", confidence: 0.95 },
+    ]);
+    expect((await service.getActiveSession(entityId, roomId))?.status).toBe(
+      "ready",
+    );
+
+    await turn(roomId, "Undo", "undo");
+
+    const session = await service.getActiveSession(entityId, roomId);
+    assert(session);
+    expect(session.fields.email).toEqual({ status: "empty" });
+    expect(session.status).toBe("active");
+    const context = await modelContext(roomId);
+    expect(context.status).toBe("active");
+    expect(context.required_missing.map((f: { key: string }) => f.key)).toEqual(
+      ["email"],
+    );
   }, 60_000);
 });

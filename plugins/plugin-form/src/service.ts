@@ -737,6 +737,15 @@ export class FormService extends Service {
       session.fields[lastChange.field] = { status: "empty" };
     }
 
+    // 'ready' means every required field is filled. When undo leaves a
+    // required field invalid, uncertain or empty, the form is open again.
+    if (
+      session.status === "ready" &&
+      !this.checkAllRequiredFilled(session, form)
+    ) {
+      session.status = "active";
+    }
+
     session.updatedAt = Date.now();
     await storageSaveSession(this.runtime, session);
 
