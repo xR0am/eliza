@@ -29,6 +29,7 @@ function makeRuntime() {
         warn: () => {},
         error: () => {},
       },
+      reportError: () => {},
       getCache: async <T>(key: string): Promise<T | null> =>
         (cache.get(key) as T | undefined) ?? null,
       setCache: async (key: string, value: unknown): Promise<void> => {
