@@ -2631,7 +2631,7 @@ export class CreditsService {
       stats.scanned += rows.length;
 
       for (const row of rows) {
-        const skippedBefore = stats.skipped;
+        const settledBefore = stats.settled;
         const reservedAmount = Math.abs(parseNumeric(row.amount, "reservation_amount"));
         const reservationMetadata = parseMetadata(row.metadata);
         const description = (row.description ?? "Credit reservation").replace(
@@ -2698,7 +2698,8 @@ export class CreditsService {
             error: error instanceof Error ? error.message : String(error),
           });
         } finally {
-          if (stats.skipped > skippedBefore) skipped.push(row.id);
+          // Every row this run did not settle, whichever branch it took.
+          if (stats.settled === settledBefore) skipped.push(row.id);
         }
       }
 

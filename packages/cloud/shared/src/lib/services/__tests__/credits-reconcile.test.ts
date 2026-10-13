@@ -1255,6 +1255,38 @@ describe("CreditsService reservation settlement marker (#11169)", () => {
   );
 
   test(
+    "sweep leaves app-chat holds it skips out of later batches so a newer hold still settles",
+    async () => {
+      if (!pgliteReady) return;
+      await seedOrg("20");
+      // Two app-chat holds without a usable base pair sort first; the sweep
+      // skips them on every pass and no static predicate removes them.
+      const skippedHolds: string[] = [];
+      for (const hoursAgo of [27, 26]) {
+        skippedHolds.push(
+          await insertAppChatReservation(1.8, hoursAgo * 60 * 60 * 1000, {
+            estimated_cost: null,
+            reserved_amount: null,
+          }),
+        );
+      }
+      const fresh = await insertReservation(1.0, 25 * 60 * 1000, true, { estimated_cost: 0.4 });
+
+      const stats = await creditsService.sweepStaleReservations({
+        graceMs: 20 * 60 * 1000,
+        batchSize: 2,
+        maxBatches: 4,
+      });
+
+      expect(stats.capHit).toBe(false);
+      expect(stats.settled).toBe(1);
+      expect(await getReservationSettledAt(fresh)).toBeTruthy();
+      for (const id of skippedHolds) expect(await getReservationSettledAt(id)).toBeNull();
+    },
+    PGLITE_TIMEOUT,
+  );
+
+  test(
     "sweep skips an app-chat hold without a usable base pair instead of guessing",
     async () => {
       if (!pgliteReady) return;
