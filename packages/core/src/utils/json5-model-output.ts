@@ -5,7 +5,11 @@
 
 import JSON5 from "json5";
 
-const jsonBlockPattern = /```(?:json|json5)?\s*\r?\n?([\s\S]*?)\r?\n?```/i;
+// Try `json5` before `json`, and stop when the next character would continue
+// the label (`json50`, `jsonc`). A prefix match kept the extra "5" in the body
+// (`5\n{...}`), so JSON5.parse rejected a valid json5 fence.
+const jsonBlockPattern =
+	/```(?:(?:json5|json)(?![A-Za-z0-9_-]))?\s*\r?\n?([\s\S]*?)\r?\n?```/i;
 
 /**
  * Extract and parse JSON from text using JSON5 for LLM output tolerance.
