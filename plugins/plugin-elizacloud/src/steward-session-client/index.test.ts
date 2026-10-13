@@ -4,10 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readStoredStewardToken,
   registerStewardTokenPersistence,
+  registerStewardTokenRemoval,
   replaceStoredStewardTokenIfCurrent,
+  STEWARD_ACTIVE_SCOPE_KEY,
+  STEWARD_SESSION_CHANGE_EVENT,
   STEWARD_TOKEN_KEY,
+  STEWARD_TOKEN_SCOPE_KEY,
   writeStoredStewardToken,
 } from "./index";
+
 afterEach(() => {
   localStorage.clear();
 });
@@ -70,3 +75,130 @@ describe("owned phone session publication", () => {
     expect(readStoredStewardToken()).toBe("phone-token");
   });
 });
+
+// Actual registered durable boundary: cancellation lands after the write starts.
+it.each([null, "owner-token"])(
+  "compensates cancellation during durable persistence from %s",
+  async (initial) => {
+    if (initial) await writeStoredStewardToken(initial);
+    let durable: string | null = initial;
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const unregister = registerStewardTokenPersistence(async (token) => {
+      if (token === "cancelled-token") {
+        entered();
+        await held;
+      }
+      durable = token;
+      localStorage.setItem(STEWARD_TOKEN_KEY, token);
+    });
+    const unregisterRemoval = registerStewardTokenRemoval(async () => {
+      durable = null;
+      localStorage.removeItem(STEWARD_TOKEN_KEY);
+    });
+    const changed = vi.fn();
+    const beforePublish = vi.fn();
+    window.addEventListener(STEWARD_SESSION_CHANGE_EVENT, changed);
+    try {
+      const controller = new AbortController();
+      const candidate = replaceStoredStewardTokenIfCurrent(
+        initial,
+        "cancelled-token",
+        { signal: controller.signal, beforePublish },
+      );
+      await started;
+      controller.abort();
+      release();
+      expect(await candidate).toBe(false);
+      expect(readStoredStewardToken()).toBe(initial);
+      expect(durable).toBe(initial);
+      expect(beforePublish).not.toHaveBeenCalled();
+      expect(changed).not.toHaveBeenCalled();
+    } finally {
+      release();
+      unregister();
+      unregisterRemoval();
+      window.removeEventListener(STEWARD_SESSION_CHANGE_EVENT, changed);
+    }
+  },
+);
+
+it.each([
+  "queued-newer",
+  "external-newer",
+  "scoped-external-newer",
+  "other-scope",
+])(
+  "preserves %s authority around cancelled durable persistence",
+  async (mode) => {
+    localStorage.setItem(STEWARD_TOKEN_KEY, "prior-token");
+    if (mode === "other-scope") {
+      localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, "prior-scope");
+      localStorage.setItem(STEWARD_ACTIVE_SCOPE_KEY, "active-scope");
+    }
+    if (mode === "scoped-external-newer") {
+      localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, "active-scope");
+      localStorage.setItem(STEWARD_ACTIVE_SCOPE_KEY, "active-scope");
+    }
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const unregister = registerStewardTokenPersistence(async (token) => {
+      localStorage.setItem(STEWARD_TOKEN_KEY, token);
+      if (token === "cancelled-token") {
+        entered();
+        await held;
+      }
+    });
+    try {
+      const controller = new AbortController();
+      const candidate = replaceStoredStewardTokenIfCurrent(
+        mode === "other-scope" ? null : "prior-token",
+        "cancelled-token",
+        { signal: controller.signal },
+      );
+      await started;
+      const newer =
+        mode === "queued-newer" ? writeStoredStewardToken("newer-token") : null;
+      if (mode === "external-newer" || mode === "scoped-external-newer")
+        localStorage.setItem(STEWARD_TOKEN_KEY, "newer-token");
+      if (mode === "scoped-external-newer") {
+        localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, "newer-scope");
+        localStorage.setItem(STEWARD_ACTIVE_SCOPE_KEY, "newer-scope");
+      }
+      controller.abort();
+      release();
+      expect(await candidate).toBe(false);
+      if (newer) await newer;
+      expect(localStorage.getItem(STEWARD_TOKEN_KEY)).toBe(
+        mode === "other-scope" ? "prior-token" : "newer-token",
+      );
+      if (mode === "scoped-external-newer") {
+        expect(localStorage.getItem(STEWARD_TOKEN_SCOPE_KEY)).toBe(
+          "newer-scope",
+        );
+        expect(readStoredStewardToken()).toBe("newer-token");
+      }
+      if (mode === "other-scope") {
+        expect(localStorage.getItem(STEWARD_TOKEN_SCOPE_KEY)).toBe(
+          "prior-scope",
+        );
+        expect(readStoredStewardToken()).toBeNull();
+      }
+    } finally {
+      release();
+      unregister();
+    }
+  },
+);

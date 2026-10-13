@@ -141,18 +141,19 @@ export async function syncStewardSessionCookie(
             markStewardServerCookieSynced(token, sessionEndpoint),
         },
       );
-      if (!published || readStoredStewardToken() !== token)
+      if (!published)
         throw new DOMException(
           "The sign-in attempt no longer owns this session.",
           "AbortError",
         );
-      options?.signal?.throwIfAborted();
     } else {
       // Preserve the ordinary sync ordering used by existing login/recovery.
       markStewardServerCookieSynced(token, sessionEndpoint);
       await writeStoredStewardToken(token);
     }
-    options?.signal?.throwIfAborted();
+    // Canonical publication is committed. A listener may abort navigation or
+    // queue a newer account, but cannot turn this completed write into failure.
+    if (readStoredStewardToken() !== token) return;
     window.dispatchEvent(
       new CustomEvent("steward-token-sync", { detail: { token } }),
     );

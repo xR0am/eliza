@@ -130,3 +130,29 @@ it("refuses an already superseded owned sync before posting", async () => {
   expect(fetchSpy).not.toHaveBeenCalled();
   expect(readStoredStewardToken()).toBe("newer-token");
 });
+
+it("treats abort from a publication listener as committed authority", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response("{}", { status: 200 }),
+  );
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  window.addEventListener(STEWARD_SESSION_CHANGE_EVENT, abort);
+  try {
+    await expect(
+      syncStewardSessionCookie("committed-token", null, {
+        expectedToken: null,
+        signal: controller.signal,
+      }),
+    ).resolves.toBeUndefined();
+    expect(readStoredStewardToken()).toBe("committed-token");
+    expect(
+      consumeStewardServerCookieSynced(
+        "committed-token",
+        "/api/auth/steward-session",
+      ),
+    ).toBe(true);
+  } finally {
+    window.removeEventListener(STEWARD_SESSION_CHANGE_EVENT, abort);
+  }
+});

@@ -508,6 +508,9 @@ describe("StewardLoginSection phone login", () => {
     await act(async () => {
       await canonical.clearStoredStewardToken();
     });
+    expect(
+      screen.getByRole("button", { name: "Sign in" }).hasAttribute("disabled"),
+    ).toBe(false);
     await act(async () => {
       finishVerify({
         token: "late-phone-token",

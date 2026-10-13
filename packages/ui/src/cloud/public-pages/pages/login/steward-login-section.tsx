@@ -833,14 +833,21 @@ export default function StewardLoginSection({
   useEffect(() => {
     if (phoneAttemptScope === null) return;
     const retireChangedSession = (event: Event) => {
+      const attempt = phoneAttemptRef.current;
       if (
         event.type === STEWARD_SESSION_CHANGE_EVENT &&
         (event as CustomEvent<{ state?: unknown }>).detail?.state === "cleared"
       ) {
-        phoneAttemptRef.current?.controller.abort();
-        return;
+        attempt?.controller.abort();
+      } else {
+        phoneAttemptIsActive(attempt);
       }
-      phoneAttemptIsActive(phoneAttemptRef.current);
+      if (
+        attempt &&
+        phoneAttemptRef.current === attempt &&
+        attempt.controller.signal.aborted
+      )
+        setLoading(null);
     };
     window.addEventListener(STEWARD_SESSION_CHANGE_EVENT, retireChangedSession);
     window.addEventListener("steward-token-sync", retireChangedSession);
