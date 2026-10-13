@@ -37,6 +37,8 @@ const bolt = vi.hoisted(() => ({
   channels: [] as Array<Record<string, unknown>>,
   users: [] as Array<Record<string, unknown>>,
   infoError: null as Error | null,
+  teamInfoError: null as Error | null,
+  openApps: 0,
   authResult: {
     user_id: "U0BOTBOT0",
     team_id: "T0TEAM000",
@@ -70,7 +72,12 @@ function createClient() {
     chat: {
       postMessage: vi.fn().mockResolvedValue({ ok: true, ts: "1.000001" }),
     },
-    team: { info: vi.fn().mockResolvedValue({ team: { name: "Sandbox" } }) },
+    team: {
+      info: vi.fn().mockImplementation(async () => {
+        if (bolt.teamInfoError) throw bolt.teamInfoError;
+        return { team: { name: "Sandbox" } };
+      }),
+    },
   };
 }
 
@@ -126,8 +133,12 @@ vi.mock("@slack/bolt", () => ({
       );
     }
 
-    async start() {}
-    async stop() {}
+    async start() {
+      bolt.openApps += 1;
+    }
+    async stop() {
+      bolt.openApps -= 1;
+    }
   },
 }));
 
@@ -368,6 +379,8 @@ function reaction(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   bolt.apps.length = 0;
+  bolt.teamInfoError = null;
+  bolt.openApps = 0;
   bolt.channels = [
     { id: OPS, name: "ops", is_channel: true },
     { id: DISABLED, name: "leadership", is_private: true, is_group: true },
@@ -705,6 +718,27 @@ describe("persisted Slack policy through Bolt handlers", () => {
       code: "SLACK_AUTH_IDENTITY_MISSING",
     });
     expect(bolt.apps[0]?.eventHandlers.size).toBe(0);
+  });
+
+  it("closes the Socket Mode app when startup fails after it opened", async () => {
+    // First boot with no stored world: the workspace bootstrap reads
+    // team.info, which fails without the team:read scope.
+    bolt.teamInfoError = new Error("missing_scope");
+    const start = () => {
+      const runtime = createRuntime({
+        enabled: true,
+        botToken: "xoxb-test-token",
+        appToken: "xapp-test-token",
+        groupPolicy: "open",
+      });
+      vi.mocked(runtime.getWorld).mockResolvedValue(null);
+      return SlackService.start(runtime);
+    };
+    // Boot, then the in-process restart that a settings save runs.
+    await expect(start()).rejects.toThrow("missing_scope");
+    await expect(start()).rejects.toThrow("missing_scope");
+    expect(bolt.apps).toHaveLength(2);
+    expect(bolt.openApps).toBe(0);
   });
 
   it("rejects missing and foreign workspace identity on every inbound family", async () => {
