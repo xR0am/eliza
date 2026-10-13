@@ -465,6 +465,8 @@ export class PromptBatcher {
       validate: opts.validate,
       maxRetries: opts.maxRetries,
       execOptions: opts.execOptions,
+    }).catch(() => {
+      // Setup failures are already reported via reportError
     });
   }
 
