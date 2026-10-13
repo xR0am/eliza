@@ -55,7 +55,8 @@ function normalizeHostname(value: unknown): string | null {
   // blocker engine does; the ASCII-only pattern below would drop it. Only a
   // bare host is converted: a path, port or credentials stay invalid.
   let ascii = withoutTrailingDot.toLowerCase();
-  if (/[^\x00-\x7f]/.test(ascii) && !/[\s/\\:?#@]/.test(ascii)) {
+  const nonAscii = [...ascii].some((char) => (char.codePointAt(0) ?? 0) > 0x7f);
+  if (nonAscii && !/[\s/\\:?#@]/.test(ascii)) {
     try {
       ascii = new URL(`https://${ascii}`).hostname;
     } catch {
