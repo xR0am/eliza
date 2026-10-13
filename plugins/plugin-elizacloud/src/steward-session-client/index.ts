@@ -465,10 +465,12 @@ export async function replaceStoredStewardTokenIfCurrent(
       ) {
         if (previousToken === null) await removeStoredStewardToken();
         else await persistStoredStewardToken(previousToken, previousScope);
-        if (previousScope === null)
-          window.localStorage.removeItem(STEWARD_TOKEN_SCOPE_KEY);
-        else
-          window.localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, previousScope);
+        if (window.localStorage.getItem(STEWARD_TOKEN_KEY) === previousToken) {
+          if (previousScope === null)
+            window.localStorage.removeItem(STEWARD_TOKEN_SCOPE_KEY);
+          else
+            window.localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, previousScope);
+        }
       }
       return false;
     }

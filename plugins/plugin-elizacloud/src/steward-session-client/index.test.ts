@@ -202,3 +202,53 @@ it.each([
     }
   },
 );
+
+it.each([null, "owner-token"])(
+  "preserves a newer external scope during rollback to %s",
+  async (initial) => {
+    if (initial) localStorage.setItem(STEWARD_TOKEN_KEY, initial);
+    localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, "initial-scope");
+    localStorage.setItem(STEWARD_ACTIVE_SCOPE_KEY, "initial-scope");
+    const controller = new AbortController();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const unregister = registerStewardTokenPersistence(async (token) => {
+      if (token === "cancelled-token") {
+        localStorage.setItem(STEWARD_TOKEN_KEY, token);
+        controller.abort();
+      } else {
+        entered();
+        await held;
+      }
+    });
+    const unregisterRemoval = registerStewardTokenRemoval(async () => {
+      entered();
+      await held;
+    });
+    try {
+      const candidate = replaceStoredStewardTokenIfCurrent(
+        initial,
+        "cancelled-token",
+        { signal: controller.signal },
+      );
+      await started;
+      localStorage.setItem(STEWARD_TOKEN_KEY, "newer-token");
+      localStorage.setItem(STEWARD_TOKEN_SCOPE_KEY, "newer-scope");
+      localStorage.setItem(STEWARD_ACTIVE_SCOPE_KEY, "newer-scope");
+      release();
+      expect(await candidate).toBe(false);
+      expect(localStorage.getItem(STEWARD_TOKEN_SCOPE_KEY)).toBe("newer-scope");
+      expect(readStoredStewardToken()).toBe("newer-token");
+    } finally {
+      release();
+      unregister();
+      unregisterRemoval();
+    }
+  },
+);
