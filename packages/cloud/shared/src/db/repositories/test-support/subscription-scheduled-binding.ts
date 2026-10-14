@@ -77,7 +77,10 @@ export async function assertScheduledPaidBinding(source: BillingSubscription, co
     { ...input, source: { ...source, provider_object_digest: "f".repeat(64) } },
     { ...input, quote: { ...quote, consumed_by_command_id: crypto.randomUUID() } },
     { ...input, command: { ...command, organization_schedule_configuration_snapshot: null } },
-    { ...input, period: { ...period, subscription_revision: period.subscription_revision - 1 } },
+    {
+      ...input,
+      period: { ...period, subscription_revision: Number(period.subscription_revision) - 1 },
+    },
     {
       ...input,
       period: { ...period, period_start: new Date(period.period_start.getTime() + 1000) },

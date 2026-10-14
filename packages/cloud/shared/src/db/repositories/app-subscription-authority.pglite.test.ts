@@ -7,7 +7,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Client } from "pg";
 import { loadCanonicalMigrations } from "../../../../scripts/admin/canonical-migration-ledger";
-import { installBillingCommandEvidenceTestColumns } from "../../testing";
+import {
+  installBillingCommandEvidenceTestColumns,
+  installSubscriptionGrantTestSchema,
+} from "../../testing";
 
 const postgresUrl = process.env.APP_BILLING_TEST_POSTGRES_URL;
 const schema = `app_billing_${randomUUID().replaceAll("-", "_")}`;
@@ -112,6 +115,7 @@ beforeAll(async () => {
   if (!pilotMigration) throw new Error("Pilot migration is absent from the canonical ledger");
   for (const statement of pilotMigration.statements) await client.exec(statement);
   await installBillingCommandEvidenceTestColumns((statement) => client.exec(statement));
+  await installSubscriptionGrantTestSchema((statement) => client.exec(statement));
 
   await client.query(
     `INSERT INTO billing_merchants(id,organization_id,provider_account_key,livemode,enabled) VALUES ($1,$2,'platform',false,true)`,

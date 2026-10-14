@@ -1250,6 +1250,7 @@ export async function runSharedAgentTurn(
   let realtimeActionResults: ActionResult[] | undefined;
   let realtimeGrounding: SharedRuntimePublicGrounding | undefined;
   if (realtimeRequirement) {
+    const preflightRequestedAt = Date.now();
     let searchResult: ActionResult;
     try {
       searchResult =
@@ -1262,6 +1263,17 @@ export async function runSharedAgentTurn(
           : await runWebSearchEdge(realtimeRequirement.query, {
               signal: input.abortSignal,
             });
+      observeOwnerCapture(input.ownerCapture, (capture) =>
+        capture.observe("preflight", {
+          stage: "provider-result",
+          path: "primary",
+          query: realtimeRequirement.query,
+          domain: realtimeRequirement.domain,
+          requestedAt: preflightRequestedAt,
+          observedAt: Date.now(),
+          result: searchResult,
+        }),
+      );
       input.abortSignal?.throwIfAborted();
     } catch (error) {
       input.abortSignal?.throwIfAborted();
@@ -1290,6 +1302,9 @@ export async function runSharedAgentTurn(
     );
     observeOwnerCapture(input.ownerCapture, (capture) =>
       capture.observe("preflight", {
+        stage: "authority-result",
+        requestedAt: preflightRequestedAt,
+        observedAt: Date.now(),
         query: realtimeRequirement.query,
         domain: realtimeRequirement.domain,
         result: traceableResult,

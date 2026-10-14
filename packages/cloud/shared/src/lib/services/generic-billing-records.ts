@@ -200,7 +200,11 @@ export class GenericBillingRecordsService {
           ? cursor(identity, {
               kind: "usage",
               reservationId: last.reservationId,
-              source: last.source,
+              // App-scoped buckets are never subscription-grant buckets (CHECK constraint).
+              source:
+                last.source === "promo_grant"
+                  ? appBillingConflict("App usage cannot be funded by a subscription grant")
+                  : last.source,
             })
           : null,
     };

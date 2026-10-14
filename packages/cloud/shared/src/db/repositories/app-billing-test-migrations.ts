@@ -1,6 +1,9 @@
 /** Applies the app billing migration extension to isolated subscription repository test databases. */
 import { readFile } from "node:fs/promises";
-import { installBillingCommandEvidenceTestColumns } from "../../testing";
+import {
+  installBillingCommandEvidenceTestColumns,
+  installSubscriptionGrantTestSchema,
+} from "../../testing";
 
 export async function applyAppBillingTestMigrations(
   execute: (statement: string) => Promise<unknown>,
@@ -59,4 +62,5 @@ export async function applyAppBillingTestMigrations(
   const column = upgradeDispatch.split("--> statement-breakpoint")[0]!;
   await execute(column.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS"));
   await installBillingCommandEvidenceTestColumns(execute);
+  await installSubscriptionGrantTestSchema(execute);
 }
