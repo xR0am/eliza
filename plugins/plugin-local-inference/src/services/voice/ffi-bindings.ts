@@ -137,8 +137,10 @@ function ensureWin32DllSearchDir(dir: string): void {
  *     Paradee. The family is bound by its own dlopen, so a v16 library is
  *     accepted only when every v17 symbol is absent; the Paradee and ASR
  *     probes then report false.
+ * v18: additive LLM context-capacity query; voice uses the unchanged v17
+ *     surface, so libraries reporting v17 remain compatible.
  */
-export const ELIZA_INFERENCE_ABI_VERSION = 17 as const;
+export const ELIZA_INFERENCE_ABI_VERSION = 18 as const;
 
 /** One transcribed word with playback-synced timing (ms from utterance start). */
 export interface AsrWordTiming {
@@ -2285,6 +2287,7 @@ function bindWithBunFfi(dylibPath: string): ElizaInferenceFfi {
 	// tokenizer), accepted only when those are absent too.
 	const abiOk =
 		(reported === String(ELIZA_INFERENCE_ABI_VERSION) && v17SymbolsAvailable) ||
+		(reported === "17" && v17SymbolsAvailable) ||
 		(reported === "16" && !v17SymbolsAvailable) ||
 		(reported === "15" && !embeddingOptionsSymbolsAvailable) ||
 		// ABI v15 only adds optional exact-size Kokoro PCM allocation symbols.

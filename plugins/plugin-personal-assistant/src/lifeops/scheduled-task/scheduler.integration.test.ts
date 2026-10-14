@@ -88,6 +88,7 @@ describe("processDueScheduledTasks — production wiring", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (runtimeResult) {
       await runtimeResult.cleanup();
       runtimeResult = null;
@@ -143,6 +144,10 @@ describe("processDueScheduledTasks — production wiring", () => {
   it("fires owner-local cron after travel changes the zone despite a future home-zone index", async () => {
     runtimeResult = await createLifeOpsTestRuntime();
     const { runtime } = runtimeResult;
+    // The scheduler preflight and runner must observe the same instant.
+    // Otherwise the runner correctly rechecks the cron against today's clock.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-11T00:01:00.000Z"));
     const facts = resolveOwnerFactStore(runtime);
     const provenance = {
       source: "profile_save" as const,
@@ -271,6 +276,7 @@ describe("processDueScheduledTasks — production wiring", () => {
         chatDeliveryBinding: {
           version: 1,
           source: "telegram",
+          accountId: "personal",
           roomId,
           channelId: "owner-chat-42",
           audience: {

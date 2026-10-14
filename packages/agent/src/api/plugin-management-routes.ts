@@ -269,7 +269,9 @@ async function persistMutation(
     ctx.error(ctx.res, "Plugin is controlled by the development launcher", 409);
     return;
   }
-  const previousConfig = ctx.state.config;
+  // Snapshot: the in-place replace below also rewrites the live object, and
+  // the runtime apply compares this config with the next one.
+  const previousConfig = structuredClone(ctx.state.config);
   const nextConfig = structuredClone(previousConfig);
   const entry = canonicalEntry(nextConfig, plugin);
   for (const [key, value] of Object.entries(values)) {
@@ -459,7 +461,7 @@ async function dispatchPluginManagementRoutes(
         error(res, rejection, 422);
         return;
       }
-      const previousConfig = ctx.state.config;
+      const previousConfig = structuredClone(ctx.state.config);
       const next = structuredClone(previousConfig);
       next.plugins ??= {};
       next.plugins.entries ??= {};
