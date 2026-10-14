@@ -468,7 +468,7 @@ jobs:
           node-version: "24.15.0"
 
       - name: Download lane receipts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: launch-gate-lane-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/launch-gate
