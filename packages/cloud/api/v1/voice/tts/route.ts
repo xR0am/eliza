@@ -666,12 +666,14 @@ async function __hono_POST(c: AppContext) {
     // instead of charging the utterance twice. Org-scoped inside reserve().
     // The key is bound to the utterance it names: the same key with another
     // text, voice, model or format is a new paid request, never a replay.
+    // Hash resolved defaults because the proxy fallback fills the legacy
+    // default voice and model that the direct request is allowed to omit.
     const clientIdempotencyKey = request.headers.get("Idempotency-Key");
     const ttsIdempotencyKey = clientIdempotencyKey
       ? `${clientIdempotencyKey}:${settlementDigest({
           text,
-          voiceId: voiceId ?? null,
-          modelId: modelId ?? null,
+          voiceId: resolvedVoiceId,
+          modelId: resolvedModelId,
           format: body.format ?? "mp3",
           withTimestamps: body.withTimestamps === true,
           synthesis: TtsSynthesisOptions.parse(body),

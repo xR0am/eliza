@@ -156,7 +156,11 @@ afterAll(async () => {
   await closeDatabaseConnectionsForTests();
 });
 
-async function speak(text: string, idempotencyKey: string) {
+async function speak(
+  text: string,
+  idempotencyKey: string,
+  identity: { voiceId?: string; modelId?: string } = {},
+) {
   const response = await app.request(
     "/api/v1/voice/tts",
     {
@@ -165,7 +169,7 @@ async function speak(text: string, idempotencyKey: string) {
         "content-type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...identity }),
     },
     { NODE_ENV: "test" },
   );
@@ -213,4 +217,24 @@ test("one Idempotency-Key pays for one utterance: a different text is charged, t
   await speak(first, key);
   expect(providerCalls).toHaveLength(3);
   expect(await balance()).toBeCloseTo(beforeRetry, 6);
+
+  // The direct browser request omits the default voice and model. Its cloud
+  // proxy fallback fills both compatibility defaults. They are the same
+  // logical utterance and must replay one reservation after an ambiguous
+  // direct response instead of charging again.
+  const fallbackKey = `fallback-${randomUUID()}`;
+  const fallbackText = "Your driver will arrive in five minutes.";
+  await speak(fallbackText, fallbackKey);
+  const afterDirect = await balance();
+  expect(afterDirect).toBeCloseTo(
+    beforeRetry - fallbackText.length * COST_PER_CHAR,
+    6,
+  );
+
+  await speak(fallbackText, fallbackKey, {
+    voiceId: "EXAVITQu4vr4xnSDxMaL",
+    modelId: "eleven_flash_v2_5",
+  });
+  expect(providerCalls).toHaveLength(5);
+  expect(await balance()).toBeCloseTo(afterDirect, 6);
 });
