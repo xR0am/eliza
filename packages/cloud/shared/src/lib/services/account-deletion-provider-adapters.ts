@@ -210,7 +210,7 @@ export interface AccountDeletionSpoolAuthority {
 }
 
 async function deleteBackupDatabaseGraph(organizationId: string): Promise<void> {
-  await writeTransaction(async (tx) => {
+  await dbWrite.transaction(async (tx) => {
     await tx
       .delete(agentBackupRestoreReceipts)
       .where(eq(agentBackupRestoreReceipts.organization_id, organizationId));
@@ -308,7 +308,7 @@ const defaultComputeDatabase: AccountDeletionComputeDatabase = {
 };
 
 async function clearVaultKeyGraph(organizationId: string): Promise<void> {
-  await writeTransaction(async (tx) => {
+  await dbWrite.transaction(async (tx) => {
     await tx
       .delete(agentVaultKeySeedReceipts)
       .where(eq(agentVaultKeySeedReceipts.organization_id, organizationId));

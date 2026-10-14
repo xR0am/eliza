@@ -247,7 +247,7 @@ export class AccountDeletionRequestsRepository {
   async reservePersonalAccountDeletion(
     input: ReservePersonalAccountDeletionInput,
   ): Promise<ReservePersonalAccountDeletionResult> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const [organization] = await tx
         .select()
         .from(organizations)
@@ -535,7 +535,7 @@ export class AccountDeletionRequestsRepository {
     now: Date;
     leaseMilliseconds: number;
   }): Promise<AccountDeletionPhaseLease | undefined> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const [current] = await tx
         .select()
         .from(accountDeletionPhaseReceipts)
@@ -970,7 +970,7 @@ export class AccountDeletionRequestsRepository {
     providerReceiptDigest: string;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const [observedPhase] = await tx
         .select({ phase: accountDeletionPhaseReceipts.phase })
         .from(accountDeletionPhaseReceipts)
@@ -1058,7 +1058,7 @@ export class AccountDeletionRequestsRepository {
     errorCode: string;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       if (!(await lockAccountDeletionRequest(tx, input.requestId))) return false;
       const [phase] = await tx
         .update(accountDeletionPhaseReceipts)
@@ -1374,7 +1374,7 @@ export class AccountDeletionRequestsRepository {
     providerReceiptDigest: string;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       if (!(await lockAccountDeletionRequest(tx, input.requestId))) return false;
       const [completed] = await tx
         .update(accountDeletionPhaseReceipts)
@@ -1422,7 +1422,7 @@ export class AccountDeletionRequestsRepository {
     providerReceiptDigest: string;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       if (!(await lockAccountDeletionRequest(tx, input.requestId))) return false;
       const [completed] = await tx
         .update(accountDeletionPhaseReceipts)
@@ -1565,7 +1565,7 @@ export class AccountDeletionRequestsRepository {
     generation: number;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const request = await lockAccountDeletionRequest(tx, input.requestId);
       if (!request || (request.status !== "reserved" && request.status !== "recovery")) {
         return false;
@@ -1612,7 +1612,7 @@ export class AccountDeletionRequestsRepository {
     byteCount: number;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const request = await lockAccountDeletionRequest(tx, input.requestId);
       if (!request) return false;
       const exportReceipt = await lockAccountDeletionExport(tx, input.requestId);
@@ -1853,7 +1853,7 @@ export class AccountDeletionRequestsRepository {
       return { outcome: "recovery_expired" };
     }
 
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const [organization] = await tx
         .select()
         .from(organizations)
@@ -2180,7 +2180,7 @@ export class AccountDeletionRequestsRepository {
     nextAttemptAt: Date;
     now: Date;
   }): Promise<void> {
-    await writeTransaction(async (tx) => {
+    await dbWrite.transaction(async (tx) => {
       // The phase INSERT below acquires a request FK lock. Take the stronger
       // request row lock before export mutation so this helper cannot cycle
       // with expiry or terminal finalizers that follow request -> export.
@@ -2352,7 +2352,7 @@ export class AccountDeletionRequestsRepository {
     providerReceiptDigest: string;
     now: Date;
   }): Promise<boolean> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const exportExists = await lockAccountDeletionExport(tx, input.requestId);
       const [phase] = await tx
         .update(accountDeletionPhaseReceipts)
@@ -2472,7 +2472,7 @@ export class AccountDeletionRequestsRepository {
   }
 
   async claimDue(limit: number, now = new Date()): Promise<AccountDeletionRequest[]> {
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       const due = await tx
         .select()
         .from(accountDeletionRequests)

@@ -2,7 +2,7 @@
 
 import { ElizaError } from "@elizaos/core";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { writeTransaction } from "../../../../db/helpers";
+import { dbWrite, writeTransaction } from "../../../../db/helpers";
 import { type AgentSandbox } from "../../../../db/repositories/agent-sandboxes";
 import { agentComputeFunding } from "../../../../db/schemas/agent-compute-funding";
 import {
@@ -184,7 +184,7 @@ export class SandboxWarmClaim {
     agentId: string,
     organizationId: string,
   ): Promise<void> {
-    await writeTransaction(async (tx) => {
+    await dbWrite.transaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) return;
@@ -236,7 +236,7 @@ export class SandboxWarmClaim {
   ): Promise<{ success: true } | { success: false; error: string }> {
     const prepaid = (await this.host.getProvider()).computeFundingCapability === "host-lease-v1";
     const retire = (expectedStopped?: AgentSandbox) =>
-      writeTransaction(async (tx) => {
+      dbWrite.transaction(async (tx) => {
         await this.host.lockLifecycle(tx, agentId, organizationId);
         const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
         if (current) {
@@ -427,7 +427,7 @@ export class SandboxWarmClaim {
       await apiKeysService.purgeConfirmedRevokedAgentKeys(ownerId, hashes);
     }
 
-    return await writeTransaction(async (tx) => {
+    return await dbWrite.transaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) return false;
@@ -773,7 +773,7 @@ export class SandboxWarmClaim {
       throw new Error("Warm-claim key push has no usable minted key/org for the claimed row");
     }
 
-    const attestedRevision = await writeTransaction(async (tx) => {
+    const attestedRevision = await dbWrite.transaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) return null;
@@ -908,7 +908,7 @@ export class SandboxWarmClaim {
       );
     }
 
-    const finalized = await writeTransaction(async (tx) => {
+    const finalized = await dbWrite.transaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (current) {
