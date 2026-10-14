@@ -26,6 +26,8 @@ export interface GmailHistoryEvent {
   messageId: string;
   threadId: string;
   labelIds: string[];
+  /** Added messages are hydrated at read time; false means Gmail returned message 404. */
+  messageAvailable?: boolean;
 }
 export interface GmailHistoryPage {
   version: 1;
@@ -73,8 +75,15 @@ export async function fetchManagedGoogleGmailHistory(
     grantId: input.grantId,
     side: "owner" as const,
   };
+  const deadline = Date.now() + 25_000;
+  const remainingBudget = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) fail(502, "Gmail history request deadline exceeded.");
+    return remaining;
+  };
   const authorize = async () => {
     const status = await getManagedGoogleConnectorStatus(scope);
+    remainingBudget();
     if (
       !status.connected ||
       status.connectionId !== input.grantId ||
@@ -106,7 +115,11 @@ export async function fetchManagedGoogleGmailHistory(
     response = await boundedProviderFetch(
       input.startHistoryId ? `${root}/history?${params}` : `${root}/profile?fields=historyId`,
       { method: "GET", headers: { Authorization: `Bearer ${credential.accessToken}` } },
-      { provider: "google-gmail-history", timeoutMs: 30_000, maxResponseBytes: 1024 * 1024 },
+      {
+        provider: "google-gmail-history",
+        timeoutMs: remainingBudget(),
+        maxResponseBytes: 1024 * 1024,
+      },
     );
   } catch {
     // error-policy:J1 provider transport/bounds failures are explicit, never empty history.
@@ -189,6 +202,57 @@ export async function fetchManagedGoogleGmailHistory(
     if (!seen.size && Array.isArray(row.messages) && row.messages.length)
       fail(502, "Gmail history contains an unclassified change.");
   }
+  // History normally contains only message identity. Read current labels before consumers
+  // classify inbox/unread additions; never mistake missing labels for an empty mailbox state.
+  const additions = events.filter((event) => event.type === "message-added");
+  const identities = new Map(additions.map((event) => [event.messageId, event.threadId]));
+  if (additions.some((event) => identities.get(event.messageId) !== event.threadId))
+    fail(502, "Inconsistent Gmail history message identity.");
+  if (identities.size > 100) fail(502, "Gmail history page exceeds the metadata read limit.");
+  const metadata = new Map<string, { labelIds: string[]; messageAvailable: boolean }>();
+  for (const [id, threadId] of identities) {
+    await authorize();
+    const remaining = remainingBudget();
+    let messageResponse: Response;
+    try {
+      messageResponse = await boundedProviderFetch(
+        `${root}/messages/${encodeURIComponent(id)}?format=minimal&fields=id,threadId,labelIds`,
+        { method: "GET", headers: { Authorization: `Bearer ${credential.accessToken}` } },
+        {
+          provider: "google-gmail-history-metadata",
+          timeoutMs: remaining,
+          maxResponseBytes: 16_384,
+        },
+      );
+    } catch {
+      fail(502, "Gmail history metadata request failed.");
+    }
+    await authorize();
+    if (messageResponse.status === 404) {
+      // It disappeared after its history addition. Retain its stable event, but never notify it.
+      metadata.set(id, { labelIds: [], messageAvailable: false });
+      continue;
+    }
+    if (!messageResponse.ok) fail(502, "Gmail history metadata request failed.");
+    let message: Record<string, unknown>;
+    try {
+      message = object(await messageResponse.json());
+    } catch {
+      fail(502, "Invalid Gmail history metadata JSON.");
+    }
+    const labels = message.labelIds ?? [];
+    if (
+      message.id !== id ||
+      message.threadId !== threadId ||
+      !Array.isArray(labels) ||
+      labels.length > 100 ||
+      labels.some((value) => typeof value !== "string" || !opaque.test(value))
+    )
+      fail(502, "Invalid Gmail history metadata.");
+    metadata.set(id, { labelIds: [...new Set(labels)] as string[], messageAvailable: true });
+  }
+  await authorize();
+  for (const event of additions) Object.assign(event, metadata.get(event.messageId));
   return {
     ...base,
     status: "page",
