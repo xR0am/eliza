@@ -561,6 +561,7 @@ describe("chatDbMessageToPublicShape", () => {
       timestamp: 1_700_000_000_000,
       isFromMe: false,
       chatType: "direct",
+      guid: "guid-42",
       hasAttachments: true,
       attachmentPaths: ["/tmp/image.png"],
     });
