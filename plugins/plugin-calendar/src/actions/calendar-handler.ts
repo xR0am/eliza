@@ -459,14 +459,17 @@ const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP)
 // "一周日程" (a week's schedule). A count before the week word, or a following
 // character that continues a different word, means no weekday was named.
 const HAN_WEEKDAY_PREFIX = /^(?:周|週|星期|礼拜|禮拜)/u;
-const HAN_COUNT_BEFORE = "(?<![〇零一二两兩三四五六七八九十百几幾数數0-9０-９])";
+const HAN_COUNT_BEFORE =
+  "(?<![〇零一二两兩三四五六七八九十百几幾数數0-9０-９])";
 const HAN_SUNDAY_COMPOUND_AFTER = "(?![程期子常记記历曆])";
 const HAN_NUMBERED_DAY_COUNT_AFTER = "(?![天次个個年月周週遍回])";
 function weekdayNameSource(name: string): string {
   const source = wholeWordSource(name);
   if (!HAN_WEEKDAY_PREFIX.test(name)) return source;
   return `${HAN_COUNT_BEFORE}${source}${
-    name.endsWith("日") ? HAN_SUNDAY_COMPOUND_AFTER : HAN_NUMBERED_DAY_COUNT_AFTER
+    name.endsWith("日")
+      ? HAN_SUNDAY_COMPOUND_AFTER
+      : HAN_NUMBERED_DAY_COUNT_AFTER
   }`;
 }
 const WEEKDAY_NAME_PATTERN = new RegExp(
