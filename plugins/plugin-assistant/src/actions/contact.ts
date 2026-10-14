@@ -227,8 +227,10 @@ export function createContactActions(dependencies: ContactActionDependencies): {
     if (typeof value === "string") {
       const result: Record<string, string> = {};
       for (const entry of value.split(",")) {
-        const [key, val] = entry.split(":").map((s) => s.trim());
-        if (key && val) result[key] = val;
+        const [key, ...rest] = entry.split(":");
+        const k = key?.trim();
+        const v = rest.join(":").trim();
+        if (k && v) result[k] = v;
       }
       return Object.keys(result).length > 0 ? result : undefined;
     }
