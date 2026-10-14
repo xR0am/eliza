@@ -446,6 +446,9 @@ const baseConfigure = [
   "-DLLAMA_BUILD_TESTS=OFF",
   "-DLLAMA_BUILD_SERVER=OFF",
   "-DLLAMA_CURL=OFF",
+  // Video shells out to FFmpeg through posix_spawn (Android API 28+).
+  // This mobile library supports older APIs and only embeds audio/image mtmd.
+  "-DMTMD_VIDEO=OFF",
 ];
 
 if (variant === "cpu") {
