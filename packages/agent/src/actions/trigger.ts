@@ -89,6 +89,8 @@ type TriggerOp = (typeof TRIGGER_OPS)[number];
 
 const TRIGGER_ACTION = "TRIGGER";
 const MAX_TRIGGERS_PER_CREATOR = 100;
+/** A planner retry of a relative-delay reminder lands within this window. */
+const RELATIVE_DELAY_REPLAY_WINDOW_MS = 60_000;
 const DEFAULT_INTERVAL_MS = 12 * 60 * 60 * 1000;
 // Cap for delaySeconds/delayMinutes. Far-future one-offs should use an
 // absolute scheduledAtIso; unbounded delays overflow Date math (RangeError).
@@ -884,12 +886,20 @@ async function opCreate(
   }
 
   // Match the complete request and creator before replaying a committed receipt.
+  // A relative-delay key names the delay, not the fire time, so it is a replay
+  // only while the stored fire time is within the retry window: the same "in
+  // 1 hour" asked 40 minutes later is a new reminder.
   const exactDuplicate = existingTasks.find((t) => {
     const cfg = readTriggerConfig(t);
     return Boolean(
       cfg?.enabled &&
         cfg.createdBy === creatorId &&
-        cfg.dedupeKey === dedupeKey,
+        cfg.dedupeKey === dedupeKey &&
+        (!usedDelay ||
+          Math.abs(
+            Date.parse(cfg.scheduledAtIso ?? "") -
+              Date.parse(scheduledFromDelay ?? ""),
+          ) <= RELATIVE_DELAY_REPLAY_WINDOW_MS),
     );
   });
   if (exactDuplicate?.id) {

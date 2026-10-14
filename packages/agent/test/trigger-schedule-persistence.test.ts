@@ -497,6 +497,60 @@ it("reads a once time with no offset in the user's zone on create and update", a
     await fixture.runtime.deleteTask(taskId);
   }
 });
+it("sets a second relative reminder asked later, and replays only an immediate retry", async () => {
+  const message = {
+    entityId: fixture.runtime.agentId,
+    agentId: fixture.runtime.agentId,
+    roomId: randomUUID() as UUID,
+    content: { text: "Remind me in 1 hour to move the laundry." },
+  } as Memory;
+  const remindInAnHour = () =>
+    triggerAction.handler(fixture.runtime, message, undefined, {
+      parameters: {
+        action: "create",
+        instructions: "Remind the user to move the laundry.",
+        delayMinutes: 60,
+      },
+    });
+  const fireTimes = async () =>
+    (await fixture.runtime.getTasks({ tags: [...TRIGGER_TASK_TAGS] }))
+      .map((task) => readTriggerConfig(task))
+      .filter(
+        (cfg) => cfg?.instructions === "Remind the user to move the laundry.",
+      )
+      .map((cfg) => cfg?.scheduledAtIso)
+      .sort();
+  const start = Date.now();
+  const createdIds: UUID[] = [];
+  try {
+    const first = await remindInAnHour();
+    expect(first, first?.text).toMatchObject({ success: true });
+    createdIds.push(
+      (first?.data as { taskId: UUID } | undefined)?.taskId as UUID,
+    );
+
+    // A planner retry of the same call a moment later is the same reminder.
+    const retry = await remindInAnHour();
+    expect(retry?.text).toBe("Already set — you're covered.");
+    expect(await fireTimes()).toHaveLength(1);
+
+    // The same words 40 minutes later ask for a reminder 40 minutes later.
+    vi.spyOn(Date, "now").mockReturnValue(start + 40 * 60_000);
+    const later = await remindInAnHour();
+    vi.restoreAllMocks();
+    expect(later, later?.text).toMatchObject({ success: true });
+    expect(later?.text).not.toBe("Already set — you're covered.");
+    createdIds.push(
+      (later?.data as { taskId: UUID } | undefined)?.taskId as UUID,
+    );
+    const times = (await fireTimes()).map((iso) => Date.parse(iso ?? ""));
+    expect(times).toHaveLength(2);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(39 * 60_000);
+  } finally {
+    vi.restoreAllMocks();
+    for (const id of createdIds) if (id) await fixture.runtime.deleteTask(id);
+  }
+});
 it("persists the timezone through pause and re-enable and schedules in that zone", async () => {
   const triggerId = randomUUID() as UUID;
   const normalized = normalizeTriggerDraft({
