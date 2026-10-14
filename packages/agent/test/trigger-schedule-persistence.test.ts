@@ -10,7 +10,7 @@ import {
   type UUID,
 } from "@elizaos/core";
 import { createTestRuntime } from "@elizaos/testing/runtime";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { runPlannerLoop } from "../../../plugins/plugin-assistant/src/runtime/planner-loop.ts";
 import {
   handleTriggerRoutes,
@@ -735,6 +735,50 @@ it.each([
     }
   },
 );
+
+it("keeps an interval trigger's next run when an edit leaves the interval", async () => {
+  const displayName = `Weekly report ${randomUUID()}`;
+  const week = 7 * 24 * 60 * 60 * 1000;
+  const created = await requestTrigger("POST", "/api/triggers", {
+    kind: "prompt",
+    displayName,
+    instructions: "Send the weekly report.",
+    triggerType: "interval",
+    intervalMs: week,
+    enabled: true,
+  });
+  expect(created.status).toBe(201);
+  const saved = (await fixture.runtime.getTasks({ tags: ["trigger"] })).find(
+    (task) => readTriggerConfig(task)?.displayName === displayName,
+  );
+  if (!saved?.id) throw new Error("Created interval task missing");
+  const taskId = saved.id;
+  const nextRunBefore = readTriggerConfig(saved)?.nextRunAtMs;
+  const anchorBefore = (saved.metadata as { updatedAt?: number }).updatedAt;
+  try {
+    // Six days later the owner only renames it; the form sends the full
+    // schedule back unchanged.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 24 * 60 * 60 * 1000);
+    const renamed = await requestTrigger("PUT", `/api/triggers/${taskId}`, {
+      displayName: `${displayName} (renamed)`,
+      triggerType: "interval",
+      intervalMs: week,
+    });
+    vi.restoreAllMocks();
+    expect(renamed.status).toBe(200);
+    const after = await fixture.runtime.getTask(taskId);
+    expect(after && readTriggerConfig(after)).toMatchObject({
+      displayName: `${displayName} (renamed)`,
+      nextRunAtMs: nextRunBefore,
+    });
+    expect(
+      (after?.metadata as { updatedAt?: number } | undefined)?.updatedAt,
+    ).toBe(anchorBefore);
+  } finally {
+    vi.restoreAllMocks();
+    await fixture.runtime.deleteTask(taskId);
+  }
+});
 
 const onceUpdates: { enabled: boolean; body: JsonObject; status: number }[] = [
   {
