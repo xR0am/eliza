@@ -30,11 +30,14 @@
  * A breaking change needs a new `typ`, which old clients refuse explicitly.
  */
 
-import { ElizaError } from "@elizaos/core";
 import { eq } from "drizzle-orm";
 import { exportJWK, importPKCS8, importSPKI, type JWK, SignJWT } from "jose";
 import { dbWrite } from "../../db/client";
-import { readEligibleSubscriptionAllowance } from "../../db/repositories/subscription-allowance-eligibility";
+import {
+  observeSubscriptionAllowanceEligibility,
+  readEligibleSubscriptionAllowance,
+} from "../../db/repositories/subscription-allowance-eligibility";
+import { moneyToMicros } from "../../db/repositories/subscription-funding-reservations";
 import {
   type BillingSubscriptionStatus,
   billingSubscriptions,
@@ -77,19 +80,11 @@ export interface EntitlementPlanAllowance {
   unit: "usd_micros";
   /** Granted for the period, adjustments included. */
   granted: number;
-  /** Still available to new requests; requests in flight are excluded. */
+  /** Not yet spent or reserved: amounts Cloud holds for requests in flight are excluded. */
   remaining: number;
   periodStart: Date;
   /** Period end. Unused allowance does not roll over. */
   resetsAt: Date;
-}
-
-/** Converts a numeric(16,6) USD string to integer micro-dollars, or null when it does not fit. */
-export function usdMicros(value: string): number | null {
-  const match = /^(\d+)(?:\.(\d{1,6}))?$/.exec(value.trim());
-  if (!match) return null;
-  const micros = Number(match[1]) * 1_000_000 + Number((match[2] ?? "").padEnd(6, "0"));
-  return Number.isSafeInteger(micros) ? micros : null;
 }
 
 export class EntitlementSigningUnavailableError extends Error {
@@ -316,29 +311,22 @@ export async function readOrganizationEntitlementSummary(
           rateTier,
         };
       if (!options.allowance || !policy.subscriptionFunded) return { ...summary, rateTier };
-      let period: Awaited<ReturnType<typeof readEligibleSubscriptionAllowance>>;
-      try {
-        period = await readEligibleSubscriptionAllowance(
-          tx,
-          organizationId,
-          new Date(policy.observedAt),
-          false,
-          policy,
-        );
-      } catch (error) {
-        if (
-          !(error instanceof ElizaError) ||
-          error.code !== "SUBSCRIPTION_FUNDING_AUTHORITY_UNAVAILABLE"
-        )
-          throw error;
-        // error-policy:J1 an allowance that needs reconciliation is not shown;
-        // the plan state is still reported and Cloud still decides each request.
+      const eligibility = await observeSubscriptionAllowanceEligibility(
+        tx,
+        organizationId,
+        new Date(policy.observedAt),
+        policy,
+      );
+      if (eligibility.status === "unavailable") {
+        // An allowance that needs reconciliation is not shown; the plan state
+        // is still reported and Cloud still decides each request.
         logger.warn("[SubscriptionEntitlement] Allowance not reported", {
           organizationId,
-          code: error.code,
+          code: eligibility.code,
         });
         return { ...summary, rateTier, allowance: null };
       }
+      const period = eligibility.period;
       return { ...summary, rateTier, allowance: period ? allowanceFromPeriod(period) : null };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
@@ -352,14 +340,16 @@ function allowanceFromPeriod(period: {
   period_start: Date;
   expires_at: Date;
 }): EntitlementPlanAllowance | null {
-  const granted = usdMicros(period.granted_amount);
-  const adjustment = usdMicros(period.adjustment_amount);
-  const remaining = usdMicros(period.available_amount);
-  if (granted === null || adjustment === null || remaining === null) return null;
+  const granted =
+    moneyToMicros(period.granted_amount, "granted_amount") +
+    moneyToMicros(period.adjustment_amount, "adjustment_amount");
+  const remaining = moneyToMicros(period.available_amount, "available_amount");
+  // numeric(16,6) can exceed a JSON-safe integer; such an allowance is not reported.
+  if (granted > BigInt(Number.MAX_SAFE_INTEGER)) return null;
   return {
     unit: "usd_micros",
-    granted: granted + adjustment,
-    remaining,
+    granted: Number(granted),
+    remaining: Number(remaining),
     periodStart: period.period_start,
     resetsAt: period.expires_at,
   };

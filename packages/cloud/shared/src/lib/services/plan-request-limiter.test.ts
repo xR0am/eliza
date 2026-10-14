@@ -55,6 +55,39 @@ describe("plan request buckets", () => {
     expect(consumePlanRequest({ ...id, service: "maps" }, CONFIG, T0).allowed).toBe(true);
   });
 
+  test("a plan's maps entry sets Maps limits apart from inference", () => {
+    const config = readPlanRequestLimitConfig({
+      ELIZA_CLOUD_PLAN_RATE_LIMITS: JSON.stringify({
+        plans: {
+          default: {
+            ...CONFIG.plans.default,
+            maps: {
+              burst: { capacity: 1, refillPerSecond: 1 },
+              sustained: { capacity: 3, refillPerSecond: 1 },
+            },
+          },
+        },
+      }),
+    });
+    if (!config) throw new Error("expected a configuration");
+    const maps = { organizationId: ORG, userId: "u1", service: "maps" as const };
+    expect(consumePlanRequest(maps, config, T0).allowed).toBe(true);
+    expect(consumePlanRequest(maps, config, T0)).toMatchObject({
+      allowed: false,
+      limit: { capacity: 1 },
+    });
+    expect(consumePlanRequest({ organizationId: ORG, userId: "u1" }, config, T0).allowed).toBe(
+      true,
+    );
+    expect(() =>
+      readPlanRequestLimitConfig({
+        ELIZA_CLOUD_PLAN_RATE_LIMITS: JSON.stringify({
+          plans: { default: { ...CONFIG.plans.default, maps: { burst: {} } } },
+        }),
+      }),
+    ).toThrow(PlanRequestLimitConfigError);
+  });
+
   test("buckets are separate per user and per plan", () => {
     for (let i = 0; i < 2; i++)
       consumePlanRequest({ organizationId: ORG, userId: "u1" }, CONFIG, T0);

@@ -320,12 +320,11 @@ describe("subscription grant redemption", () => {
       });
       // The token reports the grant's own allowance bucket in micro-dollars.
       const bucket = (await allowanceAt(PAID_ORG, new Date()))!;
+      const micros = (value: string) => Math.round(Number(value) * 1_000_000);
       expect(summary.allowance).toEqual({
         unit: "usd_micros",
-        granted:
-          entitlementToken.usdMicros(bucket.granted_amount)! +
-          entitlementToken.usdMicros(bucket.adjustment_amount)!,
-        remaining: entitlementToken.usdMicros(bucket.available_amount)!,
+        granted: micros(bucket.granted_amount) + micros(bucket.adjustment_amount),
+        remaining: micros(bucket.available_amount),
         periodStart: bucket.period_start,
         resetsAt: bucket.expires_at,
       });

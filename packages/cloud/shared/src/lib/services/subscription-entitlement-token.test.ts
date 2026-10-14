@@ -13,7 +13,6 @@ import {
   entitlementStatusForSubscription,
   publishedEntitlementKeys,
   signSubscriptionEntitlement,
-  usdMicros,
 } from "./subscription-entitlement-token";
 
 const ISSUER = "https://api.eliza.app";
@@ -171,15 +170,6 @@ describe("subscription entitlement JWS", () => {
     // v1 clients reject an `allowance` claim in an unknown unit; v2 never sends one.
     expect(claims.allowance).toBeUndefined();
     expect(claims.exp).toBe(Date.parse("2026-11-01T00:00:00Z") / 1000);
-  });
-
-  test("allowance amounts convert exactly from numeric(16,6) USD", () => {
-    expect(usdMicros("25.000000")).toBe(25_000_000);
-    expect(usdMicros("0.000001")).toBe(1);
-    expect(usdMicros("12.5")).toBe(12_500_000);
-    expect(usdMicros("7")).toBe(7_000_000);
-    expect(usdMicros("-1.000000")).toBeNull();
-    expect(usdMicros("9999999999.000000")).toBeNull();
   });
 
   test("an organization-less user omits org", async () => {
