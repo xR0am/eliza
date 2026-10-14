@@ -114,6 +114,15 @@ export interface STTOptions {
 }
 
 /**
+ * Speech-to-text result. `audioDurationSeconds` is the audio the provider
+ * transcribed, when the response reports it.
+ */
+export interface STTResult {
+  transcript: string;
+  audioDurationSeconds?: number;
+}
+
+/**
  * Service for ElevenLabs TTS and STT functionality.
  */
 export class ElevenLabsService {
@@ -210,7 +219,7 @@ export class ElevenLabsService {
   /**
    * Convert speech to text
    */
-  async speechToText(options: STTOptions): Promise<string> {
+  async speechToText(options: STTOptions): Promise<STTResult> {
     const modelId: Parameters<ElevenLabsClient["speechToText"]["convert"]>[0]["modelId"] =
       options.modelId === "scribe_v1" ? "scribe_v1" : "scribe_v2";
 
@@ -231,27 +240,24 @@ export class ElevenLabsService {
       languageCode: options.languageCode,
     });
 
-    // Handle response type (union of single/multichannel/webhook)
-    let transcript = "";
+    // Without `useMultiChannel` or `webhook` the SDK returns one chunk.
+    const transcript = result.text || "";
+    // Responses without audio_duration_secs still time each word; the last
+    // word end is the shortest span of audio that was transcribed.
+    const lastWordEnd = (result.words ?? []).reduce(
+      (last, word) => Math.max(last, word.end ?? 0),
+      0,
+    );
+    const audioDurationSeconds =
+      typeof result.audioDurationSecs === "number" &&
+      Number.isFinite(result.audioDurationSecs) &&
+      result.audioDurationSecs > 0
+        ? result.audioDurationSecs
+        : Number.isFinite(lastWordEnd) && lastWordEnd > 0
+          ? lastWordEnd
+          : undefined;
 
-    if ("text" in result) {
-      // Single channel response
-      transcript = result.text || "";
-    } else if ("transcripts" in result) {
-      // Multi-channel response - combine all channels
-      const transcripts =
-        (
-          result as {
-            transcripts?: Record<string, { text?: string }>;
-          }
-        ).transcripts || {};
-      transcript = Object.values(transcripts)
-        .map((t: { text?: string }) => t?.text || "")
-        .filter(Boolean)
-        .join(" ");
-    }
-
-    return transcript;
+    return { transcript, ...(audioDurationSeconds !== undefined ? { audioDurationSeconds } : {}) };
   }
 
   /**

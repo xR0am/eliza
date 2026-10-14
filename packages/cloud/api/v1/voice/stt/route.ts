@@ -133,6 +133,8 @@ function estimateAudioDurationMinutes(
 }
 
 interface DeepgramTranscription {
+  /** Seconds of audio Deepgram transcribed (`metadata.duration`). */
+  durationSeconds?: number;
   transcript: string;
   segments?: SttTimedSpan[];
   words?: SttTimedSpan[];
@@ -226,7 +228,21 @@ function parseDeepgramTranscription(
   const segments = parseDeepgramArray(results?.utterances, "transcript");
   if (words.invalid || segments.invalid) return null;
 
+  const metadata =
+    root?.metadata &&
+    typeof root.metadata === "object" &&
+    !Array.isArray(root.metadata)
+      ? (root.metadata as Record<string, unknown>)
+      : null;
+  const durationSeconds =
+    typeof metadata?.duration === "number" &&
+    Number.isFinite(metadata.duration) &&
+    metadata.duration > 0
+      ? metadata.duration
+      : undefined;
+
   return {
+    ...(durationSeconds !== undefined ? { durationSeconds } : {}),
     transcript,
     ...(segments.spans.length > 0 ? { segments: segments.spans } : {}),
     ...(words.spans.length > 0 ? { words: words.spans } : {}),
@@ -811,6 +827,10 @@ async function __hono_POST(c: AppContext) {
       }
 
       const deepgramDuration = Date.now() - deepgramStart;
+      // Bill the audio Deepgram transcribed; the container header estimate
+      // only sized the reservation.
+      const billedDurationSeconds =
+        transcription.durationSeconds ?? estimate.durationSeconds;
       const billingReservation = reservation;
       reservation = undefined;
 
@@ -821,15 +841,23 @@ async function __hono_POST(c: AppContext) {
         pricingProxyModel: STT_PRICING_PROXY_MODEL,
         provider: "deepgram",
         segmentCount: transcription.segments?.length,
+        transcriptionDurationSeconds: transcription.durationSeconds,
         transcriptLength: transcription.transcript.length,
         wordCount: transcription.words?.length,
       });
       let billingApplied = false;
       const billingTask = (async () => {
         try {
+          const actualSttCost = await calculateSTTCostFromCatalog({
+            model: STT_PRICING_PROXY_MODEL,
+            durationSeconds: billedDurationSeconds,
+            ...(getGenerativePricingCacheOptions(c).cacheOnly
+              ? { cache: getGenerativePricingCacheOptions(c) }
+              : {}),
+          });
           const billing = await billFlatUsage(
             deepgramBillingContext,
-            sttCost,
+            actualSttCost,
             billingReservation,
           );
           billingApplied = true;
@@ -850,7 +878,8 @@ async function __hono_POST(c: AppContext) {
             metadata: {
               audioSizeBytes: audioFile.size,
               estimatedDurationMinutes: estimate.estimatedDurationMinutes,
-              durationSeconds: estimate.durationSeconds,
+              estimatedDurationSeconds: estimate.durationSeconds,
+              durationSeconds: billedDurationSeconds,
               languageCode,
               transcriptLength: transcription.transcript.length,
               baseTotalCost: billing.baseTotalCost,
@@ -1287,26 +1316,37 @@ async function __hono_POST(c: AppContext) {
     await markProviderDispatched?.();
     providerWorkMayHaveStarted = true;
     settlementProvider = "elevenlabs";
-    const transcript = await elevenlabs.speechToText({
+    const { transcript, audioDurationSeconds } = await elevenlabs.speechToText({
       audioFile: validatedFile,
       languageCode,
     });
     const duration = Date.now() - startTime;
+    // Bill the audio ElevenLabs transcribed; the container header estimate
+    // only sized the reservation.
+    const billedDurationSeconds = audioDurationSeconds ?? durationSeconds;
 
     const billingReservation = reservation;
     reservation = undefined;
 
     logger.info("[Voice STT API] Completed", {
       durationMs: duration,
+      transcriptionDurationSeconds: audioDurationSeconds,
       transcriptLength: transcript.length,
     });
 
     let billingApplied = false;
     const billingTask = (async () => {
       try {
+        const actualSttCost = await calculateSTTCostFromCatalog({
+          model: STT_PRICING_PROXY_MODEL,
+          durationSeconds: billedDurationSeconds,
+          ...(getGenerativePricingCacheOptions(c).cacheOnly
+            ? { cache: getGenerativePricingCacheOptions(c) }
+            : {}),
+        });
         const billing = await billFlatUsage(
           elevenLabsBillingContext,
-          sttCost,
+          actualSttCost,
           billingReservation,
         );
         billingApplied = true;
@@ -1330,7 +1370,8 @@ async function __hono_POST(c: AppContext) {
             // not sensitive content, so it stays.
             audioSizeBytes: audioFile.size,
             estimatedDurationMinutes,
-            durationSeconds,
+            estimatedDurationSeconds: durationSeconds,
+            durationSeconds: billedDurationSeconds,
             languageCode,
             transcriptLength: transcript.length,
             baseTotalCost: billing.baseTotalCost,
