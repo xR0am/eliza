@@ -199,6 +199,11 @@ it.each([
   "https://agent.example.test",
   "https://agent.example.test/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111",
   "https://agent-a.cloud.eliza.app",
+  "http://api-staging.eliza.app/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111",
+  "https://api-staging.eliza.app:8443/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111",
+  "https://user:pass@api-staging.eliza.app/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111",
+  "https://api-staging.eliza.app/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111?mode=other",
+  "https://api-staging.eliza.app/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111#other",
 ])(
   "preserves independent runtime authority on %s during account rotation and logout",
   async (base) => {
@@ -231,7 +236,7 @@ it.each(["native", "electrobun"])(
     try {
       await writeStoredStewardToken("old-account");
       const client = new ElizaClient(
-        "https://api-staging.eliza.app/api/v1/eliza/agents/agent-a",
+        "https://api-staging.eliza.app/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111",
         "eliza_owner-key",
       );
       expect(

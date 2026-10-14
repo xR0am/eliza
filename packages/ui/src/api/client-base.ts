@@ -1008,7 +1008,11 @@ export class ElizaClient {
     }
     // Managed web Shared requests use the account's current authority. A
     // refresh or logout must not leave an older installed bearer in use.
-    if (isPlainWebPlatform() && isManagedCloudSharedAgentBase(this.baseUrl)) {
+    if (
+      isPlainWebPlatform() &&
+      isManagedCloudSharedAgentBase(this.baseUrl) &&
+      isTrustedCloudApiBaseUrl(this.baseUrl)
+    ) {
       return readStoredStewardToken()?.trim() || null;
     }
     if (this._token) return this._token;
