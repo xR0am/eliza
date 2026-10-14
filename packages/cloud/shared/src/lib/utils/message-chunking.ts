@@ -21,11 +21,17 @@ const graphemeSegmenter = new GraphemeSegmenter("en", {
   granularity: "grapheme",
 });
 
+/** True when a cut before `index` would split a grapheme (CR LF, a combining mark). */
+function continuesGrapheme(text: string, index: number): boolean {
+  const next = text[index] ?? "";
+  return (text[index - 1] === "\r" && next === "\n") || /[\p{M}\u200d\ufe0e\ufe0f]/u.test(next);
+}
+
 /**
  * Moves a chunk end back to just after the last newline, else the last
- * whitespace, in the second half of the chunk, so a word, URL or Markdown link
- * is not cut in two. The break character stays in the earlier chunk, so
- * chunks still join exactly.
+ * whitespace, in the second half of the chunk, so a word or URL is not cut in
+ * two. The break character stays in the earlier chunk, so chunks still join
+ * exactly, and a break that would split a grapheme is skipped.
  */
 function preferWhitespaceBreak(
   text: string,
@@ -34,10 +40,15 @@ function preferWhitespaceBreak(
   maxLength: number,
 ): number {
   const floor = offset + Math.floor(maxLength / 2);
-  const newline = text.lastIndexOf("\n", end - 1);
-  if (newline >= floor) return newline + 1;
   for (let index = end - 1; index >= floor; index -= 1) {
-    if (/\s/.test(text[index] ?? "")) return index + 1;
+    if (text[index] === "\n" && !continuesGrapheme(text, index + 1)) {
+      return index + 1;
+    }
+  }
+  for (let index = end - 1; index >= floor; index -= 1) {
+    if (/\s/.test(text[index] ?? "") && !continuesGrapheme(text, index + 1)) {
+      return index + 1;
+    }
   }
   return end;
 }
