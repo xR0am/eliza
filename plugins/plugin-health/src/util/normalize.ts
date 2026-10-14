@@ -72,10 +72,15 @@ export function normalizeOptionalIsoString(
     // 400 via requireNonEmptyString. Same defect class as #34687.
     fail(400, `${field} must be a non-empty string`);
   }
-  if (Number.isNaN(Date.parse(trimmed))) {
+  const parsed = Date.parse(trimmed);
+  if (Number.isNaN(parsed)) {
     fail(400, `${field} must be a valid ISO timestamp`);
   }
-  return trimmed;
+  // Match the canonical normalizer (packages/contracts, plugin-calendar):
+  // return the parsed instant in canonical ISO form, not the caller's
+  // spelling, so offset, date-only, and other parseable spellings of the
+  // same instant are stored identically to every other LifeOps timestamp.
+  return new Date(parsed).toISOString();
 }
 
 export function normalizeOptionalFiniteNumber(
