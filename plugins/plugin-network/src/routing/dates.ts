@@ -198,8 +198,14 @@ const END = String.raw`(?:until|till|til|'til|thru|through|back\s+(?:on|by|in)?|
 /**
  * Resolves a {from, until} window from the member's own words, or nulls when no
  * supported pattern is present. Callers prefer this over model-proposed dates.
+ * A stated duration ("for two weeks") counts from `start` when the window has
+ * one ("starting Monday"), else from today.
  */
-export function resolveWindow(text: string, now: Date): DateWindow {
+export function resolveWindow(
+  text: string,
+  now: Date,
+  start?: Date,
+): DateWindow {
   const t = text.toLowerCase().replace(/[’]/g, "'");
   const today = startOfDay(now);
   const out: DateWindow = { from: null, until: null };
@@ -230,26 +236,30 @@ export function resolveWindow(text: string, now: Date): DateWindow {
     );
   if (dur?.[1]) {
     const n = /^\d+$/.test(dur[1]) ? Number(dur[1]) : (NUMBERS[dur[1]] ?? 1);
+    const base = start ?? today;
     const until =
       dur[2] === "day"
-        ? addDays(today, n)
+        ? addDays(base, n)
         : dur[2] === "week"
-          ? addDays(today, 7 * n)
+          ? addDays(base, 7 * n)
           : (() => {
               // Clamp to the last day of the target month: Date.UTC rolls a
               // non-existent day (Jan 31 + 1 month = Feb 31) into the next
               // month (Mar 3). Same rollover class fixed in nextMonthDay
               // (#34651).
-              const target = today.getUTCMonth() + n;
+              const target = base.getUTCMonth() + n;
               const lastDay = day(
-                today.getUTCFullYear(),
+                base.getUTCFullYear(),
                 target + 1,
                 0,
               ).getUTCDate();
-              return day(
-                today.getUTCFullYear(),
-                target,
-                Math.min(today.getUTCDate(), lastDay),
+              return addDays(
+                day(
+                  base.getUTCFullYear(),
+                  target,
+                  Math.min(base.getUTCDate(), lastDay),
+                ),
+                (base.getTime() - startOfDay(base).getTime()) / 86_400_000,
               );
             })();
     return { from: null, until: iso(until) };

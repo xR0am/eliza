@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { detectNetworkSignals } from "../evaluators/network-signals.js";
-import { ownWords, quotedSpans, resolveBusyVsPaused } from "./authz.js";
+import {
+  authorizeSetState,
+  ownWords,
+  quotedSpans,
+  resolveBusyVsPaused,
+} from "./authz.js";
 
 describe("Network own-word boundary", () => {
   it("keeps third-party text out without masking the member's words", () => {
@@ -45,5 +50,58 @@ describe("Network own-word boundary", () => {
     assert.deepEqual(detectNetworkSignals("I'M In Lisbon"), [
       { kind: "travel", evidence: "I'M In Lisbon" },
     ]);
+  });
+});
+
+describe("Network stated duration", () => {
+  it("counts a stated duration from the start the member gave", () => {
+    const now = new Date("2026-10-14T15:00:00Z");
+    for (const [text, from, until] of [
+      [
+        "I'm traveling to Tokyo for two weeks starting Monday",
+        "2026-10-19",
+        "2026-11-02",
+      ],
+      ["From Monday I'm in Lisbon for a week", "2026-10-19", "2026-10-26"],
+      ["Heading to Paris on Nov 10 for 3 days", "2026-11-10", "2026-11-13"],
+      [
+        "Starting December 1st I'm traveling for a month",
+        "2026-12-01",
+        "2027-01-01",
+      ],
+    ]) {
+      const decision = authorizeSetState(
+        { state: "traveling", from, until, evidence: text },
+        text,
+        now,
+      );
+      assert.deepEqual(
+        decision,
+        {
+          allowed: true,
+          state: "traveling",
+          from: `${from}T00:00:00.000Z`,
+          until: `${until}T00:00:00.000Z`,
+        },
+        text,
+      );
+    }
+  });
+
+  it("counts a duration with no start from today", () => {
+    const text = "I'm in Tokyo for two weeks";
+    assert.deepEqual(
+      authorizeSetState(
+        { state: "traveling", until: "2026-11-01", evidence: text },
+        text,
+        new Date("2026-10-14T15:00:00Z"),
+      ),
+      {
+        allowed: true,
+        state: "traveling",
+        from: null,
+        until: "2026-10-28T00:00:00.000Z",
+      },
+    );
   });
 });
