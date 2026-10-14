@@ -197,11 +197,22 @@ async function resolveRelationshipIdFromText(
   }
 
   const relationships = await service.listRelationships();
-  const fullNameMatch = relationships.find((relationship) =>
-    haystack.includes(normalizeLookup(relationship.name)),
-  );
-  if (fullNameMatch) {
-    return fullNameMatch.id;
+  // A contact's full name must appear as whole words: "Ann" is not named by
+  // "Joanna". Two named contacts are a tie, not the first one listed.
+  const fullNameMatches = relationships.filter((relationship) => {
+    const name = normalizeLookup(relationship.name);
+    return (
+      name.length > 0 &&
+      new RegExp(
+        `(?<![\\p{L}\\p{M}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{M}\\p{N}])`,
+        "u",
+      ).test(haystack)
+    );
+  });
+  if (fullNameMatches.length > 0) {
+    return fullNameMatches.length === 1
+      ? (fullNameMatches[0]?.id ?? null)
+      : null;
   }
 
   const candidateMatches = new Map<string, string>();
