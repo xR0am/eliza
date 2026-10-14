@@ -1573,6 +1573,8 @@ export class SlackService extends Service implements ISlackService {
       message.thread_ts,
       accountId,
     );
+    // The response pipeline reads the conversation kind from the message.
+    memory.content.channelType = room.type;
 
     const existingEntity = await this.runtime.getEntityById(memory.entityId);
     if (!existingEntity) {
@@ -1691,6 +1693,8 @@ export class SlackService extends Service implements ISlackService {
       event.thread_ts,
       accountId,
     );
+    // The response pipeline reads the conversation kind from the message.
+    memory.content.channelType = room.type;
 
     const existingEntity = await this.runtime.getEntityById(memory.entityId);
     if (!existingEntity) {
