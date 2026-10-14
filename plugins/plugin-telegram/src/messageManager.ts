@@ -163,6 +163,16 @@ async function resolveTelegramFileBytes(
 }
 
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
+const CODE_FENCE = "```";
+
+/** The opener (```lang) of a code block left open at the end of `text`. */
+function openCodeFence(text: string): string | null {
+  const fences = text.split(CODE_FENCE).length - 1;
+  if (fences % 2 === 0) return null;
+  const start = text.lastIndexOf(CODE_FENCE);
+  const lang = /^[^\s`]*/.exec(text.slice(start + CODE_FENCE.length))?.[0];
+  return `${CODE_FENCE}${lang ?? ""}`;
+}
 const MAX_MEDIA_CAPTION_LENGTH = 1024;
 const INTERACTION_ONLY_FALLBACK_TEXT = "Choose an option:";
 const ACTION_PROGRESS_SOURCE = "action_progress";
@@ -1535,29 +1545,52 @@ export class MessageManager {
     }
 
     let remaining = toWellFormedUnicode(text);
+    // Fence opener (```lang) repeated at the start of the next chunk when a
+    // chunk ends inside a code block. Each chunk is converted on its own, so
+    // without it the rest of the block is styled as prose and the closing
+    // fence opens a new block.
+    let reopen = "";
     while (remaining.length > 0) {
       // This is lossless transport chunking: every returned chunk is sent and
-      // concatenating them reconstructs the complete well-formed input. When
-      // the remainder does not fit, prefer cutting right before the last
-      // newline inside the window so paragraphs stay intact; the newline
-      // itself is carried into the next chunk rather than dropped.
-      let chunk: string;
-      if (remaining.length <= MAX_MESSAGE_LENGTH) {
-        chunk = remaining;
-      } else {
-        const newlineIndex = remaining.lastIndexOf("\n", MAX_MESSAGE_LENGTH);
-        chunk =
-          newlineIndex > 0
-            ? remaining.slice(0, newlineIndex)
-            : truncateTelegramGraphemes(remaining, MAX_MESSAGE_LENGTH);
+      // concatenating them reconstructs the complete well-formed input, plus
+      // any repeated fence openers. When the remainder does not fit, prefer
+      // cutting right before the last newline inside the window so paragraphs
+      // stay intact; the newline itself is carried into the next chunk rather
+      // than dropped.
+      let chunk = this.cutTelegramChunk(
+        remaining,
+        MAX_MESSAGE_LENGTH - reopen.length,
+      );
+      let open = openCodeFence(reopen + chunk);
+      if (open && chunk.length < remaining.length) {
+        // Leave room for the closing fence the converter adds to this chunk.
+        chunk = this.cutTelegramChunk(
+          remaining,
+          MAX_MESSAGE_LENGTH - reopen.length - CODE_FENCE.length,
+        );
+        open = openCodeFence(reopen + chunk);
       }
       if (chunk.length === 0) {
         throw new Error("Unable to split Telegram message without data loss");
       }
-      chunks.push(chunk);
+      chunks.push(reopen + chunk);
       remaining = remaining.slice(chunk.length);
+      reopen =
+        open && remaining.length > 0
+          ? remaining.startsWith("\n")
+            ? open
+            : `${open}\n`
+          : "";
     }
     return chunks;
+  }
+
+  private cutTelegramChunk(remaining: string, limit: number): string {
+    if (remaining.length <= limit) return remaining;
+    const newlineIndex = remaining.lastIndexOf("\n", limit);
+    return newlineIndex > 0
+      ? remaining.slice(0, newlineIndex)
+      : truncateTelegramGraphemes(remaining, limit);
   }
 
   /**
