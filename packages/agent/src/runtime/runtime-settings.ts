@@ -24,6 +24,7 @@ import {
 import {
   collectConfigEnvVars,
   collectConnectorEnvVars,
+  writeConfigEnvValue,
 } from "../config/env-vars.ts";
 import { isVaultRef } from "./operations/vault-bridge.ts";
 
@@ -116,7 +117,7 @@ export function hydrateConfigEnvForBoot(
         !isUnresolvedVaultRef(value) &&
         !env[key]
       ) {
-        env[key] = value;
+        writeConfigEnvValue(key, value, env);
       }
     }
   };

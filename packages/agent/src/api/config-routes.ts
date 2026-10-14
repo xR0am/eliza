@@ -30,6 +30,10 @@ import {
   resolveDevCloudEnvAuthority,
 } from "../config/dev-cloud-env-authority.ts";
 import {
+  clearConfigEnvValue,
+  writeConfigEnvValue,
+} from "../config/env-vars.ts";
+import {
   agentIdentityName,
   buildCharacterFromConfig,
 } from "../runtime/build-character-config.ts";
@@ -218,14 +222,6 @@ function readProviderEnvValue(
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-/**
- * Provider keys this config sync has written into process.env. Membership
- * proves ownership: only the sync may clear a key it wrote. A delete in the
- * config never wipes an operator-set variable (docker env, shell export)
- * that happens to hold the same value.
- */
-const configSyncedProviderKeys = new Set<string>();
-
 interface ReloadDiff {
   applied: string[];
   requiresRestart: string[];
@@ -302,18 +298,9 @@ async function applyReloadedConfig(params: {
     if (isBlockedEnvKey(key)) continue;
     const value = readProviderEnvValue(nextRecord, key);
     if (value !== undefined) {
-      process.env[key] = value;
-      configSyncedProviderKeys.add(key);
-      continue;
-    }
-    const previousValue = readProviderEnvValue(asConfigRecord(previous), key);
-    if (
-      previousValue !== undefined &&
-      configSyncedProviderKeys.has(key) &&
-      process.env[key] === previousValue
-    ) {
-      delete process.env[key];
-      configSyncedProviderKeys.delete(key);
+      writeConfigEnvValue(key, value);
+    } else {
+      clearConfigEnvValue(key);
     }
   }
 
