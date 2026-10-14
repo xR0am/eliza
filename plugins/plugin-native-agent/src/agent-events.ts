@@ -99,6 +99,11 @@ export async function subscribeAgentEvents(
   const subscriptionId = newSubscriptionId();
   let finished = false;
   let closing = false;
+  let closePromise: Promise<void> | undefined;
+  let settleStart!: () => void;
+  const started = new Promise<void>((resolve) => {
+    settleStart = resolve;
+  });
   let listener: AgentPluginListenerHandle | undefined;
   let resolveEnded!: (error: string | undefined) => void;
   const ended = new Promise<string | undefined>((resolve) => {
@@ -124,25 +129,40 @@ export async function subscribeAgentEvents(
     guard(() => handlers.onEnd?.(error));
     resolveEnded(error);
   };
-  const close = async () => {
-    if (finished || closing) return;
+  const close = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    if (finished) return Promise.resolve();
     closing = true;
-    try {
-      await unsubscribe({ subscriptionId });
-    } catch {
-      // The native feed ends on its own when the agent socket closes.
-    } finally {
-      finish(undefined);
-    }
+    closePromise = (async () => {
+      // Cancellation cannot overtake native registration and leave a new feed
+      // behind after unsubscribe already reported that the id was absent.
+      await started;
+      try {
+        await unsubscribe({ subscriptionId });
+        finish(undefined);
+      } catch (error) {
+        finish("Agent event unsubscribe failed; native cleanup is unconfirmed");
+        throw error;
+      }
+    })();
+    return closePromise;
   };
-  const onAbort = () => void close();
+  const onAbort = () => {
+    // close reports the failure through onEnd/ended; an AbortSignal listener
+    // cannot return a promise to its caller.
+    void close().catch(() => {});
+  };
   // Listen before subscribing: the caller-chosen id matches events that the
   // native side emits before `subscribeEvents` resolves.
   listener = await addListener("agentEvent", (event) => {
     if (finished || !event || event.subscriptionId !== subscriptionId) return;
     switch (event.type) {
       case "event":
-        if (isEnvelope(event.event) && streams.has(event.event.stream)) {
+        if (
+          !closing &&
+          isEnvelope(event.event) &&
+          streams.has(event.event.stream)
+        ) {
           const envelope = event.event;
           guard(() => handlers.onEvent(envelope));
         }
@@ -155,10 +175,10 @@ export async function subscribeAgentEvents(
         return;
       case "end":
         finish(
-          closing
-            ? undefined
-            : typeof event.error === "string"
-              ? event.error
+          typeof event.error === "string"
+            ? event.error
+            : closing
+              ? undefined
               : "Agent event feed ended",
         );
         return;
@@ -168,6 +188,7 @@ export async function subscribeAgentEvents(
   });
   options.signal?.addEventListener("abort", onAbort, { once: true });
   try {
+    options.signal?.throwIfAborted();
     const ack = await subscribe({ streams: [...streams], subscriptionId });
     if (ack?.subscriptionId !== subscriptionId) {
       throw new Error("Agent event subscription identity changed");
@@ -181,6 +202,8 @@ export async function subscribeAgentEvents(
     resolveEnded(error instanceof Error ? error.message : String(error));
     void unsubscribe({ subscriptionId }).catch(() => {});
     throw error;
+  } finally {
+    settleStart();
   }
   if (options.signal?.aborted) await close();
   return { subscriptionId, ended, close };

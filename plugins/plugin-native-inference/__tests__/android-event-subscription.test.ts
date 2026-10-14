@@ -313,7 +313,23 @@ const frameFor = (streams: string[]) => ({
   payload: { streams, headers: { authorization: `Bearer ${TOKEN}` } },
 });
 
-test("oversized events are dropped with a count; a stalled reader is disconnected, not buffered", async () => {
+test("oversized or unserializable events explicitly terminate the real socket feed", async () => {
+  for (const data of [{ text: "x".repeat(256 * 1024) }, { big: 1n }]) {
+    const bus = new FakeBus();
+    await withServer(bus, async (f) => {
+      const peer = await open(f.file, subscribeFrame(["voice-transcript"]));
+      await until(() => peer.frames.length === 1, "no subscription ack");
+      bus.emit("voice-transcript", data);
+      await until(peer.closed, "incomplete feed remained open");
+      expect(peer.frames).toHaveLength(2);
+      expect(peer.frames[1]?.event).toBe("error");
+      expect(peer.frames[1]?.error).toContain("feed incomplete");
+      expect(bus.listeners.size).toBe(0);
+    });
+  }
+});
+
+test("a stalled reader is disconnected instead of buffering more events", async () => {
   const bus = new FakeBus();
   const fake = fakeConnection();
   const served = serveAgentEventSubscription({
@@ -324,22 +340,12 @@ test("oversized events are dropped with a count; a stalled reader is disconnecte
     frameByteLimit: 512,
     queueByteLimit: 4096,
   });
-  expect(JSON.parse(fake.lines[0] ?? "{}").event).toBe("subscribed");
-  bus.emit("voice-transcript", { phase: "partial", text: "x".repeat(1024) });
-  expect(JSON.parse(fake.lines[1] ?? "{}")).toEqual({
-    id: 7,
-    event: "dropped",
-    count: 1,
-  });
-  // Unserializable payloads are dropped, not thrown into the bus.
-  bus.emit("voice-transcript", { big: 1n } as never);
-  expect(JSON.parse(fake.lines[2] ?? "{}").count).toBe(2);
   fake.setBuffered(4000);
   bus.emit("voice-transcript", { phase: "final", text: "y".repeat(200) });
   await served;
   expect(fake.destroyed()).toBe(true);
   expect(bus.listeners.size).toBe(0);
-  expect(fake.lines).toHaveLength(3);
+  expect(fake.lines).toHaveLength(1);
 });
 
 test("keepalives flow while idle and stop with the subscription", async () => {

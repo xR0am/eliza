@@ -10,7 +10,6 @@
  *   in:  {"id","method":"events_subscribe","payload":{"streams":[..],"headers":{"Authorization":"Bearer .."}}}
  *   out: {"id","event":"subscribed","streams":[..]}            once, first
  *        {"id","event":"agent_event","data":<envelope>}        per matching event
- *        {"id","event":"dropped","count":n}                    an event exceeded the frame cap
  *        {"id","event":"keepalive"}                            every EVENT_KEEPALIVE_MS
  *        {"id","event":"error","error":".."}                   terminal refusal, then close
  *
@@ -23,8 +22,8 @@
  *   emitted after its `subscribed` frame and nothing earlier, and an
  *   `eventId` here is never a replay cursor (no `bufferSeq`).
  * - Exact-match stream filter, required. Unfiltered feeds are refused.
- * - Bounded. Each frame is capped at EVENT_FRAME_BYTE_LIMIT (an oversized or
- *   unserializable event is skipped and reported as `dropped`); the queued
+ * - Bounded. Each frame is capped at EVENT_FRAME_BYTE_LIMIT. An oversized or
+ *   unserializable event ends the feed with an explicit error; the queued
  *   bytes on the transport are capped at EVENT_QUEUE_BYTE_LIMIT, past which
  *   the subscriber is disconnected. A client that sees the feed end
  *   resubscribes; there is no gap recovery by design.
@@ -203,6 +202,7 @@ export async function serveAgentEventSubscription(
     if (!open) return;
     open = false;
     clearInterval(keepalive);
+    connection.aborted.removeEventListener("abort", finish);
     unsubscribe?.();
     unsubscribe = null;
     resolveDone();
@@ -227,7 +227,6 @@ export async function serveAgentEventSubscription(
   // so no event can fall between the two, and nothing earlier is replayed.
   send(JSON.stringify({ id, event: "subscribed", streams: [...streams] }));
   if (!open) return;
-  let dropped = 0;
   unsubscribe = bus.subscribe((event) => {
     // A bus listener must never throw into the emitter or other listeners.
     try {
@@ -243,11 +242,19 @@ export async function serveAgentEventSubscription(
           ),
         });
       } catch {
-        // Unserializable payload: reported as dropped below.
+        // Unserializable payload: explicitly refuse this feed below.
       }
       if (!line || Buffer.byteLength(line) > frameLimit) {
-        dropped++;
-        send(JSON.stringify({ id, event: "dropped", count: dropped }));
+        send(
+          JSON.stringify({
+            id,
+            event: "error",
+            error: line
+              ? "Agent event exceeds frame limit; feed incomplete"
+              : "Agent event cannot be serialized; feed incomplete",
+          }),
+        );
+        finish();
         return;
       }
       send(line);

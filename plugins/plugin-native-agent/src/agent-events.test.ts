@@ -154,4 +154,49 @@ describe("subscribeAgentEvents", () => {
     await vi.waitFor(() => expect(refused.listeners.size).toBe(0));
     await vi.waitFor(() => expect(listeners.size).toBe(0));
   });
+  it("reports failed native cleanup instead of a successful close", async () => {
+    const { agent } = fakeAgent();
+    agent.unsubscribeEvents.mockRejectedValue(new Error("bridge unavailable"));
+    const onEnd = vi.fn();
+    const sub = await subscribeAgentEvents(
+      agent,
+      { streams: ["voice-transcript"] },
+      { onEvent() {}, onEnd },
+    );
+    const first = sub.close();
+    const second = sub.close();
+    expect(second).toBe(first);
+    await expect(first).rejects.toThrow("bridge unavailable");
+    expect(await sub.ended).toContain("cleanup is unconfirmed");
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(agent.unsubscribeEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let cancellation overtake native subscription registration", async () => {
+    const { agent } = fakeAgent();
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    agent.subscribeEvents.mockImplementation(async ({ subscriptionId }) => {
+      await ready;
+      if (!subscriptionId) throw new Error("Missing subscription id");
+      return { subscriptionId };
+    });
+    const controller = new AbortController();
+    const pending = subscribeAgentEvents(
+      agent,
+      { streams: ["voice-transcript"], signal: controller.signal },
+      { onEvent() {} },
+    );
+    await vi.waitFor(() =>
+      expect(agent.subscribeEvents).toHaveBeenCalledTimes(1),
+    );
+    controller.abort();
+    expect(agent.unsubscribeEvents).not.toHaveBeenCalled();
+    release();
+    const sub = await pending;
+    expect(await sub.ended).toBeUndefined();
+    expect(agent.unsubscribeEvents).toHaveBeenCalledTimes(1);
+  });
 });
