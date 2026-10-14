@@ -125,9 +125,11 @@ export async function extractActionParamsViaLlm<
   if (!extracted) {
     return existingParams;
   }
-  // Merge: extracted fills in missing slots only. Planner values always win
-  // on collisions because the planner saw the full action surface.
-  const allowed = new Set<string>(missing);
+  // Merge: extracted values are kept only for parameters declared in the
+  // action's schema (optional ones included), so the model cannot inject
+  // unknown keys. Planner values always win on collisions because the
+  // planner saw the full action surface.
+  const allowed = new Set<string>(paramSchema.map((p) => p.name));
   const merged: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(extracted)) {
     if (allowed.has(key)) merged[key] = value;
