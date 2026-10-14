@@ -555,7 +555,9 @@ async function sendToRuntime(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  let responseText: string | undefined;
+  // A turn can answer in several callbacks (text, then a tool follow-up or an
+  // image); every part is sent and stored, in order.
+  const replyParts: string[] = [];
   // Run the agent's message pipeline, as the cloud chat handler does. No cloud
   // runtime plugin turns MESSAGE_RECEIVED into a pipeline run, so emitting it
   // produced no reply. A runtime without a message service is a broken
@@ -571,10 +573,15 @@ async function sendToRuntime(
       .filter(Boolean)
       .join("\n");
     if (reply) {
-      responseText = reply;
+      replyParts.push(reply);
       // Create response memory
       const responseMemory: Memory = {
-        id: createUniqueUuid(runtime, userMessage.id as UUID),
+        id: createUniqueUuid(
+          runtime,
+          replyParts.length === 1
+            ? (userMessage.id as UUID)
+            : `${userMessage.id}:reply:${replyParts.length}`,
+        ),
         entityId: runtime.agentId,
         agentId: runtime.agentId,
         roomId: roomUuid,
@@ -602,7 +609,7 @@ async function sendToRuntime(
     return [];
   };
   await messageService.handleMessage(runtime, userMessage, callback);
-  return responseText;
+  return replyParts.length > 0 ? replyParts.join("\n\n") : undefined;
 }
 function httpsAttachmentLinks(content: Content): string[] {
   const links = (content.attachments ?? []).flatMap((attachment) => {
