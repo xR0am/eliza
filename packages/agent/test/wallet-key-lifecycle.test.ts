@@ -306,7 +306,7 @@ it.each(["import", "provision"])(
         vi.stubEnv(key, undefined);
       const firstKey = generateWalletForChain("evm").privateKey;
       const secondKey = generateWalletForChain("evm").privateKey;
-      let entered!: () => void;
+      let entered: (() => void) | undefined;
       const firstEntered = new Promise<void>((resolve) => {
         entered = resolve;
       });
@@ -321,6 +321,8 @@ it.each(["import", "provision"])(
                   key === "EVM_PRIVATE_KEY" &&
                   value !== secondKey)
               ) {
+                if (!entered)
+                  throw new Error("Wallet import gate was not initialized");
                 entered();
                 await new Promise((resolve) => setTimeout(resolve, 300));
                 throw new Error("first import denied");
