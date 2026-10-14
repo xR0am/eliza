@@ -1,6 +1,8 @@
 /**
- * Burst and sustained token buckets for assistant inference, keyed by
- * organization, user and plan (AlphaCompute/alphaphone#410).
+ * Burst and sustained token buckets for assistant inference and Eliza Cloud
+ * Maps, keyed by service, organization, user and plan
+ * (AlphaCompute/alphaphone#410). Each service has its own buckets with the
+ * same plan limits, so Maps lookups never use up chat requests.
  *
  * The decision uses process memory only. It never reads billing, Postgres, KV
  * or a Durable Object, so it adds no network round trip to an assistant turn.
@@ -21,6 +23,16 @@
  * window has not ended; otherwise `default`. So a cache miss (no snapshot), an
  * expired plan window and a billing outage all decide from memory with the
  * `default` limits.
+ *
+ * Cap semantics: the buckets live in one Worker isolate. A caller whose
+ * requests reach N isolates can be admitted up to N times the bucket capacity
+ * in the worst case. The organization Durable Object window (`completionsRpm`) is the
+ * cross-isolate cap for inference. There is no shared bucket backend: KV is
+ * eventually consistent and cannot count, and a Durable Object or Redis
+ * bucket is a network round trip on every turn. The one shared option with no
+ * added round trip is to carry the buckets in the organization gate's existing
+ * `/rate-limit` call; that runs only after the policy read, so a refusal would
+ * no longer be free.
  */
 import { getCloudAwareEnv } from "../runtime/cloud-bindings";
 
@@ -126,7 +138,11 @@ export function readPlanRequestLimitConfig(
   return config;
 }
 
+export type PlanRequestService = "inference" | "maps";
+
 export interface PlanRequestIdentity {
+  /** Defaults to inference. Each service has its own buckets. */
+  service?: PlanRequestService;
   organizationId: string;
   userId?: string | null;
   /** Plan key from the cached admission snapshot; absent on a cache miss. */
@@ -184,7 +200,7 @@ export function consumePlanRequest(
 ): PlanRequestDecision {
   const plan = resolvePlan(identity, config, now);
   const limits = config.plans[plan];
-  const key = `${identity.organizationId}\0${identity.userId ?? ""}\0${plan}`;
+  const key = `${identity.service ?? "inference"}\0${identity.organizationId}\0${identity.userId ?? ""}\0${plan}`;
   let state = buckets.get(key);
   if (state) {
     buckets.delete(key);

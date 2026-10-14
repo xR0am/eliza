@@ -53,7 +53,13 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   as 0 and I/L as 1.
 - `GET /api/v1/subscription/entitlement` returns `{entitlement}`, a 30-minute
   ES256 JWS (`typ` `eliza-entitlement+jwt`, `aud` `eliza-alpha-phone`). It
-  never expires after the plan window it reports.
+  never expires after the plan window or allowance period it reports. Format
+  `ver: 2` adds `plan_allowance` `{unit: "usd_micros", granted, remaining,
+  periodStart, resetsAt}` when the plan has a current allowance period.
+  Amounts are integer millionths of a US dollar, Cloud's own allowance unit;
+  `remaining` excludes requests in flight. Tokens without `ver` are v1. A new
+  claim name keeps v1 clients working, because they reject an `allowance`
+  claim whose unit is not requests or tokens.
 - `GET /api/v1/subscription/entitlement-keys` (public, cached 60 s) returns the
   current, previous and next public keys. Both entitlement routes return 503
   until the `ELIZA_ENTITLEMENT_*` secrets are set; redeem needs
@@ -72,7 +78,12 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   `Retry-After` and `error.code: "rate_limited"`, `retryAfterSeconds`,
   `retryAfterMs`, `retryAt`, `plan.id` and `limit`. A cache miss, an ended
   plan window or a billing outage decides from memory with the `default`
-  limits. Set `ELIZA_CLOUD_PLAN_RATE_LIMITS` (see `shared/.env.example`); it is
+  limits. Maps uses the same plan entries with its own buckets. The cap is
+  per isolate: a caller spread over N isolates can get up to N times the
+  bucket capacity. There is no shared bucket store, because KV cannot count
+  atomically and a Durable Object or Redis bucket adds a round trip to every
+  turn (see `plan-request-limiter.ts`).
+  Set `ELIZA_CLOUD_PLAN_RATE_LIMITS` (see `shared/.env.example`); it is
   off while unset. The numbers are not selected yet; `placeholder` enables
   unselected test values only. Latency benchmark:
   `bun --conditions=eliza-source packages/cloud/scripts/plan-request-limit-latency.ts`.
@@ -208,7 +219,9 @@ returns the provider, dataset revision, regions, travel modes and attribution.
 the query or coordinates in the JSON body, so location data is not in URLs or
 logs. Each route needs an API key or session, an active or trialing plan
 (`403 subscription_required`) and the per-credential rate limit. The
-`admit` hook in `src/lib/maps-route.ts` is where organization quotas plug in.
+`admit` hook in `src/lib/maps-route.ts` applies the plan request buckets while
+`ELIZA_CLOUD_PLAN_RATE_LIMITS` is set: `429 rate_limited` with `Retry-After`
+and `retryAfterSeconds` in the body.
 Success bodies name the provider and carry its attribution. Failures are typed:
 `422 unsupported_region | unsupported_mode | no_route`, `503 maps_not_configured
 | provider_unavailable` (with `Retry-After`), `502 provider_invalid_response`.

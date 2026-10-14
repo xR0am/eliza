@@ -310,11 +310,26 @@ describe("subscription grant redemption", () => {
       expect(policy.subscriptionFunded).toBe(true);
       expect(policyModule.requireOrganizationRateTier(policy).tierName).toBe("plus_monthly");
       expect((await allowanceAt(PAID_ORG, new Date()))?.promo_grant_id).toBe(grant!.id);
-      const summary = await entitlementToken.readOrganizationEntitlementSummary(PAID_ORG);
+      const summary = await entitlementToken.readOrganizationEntitlementSummary(PAID_ORG, {
+        allowance: true,
+      });
       expect(summary).toMatchObject({
         source: "grant",
         plan: { id: "plus_monthly", status: "active" },
+        rateTier: "plus_monthly",
       });
+      // The token reports the grant's own allowance bucket in micro-dollars.
+      const bucket = (await allowanceAt(PAID_ORG, new Date()))!;
+      expect(summary.allowance).toEqual({
+        unit: "usd_micros",
+        granted:
+          entitlementToken.usdMicros(bucket.granted_amount)! +
+          entitlementToken.usdMicros(bucket.adjustment_amount)!,
+        remaining: entitlementToken.usdMicros(bucket.available_amount)!,
+        periodStart: bucket.period_start,
+        resetsAt: bucket.expires_at,
+      });
+      expect(summary.allowance!.granted).toBeGreaterThan(0);
     });
 
   test("revoking the grant of a canceled subscriber serves the free plan", async () => {

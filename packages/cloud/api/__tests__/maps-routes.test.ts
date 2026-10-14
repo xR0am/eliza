@@ -7,8 +7,10 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { AuthenticationError } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import type { MapsOperation } from "@elizaos/cloud-shared/lib/services/maps/contract";
 import { OsmMapsProvider } from "@elizaos/cloud-shared/lib/services/maps/osm-provider";
+import { resetPlanRequestLimiterForTests } from "@elizaos/cloud-shared/lib/services/plan-request-limiter";
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import {
+  admitMapsByPlanBuckets,
   createMapsRoute,
   type MapsRouteDependencies,
 } from "../src/lib/maps-route";
@@ -26,6 +28,11 @@ const CASINO = { latitude: 43.7397, longitude: 7.4276 };
 const PORT = { latitude: 43.7347, longitude: 7.4206 };
 const PARIS = { latitude: 48.8566, longitude: 2.3522 };
 const ENV = { NODE_ENV: "test" };
+const ENTITLED = {
+  entitled: true,
+  planKey: "plus_monthly",
+  planEffectiveUntil: "2099-01-01T00:00:00.000Z",
+};
 let ip = 0;
 
 type Upstream = (url: URL, init: RequestInit) => Response | Promise<Response>;
@@ -52,7 +59,7 @@ function deps(
 ) {
   return {
     authenticate: async () => USER,
-    entitled: async () => true,
+    entitlement: async () => ENTITLED,
     admit: async () => ({ allowed: true as const }),
     provider: () => provider(upstream),
     ...overrides,
@@ -196,7 +203,7 @@ describe("Eliza Cloud Maps routes", () => {
     const res = await call(
       "search",
       deps({
-        entitled: async () => false,
+        entitlement: async () => ({ ...ENTITLED, entitled: false }),
         provider: () => provider(() => Response.json([]), calls),
       }),
       { query: "Casino" },
@@ -210,7 +217,7 @@ describe("Eliza Cloud Maps routes", () => {
     const res = await call(
       "search",
       deps({
-        entitled: async () => {
+        entitlement: async () => {
           throw new Error("database unavailable");
         },
       }),
@@ -234,13 +241,61 @@ describe("Eliza Cloud Maps routes", () => {
     );
     expect(res.status).toBe(429);
     expect(res.headers.get("retry-after")).toBe("42");
+    expect((await json(res)).retryAfterSeconds).toBe(42);
     expect(seen).toEqual([
       {
         organizationId: USER.organization_id,
         userId: USER.id,
         operation: "routes",
+        planKey: ENTITLED.planKey,
+        planEffectiveUntil: ENTITLED.planEffectiveUntil,
       },
     ]);
+  });
+
+  test("the plan buckets limit Maps per plan, apart from inference buckets", async () => {
+    const previous = process.env.ELIZA_CLOUD_PLAN_RATE_LIMITS;
+    resetPlanRequestLimiterForTests();
+    process.env.ELIZA_CLOUD_PLAN_RATE_LIMITS = JSON.stringify({
+      selected: false,
+      plans: {
+        default: {
+          burst: { capacity: 1, refillPerSecond: 0.001 },
+          sustained: { capacity: 10, refillPerSecond: 0.001 },
+        },
+        plus_monthly: {
+          burst: { capacity: 2, refillPerSecond: 0.001 },
+          sustained: { capacity: 10, refillPerSecond: 0.001 },
+        },
+      },
+    });
+    try {
+      const dependencies = deps({ admit: admitMapsByPlanBuckets });
+      expect((await call("coverage", dependencies)).status).toBe(200);
+      expect((await call("coverage", dependencies)).status).toBe(200);
+      const refused = await call("coverage", dependencies);
+      expect(refused.status).toBe(429);
+      const body = await json(refused);
+      expect(body.code).toBe("rate_limited");
+      expect(body.retryAfterSeconds).toBe(
+        Number(refused.headers.get("retry-after")),
+      );
+      // An expired plan window falls back to the default plan's own buckets.
+      const lapsed = deps({
+        admit: admitMapsByPlanBuckets,
+        entitlement: async () => ({
+          ...ENTITLED,
+          planEffectiveUntil: "2000-01-01T00:00:00.000Z",
+        }),
+      });
+      expect((await call("coverage", lapsed)).status).toBe(200);
+      expect((await call("coverage", lapsed)).status).toBe(429);
+    } finally {
+      if (previous === undefined)
+        delete process.env.ELIZA_CLOUD_PLAN_RATE_LIMITS;
+      else process.env.ELIZA_CLOUD_PLAN_RATE_LIMITS = previous;
+      resetPlanRequestLimiterForTests();
+    }
   });
 
   test("coverage lists regions, modes and attribution", async () => {

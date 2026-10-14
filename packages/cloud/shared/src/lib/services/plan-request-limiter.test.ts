@@ -48,6 +48,13 @@ describe("plan request buckets", () => {
     expect(refused.retryAfterMs).toBe(96_000);
   });
 
+  test("Maps and inference have separate buckets", () => {
+    const id = { organizationId: ORG, userId: "u1" };
+    for (let i = 0; i < 2; i++) consumePlanRequest(id, CONFIG, T0);
+    expect(consumePlanRequest(id, CONFIG, T0).allowed).toBe(false);
+    expect(consumePlanRequest({ ...id, service: "maps" }, CONFIG, T0).allowed).toBe(true);
+  });
+
   test("buckets are separate per user and per plan", () => {
     for (let i = 0; i < 2; i++)
       consumePlanRequest({ organizationId: ORG, userId: "u1" }, CONFIG, T0);

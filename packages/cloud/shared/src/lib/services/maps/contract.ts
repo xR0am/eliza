@@ -239,6 +239,10 @@ export interface MapsAdmissionRequest {
   organizationId: string;
   userId: string;
   operation: MapsOperation;
+  /** Rate tier of the organization's current policy; keys the plan request buckets. */
+  planKey?: string | null;
+  /** End of that policy window (ISO), when one is known. */
+  planEffectiveUntil?: string | null;
 }
 
 export type MapsAdmissionDecision =
