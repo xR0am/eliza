@@ -33,6 +33,7 @@ import {
   lowerOrgBalanceHint,
   republishOrgBalanceHint,
 } from "./inference-auth-cache";
+import { withInferencePolicyMutation } from "./inference-policy-fence";
 import { organizationsService } from "./organizations";
 import { userSessionsService } from "./user-sessions";
 import {
@@ -1342,20 +1343,22 @@ export class CreditsService {
       params.cumulativeTargetAmount === undefined ? null : String(params.cumulativeTargetAmount);
     const originalPaymentIntentId = params.originalPaymentIntentId ?? null;
     const reversalSeries = params.reversalSeries ?? null;
-    const rows = await writeTransaction(async (tx) => {
-      const lockRows = await sqlRows<{ id: string }>(
-        tx,
-        sql`SELECT id FROM organizations WHERE id = ${params.organizationId} FOR UPDATE`,
-      );
-      if (!lockRows[0]) throw new Error("Organization not found");
+    const rows = await withInferencePolicyMutation(
+      { organizationIds: [params.organizationId] },
+      async (tx) => {
+        const lockRows = await sqlRows<{ id: string }>(
+          tx,
+          sql`SELECT id FROM organizations WHERE id = ${params.organizationId} FOR UPDATE`,
+        );
+        if (!lockRows[0]) throw new Error("Organization not found");
 
-      // The reversal query runs as a second READ COMMITTED statement after
-      // acquiring the org lock. A contender that waited for this lock now gets
-      // a fresh snapshot containing the winner's committed clawback before it
-      // derives its cumulative delta.
-      return await sqlRows<ClawbackMutationRow>(
-        tx,
-        sql`
+        // The reversal query runs as a second READ COMMITTED statement after
+        // acquiring the org lock. A contender that waited for this lock now gets
+        // a fresh snapshot containing the winner's committed clawback before it
+        // derives its cumulative delta.
+        return await sqlRows<ClawbackMutationRow>(
+          tx,
+          sql`
         WITH org AS (
           SELECT id, credit_balance::numeric AS current_balance
           FROM organizations
@@ -1541,8 +1544,9 @@ export class CreditsService {
         FROM (SELECT 1) AS singleton
         LEFT JOIN chosen_transaction ON true
         `,
-      );
-    });
+        );
+      },
+    );
 
     const row = rows[0];
     if (!row || !isPgTrue(row.org_exists)) {

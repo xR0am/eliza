@@ -3599,6 +3599,20 @@
       "when": 1796083200161,
       "tag": "0543_app_pilot_allowance",
       "breakpoints": true
+    },
+    {
+      "idx": 514,
+      "version": "7",
+      "when": 1796083200162,
+      "tag": "0544_inference_funding_budgets",
+      "breakpoints": true
+    },
+    {
+      "idx": 515,
+      "version": "7",
+      "when": 1796083200163,
+      "tag": "0545_inference_policy_mutation_fences",
+      "breakpoints": true
     }
   ]
 }

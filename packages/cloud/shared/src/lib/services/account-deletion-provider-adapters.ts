@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { ElizaError } from "@elizaos/core";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
-import { dbWrite } from "../../db/helpers";
+import { dbWrite, writeTransaction } from "../../db/helpers";
 import { decideAppBillingDeletionScope } from "../../db/repositories/app-billing-deletion-dispositions";
 import { readAppBillingDeletionObligations } from "../../db/repositories/app-billing-deletion-inventory";
 import { subscriptionAuthorityRepository } from "../../db/repositories/subscription-authority";
@@ -428,7 +428,7 @@ async function countLocalRestrictiveRows(context: AccountDeletionProviderContext
 }
 
 async function deleteLocalRestrictiveRows(context: AccountDeletionProviderContext): Promise<void> {
-  await dbWrite.transaction(async (tx) => {
+  await writeTransaction(async (tx) => {
     await subscriptionAuthorityRepository.releaseForAccountDeletion(tx, context.organizationId);
     // Retirement preserves financial history until this irreversible, organization-locked erasure.
     const subjects = await tx.execute(sql`SELECT subject.agent_id

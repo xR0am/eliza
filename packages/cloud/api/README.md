@@ -9,6 +9,20 @@ local bindings are derived from root .env/.env.local. Add routes in the file-bas
 tree and run the package codegen script. The build script checks types; typecheck also
 validates router and Worker bundling contracts.
 
+Delegated inference budgets are off by default. Apply shared migrations 0544–0545
+before setting `INFERENCE_FUNDED_BUDGET_ADMISSION=true`. Keep strong revocation
+enabled and configure the same `INFERENCE_FUNDING_BUDGET_SEAL_SECRET` on the
+Worker and accounting hosts. Enroll an organization through the internal
+`withInferencePolicyMutation({organizationIds, enable: true}, ...)` transaction.
+All policy writers must use the managed mutation service; the database rejects
+an unfenced change for an enrolled organization.
+
+Bounded, direct Cerebras chat requests use the delegated path. The refill amount
+is a target, not a request limit: a larger request can claim the full available
+balance. Other operations retain primary admission and can reclaim idle funds.
+Funds backing active requests remain reserved. Drain and reconcile all grants,
+then use `disableInferenceBudgetAdmission` before turning off the mode.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
@@ -57,22 +71,50 @@ Steward code with its PKCE verifier, then trades the Steward session for an
 (`flow: "mobile_pkce"`, Bearer Steward token), `mobile/token` and `mobile/ack`.
 Steward returns a successful code and state in the URL fragment.
 
+Native email sign-in sends `delivery: "code"` to `POST /steward/auth/email/send`.
+That email carries only the six-digit code, using the sign-in code template with
+no link, and no link token is issued for the challenge. The code is redeemed
+through `/steward/auth/email/code/verify`. Without `delivery: "code"` the email
+also carries a magic link to Steward's `/callback/email`, which signs in the
+browser rather than the phone.
+
 Operator configuration per environment:
 
-- `ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` registers `ai.elizaresearch.alphaphone`
-  with that environment's callback (and `credentialTtlSeconds: 7776000` for
-  90-day keys). Then run the admin workflow's repair for that client.
-- `ELIZA_ANDROID_ASSET_LINKS_JSON` (environment variable, public) is a JSON array
-  of `{package_name, sha256_cert_fingerprints[], relations?}` served at
+- `ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` (GitHub Environment secret on `staging` /
+  `production`) registers `ai.elizaresearch.alphaphone` with that environment's
+  callback. Leave `credentialTtlSeconds` unset (30-day default) while the
+  device's `eliza_mobile_` key remains readable by the app renderer. Then run the
+  admin workflow's repair for that client.
+- `ELIZA_ANDROID_ASSET_LINKS_JSON` is a GitHub **variable** (`vars.`), defined on
+  the `staging` / `production` GitHub Environment or at repository level. The
+  release workflow publishes it to the Worker as a Worker secret. It is a JSON
+  array of `{package_name, sha256_cert_fingerprints[], relations?}` served at
   `/.well-known/assetlinks.json` on the API host and, through the Pages proxy, on
-  `eliza.app` and `staging.eliza.app`. Malformed values publish `[]`.
+  `eliza.app` and `staging.eliza.app`. Malformed values publish `[]`. Without
+  the release signer's fingerprint, App Link verification fails on every phone:
+  do not promote native sign-in to production until it is set and
+  `adb shell pm get-app-links ai.elizaresearch.alphaphone` shows the host as
+  `verified`.
 - The Steward tenant `elizacloud` must list the callback in its
   `allowedRedirectUrls`. `/auth/oauth/:provider/authorize` receives an explicit
   `tenant_id`, so `STEWARD_OAUTH_ALLOWED_REDIRECTS` does not apply to it.
+- Steward (`packages/auth`) deploys separately from `cloud-cf-deploy`. The
+  Google `prompt=select_account` passthrough and `delivery: "code"` reach a
+  device only after that deployment.
 
 If Android does not intercept the App Link, the Pages route
-`/alphaphone/auth/callback` serves a static, no-store page whose only action is an
-`intent://` hand-off to the installed app.
+`/alphaphone/auth/callback` serves a static, no-store page. It never forwards
+the code, state or error: an `intent://` hand-off is matched on package name
+only, so a sideloaded app with the same package name could otherwise collect a
+code from an authorize it started itself. The page tells the user to return to
+Alpha Phone and start again, offers a parameterless hand-off that only brings
+the app forward, and removes the fragment and query from history. Success
+returns rely solely on the verified App Link.
+
+Remaining Cloud-hosted pages a native sign-in can still reach: this fallback
+page, and Steward's OAuth error page inside the Custom Tab (including
+`mfa_required`; Google accounts with MFA must use email sign-in until native
+MFA is returned through the exchange).
 
 ## Subscription grant codes and entitlements
 

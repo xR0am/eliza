@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildNativeSignInIntentUrl,
-  NATIVE_CALLBACK_FRAGMENT_SCRIPT,
+  NATIVE_CALLBACK_SCRUB_SCRIPT,
   onRequest,
   resolveCanonicalPageRedirect,
 } from "../functions/_middleware";
@@ -522,8 +522,10 @@ describe("pages config files stay within Cloudflare Pages semantics", () => {
 
 describe("native sign-in callback fallback", () => {
   const CALLBACK = "https://eliza.app/alphaphone/auth/callback";
+  const BARE =
+    "intent://eliza.app/alphaphone/auth/callback#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";
 
-  it("serves a static no-store, noindex hand-off page instead of the SPA", async () => {
+  it("serves a static no-store, noindex page that forwards no sign-in result", async () => {
     let nextCalled = false;
     const response = await run(
       new Request(`${CALLBACK}?code=abc_DEF-123&state=s7ate~value.x`),
@@ -540,38 +542,36 @@ describe("native sign-in callback fallback", () => {
     expect(response.headers.get("X-Frame-Options")).toBe("DENY");
     const csp = response.headers.get("Content-Security-Policy") ?? "";
     expect(csp).toContain("default-src 'none'");
-    // Exactly one script may run: the pinned fragment hand-off.
+    // Exactly one script may run: the pinned history scrub.
     const scriptHash = createHash("sha256")
-      .update(NATIVE_CALLBACK_FRAGMENT_SCRIPT)
+      .update(NATIVE_CALLBACK_SCRUB_SCRIPT)
       .digest("base64");
     expect(csp).toContain(`script-src 'sha256-${scriptHash}';`);
     const html = await response.text();
     expect(html.match(/<script>/g)).toHaveLength(1);
-    expect(html).toContain(
-      `<script>${NATIVE_CALLBACK_FRAGMENT_SCRIPT}</script>`,
-    );
+    expect(html).toContain(`<script>${NATIVE_CALLBACK_SCRUB_SCRIPT}</script>`);
     expect(html).not.toMatch(/fetch\(|XMLHttpRequest|document\.cookie/);
-    expect(html).toContain(
-      'href="intent://eliza.app/alphaphone/auth/callback?code=abc_DEF-123&amp;state=s7ate~value.x#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end"',
-    );
-    expect(html).toContain("Open Alpha Phone");
+    // The code and state never appear anywhere on the page.
+    expect(html).not.toContain("abc_DEF-123");
+    expect(html).not.toContain("s7ate~value.x");
+    expect(html).toContain(`href="${BARE}"`);
+    expect(html).toContain("Return to Alpha Phone");
+    expect(html).toContain("start sign-in again");
   });
 
-  it("forwards only exact code+state or error+state shapes", () => {
+  it("never forwards code, state or error into the app hand-off", () => {
     const intent = (query: string) =>
       buildNativeSignInIntentUrl(new URL(`${CALLBACK}${query}`));
-    const bare =
-      "intent://eliza.app/alphaphone/auth/callback#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";
-    expect(intent("?error=oauth_state_expired&state=abc")).toContain(
-      "?error=oauth_state_expired&state=abc#Intent",
-    );
-    // Extra, missing, duplicated or non URL-safe parameters are all dropped.
-    expect(intent("")).toBe(bare);
-    expect(intent("?code=a")).toBe(bare);
-    expect(intent("?code=a&state=b&token=c")).toBe(bare);
-    expect(intent("?code=a&code=b&state=c")).toBe(bare);
-    expect(intent('?code=a"><script>&state=b')).toBe(bare);
-    expect(intent(`?code=${"a".repeat(513)}&state=b`)).toBe(bare);
+    for (const query of [
+      "",
+      "?code=a&state=b",
+      "?error=oauth_state_expired&state=abc",
+      "?code=a&state=b&token=c",
+      '?code=a"><script>&state=b',
+      "#code=a&state=b",
+    ]) {
+      expect(intent(query)).toBe(BARE);
+    }
   });
 
   it("keeps the staging host in the hand-off link", () => {
@@ -582,26 +582,26 @@ describe("native sign-in callback fallback", () => {
         ),
       ),
     ).toBe(
-      "intent://staging.eliza.app/alphaphone/auth/callback?code=a&state=b#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end",
+      "intent://staging.eliza.app/alphaphone/auth/callback#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end",
     );
   });
 
-  it("rebuilds the hand-off from Steward's fragment and drops it from history", () => {
-    const runScript = (hash: string) => {
+  it("drops Steward's fragment and any query from history without touching the link", () => {
+    const runScript = (hash: string, search = "") => {
       const anchor = { href: "server-built" };
       const replaced: string[] = [];
       new Function(
         "document",
         "location",
         "history",
-        NATIVE_CALLBACK_FRAGMENT_SCRIPT,
+        NATIVE_CALLBACK_SCRUB_SCRIPT,
       )(
         { getElementById: (id: string) => (id === "open" ? anchor : null) },
         {
           hash,
           host: "eliza.app",
           pathname: "/alphaphone/auth/callback",
-          search: "",
+          search,
         },
         {
           replaceState: (_state: unknown, _title: string, url: string) =>
@@ -611,24 +611,13 @@ describe("native sign-in callback fallback", () => {
       return { href: anchor.href, replaced };
     };
     expect(runScript("#code=Ab-_9&state=s~t.1")).toEqual({
-      href: "intent://eliza.app/alphaphone/auth/callback?code=Ab-_9&state=s~t.1#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end",
+      href: "server-built",
       replaced: ["/alphaphone/auth/callback"],
     });
-    expect(runScript("#error=mfa_required&state=s").href).toContain(
-      "?error=mfa_required&state=s#Intent",
-    );
-    // Malformed fragments leave the server-built link alone but still leave history.
-    for (const hash of [
-      "#code=a",
-      "#code=a&state=b&token=c",
-      "#code=a%22%3E&state=b",
-      "#code=a&code=b&state=c",
-    ]) {
-      expect(runScript(hash)).toEqual({
-        href: "server-built",
-        replaced: ["/alphaphone/auth/callback"],
-      });
-    }
+    expect(runScript("", "?error=x&state=s")).toEqual({
+      href: "server-built",
+      replaced: ["/alphaphone/auth/callback"],
+    });
     expect(runScript("")).toEqual({ href: "server-built", replaced: [] });
   });
 
