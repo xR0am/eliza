@@ -56,9 +56,11 @@ natives. Its `JNI_OnLoad` registers the methods and is its only export.
 
 Generate the native inputs and the hash-pinned bundle (NDK 28.2, arm64-v8a and
 x86_64, 16 KiB pages). Pins are in `inputs.json` and must equal the fork pins
-in `tools/paradee/pins.json` and `tools/misaki-g2p/pins.json`. The GGUF and the
-lexicon are converted in the fork from the pinned PyTorch weights and misaki
-data; `--python` needs torch and numpy. `--model-cache` is searched first.
+in `tools/paradee/pins.json`, `tools/misaki-g2p/pins.json`,
+`tools/parakeet/pins.json`, and the mobile voice catalog. The builder includes
+Paradee, the misaki lexicon, Phonon-2, Silero VAD, and their attribution.
+`--python` needs torch plus the conversion dependencies installed above.
+`--model-cache` is searched first; every cached file is checked against its pin.
 
 ```sh
 ANDROID_HOME=~/Library/Android/sdk node packages/app/scripts/paradee-voice/build-native.ts \

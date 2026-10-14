@@ -4,7 +4,7 @@
  *   jniLibs/<abi>/libelizainference.so   (stage-elizavoice-lib.ts: Paradee +
  *                                         misaki G2P + eSpeak NG fallback)
  *   assets/paradee-voice/v1/...          (Paradee GGUF, misaki lexicon, English
- *                                         eSpeak NG data, notices, manifest)
+ *                                         eSpeak NG data, Phonon-2, VAD, notices, manifest)
  *   build-record.json                    (SHA-256 of every file above;
  *                                         consumer.gradle checks it)
  *
@@ -24,7 +24,7 @@
  * packages/app/platforms/android/paradee-voice/native. --model-cache is
  * searched (recursively, by file name) for an already converted GGUF or
  * lexicon before converting. --python runs the converters (default python3;
- * the GGUF converter needs torch and numpy).
+ * the converters need torch, numpy, gguf-py, zstandard and librosa).
  */
 
 import { execFileSync } from "node:child_process";
@@ -145,16 +145,35 @@ async function download(url, pin, target) {
 }
 
 /** inputs.json must name the same artifacts the fork pins. */
-function forkPins() {
+export function forkPins() {
   const paradee = JSON.parse(
     readFileSync(path.join(forkSrc, "tools/paradee/pins.json"), "utf8"),
   );
   const misaki = JSON.parse(
     readFileSync(path.join(forkSrc, "tools/misaki-g2p/pins.json"), "utf8"),
   );
+  const parakeet = JSON.parse(
+    readFileSync(path.join(forkSrc, "tools/parakeet/pins.json"), "utf8"),
+  );
+  const versions = JSON.parse(
+    readFileSync(
+      path.join(
+        repoRoot,
+        "plugins/plugin-native-inference/src/model-catalog/voice-model-versions.json",
+      ),
+      "utf8",
+    ),
+  );
+  const vad = versions
+    .find((version) => version.id === "mobile-voice")
+    ?.files?.find((file) => file.role === "vad");
+  if (!vad || inputs.vad.url !== vad.url)
+    fail("VAD download source disagrees with the mobile voice catalog");
   const gguf = paradee.gguf?.f32;
   const checks = [
     ["paradee GGUF", inputs.paradee, gguf?.sha256, gguf?.size],
+    ["Phonon-2 GGUF", inputs.asr, parakeet.gguf?.sha256, parakeet.gguf?.size],
+    ["Silero VAD", inputs.vad, vad.sha256, vad.bytes],
     [
       "misaki lexicon",
       inputs.lexicon,
@@ -175,7 +194,7 @@ function forkPins() {
       );
     }
   }
-  return { paradee, misaki };
+  return { paradee, misaki, parakeet };
 }
 
 /** Copies a converted file from the target itself or the model cache. */
@@ -203,7 +222,7 @@ async function convertTo(pin, target, convert) {
   renameSync(partial, target);
 }
 
-async function buildModels(args, pins, bundle) {
+export async function buildModels(args, pins, bundle) {
   // Paradee GGUF from the pinned PyTorch weights, config and tokenizer.
   const gguf = path.join(bundle, inputs.paradee.path);
   if (!(await fromCache(inputs.paradee, gguf, args.modelCache))) {
@@ -242,6 +261,35 @@ async function buildModels(args, pins, bundle) {
         "--output",
         output,
       ]),
+    );
+  }
+
+  const asr = path.join(bundle, inputs.asr.path);
+  if (!(await fromCache(inputs.asr, asr, args.modelCache))) {
+    const phonon = path.join(args.workspace, "phonon-2");
+    run("node", [
+      path.join(repoRoot, "packages/app/scripts/voice/build-phonon2-gguf.ts"),
+      "--out",
+      phonon,
+      "--source",
+      path.join(args.workspace, "phonon-2-source"),
+      "--python",
+      args.python,
+    ]);
+    if (!(await fromCache(inputs.asr, asr, phonon)))
+      fail("Phonon-2 conversion did not produce the pinned model");
+  }
+  const vad = path.join(bundle, inputs.vad.path);
+  if (!(await fromCache(inputs.vad, vad, args.modelCache))) {
+    await download(inputs.vad.url, inputs.vad, vad);
+  }
+  for (const name of ["NOTICE", "LICENSE-WEIGHTS-CC-BY-4.0.txt"]) {
+    const pin = pins.parakeet.files[name];
+    if (!pin) fail(`Missing Phonon-2 attribution pin: ${name}`);
+    await download(
+      `https://huggingface.co/${pins.parakeet.model.repo}/resolve/${pins.parakeet.model.revision}/${name}`,
+      { bytes: pin.size, sha256: pin.sha256 },
+      path.join(bundle, "notices", "phonon-2", name),
     );
   }
 }
@@ -357,4 +405,4 @@ async function main() {
   log(`wrote ${record.length} files under ${args.out}`);
 }
 
-await main();
+if (import.meta.main) await main();
