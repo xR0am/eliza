@@ -2078,12 +2078,13 @@ export class SharedRuntimeConversation {
   private async handle(request: Request): Promise<Response> {
     if (new URL(request.url).pathname === "/owner-capture/read")
       return this.readOwnerCapture(request);
-    let payload: ConversationRequest;
+    let parsedPayload: ConversationRequest;
     try {
-      payload = (await request.json()) as ConversationRequest;
+      parsedPayload = (await request.json()) as ConversationRequest;
     } catch {
       return Response.json({ error: "Invalid JSON body" }, { status: 400 });
     }
+    const payload = parsedPayload;
     if (
       (payload.operation === "personal-bridge" ||
         payload.operation === "personal-stream") &&
@@ -2808,13 +2809,15 @@ export class SharedRuntimeConversation {
       const { sharedRuntimeChatService, sharedRuntimeRoomKey } = await import(
         "@elizaos/cloud-shared/lib/services/shared-runtime/shared-runtime-chat"
       );
-      const agent = personal
-        ? payload.agent
-        : await import(
-            "@elizaos/cloud-shared/lib/services/shared-runtime/cached-agent-dates"
-          ).then(({ rehydrateCachedAgentDates }) =>
-            rehydrateCachedAgentDates(payload.agent),
-          );
+      const agent =
+        payload.operation === "personal-bridge" ||
+        payload.operation === "personal-stream"
+          ? payload.agent
+          : (
+              await import(
+                "@elizaos/cloud-shared/lib/services/shared-runtime/cached-agent-dates"
+              )
+            ).rehydrateCachedAgentDates(payload.agent);
       if (personal) await this.rememberPersonalOwner(agent);
       const executionCtx = {
         waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise),
