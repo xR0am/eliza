@@ -169,6 +169,17 @@ function boundedText(value: unknown, max: number): string | undefined {
 }
 
 /** Only well-formed source values; malformed tags are omitted, never guessed. */
+/**
+ * The name of a place Nominatim leaves unnamed (a house or building): the
+ * leading part of its address. A leading house number keeps its street,
+ * so "12, High Street, Oxford" is "12 High Street", not "12".
+ */
+function addressName(displayName: string | undefined): string | undefined {
+  const [first, second] = (displayName ?? "").split(",").map((part) => part.trim());
+  if (first && second && /^\d/.test(first) && first.length <= 10) return `${first} ${second}`;
+  return first || undefined;
+}
+
 function placeExtras(tags: unknown): Pick<MapsPlace, "phone" | "website" | "openingHours"> {
   if (!tags || typeof tags !== "object") return {};
   const record = tags as Record<string, unknown>;
@@ -489,7 +500,7 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     if (!prefix || osmId === undefined || !Number.isSafeInteger(osmId) || osmId <= 0 || !coordinate)
       return undefined;
     const displayName = boundedText(entry.display_name, 1000);
-    const name = boundedText(entry.name, 300) ?? boundedText(displayName?.split(",")[0], 300);
+    const name = boundedText(entry.name, 300) ?? boundedText(addressName(displayName), 300);
     if (!name) return undefined;
     return {
       providerId: OSM_MAPS_PROVIDER_ID,

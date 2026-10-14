@@ -309,6 +309,35 @@ describe("Eliza Cloud Maps routes", () => {
     expect(calls[0]?.searchParams.get("layer")).toBe("address");
   });
 
+  test("an unnamed address is named by its house number and street", async () => {
+    const res = await call(
+      "geocode",
+      deps({
+        provider: () =>
+          provider(() =>
+            Response.json([
+              {
+                ...NOMINATIM_CASINO,
+                osm_type: "way",
+                osm_id: 555,
+                name: "",
+                display_name: "12, Place du Casino, Monte-Carlo, Monaco",
+              },
+            ]),
+          ),
+      }),
+      { query: "12 Place du Casino" },
+    );
+    expect(res.status).toBe(200);
+    expect((await json(res)).places).toMatchObject([
+      {
+        id: "W555",
+        name: "12 Place du Casino",
+        address: "12, Place du Casino, Monte-Carlo, Monaco",
+      },
+    ]);
+  });
+
   test("details and reverse include verified source extras or an honest null", async () => {
     const details = await json(
       await call(
