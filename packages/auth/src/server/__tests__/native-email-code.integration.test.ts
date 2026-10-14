@@ -1,5 +1,7 @@
 /**
- * Native in-app email sign-in (Alpha Phone): `delivery: "code"`.
+ * Native in-app email sign-in (Alpha Phone): POST /auth/email/code/send, then
+ * POST /auth/email/code/verify. (`delivery: "code"` on /auth/email/send is the
+ * compatible older spelling of the same code-only email.)
  *
  * Drives the real identity router and PGlite store with the in-memory mock
  * email provider. A native caller asks for a code-only email, which must carry
@@ -82,6 +84,27 @@ function nativePost(path: string, body: object, ip: string) {
   });
 }
 
+/** Runs `body` against the production limiter, persisted in this test's database. */
+async function withDatabaseLimiter(body: () => Promise<void>) {
+  const priorProxyHops = process.env.STEWARD_TRUSTED_PROXY_HOPS;
+  process.env.STEWARD_TRUSTED_PROXY_HOPS = "1";
+  const { setDatabaseAuthRateLimiter } = await import(
+    "../api/services/auth-rate-limit"
+  );
+  const { checkDatabaseAuthRateLimit } = await import(
+    "../auth/database-rate-limit"
+  );
+  setDatabaseAuthRateLimiter(checkDatabaseAuthRateLimit);
+  try {
+    await body();
+  } finally {
+    setDatabaseAuthRateLimiter(undefined);
+    if (priorProxyHops === undefined)
+      delete process.env.STEWARD_TRUSTED_PROXY_HOPS;
+    else process.env.STEWARD_TRUSTED_PROXY_HOPS = priorProxyHops;
+  }
+}
+
 function sixDigitCode(text: string): string {
   const match = text.match(/\b(\d{6})\b/);
   if (!match) throw new Error("no six-digit code in the email");
@@ -147,4 +170,204 @@ describe("native email code sign-in (Alpha Phone)", () => {
     }
     expect(inbox.last(email)).toBeUndefined();
   });
+
+  test("POST /email/code/send emails only a code; verify returns the Steward session connect needs", async () => {
+    const email = "native-send@example.test";
+    const ip = "198.51.100.20";
+    const sent = await nativePost(
+      "/auth/email/code/send",
+      { email, tenantId: TENANT_ID },
+      ip,
+    );
+    expect(sent.status).toBe(200);
+    expect(sent.headers.get("cache-control")).toContain("no-store");
+    const sentBody = (await sent.json()) as {
+      ok: boolean;
+      data: Record<string, unknown>;
+    };
+    expect(sentBody.ok).toBe(true);
+    // No poll secret or challenge id: a native client never polls.
+    expect(Object.keys(sentBody.data).sort()).toEqual([
+      "codeLength",
+      "expiresAt",
+    ]);
+    expect(sentBody.data.codeLength).toBe(6);
+    const ttlMs = Date.parse(String(sentBody.data.expiresAt)) - Date.now();
+    expect(ttlMs).toBeGreaterThan(0);
+    expect(ttlMs).toBeLessThanOrEqual(10 * 60_000);
+
+    const message = inbox.last(email);
+    expect(message).toBeDefined();
+    if (!message) return;
+    for (const body of [message.text, message.html ?? ""]) {
+      expect(body).not.toMatch(/https?:\/\//i);
+      expect(body).not.toContain("/callback/email");
+      expect(body).not.toMatch(/<a\s/i);
+    }
+    expect(message.magicLink).toBeUndefined();
+    expect(message.token).toBeUndefined();
+    const code = sixDigitCode(message.text);
+
+    const verify = await nativePost(
+      "/auth/email/code/verify",
+      { email, code, tenantId: TENANT_ID },
+      ip,
+    );
+    expect(verify.status).toBe(200);
+    const session = (await verify.json()) as Record<string, unknown>;
+    expect(session.ok).toBe(true);
+    expect(typeof session.token).toBe("string");
+    expect(typeof session.refreshToken).toBe("string");
+    expect(typeof session.expiresIn).toBe("number");
+    expect((session.user as Record<string, unknown>).email).toBe(email);
+
+    // Single use: the same code cannot be redeemed twice.
+    const replay = await nativePost(
+      "/auth/email/code/verify",
+      { email, code, tenantId: TENANT_ID },
+      "198.51.100.21",
+    );
+    expect(replay.status).toBe(401);
+  });
+
+  test("a later send supersedes the earlier code", async () => {
+    const email = "native-supersede@example.test";
+    await nativePost(
+      "/auth/email/code/send",
+      { email, tenantId: TENANT_ID },
+      "198.51.100.30",
+    );
+    const first = sixDigitCode(inbox.last(email)?.text ?? "");
+    await nativePost(
+      "/auth/email/code/send",
+      { email, tenantId: TENANT_ID },
+      "198.51.100.30",
+    );
+    const second = sixDigitCode(inbox.last(email)?.text ?? "");
+    if (first !== second) {
+      const stale = await nativePost(
+        "/auth/email/code/verify",
+        { email, code: first, tenantId: TENANT_ID },
+        "198.51.100.31",
+      );
+      expect(stale.status).toBe(401);
+    }
+    const fresh = await nativePost(
+      "/auth/email/code/verify",
+      { email, code: second, tenantId: TENANT_ID },
+      "198.51.100.32",
+    );
+    expect(fresh.status).toBe(200);
+  });
+
+  test("wrong codes lock the challenge so the right code no longer works", async () => {
+    const email = "native-lock@example.test";
+    await nativePost(
+      "/auth/email/code/send",
+      { email, tenantId: TENANT_ID },
+      "198.51.100.40",
+    );
+    const code = sixDigitCode(inbox.last(email)?.text ?? "");
+    const wrong = code === "000000" ? "111111" : "000000";
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await nativePost(
+        "/auth/email/code/verify",
+        { email, code: wrong, tenantId: TENANT_ID },
+        `198.51.100.${41 + attempt}`,
+      );
+      statuses.push(response.status);
+    }
+    expect(statuses.slice(0, 4)).toEqual([401, 401, 401, 401]);
+    expect(statuses[4]).toBe(429);
+    const late = await nativePost(
+      "/auth/email/code/verify",
+      { email, code, tenantId: TENANT_ID },
+      "198.51.100.49",
+    );
+    expect(late.status).not.toBe(200);
+  });
+
+  test("the per-address budget is shared with /email/send", async () => {
+    await withDatabaseLimiter(async () => {
+      const email = "native-budget@example.test";
+      const statuses: number[] = [];
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const path =
+          attempt % 2 === 0 ? "/auth/email/send" : "/auth/email/code/send";
+        const response = await nativePost(
+          path,
+          { email, tenantId: TENANT_ID },
+          `198.51.100.${60 + attempt}`,
+        );
+        statuses.push(response.status);
+      }
+      expect(statuses).toEqual([200, 200, 200, 200, 200, 429]);
+    });
+  }, 60_000);
+
+  test("malformed bodies are refused before any email is sent", async () => {
+    const email = "native-malformed@example.test";
+    for (const body of [
+      {},
+      { email: "" },
+      { email: 42 },
+      { email, tenantId: 7 },
+      { email, captchaToken: {} },
+    ]) {
+      const response = await nativePost(
+        "/auth/email/code/send",
+        body,
+        "198.51.100.70",
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(inbox.last(email)).toBeUndefined();
+  });
+
+  test("the tenant-wide code email ceiling stops a flood across addresses and IPs", async () => {
+    await withDatabaseLimiter(async () => {
+      const statuses: number[] = [];
+      for (let index = 0; index < 121; index += 1) {
+        const response = await nativePost(
+          "/auth/email/code/send",
+          { email: `flood-${index}@example.test`, tenantId: TENANT_ID },
+          `203.0.113.${index}`,
+        );
+        statuses.push(response.status);
+      }
+      // The per-address test above already spent a couple of this minute's
+      // tenant budget, so the ceiling (120/min) arrives a little early. Once
+      // it is reached, every further send is refused and nothing is mailed.
+      const firstRefused = statuses.indexOf(429);
+      expect(firstRefused).toBeGreaterThan(110);
+      expect(firstRefused).toBeLessThanOrEqual(120);
+      expect(statuses.slice(0, firstRefused).every((s) => s === 200)).toBe(
+        true,
+      );
+      expect(statuses.slice(firstRefused).every((s) => s === 429)).toBe(true);
+      expect(inbox.last("flood-120@example.test")).toBeUndefined();
+    });
+  }, 120_000);
+
+  test("code send is rate limited per client address", async () => {
+    await withDatabaseLimiter(async () => {
+      const statuses: number[] = [];
+      for (let index = 0; index < 31; index += 1) {
+        const response = await nativePost(
+          "/auth/email/code/send",
+          {
+            email: `per-ip-${index}@example.test`,
+            tenantId: "unknown-tenant-for-ip-budget",
+          },
+          "192.0.2.77",
+        );
+        statuses.push(response.status);
+      }
+      // The per-IP limiter runs before any tenant work, so it answers 429 on
+      // the 31st request whatever the body says.
+      expect(statuses[30]).toBe(429);
+      expect(statuses.slice(0, 30).includes(429)).toBe(false);
+    });
+  }, 60_000);
 });

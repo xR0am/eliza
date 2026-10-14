@@ -225,23 +225,30 @@ export const swapCspFrameAncestors = (
 // intercepted (verification pending or failed, "open supported links" turned
 // off, a redirect without a user gesture, or the app is not installed).
 //
-// It never forwards the sign-in result. An `intent://` hand-off is matched on
+// It never forwards a sign-in code. An `intent://` hand-off is matched on
 // package name only, not on the signing certificate, so a sideloaded app that
 // reuses the package name could start its own authorize with its own PKCE
 // verifier and receive the victim's code from this page. PKCE does not help
 // when the attacker started the flow. Success returns therefore rely solely on
-// the verified App Link. This page offers a parameterless hand-off that only
-// brings the app forward so the user can start again, and one hash-pinned
-// inline script removes the fragment (where Steward puts the code) and the
-// query from session history. It renders no SPA, calls no API and sets no
-// cookie.
+// the verified App Link.
+//
+// The page's only control brings the app forward. Rendered by the server it
+// carries no parameters. One hash-pinned inline script then (a) points it at
+// `?error=app_link_unverified&state=<state>` when the fragment or query holds
+// a state of the contract's shape, so the app can match its pending attempt
+// and say the App Link was not verified, and (b) removes the fragment (where
+// Steward puts the code) and the query from session history. A state alone
+// cannot redeem anything. The page renders no SPA, calls no API and sets no
+// cookie. The shape is pinned by the shared contract fixture
+// test/fixtures/alphaphone-native-signin-callback.contract.json, which Alpha
+// Phone runs too.
 export const NATIVE_SIGN_IN_CALLBACK_PATH = "/alphaphone/auth/callback";
 export const NATIVE_SIGN_IN_PACKAGE = "ai.elizaresearch.alphaphone";
 export const NATIVE_CALLBACK_SCRUB_SCRIPT =
-  '(function(){if(location.hash||location.search)history.replaceState(null,"",location.pathname)})();';
+  '(function(){var R=/^[A-Za-z0-9_-]{43}$/,s=null;function f(t){t.split("&").forEach(function(p){var i=p.indexOf("=");if(s===null&&i>0&&p.slice(0,i)==="state"&&R.test(p.slice(i+1)))s=p.slice(i+1)})}f(location.hash.slice(1));f(location.search.slice(1));var a=document.getElementById("open");if(a&&s)a.href="intent://"+location.host+"/alphaphone/auth/callback?error=app_link_unverified&state="+s+"#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";if(location.hash||location.search)history.replaceState(null,"",location.pathname)})();';
 // sha256 of NATIVE_CALLBACK_SCRUB_SCRIPT; the test recomputes it.
 const NATIVE_CALLBACK_SCRIPT_HASH =
-  "sha256-e2Hmsqcl42QmMY6SHTpg9eTdQUJU1/rmfFSpC+kCe4M=";
+  "sha256-Sl3P1xhyAntQj4SGXYMv7AXc7nf52KPt+v434UWVIrw=";
 const NATIVE_CALLBACK_CSP = `default-src 'none'; script-src '${NATIVE_CALLBACK_SCRIPT_HASH}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 const escapeHtml = (value: string): string =>
@@ -253,9 +260,11 @@ const escapeHtml = (value: string): string =>
     .replaceAll("'", "&#39;");
 
 /**
- * Build the `intent://` URL that brings the app forward. It never carries a
- * query: no `code`, `state` or `error` from the callback URL is forwarded,
- * whatever shape the request has.
+ * Build the server-rendered `intent://` URL that brings the app forward. It
+ * never carries a query: no `code`, `state` or `error` from the callback URL
+ * is forwarded, whatever shape the request has. (The server cannot see the
+ * fragment; the pinned page script may add only `error=app_link_unverified`
+ * and a well-formed `state`, never a code.)
  */
 export function buildNativeSignInIntentUrl(url: URL): string {
   return `intent://${url.host}${NATIVE_SIGN_IN_CALLBACK_PATH}#Intent;scheme=https;package=${NATIVE_SIGN_IN_PACKAGE};end`;

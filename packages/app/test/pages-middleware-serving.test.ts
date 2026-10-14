@@ -586,7 +586,9 @@ describe("native sign-in callback fallback", () => {
     );
   });
 
-  it("drops Steward's fragment and any query from history without touching the link", () => {
+  it("drops Steward's fragment and any query from history and never puts a code in the link", () => {
+    const state = "-XpdaBcldq8nhHvl3cGAo65cM3lLV1bF7rBO_fi3hDI";
+    const code = "L14j9ZUPE0a3DJXAF5pmQiJ9yfl9Mkz2oiEWIlLHbZ0";
     const runScript = (hash: string, search = "") => {
       const anchor = { href: "server-built" };
       const replaced: string[] = [];
@@ -610,15 +612,21 @@ describe("native sign-in callback fallback", () => {
       );
       return { href: anchor.href, replaced };
     };
+    const withState = `intent://eliza.app/alphaphone/auth/callback?error=app_link_unverified&state=${state}#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end`;
+    expect(runScript(`#code=${code}&state=${state}`)).toEqual({
+      href: withState,
+      replaced: ["/alphaphone/auth/callback"],
+    });
+    expect(runScript("", `?error=oauth_state_consumed&state=${state}`)).toEqual(
+      { href: withState, replaced: ["/alphaphone/auth/callback"] },
+    );
+    // A malformed state leaves the parameterless server link in place.
     expect(runScript("#code=Ab-_9&state=s~t.1")).toEqual({
       href: "server-built",
       replaced: ["/alphaphone/auth/callback"],
     });
-    expect(runScript("", "?error=x&state=s")).toEqual({
-      href: "server-built",
-      replaced: ["/alphaphone/auth/callback"],
-    });
     expect(runScript("")).toEqual({ href: "server-built", replaced: [] });
+    expect(runScript(`#code=${code}&state=${state}`).href).not.toContain(code);
   });
 
   it("does not claim neighbouring paths", async () => {
