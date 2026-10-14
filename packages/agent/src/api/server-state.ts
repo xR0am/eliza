@@ -60,11 +60,10 @@ export function createServerState(
     skills: [],
     logBuffer: [],
     eventBuffer: [],
-    // Event ids must keep growing across process restarts: an open dashboard
-    // keeps the ids it has seen and its replay cursor, so a new process that
-    // started again at evt-1 had its events dropped as duplicates or skipped
-    // as already applied. Starting at the process start time in microseconds
-    // keeps every id above the ids of an earlier process.
+    // A dashboard retains its replay cursor across server restarts. Seed the
+    // sequence from startup time to avoid resetting to evt-1 and dropping new
+    // events as duplicates. This assumes the wall clock has not moved backward
+    // and the previous process emitted fewer than 1000 events per millisecond.
     nextEventId: Date.now() * 1000,
     chatRoomId: null,
     chatUserId: null,
