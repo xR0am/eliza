@@ -195,7 +195,8 @@ export class XDmAdapter extends BaseMessageAdapter {
         .map(memoryToMessageRef)
         .filter(
           (ref) =>
-            (!channels || channels.has(ref.channelId)) &&
+            (!channels ||
+              (ref.channelId !== undefined && channels.has(ref.channelId))) &&
             (sinceMs === undefined ||
               !Number.isFinite(ref.receivedAtMs) ||
               ref.receivedAtMs >= sinceMs),
