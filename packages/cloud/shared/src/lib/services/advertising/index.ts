@@ -466,14 +466,15 @@ class AdvertisingService {
       return { campaign, secret: existing };
     }
 
-    const secret = this.newAttributionSecret();
-    const updated = await adCampaignsRepository.update(campaign.id, {
-      metadata: {
-        ...(campaign.metadata ?? {}),
-        attribution_token_secret: secret,
-      },
-    });
-    if (!updated) {
+    // Set only if absent, in one statement: concurrent first requests agree on
+    // one secret, and no other metadata key is rewritten from this copy.
+    const updated = await adCampaignsRepository.setMetadataKeyIfAbsent(
+      campaign.id,
+      "attribution_token_secret",
+      this.newAttributionSecret(),
+    );
+    const secret = updated?.metadata?.attribution_token_secret;
+    if (!updated || !secret) {
       throw new Error("Campaign not found");
     }
     return { campaign: updated, secret };
@@ -1346,18 +1347,19 @@ class AdvertisingService {
     }
 
     if (!campaign.external_campaign_id) {
-      const metadata = {
-        ...campaign.metadata,
-        ...(dayparting ? { dayparting } : {}),
-      };
-      if (input.dayparting === null) {
-        delete metadata.dayparting;
-      }
-      const updated = await adCampaignsRepository.update(campaignId, {
-        metadata,
-        spend_cap_credits:
-          input.spendCapCredits === undefined ? undefined : requestedCampaignSpendCap,
-      });
+      // Only the dayparting key changes; the rest of the stored metadata (the
+      // attribution secret among it) is not rewritten from this copy.
+      const updated = await adCampaignsRepository.updateWithMetadataPatch(
+        campaignId,
+        {
+          spend_cap_credits:
+            input.spendCapCredits === undefined ? undefined : requestedCampaignSpendCap,
+        },
+        {
+          set: dayparting ? { dayparting } : undefined,
+          remove: input.dayparting === null ? ["dayparting"] : undefined,
+        },
+      );
       if (!updated) {
         throw new Error("Campaign not found");
       }
