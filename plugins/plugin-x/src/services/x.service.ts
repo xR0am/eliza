@@ -1551,9 +1551,12 @@ export class XService extends Service {
     const authorId = post.userId || "unknown";
     const createdAt = post.createdAt;
     const isOwn = Boolean(post.ownUserId && authorId === post.ownUserId);
+    // Ids and authors use the same keys as the live mention and timeline paths
+    // (createUniqueUuid of the X user id and post id), so a fetched post is the
+    // stored one and its author is the known entity.
     const entityId = isOwn
       ? runtime.agentId
-      : createUniqueUuid(runtime, `x:user:${authorId}`);
+      : createUniqueUuid(runtime, authorId);
     const roomId =
       post.roomId ??
       createUniqueUuid(
@@ -1565,7 +1568,7 @@ export class XService extends Service {
       : `https://x.com/i/web/status/${post.id}`;
 
     return {
-      id: createUniqueUuid(runtime, `x:post:${post.id}`),
+      id: createUniqueUuid(runtime, post.id),
       agentId: runtime.agentId,
       entityId,
       roomId,
@@ -1576,7 +1579,7 @@ export class XService extends Service {
         url,
         channelType: ChannelType.FEED,
         ...(post.inReplyTo
-          ? { inReplyTo: createUniqueUuid(runtime, `x:post:${post.inReplyTo}`) }
+          ? { inReplyTo: createUniqueUuid(runtime, post.inReplyTo) }
           : {}),
       },
       metadata: {
@@ -1631,19 +1634,22 @@ export class XService extends Service {
       target?.roomId ??
       createUniqueUuid(
         runtime,
-        counterpartId
-          ? `x:${normalizedAccountId}:dm:${counterpartId}`
-          : `x:${normalizedAccountId}:dm-conversation:${message.conversationId ?? message.id}`,
+        // Same room, memory and author keys as the live DM poller.
+        message.conversationId
+          ? `x-dm:${normalizedAccountId}:${message.conversationId}`
+          : counterpartId
+            ? `x:${normalizedAccountId}:dm:${counterpartId}`
+            : `x:${normalizedAccountId}:dm-conversation:${message.id}`,
       );
     // `senderId` is an X user id, never the agent's UUID; the account's own
     // DMs are the ones listRecentDirectMessages marked as not inbound.
     const fromAccount = message.isInbound === false;
     const entityId = fromAccount
       ? runtime.agentId
-      : createUniqueUuid(runtime, `x:user:${senderId}`);
+      : createUniqueUuid(runtime, senderId);
 
     return {
-      id: createUniqueUuid(runtime, `x:dm:${message.id}`),
+      id: createUniqueUuid(runtime, `x-dm:${message.id}`),
       agentId: runtime.agentId,
       entityId,
       roomId,
