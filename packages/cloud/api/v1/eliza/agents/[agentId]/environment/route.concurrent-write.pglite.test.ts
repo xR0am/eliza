@@ -15,7 +15,9 @@ process.env.DATABASE_URL = "pglite://memory";
 process.env.TEST_DATABASE_URL = "pglite://memory";
 process.env.NODE_ENV ||= "test";
 process.env.MOCK_REDIS = "1";
+process.env.SECRETS_MASTER_KEY ||= "7".repeat(64);
 
+import { organizationEncryptionKeys } from "@elizaos/cloud-shared/db/schemas";
 import { agentSandboxes } from "@elizaos/cloud-shared/db/schemas/agent-sandboxes";
 import * as realAuth from "@elizaos/cloud-shared/lib/auth";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
@@ -66,6 +68,12 @@ mock.module(schemaBootstrapPath, () => ({
   ensureAgentSandboxSchema: async () => undefined,
 }));
 
+const { fieldEncryption } = await import(
+  resolve(
+    import.meta.dir,
+    "../../../../../../shared/src/lib/services/field-encryption.ts",
+  )
+);
 const { closeDatabaseConnectionsForTests, dbWrite } = await import(
   "@elizaos/cloud-shared/db/client"
 );
@@ -87,17 +95,20 @@ async function storedEnvironment(): Promise<Record<string, string>> {
 }
 
 beforeAll(async () => {
-  const config = getTableConfig(agentSandboxes);
-  await dbWrite.execute(
-    sql.raw(
-      `CREATE TABLE ${config.name} (${config.columns
-        .map(
-          (column) =>
-            `"${column.name}" ${column.getSQLType()}${column.name === "id" ? " PRIMARY KEY" : ""}`,
-        )
-        .join(",")})`,
-    ),
-  );
+  // The sandbox row, and the per-organization key store field encryption uses.
+  for (const table of [agentSandboxes, organizationEncryptionKeys]) {
+    const config = getTableConfig(table);
+    await dbWrite.execute(
+      sql.raw(
+        `CREATE TABLE ${config.name} (${config.columns
+          .map(
+            (column) =>
+              `"${column.name}" ${column.getSQLType()}${column.name === "id" ? " PRIMARY KEY" : ""}${column.hasDefault && column.name === "id" ? " DEFAULT gen_random_uuid()" : ""}`,
+          )
+          .join(",")})`,
+      ),
+    );
+  }
   await dbWrite.execute(
     sql.raw(`INSERT INTO agent_sandboxes
       (id, organization_id, user_id, agent_name, status, execution_tier, environment_vars, environment_revision, lifecycle_revision)
@@ -134,4 +145,40 @@ test("a variable stored by another writer during the request survives the patch"
   expect(body.data.updatedKeys).toEqual(["B"]);
   expect(body.data.removedKeys).toEqual(["A"]);
   expect(await storedEnvironment()).toEqual({ B: "2", C: "3" });
+});
+
+test("a secret set by the patch is stored encrypted, and a removal and a concurrent variable are kept right", async () => {
+  await dbWrite.execute(
+    sql.raw(
+      `UPDATE agent_sandboxes SET environment_vars = '{"OLD_FLAG":"on"}'::jsonb WHERE id = '${AGENT}'`,
+    ),
+  );
+  concurrentWrite = () =>
+    dbWrite.execute(
+      sql.raw(`UPDATE agent_sandboxes
+        SET environment_vars = environment_vars || '{"REGION":"eu"}'::jsonb,
+            environment_revision = environment_revision + 1
+        WHERE id = '${AGENT}'`),
+    );
+
+  const response = await app.request(
+    `/api/v1/eliza/agents/${AGENT}/environment`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        environmentVars: { OPENAI_API_KEY: "sk-test-secret", OLD_FLAG: null },
+      }),
+    },
+  );
+
+  expect(response.status).toBe(200);
+  const stored = await storedEnvironment();
+  expect(Object.keys(stored).sort()).toEqual(["OPENAI_API_KEY", "REGION"]);
+  expect(stored.REGION).toBe("eu");
+  expect(stored.OPENAI_API_KEY).not.toBe("sk-test-secret");
+  expect(fieldEncryption.isEncrypted(stored.OPENAI_API_KEY)).toBe(true);
+  expect(await fieldEncryption.decrypt(stored.OPENAI_API_KEY)).toBe(
+    "sk-test-secret",
+  );
 });
