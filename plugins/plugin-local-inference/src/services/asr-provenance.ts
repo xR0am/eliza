@@ -5,6 +5,17 @@
  * ASR base or source models still carry Qwen provenance (a pre-cutover
  * stand-in). Paired with `text-provenance.ts`, which reads the same guarantee
  * out of the GGUF header bytes.
+ *
+ * Scope: this block reads ONLY the Eliza-1 bundle manifest's own ASR lineage
+ * (`lineage.asr.base`, `provenance.sourceModels.asr.repo`). The pinned mobile
+ * voice bundle (`mobile-voice` in plugin-native-inference's
+ * voice-model-versions.json) is not an Eliza-1 manifest: the Android/AOSP
+ * agent stages its Qwen3-ASR-0.6B text + mmproj pair into `asr/` with an
+ * `asr/voice-files.json` record, and the Eliza-1 manifest says nothing about
+ * it. So the Qwen-lineage block does not apply to that pair, and a strict
+ * Eliza-1 text bundle can transcribe with it on a phone. Gemma-4 audio is too
+ * large for phones, and text inference stays on Qwen via Cerebras; this split
+ * is an owner decision that still needs explicit owner confirmation.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";

@@ -178,8 +178,11 @@ the registered Capacitor BGE bridge from a real WebView, including tokenization,
 embedding, admission rejection, and context release.
 
 Use `--speech-model-dir <directory>` instead of `--embedding` for CPU Kokoro
-transport and PCM diagnostics through the framed host. Supply `kokoro-82m-v1_0.gguf` and `af_sam.bin`
-from the pinned assets in `plugins/plugin-native-inference/src/aosp-voice-download.ts`.
+transport and PCM diagnostics through the framed host. Supply `kokoro-82m-v1_0.gguf`
+(sha256 `165acd9d…`) and `af_sam.bin` (sha256 `68746708…`) from `elizaos/eliza-1` at
+revision `1e4c7371`. These are no longer the agent's voice: the AOSP agent now
+stages the pinned `mobile-voice` bundle (Paradee-8M + misaki lexicon, Qwen3-ASR-0.6B,
+Silero VAD) from `plugins/plugin-native-inference/src/model-catalog/voice-model-versions.json`.
 The test verifies their hashes inside the installed APK, checks speed, input
 rejection and release/reload, and exports full PCM plus a playable WAV. A passing
 diagnostic does not qualify speech intelligibility: the report explicitly marks
@@ -188,6 +191,28 @@ the expected phrase while the recognizer control passed; the model/forward-path
 defect remains unresolved (issue #30679). Diagnosis needs a matched canonical
 reference and the first divergent tensor. Microphone capture, phonemization and
 physical speaker playback are outside this IPA-input diagnostic.
+
+## Mobile voice quality gates
+
+The shipped mobile voice (Paradee-8M TTS and Qwen3-ASR-0.6B, both on
+libelizainference, no ONNX) is gated by `scripts/voice-quality/host-wer-gate.ts`
+on the host and by `scripts/paradee-voice/qualify` on a device. Both use the
+pins and thresholds in `scripts/voice-quality/fixtures.json`: TTS round-trip
+WER <= 0.08 over the Paradee card samples, the 25 qualify sentences and the
+first 200 Paradee held-out sentences; ASR WER <= 0.06 over 100 LibriSpeech
+test-clean utterances and `speech-fixture/0.wav`; and an empty transcript for
+silence. RTF is reported. The host report goes to `test-results/voice-quality/`.
+
+```sh
+bun packages/app/scripts/voice-quality/host-wer-gate.ts --librispeech /data/LibriSpeech
+# device inputs, then build the qualify app with them:
+bun packages/app/scripts/voice-quality/host-wer-gate.ts --librispeech /data/LibriSpeech \
+  --export-device-fixtures /tmp/voice-fixtures
+packages/app/platforms/android/gradlew -p packages/app/scripts/paradee-voice/qualify \
+  -PasrFixturesDir=/tmp/voice-fixtures :app:connectedDebugAndroidTest
+```
+
+A device run is owner acceptance; the qualify app only depends on `:paradee-voice`.
 
 ## Standalone host speech
 

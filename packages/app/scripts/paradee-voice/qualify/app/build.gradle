@@ -1,5 +1,10 @@
 apply plugin: 'com.android.application'
 
+// -PasrFixturesDir=<dir> adds the LibriSpeech + speech-fixture WAVs that
+// `host-wer-gate.ts --export-asr-fixtures <dir>` writes (asr-fixtures.json +
+// 16 kHz PCM16 WAVs, pinned by fixtures.json) to the androidTest assets.
+def asrFixturesDir = providers.gradleProperty('asrFixturesDir').orNull
+
 android {
     namespace 'ai.eliza.voicequalify'
     compileSdk 36
@@ -13,15 +18,19 @@ android {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21
     }
-    // Copying a compressed 160 MB GGUF out of the APK is slow; store it plain.
+    // Copying compressed GGUFs out of the APK is slow; store them plain.
     androidResources {
-        noCompress 'gguf', 'bin', 'onnx'
+        noCompress 'gguf', 'lex', 'wav'
+    }
+    sourceSets {
+        androidTest {
+            if (asrFixturesDir != null) assets.srcDirs += file(asrFixturesDir)
+        }
     }
 }
 
 dependencies {
-    implementation project(':kokoro-voice')
-    implementation project(':local-speech')
+    implementation project(':paradee-voice')
     androidTestImplementation 'androidx.test:runner:1.6.2'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
 }
