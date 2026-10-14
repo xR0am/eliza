@@ -430,7 +430,10 @@ export async function admitFundedBudgetInference(
     affiliateAttribution: affiliate,
     markProviderDispatched,
     settle,
-    settleUnknown: () => settle(unknownMicros.div(1e6).toNumber()),
+    // An unknown acknowledgement can already have committed the chosen actual
+    // charge. Retry that identity; choose the estimate only before any attempt.
+    settleUnknown: () =>
+      settle(new Decimal(settlementAmount ?? unknownMicros.toFixed(0)).div(1e6).toNumber()),
     reservation: {
       reservedAmount: maximumMicros.div(1e6).toNumber(),
       reservationTransactionId: null,

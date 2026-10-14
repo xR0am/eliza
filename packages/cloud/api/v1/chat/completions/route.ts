@@ -3049,14 +3049,13 @@ async function tryPassthroughStreamingRequest(params: {
           totalCost: billing.totalCost,
         });
       } catch (error) {
-        // The provider reported usage, so a local billing failure cannot be
-        // treated as proof of zero cost. The conservative terminal preserves
-        // the admitted estimate and is first-call-wins with a partial success.
-        await params.settleUnknown();
+        // Preserve the first chosen charge after an unknown acknowledgement.
+        // Record the original failure before retrying so a retry cannot hide it.
         logger.error("[Chat Completions] Passthrough settle error", {
           model,
           error: error instanceof Error ? error.message : String(error),
         });
+        await params.settleUnknown();
       }
       return;
     }
