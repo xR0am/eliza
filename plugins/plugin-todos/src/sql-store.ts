@@ -1328,6 +1328,21 @@ class SqlTodoStore<TSchema extends Record<string, unknown>>
         },
       );
     }
+    for (const item of args.todos) {
+      if (
+        item.parentTodoId !== undefined &&
+        item.parentTodoId !== null &&
+        validateUuid(item.parentTodoId) === null
+      ) {
+        throw new ElizaError(
+          `${TODOS_LOG_PREFIX} parent todo id is not a valid UUID`,
+          {
+            code: TODO_INVALID_PARENT_ERROR_CODE,
+            context: { parentTodoId: item.parentTodoId },
+          },
+        );
+      }
+    }
     const beforeRows = await tx
       .select()
       .from(todosTable)
