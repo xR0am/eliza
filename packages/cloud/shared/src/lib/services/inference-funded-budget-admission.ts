@@ -5,7 +5,7 @@ import { sql } from "drizzle-orm";
 import type { DbTransaction } from "../../db/client";
 import { sqlRows } from "../../db/execute-helpers";
 import type { RuntimeDurableObjectNamespace } from "../../types/cloud-worker-env";
-import { getCloudAwareEnv, getCloudBinding } from "../runtime/cloud-bindings";
+import { bindCloudBindings, getCloudAwareEnv, getCloudBinding } from "../runtime/cloud-bindings";
 import type { InferenceFundingBudgetConsumption } from "./inference-funding-budget-protocol";
 import type { OrganizationQuotaPolicy } from "./organization-quota-policy";
 import { requireOrganizationRateTier } from "./organization-quota-policy";
@@ -350,7 +350,7 @@ export async function admitFundedBudgetInference(
   };
   let dispatched = false;
   let dispatch: Promise<void> | undefined;
-  const markProviderDispatched = (): Promise<void> => {
+  const markProviderDispatched = bindCloudBindings((): Promise<void> => {
     if (dispatched) return Promise.resolve();
     return (dispatch ??= (async () => {
       const result = await inferenceBudgetGateRequest<{ admitted?: boolean }>(
@@ -379,10 +379,10 @@ export async function admitFundedBudgetInference(
       dispatch = undefined;
       throw error;
     }));
-  };
+  });
   let settlement: Promise<import("./credits").CreditReconciliationResult> | undefined;
   let settlementAmount: string | undefined;
-  const settle = (actualCostUsd: number) => {
+  const settle = bindCloudBindings((actualCostUsd: number) => {
     const amount = new Decimal(canonicalFundingAmount(actualCostUsd)).mul(1e6);
     if (!amount.isFinite() || amount.isNegative() || amount.gt(maximumMicros))
       throw new InferenceFundingBudgetUnavailableError(
@@ -424,7 +424,7 @@ export async function admitFundedBudgetInference(
       settlement = undefined;
       throw error;
     }));
-  };
+  });
   return {
     mode: "durable_object_funded_budget",
     affiliateAttribution: affiliate,
