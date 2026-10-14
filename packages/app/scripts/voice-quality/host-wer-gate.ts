@@ -16,8 +16,8 @@
  * Workers are separate processes speaking the host worker protocol: the
  * worker writes JSON lines on fd 3, first `{"ready":true}`, then one reply
  * per request line read from stdin.
- *   TTS: `{"id","text"}`  -> `{"id","audio": base64 PCM16 mono WAV}`
- *   ASR: `{"id","audio": base64 PCM16 mono 16 kHz WAV}` -> `{"id","text"}`
+ *   TTS: `{"id","op":"synthesize","text"}`  -> `{"id","audio": base64 PCM16 mono WAV}`
+ *   ASR: `{"id","op":"transcribe","pcm": base64 float32 LE, "encoding":"f32","sampleRate":16000}` -> `{"id","text"}`
  *   either may answer `{"id","error"}`.
  * The workers verify their own library and model hashes; pass their
  * environment (ELIZA_INFERENCE_LIBRARY and friends) through this process.
@@ -274,13 +274,19 @@ function splitCommand(command: string): string[] {
   );
 }
 
-async function transcribe(
+export async function transcribe(
   asr: HostWorker,
   pcm16k: Float32Array,
 ): Promise<{ text: string; seconds: number }> {
   const started = performance.now();
+  const samples = Buffer.alloc(pcm16k.length * 4);
+  for (let i = 0; i < pcm16k.length; i++)
+    samples.writeFloatLE(pcm16k[i]!, i * 4);
   const reply = await asr.request({
-    audio: Buffer.from(encodeWav(pcm16k, 16000)).toString("base64"),
+    op: "transcribe",
+    pcm: samples.toString("base64"),
+    encoding: "f32",
+    sampleRate: 16000,
   });
   if (typeof reply.text !== "string")
     throw new Error("ASR worker reply has no text");
@@ -581,7 +587,10 @@ async function main(): Promise<number> {
         let error: string | undefined;
         try {
           const started = performance.now();
-          const reply = await tts.request({ text: item.text });
+          const reply = await tts.request({
+            op: "synthesize",
+            text: item.text,
+          });
           ttsSeconds = (performance.now() - started) / 1000;
           if (typeof reply.audio !== "string")
             throw new Error("TTS worker reply has no audio");

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HostWorker } from "./host-wer-gate";
+import { HostWorker, transcribe } from "./host-wer-gate";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -24,7 +24,14 @@ console.log("diagnostic on stdout");
 emit({ ready: true });
 for await (const line of createInterface({ input: process.stdin })) {
   const req = JSON.parse(line);
-  if (req.text === "fail") emit({ id: req.id, error: "synthesis_failed" });
+  if (req.op === "transcribe") {
+    const pcm = Buffer.from(req.pcm, "base64");
+    if (req.encoding !== "f32" || req.sampleRate !== 16000 || pcm.length !== 12 ||
+        pcm.readFloatLE(0) !== -0.5 || pcm.readFloatLE(4) !== 0 || pcm.readFloatLE(8) !== 0.5)
+      emit({ id: req.id, error: "invalid_transcription_protocol" });
+    else emit({ id: req.id, text: "recognized" });
+  }
+  else if (req.text === "fail") emit({ id: req.id, error: "synthesis_failed" });
   else emit({ id: req.id, text: String(req.text).toUpperCase() });
 }
 `,
@@ -46,6 +53,9 @@ describe("host worker protocol", () => {
         worker.request({ text: "one" }),
         worker.request({ text: "two" }),
       ]);
+      expect(
+        (await transcribe(worker, new Float32Array([-0.5, 0, 0.5]))).text,
+      ).toBe("recognized");
       expect(a.text).toBe("ONE");
       expect(b.text).toBe("TWO");
       await expect(worker.request({ text: "fail" })).rejects.toThrow(
