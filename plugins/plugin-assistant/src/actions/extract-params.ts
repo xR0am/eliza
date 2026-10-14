@@ -127,7 +127,11 @@ export async function extractActionParamsViaLlm<
   }
   // Merge: extracted fills in missing slots only. Planner values always win
   // on collisions because the planner saw the full action surface.
-  const merged: Record<string, unknown> = { ...extracted };
+  const allowed = new Set(missing);
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extracted)) {
+    if (allowed.has(key)) merged[key] = value;
+  }
   for (const [key, value] of Object.entries(existingParams)) {
     if (value !== undefined && value !== null && value !== "") {
       merged[key] = value;
