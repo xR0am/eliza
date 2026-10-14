@@ -1562,9 +1562,15 @@ async function handleRequestForViewClient(
   // broadcast or replace the owner's keys; config and character writes change
   // what the agent runs and who it sends model traffic to; memories are the
   // owner's private store. Require the owner before any of them dispatch.
+  // Once setup is persisted, onboarding rewrites the same owner config,
+  // credentials and character, so it is owner-only too. Before setup it stays
+  // open, like GET /api/wallet/keys.
   if (
     method !== "OPTIONS" &&
-    isOwnerOnlyApiRequest(method, pathname) &&
+    (isOwnerOnlyApiRequest(method, pathname) ||
+      (method === "POST" &&
+        pathname === "/api/first-run" &&
+        hasPersistedFirstRunState(state.config))) &&
     !isTrajectoryOwnerRequest(
       req,
       method,

@@ -5,7 +5,7 @@
  * USER.
  */
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntime, createMessageMemory, type UUID } from "@elizaos/core";
@@ -30,6 +30,11 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
     ELIZA_REQUIRE_LOCAL_AUTH: "1",
   }))
     vi.stubEnv(key, value);
+  // Setup is complete: onboarding must not reopen to a guest.
+  await writeFile(
+    join(directory, "config.json"),
+    JSON.stringify({ meta: { firstRunComplete: true } }),
+  );
   setAgentHostBridge({
     resolveHttpRequestAuthorization: async (req: {
       headers: Record<string, unknown>;
@@ -109,6 +114,13 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
       [
         "/api/wallet/browser-sign-message",
         { method: "POST", body: JSON.stringify({ message: "hello" }) },
+      ],
+      [
+        "/api/first-run",
+        {
+          method: "POST",
+          body: JSON.stringify({ name: "Guest", systemPrompt: "Guest set." }),
+        },
       ],
     ];
     for (const [path, init] of guestRequests) {
