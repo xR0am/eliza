@@ -127,9 +127,9 @@ function sourceWords(text: string): SourceWord[] {
 
 /**
  * Flatten the words into the normalized token stream the matcher works on,
- * remembering for each token the source offset just past the word it came from.
- * A single word can normalize into several tokens (`what's` → `what` + `s`), so
- * each of them carries that one word's end.
+ * remembering the source offset just past each token. Punctuation may split
+ * one source word into a name and command (`Eliza,turn`), so the whitespace
+ * word end cannot stand in for each token end.
  */
 function tokensFromWords(words: SourceWord[]): {
   tokens: string[];
@@ -139,9 +139,16 @@ function tokensFromWords(words: SourceWord[]): {
   const sourceEnds: number[] = [];
   for (const word of words) {
     if (!word.normalized.length) continue;
+    let normalizedEnd = 0;
     for (const token of word.normalized.split(" ")) {
+      normalizedEnd += token.length;
       tokens.push(token);
-      sourceEnds.push(word.sourceEnd);
+      sourceEnds.push(
+        word.sourceEnd -
+          word.source.length +
+          sourceOffsetForNormalized(word, normalizedEnd),
+      );
+      normalizedEnd += 1;
     }
   }
   return { tokens, sourceEnds };
@@ -219,12 +226,14 @@ function sourceOffsetAfterMatch(words: SourceWord[], matchEnd: number): number {
  * abuts (`"Eliza, do it"`) are dropped.
  */
 function commandInTranscript(transcript: string, sourceOffset: number): string {
-  return transcript
-    .slice(sourceOffset)
-    // Drop the leading separators/punctuation the name abuts, in any script
-    // ("Eliza, do it" and "エリザ、天気教えて" both start at the first word).
-    .replace(/^[^\p{L}\p{N}]+/u, "")
-    .trimEnd();
+  return (
+    transcript
+      .slice(sourceOffset)
+      // Remove speech separators, preserving command symbols such as a minus,
+      // currency sign, quotation mark, hashtag, or emoji.
+      .replace(/^[\s,.:;!?、，。：；！？—–]+/u, "")
+      .trimEnd()
+  );
 }
 
 /** Classic iterative Levenshtein distance. */

@@ -10,6 +10,7 @@
  * matching currency; only the returned command is read from the original.
  */
 import { describe, expect, it } from "vitest";
+import { initialWakeControllerState, wakeControllerReducer } from "../wake-controller";
 import { matchWakeName } from "../wake-name-match";
 
 const COMMAND_CASES: Array<[transcript: string, name: string, command: string]> = [
@@ -28,6 +29,12 @@ const COMMAND_CASES: Array<[transcript: string, name: string, command: string]> 
   // Separators the name abuts are dropped, not spoken.
   ["Eliza, remind me at 3pm", "Eliza", "remind me at 3pm"],
   ["hey eliza", "Eliza", ""],
+  ["Eliza,turn on the lights", "Eliza", "turn on the lights"],
+  ["Eliza,what is 2+2?", "Eliza", "what is 2+2?"],
+  ["hey Eliza -5 degrees", "Eliza", "-5 degrees"],
+  ["hey Eliza 💡 on", "Eliza", "💡 on"],
+  ["hey Eliza $100", "Eliza", "$100"],
+  ['hey Eliza "Hello"', "Eliza", '"Hello"'],
 ];
 
 // A name in a script that does not space-separate words takes the substring
@@ -79,4 +86,17 @@ describe("matchWakeName decisions", () => {
     expect(matchWakeName("hey eliza do it", "Eliza").distance).toBe(0);
     expect(matchWakeName("hey elisa do it", "Eliza").distance).toBe(1);
   });
+});
+
+
+describe("two-stage wake command handoff", () => {
+  for (const [transcript, characterName, command] of [...COMMAND_CASES, ...FALLBACK_CASES]) {
+    it(`emits the unchanged command and transcript: ${JSON.stringify(transcript)}`, () => {
+      const config = { characterName, trainedHeads: new Set<string>(), capabilities: { openWakeWord: true, asrConfirm: true, swabble: false } };
+      const candidate = wakeControllerReducer(initialWakeControllerState(), { type: "stage-a-candidate", now: 100 }, config);
+      const confirmed = wakeControllerReducer(candidate.state, { type: "stage-b-transcript", transcript, now: 200 }, config);
+      expect(confirmed.emit).toEqual({ wakeWord: characterName, command, transcript, path: "two-stage-asr" });
+      expect(confirmed.state.phase).toBe("idle");
+    });
+  }
 });
