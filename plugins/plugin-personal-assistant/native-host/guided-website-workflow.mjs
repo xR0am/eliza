@@ -613,8 +613,10 @@ export class GuidedWebsiteWorkflow {
         unavailable: (guidance) => ({ ...step, guidance }),
       });
     }
-    // The step shown on the previous page is history before the planner
-    // reads this page, so it sees every step the person has completed.
+    // The step shown on the previous page joins history before the planner
+    // reads this page. History lists steps shown on earlier pages, not steps
+    // confirmed as done: a page change can come from navigation or an error,
+    // so the planner judges progress from the page it reads now.
     const fingerprint = policySnapshotKey(read.snapshot);
     if (this.lastStep && this.lastStep.fingerprint !== fingerprint) {
       this.history.push(this.lastStep.step);
