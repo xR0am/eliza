@@ -56,7 +56,7 @@ import type {
   UpdateCreativeInput,
   UploadMediaInput,
 } from "./types";
-import { AD_CREDIT_RATES, calculateSpendCredits } from "./types";
+import { AD_CREDIT_RATES, calculateSpendCredits, MIN_CAMPAIGN_BUDGET_AMOUNT } from "./types";
 
 export * from "./schemas";
 export * from "./types";
@@ -81,6 +81,14 @@ function safeDiv(numerator: number, denominator: number, multiplier = 1): number
 
 function roundMetric(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function assertCampaignBudgetSupported(budgetAmount: number, budgetCredits: number): void {
+  if (budgetAmount < MIN_CAMPAIGN_BUDGET_AMOUNT || budgetCredits < MIN_CAMPAIGN_BUDGET_AMOUNT) {
+    throw ValidationError(
+      `Campaign budget must be at least ${MIN_CAMPAIGN_BUDGET_AMOUNT.toFixed(2)} USD`,
+    );
+  }
 }
 
 function randomReportToken(): string {
@@ -1079,6 +1087,7 @@ class AdvertisingService {
       dayparting,
     };
     const budgetCredits = calculateSpendCredits(account.platform, input.budgetAmount);
+    assertCampaignBudgetSupported(input.budgetAmount, budgetCredits);
     const campaignSpendCap = this.normalizeSpendCapCredits(input.spendCapCredits);
     this.assertCampaignSpendCapAllowsAllocation({
       spendCapCredits: campaignSpendCap,
@@ -1390,6 +1399,7 @@ class AdvertisingService {
     let budgetCreditDelta = 0;
     if (input.budgetAmount !== undefined) {
       newCreditsAllocated = calculateSpendCredits(account.platform, input.budgetAmount);
+      assertCampaignBudgetSupported(input.budgetAmount, newCreditsAllocated);
       this.assertCampaignSpendCapAllowsAllocation({
         spendCapCredits: requestedCampaignSpendCap,
         newCampaignCredits: newCreditsAllocated,
