@@ -26,6 +26,7 @@ import {
   logger,
   type Media,
   type Memory,
+  type MentionContext,
   type MessagePayload,
   ModelType,
   type ResolvedAttachmentBytes,
@@ -438,6 +439,50 @@ function telegramReceipt(
       status: "persisted",
       memoryIds: memories.map(telegramMemoryId),
     },
+  };
+}
+
+/**
+ * Whether a group message is addressed to this bot: a reply to one of its
+ * messages, an @mention of its username (any case), a text mention of its
+ * user, or a /command@ its username. Same rules as the Cloud Telegram group
+ * classifier. Telegram entity offsets count UTF-16 units, like JS strings.
+ */
+export function telegramMentionContext(
+  message: Message,
+  bot: { id: number; username?: string } | undefined,
+): MentionContext {
+  const username = bot?.username?.toLowerCase();
+  const isReply =
+    bot !== undefined &&
+    "reply_to_message" in message &&
+    message.reply_to_message?.from?.id === bot.id;
+  const text =
+    ("text" in message && message.text) ||
+    ("caption" in message && message.caption) ||
+    "";
+  const entities =
+    ("entities" in message && message.entities) ||
+    ("caption_entities" in message && message.caption_entities) ||
+    [];
+  const isMention = entities.some((entity) => {
+    if (entity.type === "text_mention") return entity.user.id === bot?.id;
+    if (!username) return false;
+    const value = text.slice(entity.offset, entity.offset + entity.length);
+    if (entity.type === "mention") {
+      return value.slice(1).toLowerCase() === username;
+    }
+    if (entity.type === "bot_command") {
+      const target = value.split("@")[1];
+      return target?.toLowerCase() === username;
+    }
+    return false;
+  });
+  return {
+    isMention,
+    isReply,
+    isThread: false,
+    mentionType: isMention ? "platform_mention" : isReply ? "reply" : "none",
   };
 }
 
@@ -1744,6 +1789,14 @@ export class MessageManager {
           source: "telegram",
           metadata: { accountId: this.accountId },
           channelType,
+          ...(channelType === ChannelType.DM
+            ? {}
+            : {
+                mentionContext: telegramMentionContext(
+                  message,
+                  ctx.botInfo ?? this.bot.botInfo,
+                ),
+              }),
           inReplyTo:
             "reply_to_message" in message && message.reply_to_message
               ? createUniqueUuid(
