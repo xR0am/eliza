@@ -2267,6 +2267,8 @@ export class DiscordService extends Service implements IDiscordService {
 												? {
 														reply: {
 															messageReference: outboundReplyToMessageId,
+															// A deleted target still gets the answer, without the reply link.
+															failIfNotExists: false,
 														},
 													}
 												: {}),
@@ -2285,6 +2287,7 @@ export class DiscordService extends Service implements IDiscordService {
 											? {
 													reply: {
 														messageReference: outboundReplyToMessageId,
+														failIfNotExists: false,
 													},
 												}
 											: {}),
@@ -2303,6 +2306,7 @@ export class DiscordService extends Service implements IDiscordService {
 											? {
 													reply: {
 														messageReference: outboundReplyToMessageId,
+														failIfNotExists: false,
 													},
 												}
 											: {}),
@@ -2318,6 +2322,7 @@ export class DiscordService extends Service implements IDiscordService {
 										? {
 												reply: {
 													messageReference: outboundReplyToMessageId,
+													failIfNotExists: false,
 												},
 											}
 										: {}),
