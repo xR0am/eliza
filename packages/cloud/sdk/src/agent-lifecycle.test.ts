@@ -182,3 +182,49 @@ test("provision names the job to poll when one was enqueued", async () => {
   expect(response.polling?.endpoint).toBe("/api/v1/jobs/job-2");
   expect(response.polling?.expectedDurationMs).toBe(90000);
 });
+
+/** Exact 200 body of `DELETE /api/v1/eliza/agents/:agentId` for a shared-runtime agent (route.ts, shared-runtime branch). */
+const deleteSharedBody = {
+  success: true,
+  deleted: true,
+  source: "shared_runtime",
+  data: { agentId: "agent-1", status: "deleted", executionTier: "shared" },
+};
+
+/** Exact 202 body of the same route when a delete job was enqueued. */
+const deleteJobBody = {
+  success: true,
+  created: true,
+  alreadyInProgress: false,
+  message: "Delete job created. Poll the job endpoint for status.",
+  data: { jobId: "job-4", agentId: "agent-1", status: "pending" },
+};
+
+/** Exact 200 body of `POST /api/v1/eliza/agents/:agentId/resume` for a running agent (resume/route.ts). */
+const resumeRunningBody = {
+  success: true,
+  data: {
+    agentId: "agent-1",
+    action: "resume",
+    message: "Agent is already running",
+    status: "running",
+    webUiUrl: null,
+  },
+};
+
+test("delete and resume bodies carry data on every success path", async () => {
+  const shared = await clientReturning(deleteSharedBody).deleteAgent("agent-1");
+  expect(shared.deleted).toBe(true);
+  expect(shared.source).toBe("shared_runtime");
+  expect(shared.data.status).toBe("deleted");
+
+  const queued = await clientReturning(deleteJobBody, 202).deleteAgent(
+    "agent-1",
+  );
+  expect(queued.data.jobId).toBe("job-4");
+
+  const resumed =
+    await clientReturning(resumeRunningBody).resumeAgent("agent-1");
+  expect(resumed.data.action).toBe("resume");
+  expect(resumed.data.webUiUrl).toBeNull();
+});

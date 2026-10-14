@@ -1073,6 +1073,12 @@ export interface CreateAgentRequest {
   autoProvision?: boolean;
 }
 
+/** Path that served an agent without a fresh dedicated server. */
+export type AgentServedSource =
+  | "shared_runtime"
+  | "warm_pool"
+  | "warm_pool_recovery";
+
 /** Body of `POST /api/v1/eliza/agents`; every agent field lives under `data`. */
 export interface CreateAgentResponse {
   success: boolean;
@@ -1082,7 +1088,7 @@ export interface CreateAgentResponse {
    */
   created?: boolean;
   /** Set when the agent did not get its own fresh server: the shared runtime or the warm pool served it. */
-  source?: "shared_runtime" | "warm_pool" | "warm_pool_recovery";
+  source?: AgentServedSource;
   message?: string;
   data?: {
     id: string;
@@ -1097,7 +1103,7 @@ export interface CreateAgentResponse {
     estimatedCompletionAt?: string | null;
     createdAt?: string;
     /** The agent's REST base when it runs on the shared runtime or the warm pool. */
-    webUiUrl?: string;
+    webUiUrl?: string | null;
   };
   /** Present on the 202 body when a provisioning job was enqueued. */
   polling?: {
@@ -1121,8 +1127,10 @@ export interface AgentLifecycleResponse {
   created?: boolean;
   alreadyInProgress?: boolean;
   message?: string;
-  /** Provision only: "shared_runtime", "warm_pool" or "warm_pool_recovery". */
-  source?: string;
+  /** Provision, resume and delete of an agent the shared runtime or warm pool serves. */
+  source?: AgentServedSource;
+  /** Delete of a shared-runtime agent: the row was removed at once, no job. */
+  deleted?: boolean;
   /** The 2xx body; a non-2xx body is `{ success: false, error }` and the client throws it. */
   data: {
     /** The agent id on the job-enqueuing bodies. */
