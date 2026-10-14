@@ -1614,12 +1614,17 @@ export class SlackService extends Service implements ISlackService {
       this.buildEventPayload(accountId),
     );
 
-    // Process the message through the agent
+    // Process the message through the agent. A channel reply opens a thread
+    // under the message; a direct message is one conversation, so a top-level
+    // DM is answered in the DM itself and its reply stays in the DM room.
     await this.processAgentMessage(
       claimedMemory,
       room,
       message.channel,
-      message.thread_ts || message.ts,
+      gate.conversationKind === "public_channel" ||
+        gate.conversationKind === "private_channel"
+        ? message.thread_ts || message.ts
+        : message.thread_ts,
       accountId,
     );
   }
@@ -2179,7 +2184,7 @@ export class SlackService extends Service implements ISlackService {
     memory: Memory,
     room: Room,
     channelId: string,
-    threadTs: string,
+    threadTs: string | undefined,
     accountId = this.defaultAccountId,
   ): Promise<void> {
     const callback: HandlerCallback = async (
