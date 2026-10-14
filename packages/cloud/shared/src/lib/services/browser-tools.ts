@@ -216,9 +216,7 @@ async function firecrawlRequest<T>(
     try {
       payload = JSON.parse(text) as Record<string, unknown>;
     } catch {
-      throw new Error(
-        `Firecrawl returned a non-JSON response (HTTP ${response.status})`,
-      );
+      throw new Error(`Firecrawl returned a non-JSON response (HTTP ${response.status})`);
     }
   }
 
