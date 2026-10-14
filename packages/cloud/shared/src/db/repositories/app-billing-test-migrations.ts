@@ -67,6 +67,11 @@ export async function applyAppBillingTestMigrations(
   // 0543 references the promo_grant_id column and invoice-check constraint it
   // leaves behind, and the allowance repository now selects pilot_redemption_id
   // on every read. Mirrors records-test-harness.ts (merged #36192).
+  // ADD COLUMN is made IF NOT EXISTS because the organization-policy fixture
+  // (installed before this helper by the authority/cancellation suites) already
+  // adds pilot_redemption_id as a plain column via the billing-scope fixture;
+  // the raw 0543 ALTER then failed with 42701 in the Subscription authority
+  // PostgreSQL job. The remaining 0543 statements still apply in full.
   for (const tag of [
     "0534_subscription_allowance_invoice_authority",
     "0541_app_pilot_redemptions",
@@ -74,6 +79,11 @@ export async function applyAppBillingTestMigrations(
   ]) {
     const migration = await readFile(new URL(`../migrations/${tag}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint"))
-      if (statement.trim()) await execute(statement.replaceAll('"public".', ""));
+      if (statement.trim())
+        await execute(
+          statement
+            .replaceAll('"public".', "")
+            .replace(/ADD COLUMN(?! IF NOT EXISTS)/, "ADD COLUMN IF NOT EXISTS"),
+        );
   }
 }
