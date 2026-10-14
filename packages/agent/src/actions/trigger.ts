@@ -1155,6 +1155,14 @@ async function opUpdate(
     dedupeIdentityChanged =
       dedupeIdentityChanged || scheduledAtIso !== trigger.scheduledAtIso;
     next.scheduledAtIso = scheduledAtIso;
+    // A moved once trigger is no longer delay-derived: drop the persisted
+    // create-time delay so the recomputed key falls back to the current
+    // absolute fire time instead of a stale `+delay` scheme that would stop
+    // describing the trigger's real schedule (and would miss a re-create of
+    // the same absolute time on the create path).
+    if (scheduledAtIso !== trigger.scheduledAtIso) {
+      next.delayMs = undefined;
+    }
   }
   if (cronExpression !== undefined && next.triggerType === "cron") {
     if (!parseCronExpression(cronExpression)) {
