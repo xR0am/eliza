@@ -1596,7 +1596,11 @@ class SqlTodoStore<TSchema extends Record<string, unknown>>
     scope: TodoScope,
     locator: TodoLocator,
   ): Promise<{ id: string } | { miss: TodoTargetMiss }> {
-    if (locator.id !== undefined) return { id: locator.id };
+    if (locator.id !== undefined) {
+      return validateUuid(locator.id) === null
+        ? { miss: { kind: "not_found" } }
+        : { id: locator.id };
+    }
     const todos = await this.scopeTodos(tx, scope);
     let matches: Todo[];
     if (locator.match !== undefined) {
