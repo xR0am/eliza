@@ -1,4 +1,3 @@
-import {readGmailMetadataBatch} from "../../utils/gmail-metadata-batch";
 // Coordinates cloud service gmail behavior behind route handlers.
 import { stripHtmlRawTextElements } from "@elizaos/core";
 import {
@@ -6,6 +5,7 @@ import {
   MAX_GMAIL_ATTACHMENT_BYTES,
 } from "@elizaos/plugin-google-workspace/gmail-attachments";
 import { gmailThreadSourceLink } from "@elizaos/plugin-google-workspace/gmail-source-link";
+import { readGmailMetadataBatch } from "../../utils/gmail-metadata-batch";
 import {
   decodeEntities,
   extractGmailHtmlLinks,
@@ -16,8 +16,8 @@ import {
 import { extractBody, sanitizeHeaderValue } from "../../utils/google-mcp-shared";
 import type { OAuthConnectionRole } from "../oauth/types";
 import {
-  fail,
   AgentGoogleConnectorError,
+  fail,
   getManagedGoogleConnectorStatus,
   googleFetch,
   type ManagedGoogleGmailMessage,
@@ -446,20 +446,53 @@ async function fetchManagedGoogleGmailMessages(args: {
   )
     fail(502, "Invalid Gmail continuation token.");
 
-  const ids=(listed.messages??[]).map(row=>{const id=row.id?.trim();if(!id)fail(502,"Google Gmail returned a missing message identity.");return id;});
+  const ids = (listed.messages ?? []).map((row) => {
+    const id = row.id?.trim();
+    if (!id) fail(502, "Google Gmail returned a missing message identity.");
+    return id;
+  });
   // Cost: list + one bounded metadata HTTP batch; quota remains per inner read.
   // Each exchange retains the existing scoped grant/token authorization.
-  let raw:Record<string,unknown>[]=[];
+  let raw: Record<string, unknown>[] = [];
   try {
-    if(ids.length)raw=await readGmailMetadataBatch(ids,GMAIL_METADATA_HEADERS,(url,options)=>googleFetch({organizationId:args.organizationId,userId:args.userId,side:args.side,grantId:args.grantId,personalContextRead:args.personalContextRead,url,options}));
-  } catch(error) {
-    if(error instanceof AgentGoogleConnectorError || error instanceof Error && error.name==="AbortError")throw error;
+    if (ids.length)
+      raw = await readGmailMetadataBatch(ids, GMAIL_METADATA_HEADERS, (url, options) =>
+        googleFetch({
+          organizationId: args.organizationId,
+          userId: args.userId,
+          side: args.side,
+          grantId: args.grantId,
+          personalContextRead: args.personalContextRead,
+          url,
+          options,
+        }),
+      );
+  } catch (error) {
+    if (
+      error instanceof AgentGoogleConnectorError ||
+      (error instanceof Error && error.name === "AbortError")
+    )
+      throw error;
     // error-policy:J1 provider framing, failed parts and payload errors remain typed 502s.
-    fail(502,"Google Gmail returned an invalid metadata batch.");
+    fail(502, "Google Gmail returned an invalid metadata batch.");
   }
-  const messages=raw.map((value,index)=>{const normalized=normalizeGoogleGmailMessage(value as GoogleGmailMetadataResponse,args.selfEmail);if(!normalized||normalized.externalId!==ids[index])fail(502,"Google Gmail returned a mismatched batch message.");return normalized;});
-  const current=await getManagedGoogleConnectorStatus({organizationId:args.organizationId,userId:args.userId,side:args.side,grantId:args.grantId,personalContextRead:args.personalContextRead});
-  if(!current.connected)fail(409,"Google connection changed during the mailbox read.");
+  const messages = raw.map((value, index) => {
+    const normalized = normalizeGoogleGmailMessage(
+      value as GoogleGmailMetadataResponse,
+      args.selfEmail,
+    );
+    if (!normalized || normalized.externalId !== ids[index])
+      fail(502, "Google Gmail returned a mismatched batch message.");
+    return normalized;
+  });
+  const current = await getManagedGoogleConnectorStatus({
+    organizationId: args.organizationId,
+    userId: args.userId,
+    side: args.side,
+    grantId: args.grantId,
+    personalContextRead: args.personalContextRead,
+  });
+  if (!current.connected) fail(409, "Google connection changed during the mailbox read.");
 
   return { messages, nextPageToken: listed.nextPageToken ?? null };
 }
@@ -687,14 +720,29 @@ export async function readManagedGoogleGmailMessage(args: {
   if (!message || message.externalId !== args.messageId) {
     fail(502, "Google Gmail returned a partial message payload.");
   }
-  const current=await getManagedGoogleConnectorStatus({organizationId:args.organizationId,userId:args.userId,side:args.side,grantId:args.grantId,personalContextRead:args.personalContextRead});
-  if(!current.connected || current.connectionId!==connectorStatus.connectionId || !hasGmailBodyReadScope(current.grantedScopes))fail(409,"Google connection changed during the message read.");
+  const current = await getManagedGoogleConnectorStatus({
+    organizationId: args.organizationId,
+    userId: args.userId,
+    side: args.side,
+    grantId: args.grantId,
+    personalContextRead: args.personalContextRead,
+  });
+  if (
+    !current.connected ||
+    current.connectionId !== connectorStatus.connectionId ||
+    !hasGmailBodyReadScope(current.grantedScopes)
+  )
+    fail(409, "Google connection changed during the message read.");
   const rawBody = parsed.payload ? extractBody(parsed.payload) : "";
-  const htmlView=args.side==="owner"?extractGmailHtmlView(parsed.payload):{html:null,status:"owner-only" as const};
+  const htmlView =
+    args.side === "owner"
+      ? extractGmailHtmlView(parsed.payload)
+      : { html: null, status: "owner-only" as const };
   return {
     message,
     bodyText: normalizeManagedGmailBodyText(rawBody) || message.snippet,
-    bodyHtml:htmlView.html,bodyHtmlStatus:htmlView.status,
+    bodyHtml: htmlView.html,
+    bodyHtmlStatus: htmlView.status,
     links: parsed.payload ? extractGmailHtmlLinks(parsed.payload) : [],
     attachments: gmailAttachmentParts(parsed.payload).map((part) => part.descriptor),
   };
