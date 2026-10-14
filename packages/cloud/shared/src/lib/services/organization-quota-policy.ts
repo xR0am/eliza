@@ -3,6 +3,7 @@ import { ElizaError } from "@elizaos/core";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { type DbTransaction, dbWrite } from "../../db/client";
 import { readPrimaryOrganizationSubscriptionSource } from "../../db/repositories/account-billing-snapshot-subscription";
+import { readConfiguredCancellationAuthority } from "../../db/repositories/configured-schedule-cancellation-authority";
 import {
   deriveSubscriptionEntitlementValues,
   SUBSCRIPTION_FREE_ENTITLEMENT_VALUES,
@@ -511,6 +512,9 @@ export async function readOrganizationQuotaPolicyInTransaction(
   const current = await readPrimaryOrganizationSubscriptionSource(tx, organizationId);
   if (current.state !== "current")
     return unavailable(organizationId, "subscription_source_mismatch");
+  // A published pending plan must retain its original configured schedule proof.
+  const hasPendingSchedule = current.subscription.pending_plan_key !== null;
+  if (hasPendingSchedule) await readConfiguredCancellationAuthority(tx, current.subscription);
   const entitlement = current.entitlement;
   const expected = deriveSubscriptionEntitlementValues(current.revision);
   for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
@@ -523,7 +527,16 @@ export async function readOrganizationQuotaPolicyInTransaction(
     )
       return unavailable(organizationId, "subscription_projection_conflict");
   }
-  const now = observedAt ?? current.observedAt;
+  let now = observedAt ?? current.observedAt;
+  if (hasPendingSchedule && observedAt === undefined) {
+    // Observe expiry after the additional proof reads, as the full reader did.
+    const [clock] = await tx
+      .select({ now: sql<Date>`clock_timestamp()` })
+      .from(organizations)
+      .where(eq(organizations.id, organizationId));
+    if (!clock) return unavailable(organizationId, "missing_database_clock");
+    now = new Date(clock.now);
+  }
   if (now < entitlement.effective_from)
     return unavailable(organizationId, "entitlement_not_effective");
   // Stripe settles renewals shortly after the stored period end, so an active
