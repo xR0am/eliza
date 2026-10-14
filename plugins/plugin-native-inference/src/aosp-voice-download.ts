@@ -324,31 +324,6 @@ export function aospVoiceGroupNeedsStaging(
   );
 }
 
-/** Roles of the retired Qwen3-ASR pair, which a device may still have staged. */
-const RETIRED_ASR_ROLES: ReadonlySet<string> = new Set([
-  "asr-text",
-  "asr-mmproj",
-]);
-
-/**
- * True when the staged group at `<bundleRoot>/<group.dir>` records a retired
- * Qwen3-ASR row. Such a group is removed even when Phonon-2 cannot be staged
- * yet: the retired model is not a fallback.
- */
-export function aospVoiceGroupHasRetiredRows(
-  bundleRoot: string,
-  group: AospVoiceGroup,
-): boolean {
-  const recorded = readAospVoiceGroupRecordRows(
-    path.join(bundleRoot, group.dir),
-    group,
-  );
-  return (
-    recorded?.some((row) => row.role && RETIRED_ASR_ROLES.has(row.role)) ??
-    false
-  );
-}
-
 export async function sha256File(file: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -501,22 +476,6 @@ export async function stageAospVoiceGroup(
   const removeStaging =
     options.removeStaging ??
     ((dir: string) => rmSync(dir, { recursive: true, force: true }));
-  const unavailable = (reason: string): AospVoiceGroupResult => {
-    if (replacing && aospVoiceGroupHasRetiredRows(bundleRoot, group)) {
-      // The rename keeps a reader from seeing a half-removed group; the
-      // retired dir ends in `.staging` so the guarded remover accepts it.
-      const retiredDir = `${finalDir}.retired.staging`;
-      removeStaging(retiredDir);
-      renameSync(finalDir, retiredDir);
-      removeStaging(retiredDir);
-      return {
-        status: "unavailable",
-        dir: finalDir,
-        reason: `${reason}; removed the retired Qwen3-ASR group`,
-      };
-    }
-    return { status: "unavailable", dir: finalDir, reason };
-  };
   const plan: Array<{
     file: MobileVoiceFile;
     pin: AospVoicePin;
@@ -532,14 +491,18 @@ export async function stageAospVoiceGroup(
         ? candidate
         : null;
     if (!pin) {
-      return unavailable(
-        `${file.id} is unpublished and no pinned local copy was supplied (${file.localFrom ?? "owner publish pending"})`,
-      );
+      return {
+        status: "unavailable",
+        dir: finalDir,
+        reason: `${file.id} is unpublished and no pinned local copy was supplied (${file.localFrom ?? "owner publish pending"})`,
+      };
     }
     if (!localPath && !isPublishedMobileVoiceFile(file)) {
-      return unavailable(
-        `${file.id} is unpublished and missing from the local source`,
-      );
+      return {
+        status: "unavailable",
+        dir: finalDir,
+        reason: `${file.id} is unpublished and missing from the local source`,
+      };
     }
     plan.push({ file, pin, localPath });
   }

@@ -543,7 +543,7 @@ describe("pinned mobile voice bundle", () => {
     expect(existsSync(path.join(other, "asr"))).toBe(false);
   });
 
-  it("replaces a staged Qwen3-ASR asr/ with Phonon-2, and removes it while Phonon-2 is missing", async () => {
+  it("replaces a staged Qwen3-ASR group only after Phonon-2 is verified", async () => {
     const text = Buffer.from("qwen text");
     const proj = Buffer.from("qwen proj");
     const gguf = Buffer.from("phonon gguf");
@@ -570,24 +570,33 @@ describe("pinned mobile voice bundle", () => {
       expect(readFileSync(path.join(root, "asr", "text.gguf"))).toEqual(text);
     };
 
-    // Without a local Phonon-2 copy the retired group is removed, not kept.
+    // Retain rollback bytes until a replacement is verified; this is not an ASR fallback.
     const bare = bundleRoot();
     await stageRetired(bare);
     expect(aospVoiceGroupNeedsStaging(bare, parakeet, [phonon])).toBe(true);
-    const removed = await stageAospVoiceGroup(bare, parakeet, {
+    const unavailable = await stageAospVoiceGroup(bare, parakeet, {
       files: [phonon],
     });
-    expect(removed.status).toBe("unavailable");
-    expect(removed.status === "unavailable" && removed.reason).toContain(
-      "removed the retired Qwen3-ASR group",
-    );
-    expect(existsSync(path.join(bare, "asr"))).toBe(false);
+    expect(unavailable.status).toBe("unavailable");
+    expect(readFileSync(path.join(bare, "asr", "text.gguf"))).toEqual(text);
+    expect(readFileSync(path.join(bare, "asr", "mmproj.gguf"))).toEqual(proj);
+    expect(aospVoiceGroupNeedsStaging(bare, parakeet, [phonon])).toBe(true);
     expect(existsSync(path.join(bare, "asr.retired.staging"))).toBe(false);
 
     const root = bundleRoot();
     await stageRetired(root);
     const source = bundleRoot();
     mkdirSync(path.join(source, "asr"));
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), "corrupt");
+    await expect(
+      stageAospVoiceGroup(root, parakeet, {
+        files: [phonon],
+        local: readAospVoiceLocalSource(source),
+      }),
+    ).rejects.toThrow("does not match its pin");
+    expect(readFileSync(path.join(root, "asr", "text.gguf"))).toEqual(text);
+    expect(readFileSync(path.join(root, "asr", "mmproj.gguf"))).toEqual(proj);
+    expect(existsSync(path.join(root, "asr.staging"))).toBe(false);
     writeFileSync(path.join(source, "asr", "phonon.gguf"), gguf);
     const result = await stageAospVoiceGroup(root, parakeet, {
       files: [phonon],
