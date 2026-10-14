@@ -1552,7 +1552,9 @@ export class MessageManager {
       if (!ctx.chat) {
         throw new Error("sendMedia: ctx.chat is undefined");
       }
-      const chatId = ctx.chat.id;
+      // Same chat routing as text: a group upgraded to a supergroup takes its
+      // new chat id, learned here or by an earlier send.
+      const chat = { id: this.currentChatId(ctx.chat.id) };
       const captionNeedsFollowUp =
         typeof caption === "string" &&
         caption.length > MAX_MEDIA_CAPTION_LENGTH;
@@ -1568,19 +1570,28 @@ export class MessageManager {
         // A stored inbound capability reference names a Telegram file_id; the
         // Bot API re-sends those by id directly, so the round-trip never needs
         // the token-bearing file URL.
-        await sendFunction(ctx.chat.id, fileRefId, sendOptions);
+        await this.sendWithRetry(
+          () => sendFunction(chat.id, fileRefId, sendOptions),
+          undefined,
+          chat,
+        );
       } else {
         const resolved = await resolveOutboundAttachmentBytes(mediaPath, {
           localFetch: this.runtime.fetch ?? undefined,
           ...fetchOptions,
         });
-        await sendFunction(
-          ctx.chat.id,
-          {
-            source: resolved.buffer,
-            filename: resolved.fileName ?? "attachment",
-          },
-          sendOptions,
+        await this.sendWithRetry(
+          () =>
+            sendFunction(
+              chat.id,
+              {
+                source: resolved.buffer,
+                filename: resolved.fileName ?? "attachment",
+              },
+              sendOptions,
+            ),
+          undefined,
+          chat,
         );
       }
 
@@ -1589,10 +1600,13 @@ export class MessageManager {
         // the media first, then preserve the complete caption as ordinary text
         // messages instead of reporting success after silently clipping it.
         for (const chunk of this.splitMessage(caption)) {
-          await this.sendWithRetry(() =>
-            ctx.telegram.sendMessage(chatId, chunk, {
-              message_thread_id: messageThreadId,
-            }),
+          await this.sendWithRetry(
+            () =>
+              ctx.telegram.sendMessage(chat.id, chunk, {
+                message_thread_id: messageThreadId,
+              }),
+            undefined,
+            chat,
           );
         }
       }
