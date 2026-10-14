@@ -30,19 +30,20 @@ import {
  *   await tx.insert(credits).values(creditData);
  * });
  */
-const beforeCommitCallbacks = new WeakMap<DbTransaction, Array<() => Promise<void>>>();
+const commitCallbacks = new WeakMap<
+  DbTransaction,
+  { before: Array<() => Promise<void>>; after: Array<() => Promise<void>> }
+>();
 
 export function registerBeforeCommit(tx: DbTransaction, callback: () => Promise<void>): void {
-  const callbacks = beforeCommitCallbacks.get(tx);
+  const callbacks = commitCallbacks.get(tx)?.before;
   if (!callbacks) throw new UnmanagedWriteTransactionError();
   callbacks.push(callback);
 }
 
-const afterCommitCallbacks = new WeakMap<DbTransaction, Array<() => Promise<void>>>();
-
 /** Register effects on the exact managed transaction; never run them before COMMIT. */
 export function registerAfterCommit(tx: DbTransaction, callback: () => Promise<void>): void {
-  const callbacks = afterCommitCallbacks.get(tx);
+  const callbacks = commitCallbacks.get(tx)?.after;
   if (!callbacks) {
     throw new UnmanagedWriteTransactionError();
   }
@@ -61,15 +62,13 @@ export async function writeTransaction<T>(fn: (tx: DbTransaction) => Promise<T>)
   const result = await observeDbOperation("transaction", "writeTransaction", () =>
     dbWrite.transaction(async (tx) => {
       const beforeCommit: Array<() => Promise<void>> = [];
-      afterCommitCallbacks.set(tx, callbacks);
-      beforeCommitCallbacks.set(tx, beforeCommit);
+      commitCallbacks.set(tx, { before: beforeCommit, after: callbacks });
       try {
         const result = await fn(tx);
         for (const callback of beforeCommit) await callback();
         return result;
       } finally {
-        afterCommitCallbacks.delete(tx);
-        beforeCommitCallbacks.delete(tx);
+        commitCallbacks.delete(tx);
       }
     }),
   );

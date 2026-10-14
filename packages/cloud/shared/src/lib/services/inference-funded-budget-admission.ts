@@ -330,7 +330,6 @@ export async function admitFundedBudgetInference(
     credential,
     endpointType: params.fundedBudgetEndpointType ?? "completions",
     rateReceipt: params.fundedBudgetRateReceipt,
-    rateAlreadyChecked: Boolean(params.fundedBudgetRateReceipt),
     createdAt,
     expiresAt: createdAt + 20 * 60_000,
     preProviderCancellationToken,

@@ -168,13 +168,10 @@ export async function withInferencePolicyMutationInTransaction<T>(
   // Registration verifies exact outer transaction ownership before any DO side effect.
   registerAfterCommit(tx, async () => {
     if (publications.length === 0) return;
-    const { loadInferenceBudgetPolicy } = await import("./inference-funded-budget-admission");
     for (const publication of publications) {
-      const policy = await loadInferenceBudgetPolicy(publication.organizationId);
       await policyCall(publication.organizationId, "/policy-mutation/commit", {
         ...publication,
         mutationId,
-        policy,
       });
       await dbWrite.execute(
         sql`UPDATE inference_policy_mutations SET phase = 'complete', updated_at = clock_timestamp() WHERE organization_id = ${publication.organizationId}::uuid AND mutation_id = ${mutationId} AND phase = 'applied'`,
