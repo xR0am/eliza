@@ -90,6 +90,12 @@ test("a disconnected sandbox still occupies the organization's sandbox ceiling",
 
   // Four running plus the disconnected one: the ceiling of five is full.
   await expect(createIsAdmitted()).rejects.toBeInstanceOf(AgentQuotaExceededError);
+  // The account limits snapshot reports the same five, so it shows no free slot.
+  const { readPrimaryAccountBillingSnapshot } = await import(
+    "../../db/repositories/account-billing-snapshot"
+  );
+  const snapshot = await readPrimaryAccountBillingSnapshot(PLUS_ORG);
+  expect(snapshot.sandboxCounts).toMatchObject({ used: "5", reserved: "0" });
 
   // Once that sandbox is gone for good, the slot is free again.
   await exec(`UPDATE agent_sandboxes SET status = 'error' WHERE id = '${disconnected}'`);

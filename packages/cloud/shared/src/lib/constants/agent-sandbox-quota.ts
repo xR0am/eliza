@@ -28,6 +28,12 @@ export const QUOTA_COUNTED_STATUSES: AgentSandboxStatus[] = [
   "stopped",
   "sleeping",
 ];
+/** Counted states still being created: reported as reserved, not used. */
+export const QUOTA_RESERVED_STATUSES: AgentSandboxStatus[] = ["pending", "provisioning"];
+/** Counted states that hold a created sandbox: reported as used. */
+export const QUOTA_USED_STATUSES: AgentSandboxStatus[] = QUOTA_COUNTED_STATUSES.filter(
+  (status) => !QUOTA_RESERVED_STATUSES.includes(status),
+);
 
 import { ElizaError } from "@elizaos/core";
 
