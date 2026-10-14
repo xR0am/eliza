@@ -2078,7 +2078,13 @@ export class SharedRuntimeConversation {
   private async handle(request: Request): Promise<Response> {
     if (new URL(request.url).pathname === "/owner-capture/read")
       return this.readOwnerCapture(request);
-    const payload = (await request.json()) as ConversationRequest;
+    let parsedPayload: ConversationRequest;
+    try {
+      parsedPayload = (await request.json()) as ConversationRequest;
+    } catch {
+      return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const payload = parsedPayload;
     if (
       (payload.operation === "personal-bridge" ||
         payload.operation === "personal-stream") &&
