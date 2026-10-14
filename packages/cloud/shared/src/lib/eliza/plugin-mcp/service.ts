@@ -57,6 +57,8 @@ export class McpService extends Service {
   private toolCompatibility: McpToolCompatibility | null = null;
   private initPromise: Promise<void> | null = null;
   private registeredActions = new Map<string, McpToolAction>();
+  /** Set by stop(): once true, no new connection state or retry timer may be created. */
+  private stopped = false;
   private tier2Index = new Tier2ToolIndex();
   private tier2Tools: Tier2ToolEntry[] = [];
   private schemaCache = getSchemaCache();
@@ -79,6 +81,12 @@ export class McpService extends Service {
     await this.initPromise;
   }
   async stop(): Promise<void> {
+    // Mark shutdown BEFORE scanning the maps: an in-flight retry callback can be
+    // paused inside connect() at the awaited leading disconnect(), which has
+    // already deleted the old state while the new one is not yet created. A
+    // snapshot taken without the flag would miss such a callback, and it would
+    // then resurrect state and schedule a new retry timer after stop() returns.
+    this.stopped = true;
     // Failed transport creation can leave retry state without a live connection.
     for (const name of new Set([...this.connections.keys(), ...this.connectionStates.keys()])) {
       await this.disconnect(name);
@@ -203,6 +211,12 @@ export class McpService extends Service {
       ? (this.connectionStates.get(name)?.reconnectAttempts ?? 0)
       : 0;
     await this.disconnect(name);
+    // A retry callback can be paused at the awaited disconnect() above while
+    // stop() runs and marks shutdown. Bail out before rebuilding any state so
+    // no retry ladder survives shutdown.
+    if (this.stopped) {
+      throw new Error(`McpService stopped; not connecting "${name}"`);
+    }
     const state: ConnectionState = {
       status: "connecting",
       reconnectAttempts: carriedReconnectAttempts,
@@ -375,6 +389,9 @@ export class McpService extends Service {
     }, this.pingConfig.intervalMs);
   }
   private handleDisconnect(name: string, error: unknown): void {
+    // No retries after shutdown: stop() clears every pending timer, and a
+    // callback that fired just before shutdown must not schedule a new one.
+    if (this.stopped) return;
     const state = this.connectionStates.get(name);
     if (!state) return;
     state.status = "disconnected";
@@ -387,6 +404,9 @@ export class McpService extends Service {
     }
     const delay = INITIAL_RETRY_DELAY * BACKOFF_MULTIPLIER ** state.reconnectAttempts;
     state.reconnectTimeout = setTimeout(async () => {
+      // A timer that fired just before stop() cleared it must not resurrect
+      // state or schedule another retry.
+      if (this.stopped) return;
       state.reconnectAttempts++;
       // Reconnect from the config kept on the ConnectionState, never from
       // `this.connections.get(name)`: `connect` begins by calling `disconnect`,

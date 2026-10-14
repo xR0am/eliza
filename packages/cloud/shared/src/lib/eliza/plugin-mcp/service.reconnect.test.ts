@@ -66,6 +66,13 @@ async function retry() {
 function retryTimers() {
   return [...timers.values()].filter((timer) => timer.delay < 60000);
 }
+/** Starts a retry timer's callback without awaiting it, so the test controls the interleaving. */
+function fireRetry(): Promise<void> {
+  const entry = [...timers.entries()].find(([, timer]) => timer.delay < 60000);
+  if (!entry) throw new Error("No pending retry");
+  timers.delete(entry[0]);
+  return entry[1].callback();
+}
 
 test("failed connection retries back off and stop at the cap", async () => {
   await expect(internal.connect("server", validConfig)).rejects.toThrow("server unavailable");
@@ -102,6 +109,21 @@ test("stop cancels retries even when no transport could be constructed", async (
   await service.stop();
   expect(retryTimers()).toHaveLength(0);
   expect(internal.connectionStates.size).toBe(0);
+});
+
+test("stop during an in-flight retry leaves no state or timers", async () => {
+  await expect(internal.connect("server", { type: "stdio", command: "" })).rejects.toThrow();
+  expect(retryTimers()).toHaveLength(1);
+  // Fire the retry callback without awaiting it: it runs synchronously through
+  // connect()'s leading disconnect() (deleting the old state) and then pauses.
+  const inFlight = fireRetry();
+  expect(internal.connectionStates.size).toBe(0);
+  // stop() establishes shutdown before scanning the maps, so the paused
+  // callback must not resurrect state or schedule another timer when it resumes.
+  await service.stop();
+  await inFlight;
+  expect(internal.connectionStates.size).toBe(0);
+  expect(retryTimers()).toHaveLength(0);
 });
 
 test("an explicit reconnect starts a fresh retry ladder", async () => {
