@@ -90,7 +90,7 @@ const files = [
   "phonon-2.bps.tar.zst",
   "NOTICE",
   "LICENSE-WEIGHTS-CC-BY-4.0.txt",
-];
+] as const;
 try {
   for (const name of files) {
     const pin = pins.files[name];
