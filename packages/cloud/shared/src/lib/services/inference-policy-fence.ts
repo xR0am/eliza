@@ -334,11 +334,36 @@ async function confirmInferencePolicyAuthCacheWithdrawal(organizationId: string)
   await invalidateInferenceAuthContextsByKeyHashes(keys.map((key) => key.key_hash));
 }
 
+/** Old deployments have no delegation metadata; partial installation must remain unavailable. */
+async function inferencePolicyMetadataAvailable(tx?: DbTransaction): Promise<boolean> {
+  const [tables] = await sqlRows<{
+    authorities: boolean;
+    mutations: boolean;
+    grants: boolean;
+    receipts: boolean;
+  }>(
+    tx ?? dbWrite,
+    sql`SELECT to_regclass('inference_policy_authorities') IS NOT NULL AS authorities,
+      to_regclass('inference_policy_mutations') IS NOT NULL AS mutations,
+      to_regclass('inference_funding_budget_grants') IS NOT NULL AS grants,
+      to_regclass('inference_funding_budget_receipts') IS NOT NULL AS receipts`,
+  );
+  if (!tables) throw new InferencePolicyFenceError("Inference policy metadata is unavailable");
+  const available = Object.values(tables);
+  if (available.every((exists) => exists)) return true;
+  if (
+    available.every((exists) => !exists) &&
+    getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true"
+  )
+    return false;
+  throw new InferencePolicyFenceError("Inference policy metadata migration is incomplete");
+}
+
 /** Drain and withdraw delegated authority before irreversible account resource cleanup. */
 export async function prepareInferencePolicyForAccountDeletion(
   organizationId: string,
 ): Promise<void> {
-  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true") return;
+  if (!(await inferencePolicyMetadataAvailable())) return;
   const [authority] = await sqlRows<{ enabled: boolean }>(
     dbWrite,
     sql`SELECT enabled FROM inference_policy_authorities WHERE organization_id = ${organizationId}::uuid`,
@@ -349,6 +374,10 @@ export async function prepareInferencePolicyForAccountDeletion(
     await confirmInferencePolicyAuthCacheWithdrawal(organizationId);
     return;
   }
+  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true")
+    throw new InferencePolicyFenceError(
+      "Keep funded budget admission enabled until rollback is acknowledged",
+    );
   const { inferenceBudgetGateRequest } = await import("./inference-funded-budget-admission");
   const result = await inferenceBudgetGateRequest<unknown>(organizationId, "/budget/reclaim", {
     organizationId,
@@ -371,7 +400,7 @@ export async function clearDisabledInferencePolicyForAccountDeletion(
   tx: DbTransaction,
   organizationId: string,
 ): Promise<void> {
-  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true") return;
+  if (!(await inferencePolicyMetadataAvailable(tx))) return;
   const [authority] = await sqlRows<{ enabled: boolean }>(
     tx,
     sql`SELECT enabled FROM inference_policy_authorities WHERE organization_id = ${organizationId}::uuid FOR UPDATE`,
