@@ -226,18 +226,16 @@ function stringFromUnknown(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function parseStringArray(value: unknown): string[] {
+function parseArray(value: unknown): unknown[] {
   if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string");
+    return value;
   }
 
   if (typeof value !== "string" || value.trim().length === 0) return [];
 
   try {
     const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string")
-      : [];
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -255,8 +253,10 @@ function mapPolymarketMarket(input: unknown): PolymarketMarketRecord | null {
   const question = stringFromUnknown(record.question);
   if (!question) return null;
 
-  const outcomeLabels = parseStringArray(record.outcomes);
-  const outcomeProbabilities = parseStringArray(record.outcomePrices).map((value) =>
+  const outcomeLabels = parseArray(record.outcomes).map(
+    (value) => stringFromUnknown(value) ?? "",
+  );
+  const outcomeProbabilities = parseArray(record.outcomePrices).map((value) =>
     clampProbability(numberFromUnknown(value)),
   );
   const volume24hUsd = numberFromUnknown(record.volume24hr);
