@@ -174,6 +174,9 @@ export class XDmAdapter extends BaseMessageAdapter {
 
     const limit = normalizeListLimit(opts.limit);
     const sinceMs = opts.sinceMs;
+    // A conversation-scoped request (`channelIds`) lists only those
+    // conversations; this adapter owns that scope (`channels: "implicit"`).
+    const channels = opts.channelIds?.length ? new Set(opts.channelIds) : null;
     // Every requested X account (`worldIds`), or the service's default account.
     const accountIds: Array<string | undefined> = opts.worldIds?.length
       ? [...new Set(opts.worldIds)]
@@ -192,9 +195,10 @@ export class XDmAdapter extends BaseMessageAdapter {
         .map(memoryToMessageRef)
         .filter(
           (ref) =>
-            sinceMs === undefined ||
-            !Number.isFinite(ref.receivedAtMs) ||
-            ref.receivedAtMs >= sinceMs,
+            (!channels || channels.has(ref.channelId)) &&
+            (sinceMs === undefined ||
+              !Number.isFinite(ref.receivedAtMs) ||
+              ref.receivedAtMs >= sinceMs),
         );
       refs.push(...candidates);
     }
