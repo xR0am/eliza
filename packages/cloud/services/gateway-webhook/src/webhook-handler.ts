@@ -147,6 +147,9 @@ class PersonalSharedPreEgressError extends Error {
   }
 }
 
+/** Rejected Network ingress cannot authorize even a generic failure reply. */
+class NetworkIngressRejectedError extends PersonalSharedPreEgressError {}
+
 /** Read Cloud's explicit pre-execution cutover hold from a refused turn. */
 async function readCutoverHold(
   response: Response,
@@ -995,6 +998,7 @@ async function settleAcknowledgedTurnFailure(
     !agentId &&
     isPersonalElizaTransport(adapter.platform) &&
     !isNetworkProject(project) &&
+    !(err instanceof NetworkIngressRejectedError) &&
     isDirectChat(event)
   ) {
     logger.warn("Personal Shared turn failed; delivering failure notice", {
@@ -1331,7 +1335,7 @@ async function processMessage(
         process.env.NETWORK_PERSONAL_CONTINUITY_ENABLED,
       )
     )
-      throw new PersonalSharedPreEgressError(
+      throw new NetworkIngressRejectedError(
         "Network Shared ingress authority does not match",
       );
   }

@@ -650,13 +650,13 @@ describe("Shared Network admission and consent boundaries", () => {
     });
   }
   test("an owned Shared identity-link challenge is confirmed before intake", async () => {
-    expect(await inbound("LINK-ABCD1234", phone, "private", options)).toBe(
+    expect(await inbound("LINK-ABCD2345", phone, "private", options)).toBe(
       "delivered",
     );
     expect(turns).toHaveLength(0);
     expect(cloudBodies).toHaveLength(1);
     expect(cloudBodies[0]).toMatchObject({
-      code: "LINK-ABCD1234",
+      code: "LINK-ABCD2345",
       platform: "blooio",
       platformId: phone,
     });

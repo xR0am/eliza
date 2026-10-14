@@ -22,12 +22,8 @@ export function serviceNetworkStoreFactory(
   trustedNetworkTurn: unknown,
   env: Record<string, string | undefined> = getCloudAwareEnv(),
 ): ((() => NetworkStore) & { readonly app?: NetworkAppId }) | undefined {
-  const admission = isVerifiedNetworkAdmission(trustedNetworkTurn)
-    ? trustedNetworkTurn
-    : undefined;
-  const turn = parseServiceTurn(
-    admission ? admission.turn : trustedNetworkTurn,
-  );
+  const admission = isVerifiedNetworkAdmission(trustedNetworkTurn) ? trustedNetworkTurn : undefined;
+  const turn = parseServiceTurn(admission ? admission.turn : trustedNetworkTurn);
   const baseUrl = env.NETWORK_SERVICE_URL?.trim();
   const secret = env.SERVICE_TURN_SECRET;
   if (!turn || !baseUrl || !secret) return undefined;
@@ -61,9 +57,7 @@ export function sharedNetworkExecution(
   >,
   personalShared: boolean,
   isNoncanonicalRoom: boolean,
-  storeFactory:
-    | ((() => NetworkStore) & { readonly app?: NetworkAppId })
-    | undefined,
+  storeFactory: ((() => NetworkStore) & { readonly app?: NetworkAppId }) | undefined,
   routing?: NetworkRouting,
   voiceApp?: NetworkAppId,
   admission?: VerifiedNetworkAdmission,

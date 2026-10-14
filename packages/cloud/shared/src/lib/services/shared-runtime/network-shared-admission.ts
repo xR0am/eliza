@@ -118,9 +118,7 @@ export interface VerifiedNetworkAdmission {
   };
 }
 const admitted = new WeakSet<object>();
-export function isVerifiedNetworkAdmission(
-  value: unknown,
-): value is VerifiedNetworkAdmission {
+export function isVerifiedNetworkAdmission(value: unknown): value is VerifiedNetworkAdmission {
   return !!value && typeof value === "object" && admitted.has(value);
 }
 /** The service's OPEN decision owns age/invite/current membership admission.
@@ -174,14 +172,9 @@ export async function verifyNetworkOpenAdmission(input: {
   const body = original as Record<string, unknown>;
   if (
     body.networkHandled !== undefined ||
-    [
-      "chatId",
-      "groupId",
-      "membershipChange",
-      "agentId",
-      "eventType",
-      "chatType",
-    ].some((key) => body[key] !== undefined) ||
+    ["chatId", "groupId", "membershipChange", "agentId", "eventType", "chatType"].some(
+      (key) => body[key] !== undefined,
+    ) ||
     typeof body.transport !== "string" ||
     !["imessage", "sms", "rcs", "unknown"].includes(body.transport) ||
     body.platform !== input.ingress.platform ||
@@ -230,11 +223,7 @@ export async function verifyNetworkAdmissionEnvelope(
     // error-policy:J3 malformed policy or signed JSON grants no admission.
     return undefined;
   }
-  if (
-    !body ||
-    typeof body !== "object" ||
-    !["blooio", "twilio"].includes(String(body.platform))
-  )
+  if (!body || typeof body !== "object" || !["blooio", "twilio"].includes(String(body.platform)))
     return undefined;
   const ingress = body as unknown as NetworkIngressScope;
   if (
@@ -305,9 +294,7 @@ export async function verifyNetworkHandledEnvelope(
     NETWORK_PERSONAL_CONTINUITY_ENABLED?: string;
     NETWORK_OWNED_INGRESS_POLICY?: string;
   },
-): Promise<
-  { ingress: NetworkIngressScope; handled: NetworkHandled } | undefined
-> {
+): Promise<{ ingress: NetworkIngressScope; handled: NetworkHandled } | undefined> {
   if (
     envelope.path !== "/api/internal/eliza-app/personal-shared/messages" ||
     typeof envelope.originalBody !== "string" ||
@@ -325,14 +312,9 @@ export async function verifyNetworkHandledEnvelope(
     !b ||
     typeof b !== "object" ||
     b.networkTurn !== undefined ||
-    [
-      "chatId",
-      "groupId",
-      "membershipChange",
-      "agentId",
-      "eventType",
-      "chatType",
-    ].some((key) => b[key] !== undefined)
+    ["chatId", "groupId", "membershipChange", "agentId", "eventType", "chatType"].some(
+      (key) => b[key] !== undefined,
+    )
   )
     return undefined;
   const ingress = b as unknown as NetworkIngressScope;
@@ -346,16 +328,8 @@ export async function verifyNetworkHandledEnvelope(
     ].some((x) => typeof x !== "string")
   )
     return undefined;
-  const policy = parseNetworkAdmissionPolicy(
-    bindings.NETWORK_OWNED_INGRESS_POLICY,
-  );
-  if (
-    !networkIngressMatchesPolicy(
-      ingress,
-      policy,
-      bindings.NETWORK_PERSONAL_CONTINUITY_ENABLED,
-    )
-  )
+  const policy = parseNetworkAdmissionPolicy(bindings.NETWORK_OWNED_INGRESS_POLICY);
+  if (!networkIngressMatchesPolicy(ingress, policy, bindings.NETWORK_PERSONAL_CONTINUITY_ENABLED))
     return undefined;
   const h = handledSchema.safeParse(b.networkHandled);
   if (!h.success) return undefined;
@@ -405,23 +379,17 @@ export async function verifyNetworkServiceDeliveryEnvelope(
     NETWORK_PERSONAL_CONTINUITY_ENABLED?: string;
     NETWORK_OWNED_INGRESS_POLICY?: string;
   },
-): Promise<
-  | { delivery: NetworkServiceDelivery; policy: NetworkAdmissionPolicy }
-  | undefined
-> {
+): Promise<{ delivery: NetworkServiceDelivery; policy: NetworkAdmissionPolicy } | undefined> {
   if (
-    ![
-      "/api/internal/network/deliver",
-      "/api/internal/network/deliver/receipt",
-    ].includes(envelope.path) ||
+    !["/api/internal/network/deliver", "/api/internal/network/deliver/receipt"].includes(
+      envelope.path,
+    ) ||
     typeof envelope.originalBody !== "string" ||
     new TextEncoder().encode(envelope.originalBody).byteLength > 8192 ||
     bindings.NETWORK_PERSONAL_CONTINUITY_ENABLED !== "true"
   )
     return undefined;
-  const policy = parseNetworkAdmissionPolicy(
-    bindings.NETWORK_OWNED_INGRESS_POLICY,
-  );
+  const policy = parseNetworkAdmissionPolicy(bindings.NETWORK_OWNED_INGRESS_POLICY);
   if (!policy) return undefined;
   let raw: unknown;
   try {

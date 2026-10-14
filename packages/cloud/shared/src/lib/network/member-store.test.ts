@@ -4,10 +4,7 @@ import type { NetworkStore } from "@elizaos/plugin-network";
 import { svcSign } from "@elizaos/plugin-network/svc-auth";
 import { verifyNetworkAdmissionEnvelope } from "../services/shared-runtime/network-shared-admission";
 import { personalSharedAgentId } from "../services/shared-runtime/personal-shared-identity";
-import {
-  serviceNetworkStoreFactory,
-  sharedNetworkExecution,
-} from "./member-store";
+import { serviceNetworkStoreFactory, sharedNetworkExecution } from "./member-store";
 
 const userId = "11111111-1111-4111-8111-111111111111";
 const organizationId = "22222222-2222-4222-8222-222222222222";
@@ -39,6 +36,7 @@ async function admission() {
   const originalBody = JSON.stringify({
     project: "eliza-app",
     platform: "blooio",
+    transport: "imessage",
     connectorAccountId: "owned-connector",
     phoneNumber: "+15555550100",
     messageId: "blooio:eliza-app:provider-id",
@@ -79,9 +77,7 @@ test("Canonical admission is branded and service-backed without changing legacy 
     SERVICE_TURN_SECRET: secret,
   };
   expect(serviceNetworkStoreFactory(verified, env)?.app).toBe("ntwrk");
-  expect(
-    serviceNetworkStoreFactory(JSON.parse(JSON.stringify(verified)), env),
-  ).toBeUndefined();
+  expect(serviceNetworkStoreFactory(JSON.parse(JSON.stringify(verified)), env)).toBeUndefined();
   expect(serviceNetworkStoreFactory(turn, env)?.app).toBeUndefined();
   let calls = 0;
   const factory = Object.assign(
@@ -92,15 +88,7 @@ test("Canonical admission is branded and service-backed without changing legacy 
     { app: "ntwrk" as const },
   );
   expect(
-    sharedNetworkExecution(
-      agent,
-      true,
-      false,
-      factory,
-      undefined,
-      undefined,
-      verified,
-    )?.memberId,
+    sharedNetworkExecution(agent, true, false, factory, undefined, undefined, verified)?.memberId,
   ).toBe(userId);
   expect(calls).toBe(1);
   for (const [candidate, personal, wrongRoom] of [
@@ -122,12 +110,7 @@ test("Canonical admission is branded and service-backed without changing legacy 
   }
   expect(sharedNetworkExecution(agent, true, false, factory)).toBeUndefined();
   expect(
-    sharedNetworkExecution(
-      { ...agent, project: "network" },
-      true,
-      false,
-      factory,
-    ),
+    sharedNetworkExecution({ ...agent, project: "network" }, true, false, factory),
   ).toBeDefined();
   expect(
     sharedNetworkExecution(

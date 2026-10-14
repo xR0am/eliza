@@ -22,20 +22,14 @@ import type { RuntimeDurableObjectNamespace } from "../../../types/cloud-worker-
 import { InsufficientCreditsError } from "../../api/errors";
 import { logger } from "../../utils/logger";
 import type { BridgeRequest } from "../eliza-sandbox";
-import {
-  coordinateSharedBridge,
-  coordinateSharedHistory,
-} from "./conversation-coordinator";
+import { coordinateSharedBridge, coordinateSharedHistory } from "./conversation-coordinator";
 import type { NetworkAdmissionEnvelope } from "./network-shared-admission";
 import type { NetworkSharedTurnObservation } from "./network-shared-context";
 import type { PersonalSharedFallbackAccountState } from "./personal-fallback-account-state";
 import type { SharedAgentCharacter } from "./run-shared-agent-turn";
 import type { SharedRuntimeAgent } from "./shared-runtime-agent";
 import type { SharedRuntimeChannel } from "./shared-runtime-channel";
-import {
-  type BridgeExecutionContext,
-  sharedRuntimeChatService,
-} from "./shared-runtime-chat";
+import { type BridgeExecutionContext, sharedRuntimeChatService } from "./shared-runtime-chat";
 import {
   parseSharedProviderTimingReceipt,
   type SharedProviderTimingReceipt,
@@ -43,9 +37,7 @@ import {
 
 const BRIDGE_INSUFFICIENT_CREDITS_CODE = -32002;
 /** Serialize the privacy-bounded provider receipt into finite Server-Timing metrics. */
-export function sharedTurnServerTiming(
-  receipt: SharedProviderTimingReceipt | undefined,
-): string {
+export function sharedTurnServerTiming(receipt: SharedProviderTimingReceipt | undefined): string {
   if (!receipt) return "";
   return `shared_model;dur=${receipt.durationMs.toFixed(1)};desc="provider=${receipt.selectedProvider} calls=${receipt.callCount} fallbacks=${receipt.fallbackCount} replayed=${receipt.replayed ? 1 : 0} clamped=${receipt.clamped ? 1 : 0}"`;
 }
@@ -195,8 +187,7 @@ const SHARED_CHAT_VIEW: SharedRestViewRegistration = {
   id: "chat",
   label: "Chat",
   viewType: "gui",
-  description:
-    "Conversations with your agent, inbound messages from every connector",
+  description: "Conversations with your agent, inbound messages from every connector",
   icon: "MessageSquare",
   path: SHARED_CHAT_VIEW_PATH,
   available: true,
@@ -493,10 +484,7 @@ export async function sharedRestCharacter(
   character: SharedAgentCharacter;
   agentName: string;
 }> {
-  const character = await sharedRuntimeChatService.getCharacter(
-    agent,
-    executionCtx,
-  );
+  const character = await sharedRuntimeChatService.getCharacter(agent, executionCtx);
   return { character, agentName: agentName || "Eliza" };
 }
 /** GET .../api/conversations — always the one canonical conversation. */
@@ -536,9 +524,7 @@ export function sharedRestConversationUpdate(
   conversation: SharedRestConversation;
 } {
   const title =
-    typeof patch?.title === "string" && patch.title.trim()
-      ? patch.title.trim()
-      : agentName;
+    typeof patch?.title === "string" && patch.title.trim() ? patch.title.trim() : agentName;
   return { conversation: makeConversation(agentId, title, createdAt) };
 }
 /**
@@ -557,11 +543,7 @@ function sharedRestMessageTimestamp(
   index: number,
   total: number,
 ): number {
-  if (
-    typeof turn.createdAt === "number" &&
-    Number.isFinite(turn.createdAt) &&
-    turn.createdAt > 0
-  ) {
+  if (typeof turn.createdAt === "number" && Number.isFinite(turn.createdAt) && turn.createdAt > 0) {
     return turn.createdAt;
   }
   // Legacy shared-runtime history rows predate createdAt. Keep them finite but
@@ -598,9 +580,7 @@ export async function sharedRestMessagesGet(
     role: turn.role,
     text: turn.content,
     timestamp: sharedRestMessageTimestamp(turn, index, visibleHistory.length),
-    ...(turn.role === "assistant" && turn.interrupted
-      ? { interrupted: true }
-      : {}),
+    ...(turn.role === "assistant" && turn.interrupted ? { interrupted: true } : {}),
   }));
   return { messages };
 }
@@ -701,20 +681,15 @@ export async function sharedRestMessageSend(
             mediaUrl?: unknown;
           }
         ).mediaUrl;
-        return typeof mediaUrl === "string" && mediaUrl.trim()
-          ? [mediaUrl.trim()]
-          : [];
+        return typeof mediaUrl === "string" && mediaUrl.trim() ? [mediaUrl.trim()] : [];
       })
     : [];
   const timing = parseSharedProviderTimingReceipt(result.timing);
   if (result.timing !== undefined && timing === undefined) {
-    logger.warn(
-      "[shared-runtime REST] message.send returned an invalid timing receipt",
-      {
-        agentId: agent.id,
-        conversationId,
-      },
-    );
+    logger.warn("[shared-runtime REST] message.send returned an invalid timing receipt", {
+      agentId: agent.id,
+      conversationId,
+    });
   }
   return {
     text: replyText,

@@ -36,9 +36,7 @@ test("Network ingress remains default off and matches exact existing connector n
     { connectorAccountId: "other" },
     { messageId: "blooio:network:provider-id" },
   ])
-    expect(
-      networkIngressMatchesPolicy({ ...ingress, ...patch }, policy, "true"),
-    ).toBe(false);
+    expect(networkIngressMatchesPolicy({ ...ingress, ...patch }, policy, "true")).toBe(false);
 });
 test("Network capability never substitutes another Cloud account or room", () => {
   const account = {
@@ -48,15 +46,10 @@ test("Network capability never substitutes another Cloud account or room", () =>
     roomId: "personal:canonical",
   };
   expect(networkAccountMatchesPolicy(account, policy)).toBe(true);
-  expect(
-    networkAccountMatchesPolicy(
-      { ...account, userId: policy.organizationId },
-      policy,
-    ),
-  ).toBe(false);
-  expect(
-    networkAccountMatchesPolicy({ ...account, roomId: "other" }, policy),
-  ).toBe(false);
+  expect(networkAccountMatchesPolicy({ ...account, userId: policy.organizationId }, policy)).toBe(
+    false,
+  );
+  expect(networkAccountMatchesPolicy({ ...account, roomId: "other" }, policy)).toBe(false);
 });
 test("Malformed or widening Network policy grants no authority", () => {
   expect(parseNetworkAdmissionPolicy(JSON.stringify(policy))).toEqual(policy);
@@ -135,13 +128,10 @@ test("HANDLED admission rejects stale signature, default off, crossed sender and
     ),
   ).toBeUndefined();
   expect(
-    await verifyNetworkHandledEnvelope(
-      await signed({ ...ingress, networkHandled: handled }),
-      {
-        ...bindings,
-        NETWORK_PERSONAL_CONTINUITY_ENABLED: undefined,
-      },
-    ),
+    await verifyNetworkHandledEnvelope(await signed({ ...ingress, networkHandled: handled }), {
+      ...bindings,
+      NETWORK_PERSONAL_CONTINUITY_ENABLED: undefined,
+    }),
   ).toBeUndefined();
   expect(
     await verifyNetworkHandledEnvelope(
@@ -177,10 +167,7 @@ test("HANDLED admission rejects incomplete collected IDs and oversized replies",
     ).toBeUndefined();
 });
 
-async function signedService(
-  patch: Record<string, unknown> = {},
-  receipt = false,
-) {
+async function signedService(patch: Record<string, unknown> = {}, receipt = false) {
   const target = "/api/internal/network/deliver" + (receipt ? "/receipt" : "");
   const originalBody = JSON.stringify({
     id: "provider-id",
@@ -205,18 +192,12 @@ async function signedService(
 }
 test("Service delivery and receipt use distinct exact signed paths and owned recipient scope", async () => {
   expect(
-    (
-      await verifyNetworkServiceDeliveryEnvelope(
-        await signedService(),
-        bindings,
-      )
-    )?.delivery.kind,
+    (await verifyNetworkServiceDeliveryEnvelope(await signedService(), bindings))?.delivery.kind,
   ).toBe("relay");
   const receipt = await signedService({}, true);
-  expect(
-    (await verifyNetworkServiceDeliveryEnvelope(receipt, bindings))?.delivery
-      .to,
-  ).toBe(ingress.phoneNumber);
+  expect((await verifyNetworkServiceDeliveryEnvelope(receipt, bindings))?.delivery.to).toBe(
+    ingress.phoneNumber,
+  );
   expect(
     await verifyNetworkServiceDeliveryEnvelope(
       { ...receipt, path: "/api/internal/network/deliver" },
@@ -232,10 +213,7 @@ test("Service delivery rejects foreign recipient, channel, provider ID and unkno
     { networkTurn: {} },
   ])
     expect(
-      await verifyNetworkServiceDeliveryEnvelope(
-        await signedService(patch),
-        bindings,
-      ),
+      await verifyNetworkServiceDeliveryEnvelope(await signedService(patch), bindings),
     ).toBeUndefined();
 });
 
@@ -270,9 +248,7 @@ test("OPEN signed context mints only an in-memory capability and re-verifies acr
   });
   expect(isVerifiedNetworkAdmission(admission)).toBe(true);
   expect(admission?.ingress.transport).toBe("imessage");
-  expect(
-    isVerifiedNetworkAdmission(JSON.parse(JSON.stringify(admission))),
-  ).toBe(false);
+  expect(isVerifiedNetworkAdmission(JSON.parse(JSON.stringify(admission)))).toBe(false);
   const reverified = await verifyNetworkAdmissionEnvelope(
     JSON.parse(JSON.stringify(envelope)),
     bindings,
