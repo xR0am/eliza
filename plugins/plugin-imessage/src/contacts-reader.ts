@@ -205,7 +205,7 @@ export function normalizeContactHandle(raw: string): string {
   // more than ten digits without one gets it, as the connector does.
   const hasPlus = trimmed.startsWith("+");
   const digitsOnly = trimmed.replace(/[^\d]/g, "");
-  return hasPlus ? `+${digitsOnly}` : formatPhoneNumber(digitsOnly);
+  return formatPhoneNumber(hasPlus ? `+${digitsOnly}` : digitsOnly);
 }
 
 /**

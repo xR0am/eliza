@@ -1101,12 +1101,20 @@ describe("normalizeContactHandle", () => {
   });
 
   it("keys a contact phone the way the connector keys a chat.db handle", () => {
-    // Apple Contacts often store the country code without "+"; chat.db
-    // handles are E.164. Both must land on the same key.
-    expect(normalizeContactHandle("1 (555) 123-4567")).toBe(formatPhoneNumber("+15551234567"));
-    expect(normalizeContactHandle("1 (555) 123-4567")).toBe("+15551234567");
-    // A national number without a country code keeps its digits.
-    expect(normalizeContactHandle("(555) 987-6543")).toBe("5559876543");
+    // chat.db stores E.164 handles; the connector keys them with
+    // formatPhoneNumber. Each contact spelling must reach that same key.
+    const cases: Array<[contact: string, chatDbHandle: string]> = [
+      ["1 (555) 123-4567", "+15551234567"], // country code without "+"
+      ["+1 (555) 123-4567", "+15551234567"], // "+" form, US
+      ["+44 20 7946 0958", "+442079460958"], // "+" form, UK
+      ["44 20 7946 0958", "+442079460958"], // UK country code without "+"
+    ];
+    for (const [contact, chatDbHandle] of cases) {
+      expect(normalizeContactHandle(contact)).toBe(formatPhoneNumber(chatDbHandle));
+    }
+    // A national number carries no country, so it cannot be mapped to an
+    // E.164 handle; it keeps its digits, as formatPhoneNumber does.
+    expect(normalizeContactHandle("(555) 987-6543")).toBe(formatPhoneNumber("5559876543"));
   });
 });
 
