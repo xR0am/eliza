@@ -9,7 +9,7 @@
  *
  * Each group is staged into `<dir>.staging/`, verified (size + sha256), and
  * published with one rename, so a reader sees the whole group or nothing.
- * A group whose directory already exists is left alone.
+ * An existing group is reused only after its files match their pins.
  *
  * Published rows download from their pinned Hugging Face revision through the
  * AOSP network admission check. Unpublished rows (Paradee GGUF and lexicon
@@ -189,7 +189,7 @@ export interface StageAospVoiceGroupOptions
 
 /**
  * Stage one group into `<bundleRoot>/<group.dir>`. Returns "present" when the
- * directory already exists, "unavailable" when an unpublished row has no
+ * directory already exists and its files match their pins, "unavailable" when an unpublished row has no
  * local source (nothing is written), else downloads/copies every file into
  * `<dir>.staging`, verifies it, writes the record and renames the staging
  * directory into place.
@@ -200,8 +200,77 @@ export async function stageAospVoiceGroup(
   options: StageAospVoiceGroupOptions = {},
 ): Promise<AospVoiceGroupResult> {
   const finalDir = path.join(bundleRoot, group.dir);
-  if (existsSync(finalDir)) return { status: "present", dir: finalDir };
   const files = aospVoiceGroupFiles(group, options.files);
+  if (existsSync(finalDir)) {
+    if (!lstatSync(finalDir).isDirectory()) {
+      throw new Error(
+        `[aosp-voice] existing group ${finalDir} is not a directory`,
+      );
+    }
+    let recordedFiles: unknown[] | undefined;
+    for (const file of files) {
+      let pin = expectedAospVoicePin(file, options.local);
+      if (!pin) {
+        // Keep the originally authorized local pins when their source directory
+        // is no longer attached. Published catalog pins always take precedence.
+        if (!recordedFiles) {
+          const record = JSON.parse(
+            readFileSync(path.join(finalDir, AOSP_VOICE_RECORD), "utf8"),
+          ) as {
+            schema?: unknown;
+            dir?: unknown;
+            files?: unknown;
+          } | null;
+          if (
+            record?.schema !== "eliza-mobile-voice-group-v1" ||
+            record.dir !== group.dir ||
+            !Array.isArray(record.files)
+          ) {
+            throw new Error(
+              `[aosp-voice] existing group ${finalDir} has no valid pin record`,
+            );
+          }
+          recordedFiles = record.files;
+        }
+        const matches = recordedFiles.filter(
+          (row): row is Record<string, unknown> =>
+            row !== null &&
+            typeof row === "object" &&
+            "id" in row &&
+            row.id === file.id,
+        );
+        const row = matches[0];
+        if (
+          matches.length !== 1 ||
+          !row ||
+          row.role !== file.role ||
+          row.path !== file.path ||
+          typeof row.sha256 !== "string" ||
+          !/^[0-9a-f]{64}$/.test(row.sha256) ||
+          typeof row.bytes !== "number" ||
+          !Number.isSafeInteger(row.bytes) ||
+          row.bytes <= 0
+        ) {
+          throw new Error(
+            `[aosp-voice] existing ${file.id} has no valid recorded pin`,
+          );
+        }
+        pin = { sha256: row.sha256, bytes: row.bytes };
+      }
+      const target = path.join(finalDir, path.posix.basename(file.path));
+      const stat = lstatSync(target);
+      if (
+        !stat.isFile() ||
+        stat.size !== pin.bytes ||
+        (await sha256File(target)) !== pin.sha256
+      ) {
+        throw new Error(
+          `[aosp-voice] existing ${file.id} does not match its pin`,
+        );
+      }
+    }
+    return { status: "present", dir: finalDir };
+  }
   const plan: Array<{
     file: MobileVoiceFile;
     pin: AospVoicePin;

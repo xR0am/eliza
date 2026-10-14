@@ -343,9 +343,17 @@ describe("pinned mobile voice bundle", () => {
     expect(
       readFileSync(path.join(root, "tts", "paradee", "paradee.gguf")),
     ).toEqual(gguf);
-    // A second call leaves the published group alone.
+    // A second call verifies the original local pins without the source directory.
     expect((await stageAospVoiceGroup(root, group, { files })).status).toBe(
       "present",
+    );
+
+    writeFileSync(
+      path.join(root, "tts", "paradee", "misaki.lex"),
+      Buffer.alloc(lex.length),
+    );
+    await expect(stageAospVoiceGroup(root, group, { files })).rejects.toThrow(
+      "does not match its pin",
     );
 
     writeFileSync(
@@ -360,6 +368,39 @@ describe("pinned mobile voice bundle", () => {
       }),
     ).rejects.toThrow("does not match its pin");
     expect(existsSync(path.join(other, "tts", "paradee"))).toBe(false);
+  });
+
+  it("rejects corrupt existing bytes even when their size and local record agree", async () => {
+    const root = bundleRoot();
+    const data = Buffer.from("valid model");
+    const file = published("vad", "vad", "vad/silero.gguf", data);
+    const group = { dir: "vad", roles: ["vad"] } as const;
+    await stageAospVoiceGroup(root, group, {
+      ...allowedNetwork,
+      files: [file],
+      fetchImpl: (async () => new Response(data)) as typeof fetch,
+    });
+    expect(
+      (await stageAospVoiceGroup(root, group, { files: [file] })).status,
+    ).toBe("present");
+    const corrupt = Buffer.alloc(data.length);
+    writeFileSync(path.join(root, file.path), corrupt);
+    writeFileSync(
+      path.join(root, "vad", AOSP_VOICE_RECORD),
+      JSON.stringify({
+        schema: "eliza-mobile-voice-group-v1",
+        dir: "vad",
+        files: [{ ...file, sha256: sha(corrupt) }],
+      }),
+    );
+    await expect(
+      stageAospVoiceGroup(root, group, { files: [file] }),
+    ).rejects.toThrow("does not match its pin");
+    expect(readFileSync(path.join(root, file.path))).toEqual(corrupt);
+    rmSync(path.join(root, file.path));
+    await expect(
+      stageAospVoiceGroup(root, group, { files: [file] }),
+    ).rejects.toThrow();
   });
 
   it("rejects a local pin that disagrees with a published catalog pin", () => {
