@@ -694,7 +694,7 @@ function clampLimit(value: string | null, fallback = 50): number {
 function parseOffset(value: string | null): number {
   const parsed = value ? Number(value) : 0;
   if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
-  return Math.min(parsed, 100_000);
+  return parsed;
 }
 
 function parseQueryList(value: string | undefined): string[] {
