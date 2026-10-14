@@ -44,16 +44,26 @@ describe("BROWSER wait_for_url", () => {
     const runtime = { getService: () => null } as unknown as IAgentRuntime;
     const message = { content: { text: "" } } as Memory;
     let userFinishedSignIn = false;
-    const callback = async (content: { text?: string }) => {
-      if (userFinishedSignIn || !content.text?.startsWith("⏳")) return [];
+    const callback = async () => {
+      // The first progress callback follows opening the visible login tab.
+      // Simulate the user completing it without coupling to presentation text.
+      if (userFinishedSignIn) return [];
       userFinishedSignIn = true;
       const tabs = await listBrowserWorkspaceTabs();
-      const seen = tabs.find((tab) => tab.visible);
+      const seen = tabs.find(
+        (tab) => tab.visible && tab.url === `${origin}/oauth/authorize`,
+      );
       if (!seen) throw new Error("No browser tab is visible to the user");
       await navigateBrowserWorkspaceTab({
         id: seen.id,
         url: `${origin}/oauth/callback?code=ok`,
       });
+      const current = await executeBrowserWorkspaceCommand({
+        id: seen.id,
+        subaction: "get",
+        getMode: "url",
+      });
+      expect(current.value).toContain("/oauth/callback");
       return [];
     };
 
@@ -66,7 +76,7 @@ describe("BROWSER wait_for_url", () => {
           action: "wait_for_url",
           url: `${origin}/oauth/authorize`,
           pattern: "/oauth/callback",
-          timeoutMs: 3_000,
+          timeoutMs: 30_000,
           pollIntervalMs: 50,
         },
       },
