@@ -3,7 +3,7 @@
  * automation is a prompt trigger, a cron schedule carries the zone it is
  * previewed in, and a one-time run carries the instant it is previewed at.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import type { TriggerSummary } from "../../../api/client-types-core";
 import {
   buildCreateRequest,
@@ -11,6 +11,7 @@ import {
   emptyForm,
   formFromTrigger,
   nextRunsForCron,
+  onceInstant,
   type TriggerFormState,
   validateForm,
 } from "../trigger-form-utils";
@@ -141,4 +142,14 @@ describe("Automations trigger form", () => {
       nextRunsForCron("0 9 * * 1-5", 1, from, "America/Los_Angeles"),
     ).toEqual([new Date("2026-10-12T16:00:00.000Z")]);
   });
+});
+
+test("preview resolver preserves precision of unchanged stored instant", () => {
+  for (const instant of ["2026-11-01T06:30:00.000Z", "2026-10-14T16:00:42.123Z"]) {
+    const form = formFromTrigger({...storedPrompt, triggerType: "once", scheduledAtIso: instant});
+    expect(onceInstant(form)).toBe(instant);
+    expect(buildUpdateRequest(form).scheduledAtIso).toBe(onceInstant(form));
+    form.scheduledAtIso = "2026-11-02T09:15";
+    expect(onceInstant(form)).toBe(new Date(form.scheduledAtIso).toISOString());
+  }
 });

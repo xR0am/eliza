@@ -278,7 +278,7 @@ function localDateTimeInput(iso: string): string {
     .slice(0, 16);
 }
 /** The instant a one-time trigger runs at: the stored one while the field is unchanged. */
-function onceInstant(form: TriggerFormState): string {
+export function onceInstant(form: TriggerFormState): string {
   const text = form.scheduledAtIso.trim();
   if (
     form.storedScheduledAtIso &&
