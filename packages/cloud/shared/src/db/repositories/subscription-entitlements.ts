@@ -5,6 +5,7 @@
  */
 import { ElizaError } from "@elizaos/core";
 import { and, eq, isNull } from "drizzle-orm";
+import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 import {
   FREE_RESOURCE_CEILINGS,
   resolveSubscriptionPlanDefinition,
@@ -183,6 +184,8 @@ export class SubscriptionEntitlementsRepository {
     tx: DbTransaction,
     input: RebuildSubscriptionEntitlementInput,
   ): Promise<RebuildSubscriptionEntitlementResult> {
+    await ensureInferencePolicyMutation(tx, input.organizationId);
+
     const [organization] = await tx
       .select({ id: organizations.id })
       .from(organizations)

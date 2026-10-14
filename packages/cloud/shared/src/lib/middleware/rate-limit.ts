@@ -502,6 +502,12 @@ export async function enforceOrgRateLimit(
     apiKeyId?: string | null;
     /** Authenticated user; with the organization and plan it keys the plan buckets. */
     userId?: string | null;
+    fundedBudget?: {
+      policy: import("../services/inference-funded-budget-admission").InferenceBudgetPolicy;
+      credential: import("../services/inference-credential-revocation").InferenceCredentialCheck;
+      requestId: string;
+      onReceipt(receipt: string): void;
+    };
   } = {},
 ): Promise<Response | null> {
   if (endpointType === "completions") {
@@ -514,6 +520,39 @@ export async function enforceOrgRateLimit(
     if (planLimited) return planLimited;
   }
   try {
+    if (options.fundedBudget) {
+      const { inferenceBudgetGateRequest, isFundedBudgetAdmissionEnabled } = await import(
+        "../services/inference-funded-budget-admission"
+      );
+      const proof = options.fundedBudget;
+      if (!isFundedBudgetAdmissionEnabled() || proof.policy.organizationId !== organizationId)
+        return rateLimitUnavailableResponse();
+      try {
+        const result = await inferenceBudgetGateRequest<{ rateReceipt?: string }>(
+          organizationId,
+          "/budget/rate",
+          {
+            requestId: proof.requestId,
+            policyEpoch: proof.policy.epoch,
+            policyGeneration: proof.policy.policyGeneration,
+            credential: proof.credential,
+            endpointType,
+            windowMs: 60_000,
+          },
+        );
+        if (typeof result.rateReceipt !== "string") return rateLimitUnavailableResponse();
+        proof.onReceipt(result.rateReceipt);
+        return null;
+      } catch (error) {
+        const { RateLimitError } = await import("../api/errors");
+        if (error instanceof RateLimitError)
+          return Response.json(
+            { error: "Rate limit exceeded" },
+            { status: 429, headers: { "Retry-After": "60" } },
+          );
+        throw error;
+      }
+    }
     const admitOrganizationPolicy = options.cacheOnly
       ? withOrganizationPolicyReadAdmission
       : withOrganizationPolicyAdmission;
@@ -537,6 +576,60 @@ export async function enforceOrgRateLimit(
         // The key authenticated this request but is gone from the primary
         // (revoked or deleted mid-flight): refuse rather than drop its cap.
         if (apiKeyCap === "missing") return rateLimitUnavailableResponse();
+        const { readInferenceBudgetPolicy, inferenceBudgetGateRequest } = await import(
+          "../services/inference-funded-budget-admission"
+        );
+        const budgetPolicy = await readInferenceBudgetPolicy(tx, organizationId, policy);
+        if (budgetPolicy) {
+          // Compatibility callers use the same counters as delegated callers.
+          // Their current primary read supplies the key cap; this signature
+          // grants only a rate decision, never permission to spend or dispatch.
+          const { signBudgetEffect } = await import(
+            "../services/inference-funding-budget-protocol"
+          );
+          const { getCloudAwareEnv } = await import("../runtime/cloud-bindings");
+          const signingSecret = getCloudAwareEnv().INFERENCE_FUNDING_BUDGET_SEAL_SECRET;
+          if (!signingSecret) return rateLimitUnavailableResponse();
+          const requestId = crypto.randomUUID();
+          const windowStartedAt = Math.floor(Date.now() / 60_000) * 60_000;
+          const keyId = apiKeyCap?.id ?? null;
+          const keyLimit = apiKeyCap?.maxRequests ?? null;
+          const signature = await signBudgetEffect(
+            JSON.stringify([
+              "inference-budget-primary-rate-v1",
+              organizationId,
+              requestId,
+              budgetPolicy.epoch,
+              budgetPolicy.policyGeneration,
+              endpointType,
+              keyId,
+              keyLimit,
+              windowStartedAt,
+            ]),
+            signingSecret,
+          );
+          try {
+            await inferenceBudgetGateRequest(organizationId, "/budget/authoritative-rate", {
+              requestId,
+              policyEpoch: budgetPolicy.epoch,
+              policyGeneration: budgetPolicy.policyGeneration,
+              endpointType,
+              keyId,
+              keyLimit,
+              windowStartedAt,
+              signature,
+            });
+            return null;
+          } catch (error) {
+            const { RateLimitError } = await import("../api/errors");
+            if (error instanceof RateLimitError)
+              return Response.json(
+                { error: "Rate limit exceeded" },
+                { status: 429, headers: { "Retry-After": "60" } },
+              );
+            throw error;
+          }
+        }
         if (options.cacheOnly) {
           // A supplied observation must still agree with current authority.
           // With no observation, the locked primary read already owns the

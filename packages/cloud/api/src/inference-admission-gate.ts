@@ -658,6 +658,54 @@ export class InferenceAdmissionGate {
   // This queue orders calls within a rate-only identity. Cross-lane isolation
   // comes from the distinct Durable Object identity selected by the caller.
   private rateLimitOperationQueue: Promise<void> = Promise.resolve();
+  private fundedBudgetController?: import("./inference-funded-budget-controller").InferenceFundedBudgetController;
+
+  private async fundedBudgets() {
+    if (!this.fundedBudgetController) {
+      const { InferenceFundedBudgetController } = await import(
+        "./inference-funded-budget-controller"
+      );
+      this.fundedBudgetController = new InferenceFundedBudgetController(
+        this.state.storage,
+        this.env as Record<string, unknown>,
+        {
+          withAuthority: (operation) => this.serializeRevocation(operation),
+          checkCredential: async (value) => {
+            if (!value || typeof value !== "object")
+              return jsonError("Invalid budget credential", 400);
+            const credential = value as CredentialCheckRequest;
+            return this.credentialDenial(credential);
+          },
+          consumeRate: async (value) => {
+            if (!value || typeof value !== "object")
+              return jsonError("Invalid budget rate policy", 400);
+            const rate = value as RateLimitRequest & {
+              credential?: { credentialId?: string };
+              credentialLimit?: number;
+              requestId?: string;
+            };
+            return this.serializeRateLimit(() =>
+              this.rateLimit({
+                ...rate,
+                operationId: rate.requestId,
+                operationDeadlineAt:
+                  rate.operationDeadlineAt ?? Date.now() + 3_000,
+                ...(rate.credential?.credentialId && rate.credentialLimit
+                  ? {
+                      apiKey: {
+                        id: rate.credential.credentialId,
+                        maxRequests: rate.credentialLimit,
+                      },
+                    }
+                  : {}),
+              }),
+            );
+          },
+        },
+      );
+    }
+    return this.fundedBudgetController;
+  }
 
   constructor(state: DurableObjectState, env: AppEnv["Bindings"]) {
     this.state = state;
@@ -798,10 +846,18 @@ export class InferenceAdmissionGate {
           leaseExpiryIndex(entry.requestId, entry.lease),
         );
       }
+      const existingAlarm =
+        this.env.INFERENCE_FUNDED_BUDGET_ADMISSION === "true"
+          ? await transaction.getAlarm()
+          : null;
       if (scheduledAlarm === null) {
-        await transaction.deleteAlarm();
+        if (existingAlarm === null) await transaction.deleteAlarm();
       } else {
-        await transaction.setAlarm(scheduledAlarm);
+        await transaction.setAlarm(
+          existingAlarm === null
+            ? scheduledAlarm
+            : Math.min(existingAlarm, scheduledAlarm),
+        );
       }
     });
     this.ledger = snapshot;
@@ -1782,6 +1838,11 @@ export class InferenceAdmissionGate {
     }
     if (!body) return jsonError("Invalid JSON body", 400);
     const path = new URL(request.url).pathname;
+    if (path.startsWith("/budget/") || path.startsWith("/policy-mutation/")) {
+      if (this.env.INFERENCE_FUNDED_BUDGET_ADMISSION !== "true")
+        return jsonError("Funded inference admission is not enabled", 503);
+      return (await this.fundedBudgets()).handle(path, body);
+    }
     if (path === "/lease") {
       return await this.serialize(() => this.lease(body as LeaseRequest));
     }
@@ -2097,6 +2158,8 @@ export class InferenceAdmissionGate {
   }
 
   async alarm(): Promise<void> {
+    if (this.env.INFERENCE_FUNDED_BUDGET_ADMISSION === "true")
+      await (await this.fundedBudgets()).alarm();
     const expired = await this.serialize(() => this.claimExpiredLeases());
     if (expired.length === 0) return;
     const results = await Promise.allSettled(

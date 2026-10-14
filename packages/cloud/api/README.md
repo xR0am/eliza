@@ -9,6 +9,20 @@ local bindings are derived from root .env/.env.local. Add routes in the file-bas
 tree and run the package codegen script. The build script checks types; typecheck also
 validates router and Worker bundling contracts.
 
+Delegated inference budgets are off by default. Apply shared migrations 0544–0545
+before setting `INFERENCE_FUNDED_BUDGET_ADMISSION=true`. Keep strong revocation
+enabled and configure the same `INFERENCE_FUNDING_BUDGET_SEAL_SECRET` on the
+Worker and accounting hosts. Enroll an organization through the internal
+`withInferencePolicyMutation({organizationIds, enable: true}, ...)` transaction.
+All policy writers must use the managed mutation service; the database rejects
+an unfenced change for an enrolled organization.
+
+Bounded, direct Cerebras chat requests use the delegated path. The refill amount
+is a target, not a request limit: a larger request can claim the full available
+balance. Other operations retain primary admission and can reclaim idle funds.
+Funds backing active requests remain reserved. Drain and reconcile all grants,
+then use `disableInferenceBudgetAdmission` before turning off the mode.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
