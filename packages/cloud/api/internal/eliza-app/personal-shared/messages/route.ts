@@ -1195,7 +1195,7 @@ app.post("/", async (c) => {
       }
       const delivered = await coordinateNetworkDelivery(
         {
-          project: parsed.data.project,
+          project: canonicalNetworkIngress ? "eliza-app" : "network",
           connectorAccountId: parsed.data.connectorAccountId,
           ...(canonicalNetworkIngress
             ? admitted.app

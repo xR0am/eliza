@@ -89,16 +89,9 @@ test("Network enrichment preserves selected rooms across the four Personal HTTP 
           name: "room-route-external-boundaries",
           setup(builder) {
             builder.onResolve({ filter: /^@elizaos\/core$/ }, () => ({
-              path: "core",
-              namespace: "room-route",
+              path: fileURLToPath(import.meta.resolve("@elizaos/core")),
+              external: true,
             }));
-            builder.onLoad(
-              { filter: /^core$/, namespace: "room-route" },
-              () => ({
-                loader: "ts",
-                contents: `export class ElizaError extends Error {} export class MediaFetchError extends Error {} export function readResponseWithLimit() { throw new Error("unexpected provider read"); } export const ChannelType = { DM: "DM" }; export const MESSAGE_SOURCE_CLIENT_CHAT = "client_chat";`,
-              }),
-            );
             builder.onResolve(
               { filter: /^@\/(?:db|lib|types)\// },
               ({ path }) => ({
@@ -644,4 +637,4 @@ test("Network enrichment preserves selected rooms across the four Personal HTTP 
     Reflect.deleteProperty(globalThis, "__roomRouteFixture");
     await rm(directory, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
