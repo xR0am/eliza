@@ -314,7 +314,7 @@ export function createDesktopBrowserWorkspaceCommandScript(
     }
     return null;
   };
-  const findAllByText = (wanted) => {
+  const findAllByText = (wanted, exact = false) => {
     const needle = normalize(wanted).toLowerCase();
     if (!needle) return [];
     const elements = Array.from(document.querySelectorAll(
@@ -332,7 +332,7 @@ export function createDesktopBrowserWorkspaceCommandScript(
         .map((value) => normalize(value))
         .filter(Boolean)
         .map((value) => value.toLowerCase());
-      return haystacks.some((value) => value.includes(needle));
+      return haystacks.some((value) => exact ? value === needle : value.includes(needle));
     });
   };
   const findByLabel = (wanted, exact = false) => {
@@ -365,7 +365,7 @@ export function createDesktopBrowserWorkspaceCommandScript(
       const nested = label.querySelector("input, textarea, select, button");
       if (nested) found.push(nested);
     }
-    return found;
+    return [...new Set(found)];
   };
   const findByRole = (role, name, exact = false) => {
     const candidates = Array.from(
@@ -590,14 +590,12 @@ export function createDesktopBrowserWorkspaceCommandScript(
           : [];
       case "testid":
         return targetCommand.text
-          ? [
-              document.querySelector(
-                '[data-testid="' + targetCommand.text + '"]'
-              ),
-            ].filter(Boolean)
+          ? Array.from(document.querySelectorAll("[data-testid]")).filter(
+              (element) => element.getAttribute("data-testid") === targetCommand.text
+            )
           : [];
       case "text":
-        return targetCommand.text ? findAllByText(targetCommand.text) : [];
+        return targetCommand.text ? findAllByText(targetCommand.text, targetCommand.exact) : [];
       case "title":
         return Array.from(document.querySelectorAll("[title]")).filter((element) =>
           textMatches(

@@ -273,7 +273,7 @@ export function findAllBrowserWorkspaceElementsByLabel(
       found.push(nested);
     }
   }
-  return found;
+  return [...new Set(found)];
 }
 
 export function findBrowserWorkspaceElementByLabel(
@@ -501,6 +501,7 @@ export function queryAllBrowserWorkspaceSelector(
 export function findAllBrowserWorkspaceElementsByText(
   document: Document,
   needle: string,
+  exact = false,
 ): Element[] {
   const wanted = normalizeBrowserWorkspaceText(needle).toLowerCase();
   if (!wanted) {
@@ -527,7 +528,9 @@ export function findAllBrowserWorkspaceElementsByText(
       .filter(Boolean)
       .map((value) => value.toLowerCase());
 
-    return haystacks.some((value) => value.includes(wanted));
+    return haystacks.some((value) =>
+      exact ? value === wanted : value.includes(wanted),
+    );
   });
 }
 
@@ -540,7 +543,6 @@ export function findBrowserWorkspaceElementByText(
 
 export function resolveBrowserWorkspaceFindElement(
   document: Document,
-
   command: BrowserWorkspaceCommand,
 ): Element | null {
   switch (command.findBy) {
@@ -704,17 +706,19 @@ export function resolveBrowserWorkspaceFindElements(
             command.exact,
           )
         : [];
-    case "testid": {
-      const element = command.text?.trim()
-        ? document.querySelector(
-            `[data-testid=${buildBrowserWorkspaceCssStringLiteral(command.text)}]`,
+    case "testid":
+      return command.text?.trim()
+        ? Array.from(document.querySelectorAll("[data-testid]")).filter(
+            (element) => element.getAttribute("data-testid") === command.text,
           )
-        : null;
-      return element ? [element] : [];
-    }
+        : [];
     case "text":
       return command.text?.trim()
-        ? findAllBrowserWorkspaceElementsByText(document, command.text)
+        ? findAllBrowserWorkspaceElementsByText(
+            document,
+            command.text,
+            command.exact,
+          )
         : [];
     case "title":
       return Array.from(document.querySelectorAll("[title]")).filter(
