@@ -22,12 +22,34 @@ const graphemeSegmenter = new GraphemeSegmenter("en", {
 });
 
 /**
+ * Moves a chunk end back to just after the last newline, else the last
+ * whitespace, in the second half of the chunk, so a word, URL or Markdown link
+ * is not cut in two. The break character stays in the earlier chunk, so
+ * chunks still join exactly.
+ */
+function preferWhitespaceBreak(
+  text: string,
+  offset: number,
+  end: number,
+  maxLength: number,
+): number {
+  const floor = offset + Math.floor(maxLength / 2);
+  const newline = text.lastIndexOf("\n", end - 1);
+  if (newline >= floor) return newline + 1;
+  for (let index = end - 1; index >= floor; index -= 1) {
+    if (/\s/.test(text[index] ?? "")) return index + 1;
+  }
+  return end;
+}
+
+/**
  * Split UTF-16 text into bounded chunks whose concatenation is byte-for-byte
  * exact. A chunk never ends inside a grapheme cluster (a ZWJ emoji sequence,
  * a regional-indicator flag, a combining mark, or a skin-tone modifier), so a
  * cluster is never split across two message parts. When a single cluster
  * alone exceeds the limit, the cut falls back to the surrogate-safe boundary;
- * it is the only case with no clean boundary.
+ * it is the only case with no clean boundary. Within those rules a chunk
+ * ends after a newline, else whitespace, when its second half has one.
  */
 export function splitMessageLosslessly(text: string, maxLength: number): string[] {
   assertValidMessageChunkLength(maxLength);
@@ -48,6 +70,7 @@ export function splitMessageLosslessly(text: string, maxLength: number): string[
       } else if (text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) {
         end -= 1;
       }
+      end = preferWhitespaceBreak(text, offset, end, maxLength);
     }
     chunks.push(text.slice(offset, end));
     offset = end;
