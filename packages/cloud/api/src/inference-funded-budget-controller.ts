@@ -692,7 +692,15 @@ export class InferenceFundedBudgetController {
           ...(rateWindowEndsAt !== undefined ? { rateWindowEndsAt } : {}),
         };
         state.pendingMutationIds.push(mutationId);
-        await this.storage.put({ [POLICY]: state, [key]: mutation });
+        const pending = mutation;
+        // A durable denial must always retain its recovery wakeup, including
+        // a crash before the primary transaction records the permit.
+        await this.storage.transaction(async (tx) => {
+          const alarm = await tx.getAlarm();
+          await tx.put({ [POLICY]: state, [key]: pending });
+          const next = Math.max(Date.now() + 1, pending.validUntil);
+          await tx.setAlarm(alarm === null ? next : Math.min(alarm, next));
+        });
       }
       if (disable !== (mutation.rateWindowEndsAt !== undefined))
         return error("Mutation retry changes its rollback intent", 400);
