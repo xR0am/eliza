@@ -1158,6 +1158,19 @@ test("device approval REST lifecycle survives restart and never duplicates claim
               },
             ],
           },
+          {
+            ...result,
+            status: "submitted",
+            parts: [
+              {
+                index: 0,
+                recipientIndex: 0,
+                partIndex: 0,
+                sent: "failed",
+                delivery: "unknown",
+              },
+            ],
+          },
         ])
           expect((await post({ ...receipt, result: changed })).status).toBe(
             409,
