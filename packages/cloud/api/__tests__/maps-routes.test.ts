@@ -341,6 +341,33 @@ describe("Eliza Cloud Maps routes", () => {
     expect(empty.attribution).toContain("OpenStreetMap");
   });
 
+  test("malformed route values return a typed provider failure, never zero coordinates or a server crash", async () => {
+    for (const path of [
+      null,
+      { ...GRAPHHOPPER_PATH(600), distance: " " },
+      { ...GRAPHHOPPER_PATH(600), instructions: [null] },
+      {
+        ...GRAPHHOPPER_PATH(600),
+        points: {
+          coordinates: [
+            ["", " "],
+            [7.4206, 43.7347],
+          ],
+        },
+      },
+    ]) {
+      const res = await call(
+        "routes",
+        deps({
+          provider: () => provider(() => Response.json({ paths: [path] })),
+        }),
+        { from: CASINO, to: PORT, mode: "drive" },
+      );
+      expect(res.status).toBe(502);
+      expect((await json(res)).code).toBe("provider_invalid_response");
+    }
+  });
+
   test("routes map GraphHopper paths to device routes with alternatives", async () => {
     let routerBody: Record<string, unknown> | undefined;
     const res = await call(

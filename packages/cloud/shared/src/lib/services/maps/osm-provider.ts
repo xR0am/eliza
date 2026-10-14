@@ -191,6 +191,7 @@ function placeExtras(tags: unknown): Pick<MapsPlace, "phone" | "website" | "open
 }
 
 function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "string" && !value.trim()) return undefined;
   const number = typeof value === "string" ? Number(value) : value;
   return typeof number === "number" && Number.isFinite(number) ? number : undefined;
 }
@@ -369,6 +370,7 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     index: number,
     fetchedAt: number,
   ): Promise<MapsRoute> {
+    if (!path || typeof path !== "object") throw invalidResponse();
     const value = path as {
       distance?: unknown;
       time?: unknown;
@@ -393,6 +395,7 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     });
     if (geometry.length < 2 || !Array.isArray(value.instructions)) throw invalidResponse();
     const steps = value.instructions.map((entry, stepIndex) => {
+      if (!entry || typeof entry !== "object") throw invalidResponse();
       const step = entry as {
         text?: unknown;
         distance?: unknown;
