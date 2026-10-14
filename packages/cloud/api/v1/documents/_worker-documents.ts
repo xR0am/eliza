@@ -173,15 +173,15 @@ export async function countDocumentRecords(scope: DocumentScope) {
 }
 
 /**
- * Every document record in the scope, newest first, read in keyset pages so a
- * document added or removed during the scan can neither repeat nor hide
- * another one.
+ * Every document record in the scope, newest first, yielded one keyset page at
+ * a time so a document added or removed during the scan can neither repeat
+ * nor hide another one, and the caller holds one page in memory, not the
+ * whole scope.
  */
-export async function scanDocumentRecords(
+export async function* scanDocumentRecords(
   scope: DocumentScope,
   pageSize = 200,
 ) {
-  const records = [];
   let after: { createdAt: number; id: string } | undefined;
   for (;;) {
     const page = await memoriesRepository.search({
@@ -191,13 +191,12 @@ export async function scanDocumentRecords(
       limit: pageSize,
       after,
     });
-    records.push(...page.map(toDocumentRecord));
+    yield page.map(toDocumentRecord);
     const last = page.at(-1);
     if (page.length < pageSize || !last?.id || last.createdAt === undefined)
-      break;
+      return;
     after = { createdAt: last.createdAt, id: last.id };
   }
-  return records;
 }
 
 export async function createDocumentRecord(
