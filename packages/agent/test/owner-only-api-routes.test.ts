@@ -88,6 +88,7 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
     const guestRequests: [string, RequestInit][] = [
       ["/api/memories/browse?q=private", {}],
       ["/api/context/quick?q=private", {}],
+      ["/api/context/quick/?q=private", {}],
       [`/api/memories/${memoryId}`, { method: "DELETE" }],
       [
         "/api/config",
@@ -130,6 +131,16 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
       body: JSON.stringify({ system: "Set by the owner." }),
     });
     expect(ownerCharacter.status).toBe(200);
+    // The wallet gate passes the owner through to the wallet routes.
+    const ownerSign = await send(
+      OWNER_TOKEN,
+      "/api/wallet/browser-sign-message",
+      {
+        method: "POST",
+        body: JSON.stringify({ message: "hello" }),
+      },
+    );
+    expect(ownerSign.status).not.toBe(403);
   } finally {
     await server?.close();
     await runtime.close();

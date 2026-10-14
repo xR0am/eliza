@@ -1033,7 +1033,7 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     under("/api/memory") ||
     under("/api/memories") ||
     // Served by the memory handler from the same stored notes.
-    pathname === "/api/context/quick" ||
+    under("/api/context/quick") ||
     (write &&
       (pathname.startsWith("/api/wallet/") ||
         under("/api/config") ||
