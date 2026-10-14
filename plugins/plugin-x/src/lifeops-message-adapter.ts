@@ -184,7 +184,13 @@ export class XDmAdapter extends BaseMessageAdapter {
         participantId: undefined,
         limit,
       });
-      refs.push(...memories.map(memoryToMessageRef));
+      // The listing includes the account's own sent DMs; the inbox holds only
+      // messages from others, like the Discord triage adapter.
+      refs.push(
+        ...memories
+          .filter((memory) => memory.entityId !== runtime.agentId)
+          .map(memoryToMessageRef),
+      );
     }
     return refs.filter((ref) => {
       if (
