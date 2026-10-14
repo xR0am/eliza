@@ -10,6 +10,7 @@ import { messageAction } from "../features/advanced-capabilities/actions/message
 
 it("binds stored message mutations to their room and preserves native UUID ids", async () => {
   const f = await createIsolatedTestDatabase("message-mutation-binding");
+  const worldId = "33333333-3333-4333-8333-333333333333" as UUID;
   const roomId = "44444444-4444-4444-8444-444444444444" as UUID;
   const otherRoomId = "66666666-6666-4666-8666-666666666666" as UUID;
   const userId = "55555555-5555-4555-8555-555555555555" as UUID;
@@ -22,7 +23,13 @@ it("binds stored message mutations to their room and preserves native UUID ids",
       names: ["Owner"],
       agentId: f.testAgentId,
     });
+    await f.runtime.ensureWorldExists({
+      id: worldId,
+      name: "Slack",
+      agentId: f.testAgentId,
+    });
     await f.runtime.ensureRoomExists({
+      worldId,
       id: roomId,
       source: "slack",
       type: ChannelType.GROUP,
