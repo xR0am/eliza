@@ -139,8 +139,10 @@ export class AppBackupService {
     // trusted from the client-supplied blob.
     const linkedCharacterIds: string[] = [];
     for (const characterId of backup.app.linked_character_ids ?? []) {
-      const character = await charactersService.getById(characterId);
-      if (character && charactersService.isLinkedCharacterVisible(character, { userId })) {
+      const character = await charactersService.getByIdForAccessCheck(characterId);
+      if (!character) {
+        warnings.push(`Linked character ${characterId} was not restored: it no longer exists.`);
+      } else if (charactersService.isLinkedCharacterVisible(character, { userId })) {
         linkedCharacterIds.push(characterId);
       } else {
         warnings.push(

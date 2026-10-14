@@ -122,7 +122,8 @@ async function updateApp(c: AppContext, verb: "PUT" | "PATCH") {
   // metadata back via GET /apps/:id/characters (cross-tenant disclosure).
   if (validationResult.data.linked_character_ids) {
     for (const characterId of validationResult.data.linked_character_ids) {
-      const character = await charactersService.getById(characterId);
+      const character =
+        await charactersService.getByIdForAccessCheck(characterId);
       if (!character) {
         return c.json(
           { success: false, error: `Character not found: ${characterId}` },

@@ -303,6 +303,15 @@ export class CharactersService {
   }
 
   /**
+   * Character read for an access decision. It skips the in-memory and Redis
+   * caches: a cached record in another isolate can still say public for up
+   * to the cache TTL after the owner made the character private.
+   */
+  async getByIdForAccessCheck(id: string): Promise<UserCharacter | undefined> {
+    return await userCharactersRepository.findById(id);
+  }
+
+  /**
    * Whether a caller may see or link a character: the caller owns it, the
    * caller's organization owns it, or it is public. One rule for the app
    * link writes, the app character read and backup restore, so a character

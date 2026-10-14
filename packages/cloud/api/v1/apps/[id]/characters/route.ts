@@ -83,7 +83,8 @@ async function __hono_GET(
     // public catalog is not disclosed through a link made while it was public.
     const characters = await Promise.all(
       linkedCharacterIds.map(async (characterId) => {
-        const character = await charactersService.getById(characterId);
+        const character =
+          await charactersService.getByIdForAccessCheck(characterId);
         if (
           !character ||
           !charactersService.isLinkedCharacterVisible(character, {
@@ -197,7 +198,8 @@ async function __hono_PUT(
 
     // Verify all characters exist and belong to the user
     for (const characterId of character_ids) {
-      const character = await charactersService.getById(characterId);
+      const character =
+        await charactersService.getByIdForAccessCheck(characterId);
       if (!character) {
         return Response.json(
           { success: false, error: `Character not found: ${characterId}` },

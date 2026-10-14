@@ -19,6 +19,7 @@ const USER_A = "22222222-2222-4222-8222-222222222222";
 const ORG_B = "33333333-3333-4333-8333-333333333333";
 const USER_B = "44444444-4444-4444-8444-444444444444";
 const CHAR = "55555555-5555-4555-8555-555555555555";
+const MISSING_CHAR = "77777777-7777-4777-8777-777777777777";
 
 const userB = {
   id: USER_B,
@@ -174,7 +175,7 @@ test("restore drops a linked character the user may not link and never lists it"
           app: {
             name: "Org B restored app",
             app_url: "https://app-b.example.test",
-            linked_character_ids: [CHAR],
+            linked_character_ids: [CHAR, MISSING_CHAR],
           },
           monetization: {
             enabled: false,
@@ -193,7 +194,8 @@ test("restore drops a linked character the user may not link and never lists it"
   };
   expect(restore.status).toBe(201);
   expect(restored.warnings).toEqual([
-    expect.stringContaining(`Linked character ${CHAR} was not restored`),
+    `Linked character ${CHAR} was not restored: it is not yours and not public.`,
+    `Linked character ${MISSING_CHAR} was not restored: it no longer exists.`,
   ]);
   const appId = restored.app!.id;
   expect((await appsService.getById(appId))?.linked_character_ids).toEqual([]);

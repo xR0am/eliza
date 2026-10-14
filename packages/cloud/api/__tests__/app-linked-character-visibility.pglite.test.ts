@@ -1,8 +1,9 @@
 /**
  * A character linked to an app while it was public is no longer listed by
  * GET /api/v1/apps/:id/characters once its owner (another organization)
- * makes it private. Real route, PGlite database, caller authenticated as the
- * app's organization.
+ * makes it private, even while a character cache still holds the public
+ * record. Real route, PGlite database, caller authenticated as the app's
+ * organization.
  */
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
 import { pushSchema } from "drizzle-kit/api";
@@ -129,17 +130,28 @@ test("a linked character leaves the app list when its owner makes it private", a
   );
   expect(link.status).toBe(200);
 
-  // 2. Owner A withdraws the character from the public catalog.
+  // 2. Owner A withdraws the character from the public catalog. This
+  // isolate's character cache still holds the public record, as the cache of
+  // any isolate that did not serve A's edit does.
+  expect((await charactersService.getById(CHAR))?.is_public).toBe(true);
   await dbWrite
     .update(userCharacters)
     .set({ is_public: false })
     .where(eq(userCharacters.id, CHAR));
-  await charactersService.invalidateCache(CHAR);
+  expect((await charactersService.getById(CHAR))?.is_public).toBe(true);
 
   // B has no legitimate read path to the character any more.
   expect(await charactersService.getByIdForUser(CHAR, USER_B)).toBeNull();
-  const fresh = await charactersService.getById(CHAR);
-  expect(fresh?.is_public).toBe(false);
+  const relink = await app.request(
+    `/api/v1/apps/${APP}/characters`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ character_ids: [CHAR] }),
+    },
+    workerEnv,
+  );
+  expect(relink.status).toBe(403);
 
   // 3. The app list follows the character's current visibility.
   const read = await app.request(
@@ -158,7 +170,6 @@ test("a linked character leaves the app list when its owner makes it private", a
     .update(userCharacters)
     .set({ is_public: true })
     .where(eq(userCharacters.id, CHAR));
-  await charactersService.invalidateCache(CHAR);
   const listed = (await (
     await app.request(
       `/api/v1/apps/${APP}/characters`,
