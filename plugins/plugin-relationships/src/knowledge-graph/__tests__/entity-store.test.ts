@@ -792,6 +792,37 @@ describe("EntityStore", () => {
     );
     expect(result.entity.state.lastObservedAt).toBe(T1);
   });
+  it("matches a saved formatted phone number with the E.164 handle a connector observes", async () => {
+    const { store } = createHarness();
+    await store.upsert({
+      entityId: "ent-coparent",
+      type: "person",
+      preferredName: "Sam",
+      identities: [
+        identity({
+          platform: "imessage",
+          handle: "+1 (415) 555-0134",
+          evidence: ["contact"],
+          confidence: 1,
+        }),
+      ],
+      tags: [],
+      visibility: "owner_agent_admin",
+      state: {},
+    });
+    vi.setSystemTime(new Date(T1));
+    const result = await store.observeIdentity({
+      platform: "imessage",
+      handle: "+14155550134",
+      evidence: ["message"],
+      confidence: AUTO_MERGE_CONFIDENCE_THRESHOLD,
+    });
+    expect(result.conflict).toBeUndefined();
+    expect(result.entity.entityId).toBe("ent-coparent");
+    expect(result.entity.identities).toHaveLength(1);
+    expect(result.entity.state.lastObservedAt).toBe(T1);
+  });
+
   it("matches a saved @handle with an observation that carries no @ prefix", async () => {
     const { store } = createHarness();
     await store.upsert({
