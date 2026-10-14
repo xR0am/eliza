@@ -79,6 +79,9 @@ beforeAll(async () => {
   const { creditTransactions } = await import(`${base}credit-transactions.ts`);
   const { billingSubscriptions, organizationSubscriptionAuthorities } =
     await import(`${base}billing-subscriptions.ts`);
+  const { organizationEntitlements } = await import(
+    `${base}organization-entitlements.ts`
+  );
   const { getTableConfig } = await import("drizzle-orm/pg-core");
   const { sql } = await import("drizzle-orm");
   const schema = {
@@ -104,6 +107,7 @@ beforeAll(async () => {
     ["org_rate_limit_overrides", orgRateLimitOverrides],
     ["organization_config", organizationConfig],
     ["org_storage_quota", orgStorageQuota],
+    ["organization_entitlements", organizationEntitlements],
   ] as const) {
     await dbWrite.execute(
       sql.raw(
