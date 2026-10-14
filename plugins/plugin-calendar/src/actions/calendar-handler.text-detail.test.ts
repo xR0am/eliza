@@ -221,6 +221,20 @@ describe("parseExplicitLocalDate Intl names", () => {
         day: 19,
       });
     }
+    // 下下周 / 다다음 주 name the week after next.
+    for (const [text, day] of [
+      ["下下周一", 26],
+      ["下下星期一", 26],
+      ["다다음 주 월요일", 26],
+      ["下下周五", 30],
+      ["下下周日", 1],
+    ] as const) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual({
+        year: 2026,
+        month: day === 1 ? 11 : 10,
+        day,
+      });
+    }
     for (const text of ["这周五", "这周星期五"]) {
       expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual({
         year: 2026,
