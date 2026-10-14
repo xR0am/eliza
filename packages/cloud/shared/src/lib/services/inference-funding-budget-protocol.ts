@@ -1,3 +1,4 @@
+import { canonicalSettlementJson } from "./settlement-digest";
 /** Shared authenticated effect receipts. All amounts are integer USD micro-units. */
 export interface InferenceFundingBudgetGrant {
   id: string;
@@ -27,24 +28,10 @@ export interface InferenceFundingBudgetSeal {
   consumedMicros: string;
   signature: string;
 }
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .filter((key) => record[key] !== undefined)
-      .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
-      .join(",")}}`;
-  }
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new Error("Budget receipt must contain JSON values");
-  return encoded;
-}
 export function budgetConsumptionPayload(
   input: Omit<InferenceFundingBudgetConsumption, "signature">,
 ): string {
-  return canonical([
+  return canonicalSettlementJson([
     "inference-funding-budget-consume-v1",
     input.organizationId,
     input.requestId,
@@ -54,7 +41,7 @@ export function budgetConsumptionPayload(
   ]);
 }
 export function budgetSealPayload(input: Omit<InferenceFundingBudgetSeal, "signature">): string {
-  return canonical([
+  return canonicalSettlementJson([
     "inference-funding-budget-seal-v1",
     input.organizationId,
     input.grantId,

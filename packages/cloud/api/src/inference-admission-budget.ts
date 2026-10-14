@@ -1,13 +1,12 @@
 /** Durable ownership of already-reserved database funds. No method performs network I/O. */
 import type { InferenceAdmissionRecoveryContext } from "@elizaos/cloud-shared/lib/services/inference-admission-recovery";
-
 import type {
-  InferenceFundingBudgetAllocation,
   InferenceFundingBudgetConsumption,
   InferenceFundingBudgetGrant,
+  InferenceFundingBudgetSeal,
 } from "@elizaos/cloud-shared/lib/services/inference-funding-budget-protocol";
+import { canonicalSettlementJson as identity } from "@elizaos/cloud-shared/lib/services/settlement-digest";
 export type InferenceBudgetGrant = InferenceFundingBudgetGrant;
-export type InferenceBudgetAllocation = InferenceFundingBudgetAllocation;
 export type InferenceBudgetReceipt = Pick<
   InferenceFundingBudgetConsumption,
   "organizationId" | "requestId" | "amountMicros" | "allocations"
@@ -34,7 +33,7 @@ export interface InferenceBudgetRequest {
 }
 
 interface RequestState extends InferenceBudgetRequest {
-  phase: "prepared" | "dispatched" | "completed" | "cancelled";
+  phase: "dispatched" | "completed" | "cancelled";
   reserved: { grantId: string; amountMicros: string }[];
   receipt?: InferenceBudgetReceipt;
   acknowledged?: boolean;
@@ -88,39 +87,16 @@ function micros(value: string, positive = false): bigint {
   return amount;
 }
 
-function identity(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined)
-      throw new InferenceBudgetError(
-        "INVALID_BUDGET_INPUT",
-        "Budget intent must be serializable",
-      );
-    return encoded;
-  }
-  if (Array.isArray(value)) return `[${value.map(identity).join(",")}]`;
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, child]) => `${JSON.stringify(key)}:${identity(child)}`)
-    .join(",")}}`;
-}
-
 const SUMMARY_KEY = "funding-budget:summary:v1";
 const grantKey = (id: string) => `funding-budget:grant:${id}`;
 const requestKey = (id: string) => `funding-budget:request:${id}`;
 const outboxKey = (id: string) => `funding-budget:outbox:${id}`;
 const sealKey = (id: string) => `funding-budget:seal:${id}`;
-export interface InferenceBudgetSeal {
-  organizationId: string;
-  grantId: string;
-  lastSequence: number;
-  consumedMicros: string;
-}
+export type InferenceBudgetSeal = Omit<InferenceFundingBudgetSeal, "signature">;
 
 export type InferenceBudgetReservation =
   | {
       kind: "RESERVED";
-      phase: "prepared" | "dispatched";
       maximumMicros: string;
     }
   | { kind: "COMPLETED"; receipt: InferenceBudgetReceipt }
@@ -144,10 +120,10 @@ export class InferenceAdmissionBudget {
     return value ?? { organizationId: this.organizationId, grantIds: [] };
   }
 
+  /** Reserve funds and acknowledge dispatch in one durable transaction. */
   async reserve(
     input: InferenceBudgetRequest,
     now = Date.now(),
-    dispatch = false,
   ): Promise<InferenceBudgetReservation> {
     const maximum = micros(input.maximumMicros, true);
     if (micros(input.unknownCostMicros) > maximum)
@@ -187,29 +163,9 @@ export class InferenceAdmissionBudget {
           conflict("Request replay changes its immutable intent");
         if (existing.receipt)
           return { kind: "COMPLETED", receipt: existing.receipt };
-        if (dispatch && existing.phase === "prepared") {
-          if (existing.expiresAt <= now)
-            throw new InferenceBudgetError(
-              "BUDGET_NOT_READY",
-              "Request expired before dispatch",
-            );
-          for (const allocation of existing.reserved) {
-            const grant = await tx.get<GrantState>(
-              grantKey(allocation.grantId),
-            );
-            if (!grant || grant.sealed || grant.expiresAt <= now)
-              throw new InferenceBudgetError(
-                "BUDGET_NOT_READY",
-                "Dispatch grant is no longer valid",
-              );
-          }
-          existing.phase = "dispatched";
-          await tx.put(requestKey(input.requestId), existing);
-        }
 
         return {
           kind: "RESERVED",
-          phase: existing.phase as "prepared" | "dispatched",
           maximumMicros: existing.maximumMicros,
         };
       }
@@ -269,22 +225,15 @@ export class InferenceAdmissionBudget {
       }
       updates[requestKey(input.requestId)] = {
         ...input,
-        phase: dispatch ? "dispatched" : "prepared",
+        phase: "dispatched",
         reserved,
       } satisfies RequestState;
       await tx.put(updates);
       return {
         kind: "RESERVED",
-        phase: dispatch ? "dispatched" : "prepared",
         maximumMicros: input.maximumMicros,
       };
     });
-  }
-
-  async reserveAndDispatch(
-    input: InferenceBudgetRequest,
-  ): Promise<InferenceBudgetReservation> {
-    return this.reserve(input, Date.now(), true);
   }
 
   /** A lost mint acknowledgement is retried under this exact pending grant ID. */
@@ -345,44 +294,13 @@ export class InferenceAdmissionBudget {
   }
 
   /** Clear only after the database proves no grant was committed. Unknown outcomes retain ownership. */
-  async rejectRefill(
-    id: string,
-    outcome: "INSUFFICIENT" | "FENCED" | "UNAVAILABLE",
-  ): Promise<void> {
+  async rejectRefill(id: string): Promise<void> {
     await this.storage.transaction(async (tx) => {
       const summary = await this.summary(tx);
       if (summary.pendingRefill?.id !== id)
         conflict("Refill outcome belongs to another operation");
-      if (outcome === "INSUFFICIENT" || outcome === "FENCED") {
-        delete summary.pendingRefill;
-        await tx.put(SUMMARY_KEY, summary);
-      }
-    });
-  }
-
-  async markDispatched(requestId: string, token: string): Promise<void> {
-    await this.storage.transaction(async (tx) => {
-      await this.summary(tx);
-      const request = await tx.get<RequestState>(requestKey(requestId));
-      if (!request || request.preProviderCancellationToken !== token)
-        conflict("Dispatch capability does not match the reservation");
-      if (request.phase === "completed" || request.phase === "cancelled")
-        conflict("A terminal request cannot dispatch");
-      if (request.expiresAt <= Date.now())
-        throw new InferenceBudgetError(
-          "BUDGET_NOT_READY",
-          "Request expired before dispatch",
-        );
-      for (const allocation of request.reserved) {
-        const grant = await tx.get<GrantState>(grantKey(allocation.grantId));
-        if (!grant || grant.sealed || grant.expiresAt <= Date.now())
-          throw new InferenceBudgetError(
-            "BUDGET_NOT_READY",
-            "Dispatch grant is no longer valid",
-          );
-      }
-      request.phase = "dispatched";
-      await tx.put(requestKey(requestId), request);
+      delete summary.pendingRefill;
+      await tx.put(SUMMARY_KEY, summary);
     });
   }
 

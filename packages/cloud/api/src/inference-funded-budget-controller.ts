@@ -49,7 +49,6 @@ interface Admission extends InferenceBudgetRequest {
   organizationId: string;
   credential: Credential;
   endpointType: string;
-  rateAlreadyChecked?: boolean;
   rateReceipt?: string;
 }
 interface RateReceipt {
@@ -160,24 +159,15 @@ export class InferenceFundedBudgetController {
     if (current === null || next < current) await this.storage.setAlarm(next);
   }
   private async policy(organizationId: string): Promise<void> {
-    const ready = await this.callbacks.withAuthority(async () => {
-      const state = await this.state(organizationId);
-      return (
-        state.pendingMutationIds.length === 0 &&
-        state.policy &&
-        state.policy.validUntil > Date.now()
-      );
-    });
-    if (ready) return;
-    const blocked = await this.callbacks.withAuthority(
-      async () =>
-        (await this.state(organizationId)).pendingMutationIds.length > 0,
+    const state = await this.callbacks.withAuthority(() =>
+      this.state(organizationId),
     );
-    if (blocked)
+    if (state.pendingMutationIds.length > 0)
       throw new InferenceBudgetError(
         "BUDGET_NOT_READY",
         "Inference policy mutation is pending",
       );
+    if (state.policy && state.policy.validUntil > Date.now()) return;
     this.policyLoad ??= this.primary(async () => {
       const { loadInferenceBudgetPolicy } = await import(
         "@elizaos/cloud-shared/lib/services/inference-funded-budget-admission"
@@ -255,7 +245,8 @@ export class InferenceFundedBudgetController {
         return error("Rate receipt belongs to another request policy");
       return existing;
     }
-    if (input.rateAlreadyChecked) return error("Rate receipt is missing");
+    if (input.rateReceipt !== undefined)
+      return error("Rate receipt is missing");
     const maximum =
       input.endpointType === "embeddings"
         ? policy.rateLimits.embeddingsRpm
@@ -363,9 +354,9 @@ export class InferenceFundedBudgetController {
         if (policy instanceof Response) return policy;
         const rate = await this.rate(input, policy);
         if (rate instanceof Response) return rate;
-        if (input.rateAlreadyChecked && rate.token !== input.rateReceipt)
+        if (input.rateReceipt !== undefined && rate.token !== input.rateReceipt)
           return error("Rate acknowledgement does not match its receipt");
-        const result = await budget.reserveAndDispatch({
+        const result = await budget.reserve({
           requestId: input.requestId,
           maximumMicros: input.maximumMicros,
           unknownCostMicros: input.unknownCostMicros,
@@ -406,7 +397,7 @@ export class InferenceFundedBudgetController {
       }
       if (minted.status === "fenced") {
         await this.callbacks.withAuthority(() =>
-          budget.rejectRefill(decision.refill.id, "FENCED"),
+          budget.rejectRefill(decision.refill.id),
         );
         return error(
           "Inference budget funding policy changed; retry authorization",
@@ -422,7 +413,7 @@ export class InferenceFundedBudgetController {
           retry.refill.ownerRequestId === input.requestId &&
           retry.shortfallMicros === decision.refill.minimumMicros;
         if ((await budget.readPendingRefill())?.id === decision.refill.id)
-          await budget.rejectRefill(decision.refill.id, "INSUFFICIENT");
+          await budget.rejectRefill(decision.refill.id);
         return owns
           ? {
               availableMicros: (
@@ -882,8 +873,8 @@ export class InferenceFundedBudgetController {
         )
           return error("Invalid budget credential policy proof", 400);
         const input = body as unknown as Admission;
-        await this.policy(organizationId);
         if (path === "/budget/admit") return await this.admit(input);
+        await this.policy(organizationId);
         return this.callbacks.withAuthority(async () => {
           const policy = await this.authorized(input);
           if (policy instanceof Response) return policy;
@@ -931,11 +922,7 @@ export class InferenceFundedBudgetController {
         await this.callbacks.withAuthority(async () => {
           if (minted.status === "granted")
             await budget.installGrant(minted.grant);
-          else
-            await budget.rejectRefill(
-              refill.id,
-              minted.status === "fenced" ? "FENCED" : "INSUFFICIENT",
-            );
+          else await budget.rejectRefill(refill.id);
         });
         await this.closeIdle(state.organizationId, true);
       }
@@ -953,20 +940,11 @@ export class InferenceFundedBudgetController {
           await this.callbacks.withAuthority(async () => {
             const request = await budget.readRequest(snapshot.requestId);
             if (!request || request.receipt) return;
-            if (request.phase === "dispatched") {
-              await this.storage.put(
-                `funded-budget:recovered:${request.requestId}`,
-                true,
-              );
-              await budget.complete(
-                request.requestId,
-                request.unknownCostMicros,
-              );
-            } else
-              await budget.cancel(
-                request.requestId,
-                request.preProviderCancellationToken,
-              );
+            await this.storage.put(
+              `funded-budget:recovered:${request.requestId}`,
+              true,
+            );
+            await budget.complete(request.requestId, request.unknownCostMicros);
           });
         }
       }
