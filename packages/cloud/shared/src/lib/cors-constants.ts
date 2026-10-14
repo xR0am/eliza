@@ -74,6 +74,8 @@ export const CORS_ALLOW_HEADERS = CORS_ALLOW_HEADER_NAMES.join(", ");
 
 /** Browser-visible response headers used by the latency harness and app. */
 export const CORS_EXPOSE_HEADER_NAMES = [
+  // Refusals whose body carries no wait (the Anthropic-style /messages body).
+  "Retry-After",
   "Server-Timing",
   "X-Request-ID",
   "X-Eliza-Trace-Id",
