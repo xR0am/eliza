@@ -233,7 +233,7 @@ export function reconcileDirectTextModelSettings(
       const nestedSecrets = runtime.character.settings?.secrets;
       if (nestedSecrets?.[key] === before[key]) delete nestedSecrets[key];
     }
-    if (after[key] !== undefined) {
+    if (after[key] !== undefined && (ownsPrevious || before[key] === undefined)) {
       runtime.setSetting(key, after[key]);
     } else if (ownsPrevious) {
       runtime.setSetting(key, explicit[key] ?? env[key] ?? null);
