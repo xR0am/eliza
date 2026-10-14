@@ -296,6 +296,7 @@ export function rateLimitExceededPayload(
     code: "rate_limit_exceeded";
     message: string;
     retryAfter?: number;
+    retryAfterSeconds: number;
   };
   headers: Record<string, string>;
 } {
@@ -305,6 +306,8 @@ export function rateLimitExceededPayload(
     code: "rate_limit_exceeded" as const,
     message: `Rate limit exceeded. Maximum ${maxRequests} requests per ${Math.ceil(windowMs / 1000)} seconds.`,
     retryAfter: result.retryAfter,
+    // Native clients read retry timing from the body only (no headers).
+    retryAfterSeconds: result.retryAfter ?? 60,
   };
   const headers: Record<string, string> = {
     "X-RateLimit-Limit": maxRequests.toString(),

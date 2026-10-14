@@ -2581,6 +2581,11 @@ export class CreditsService {
       capHit: false,
     };
 
+    // A hold this run could not settle keeps `settled_at` null, so it would be
+    // selected again by every later batch and, once a full batch of such holds
+    // exists, by every later run; newer holds behind it would never settle.
+    // Each run excludes the holds it has already skipped.
+    const skipped: string[] = [];
     for (let batch = 0; batch < maxBatches; batch++) {
       const rows = await sqlRows<{
         id: string;
@@ -2604,8 +2609,19 @@ export class CreditsService {
                 AND metadata->>'settlement_marker' = ${APP_CHAT_RESERVATION_SETTLEMENT_MARKER}
               )
             )
+            -- Native storage holds are settled by the storage reconciler after a
+            -- strong R2 HEAD; the reconcile claim below refuses them.
+            AND NOT (metadata ? 'storage_operation_id')
             AND settled_at IS NULL
             AND created_at < NOW() - (${String(graceMs)} || ' milliseconds')::interval
+            ${
+              skipped.length
+                ? sql`AND id NOT IN (${sql.join(
+                    skipped.map((id) => sql`${id}`),
+                    sql`, `,
+                  )})`
+                : sql``
+            }
           ORDER BY created_at ASC
           LIMIT ${batchSize}
         `,
@@ -2615,6 +2631,7 @@ export class CreditsService {
       stats.scanned += rows.length;
 
       for (const row of rows) {
+        const settledBefore = stats.settled;
         const reservedAmount = Math.abs(parseNumeric(row.amount, "reservation_amount"));
         const reservationMetadata = parseMetadata(row.metadata);
         const description = (row.description ?? "Credit reservation").replace(
@@ -2680,6 +2697,9 @@ export class CreditsService {
             organizationId: row.organization_id,
             error: error instanceof Error ? error.message : String(error),
           });
+        } finally {
+          // Every row this run did not settle, whichever branch it took.
+          if (stats.settled === settledBefore) skipped.push(row.id);
         }
       }
 

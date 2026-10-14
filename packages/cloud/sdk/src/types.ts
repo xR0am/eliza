@@ -121,11 +121,27 @@ export interface CliLoginPollResponse {
   error?: string;
 }
 
+/** The 200 body of `POST /api/v1/eliza/agents/:agentId/pairing-token`: the agent runs and a token was issued. */
 export interface PairingTokenResponse {
   token: string;
   redirectUrl: string;
   expiresIn: number;
 }
+
+/** The 202 body of the same route: the agent is not running; a resume was requested. */
+export interface PairingTokenStarting {
+  agentId: string;
+  status: string;
+  jobId?: string;
+  alreadyInProgress: boolean;
+  /** How long the route asks the caller to wait before asking again. */
+  retryAfterMs: number;
+  message?: string;
+}
+
+export type PairingTokenResult =
+  | ({ kind: "ready" } & PairingTokenResponse)
+  | ({ kind: "starting" } & PairingTokenStarting);
 
 export interface AuthPairResponse {
   message: string;
@@ -1073,6 +1089,32 @@ export interface CreateAgentRequest {
   autoProvision?: boolean;
 }
 
+/**
+ * Body for `PATCH /api/v1/eliza/agents/:agentId` edits: the route's edit schema
+ * reads only these two fields and drops any other key.
+ */
+export type UpdateAgentRequest = Partial<
+  Pick<CreateAgentRequest, "agentName" | "agentConfig">
+>;
+
+/** Body for `PATCH /api/v1/eliza/agents/:agentId/environment`; a `null` value removes that variable. */
+export interface UpdateAgentEnvironmentRequest {
+  environmentVars: Record<string, string | null>;
+}
+
+export interface UpdateAgentEnvironmentResponse {
+  success: boolean;
+  data?: {
+    agentId: string;
+    updatedKeys: string[];
+    removedKeys: string[];
+    status: string;
+    executionTier: string;
+    needsRestart: boolean;
+  };
+  error?: string;
+}
+
 export interface CreateAgentResponse {
   success: boolean;
   data?: {
@@ -1164,11 +1206,28 @@ export interface PollGatewayRelayResponse {
   };
 }
 
+/** One row of `GET /api/v1/jobs/:jobId`, as the route serializes it. */
 export interface JobStatus {
   id: string;
+  type: string;
   status: "pending" | "in_progress" | "completed" | "failed" | string;
   result?: JsonValue;
-  error?: string;
+  error?: string | null;
+  attempts: number;
+  maxAttempts: number;
+  estimatedCompletionAt: string | null;
+  scheduledFor: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The envelope `GET /api/v1/jobs/:jobId` returns; `polling` tells a client whether to keep asking. */
+export interface JobStatusResponse {
+  success: true;
+  data: JobStatus;
+  polling: { intervalMs?: number; shouldContinue: boolean };
 }
 
 export interface ApiKeySummary {

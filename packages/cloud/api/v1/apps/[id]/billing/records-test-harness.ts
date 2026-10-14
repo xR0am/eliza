@@ -1,4 +1,7 @@
-import { installBillingCommandEvidenceTestColumns } from "@elizaos/cloud-shared/testing";
+import {
+  installBillingCommandEvidenceTestColumns,
+  installSubscriptionGrantTestSchema,
+} from "@elizaos/cloud-shared/testing";
 /** Starts isolated PostgreSQL and signed-session records routes with real billing repositories and controlled Stripe HTTP. */
 
 import { randomUUID } from "node:crypto";
@@ -150,6 +153,7 @@ export async function setupRecordsTest() {
   await installBillingCommandEvidenceTestColumns((statement) =>
     db.query(statement),
   );
+  await installSubscriptionGrantTestSchema((statement) => db.query(statement));
   await db.query(
     "INSERT INTO organizations(id,name,slug,stripe_customer_id) VALUES($1,'Developer','records-developer','cus_infrastructure')",
     [org],

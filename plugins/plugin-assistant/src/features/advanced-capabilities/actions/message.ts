@@ -51,6 +51,7 @@ import {
   runWithActionRoutingContext,
   ServiceType,
   searchCanonicalConversationMemories,
+  selectBestRankedRecallItems,
   stringToUuid,
   toWellFormedUnicode,
 } from "@elizaos/core";
@@ -4586,11 +4587,14 @@ async function handleSearch(
       source,
     });
 
-    const matchingResults = recall.items
-      .map((item) => item.memory)
-      .filter((m) => m.content.text);
-    const results =
-      limit === undefined ? matchingResults : matchingResults.slice(0, limit);
+    const matchingItems = recall.items.filter(
+      (item) => item.memory.content.text,
+    );
+    const results = (
+      limit === undefined
+        ? matchingItems
+        : selectBestRankedRecallItems(matchingItems, limit)
+    ).map((item) => item.memory);
     return opSuccess(
       "search",
       conversationSearchText(query, results.length, recall.availability),

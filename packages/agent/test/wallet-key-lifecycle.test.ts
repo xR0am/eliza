@@ -347,8 +347,8 @@ it.each(["import", "provision"])(
         hostConfig: loadElizaConfig(),
         skipDeferredStartupWork: true,
       });
+      if (!server) throw new Error("API server failed to start");
       const activeServer = server;
-      if (!activeServer) throw new Error("Wallet API server did not start");
       // Load the optional wallet route before opening the concurrency window.
       const warm = await fetch(
         `http://127.0.0.1:${activeServer.port}/api/wallet/config`,

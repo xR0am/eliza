@@ -447,6 +447,51 @@ export function impliedTriggerQuery(
   return /[a-z]{3,}/i.test(query) ? query : undefined;
 }
 
+function normalizeTriggerName(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/^trigger:\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const WORD_CHAR = "[\\p{L}\\p{M}\\p{N}]";
+// These scripts attach particles without a space ("운동을"), so a name inside
+// a query stays a substring match there.
+const PARTICLE_SCRIPT_PATTERN =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+function containsWholePhrase(text: string, phrase: string): boolean {
+  if (!phrase) return false;
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<!${WORD_CHAR})${escaped}(?!${WORD_CHAR})`, "u").test(
+    text,
+  );
+}
+
+/**
+ * 0 = exact name, 1 = whole word/phrase either way, 2 = substring (a name
+ * inside the query only for particle scripts), undefined = no match.
+ */
+function triggerNameMatchTier(
+  name: string,
+  query: string,
+): 0 | 1 | 2 | undefined {
+  if (!name || !query) return undefined;
+  if (name === query) return 0;
+  if (containsWholePhrase(name, query) || containsWholePhrase(query, name)) {
+    return 1;
+  }
+  if (
+    name.includes(query) ||
+    (PARTICLE_SCRIPT_PATTERN.test(name) && query.includes(name))
+  ) {
+    return 2;
+  }
+  return undefined;
+}
+
 async function resolveTriggerRef(
   runtime: IAgentRuntime,
   op: TriggerOp,
@@ -467,18 +512,12 @@ async function resolveTriggerRef(
           ? readString(params.displayName)
           : undefined;
       if (referenceName) {
-        const normalize = (value: string) =>
-          value
-            .toLowerCase()
-            .replace(/^trigger:\s*/, "")
-            .trim();
-        const actual = normalize(loaded.trigger.displayName);
-        const stated = normalize(referenceName);
+        const actual = normalizeTriggerName(loaded.trigger.displayName);
+        const stated = normalizeTriggerName(referenceName);
         if (
           stated &&
           actual &&
-          !actual.includes(stated) &&
-          !stated.includes(actual)
+          triggerNameMatchTier(actual, stated) === undefined
         ) {
           return failed(
             op,
@@ -500,7 +539,7 @@ async function resolveTriggerRef(
     readString(params.instructions) ??
     (rawId && !readUuid(params.taskId) ? rawId : undefined) ??
     impliedTriggerQuery(message);
-  const query = querySource?.toLowerCase().replace(/^trigger:\s*/, "");
+  const query = querySource ? normalizeTriggerName(querySource) : undefined;
 
   const tasks = await runtime.getTasks({
     tags: [...TRIGGER_TASK_TAGS],
@@ -516,18 +555,26 @@ async function resolveTriggerRef(
     : undefined;
   if (byTriggerId) return byTriggerId;
 
-  const matches = query
-    ? all.filter((c) => {
-        const name = c.trigger.displayName
-          .toLowerCase()
-          .replace(/^trigger:\s*/, "");
-        return (
-          name.includes(query) ||
-          query.includes(name) ||
-          c.trigger.instructions.toLowerCase().includes(query)
-        );
-      })
-    : [];
+  // The first tier with any hit wins, so "Standup" is not ambiguous with
+  // "Standup notes" and "Gym" is not hit by "gymnastics".
+  const tiers: Array<Array<{ task: Task; trigger: TriggerConfig }>> = [
+    [],
+    [],
+    [],
+  ];
+  if (query) {
+    for (const c of all) {
+      const name = normalizeTriggerName(c.trigger.displayName);
+      const instructions = normalizeTriggerName(c.trigger.instructions);
+      let tier = triggerNameMatchTier(name, query);
+      if (tier === undefined || tier > 1) {
+        if (containsWholePhrase(instructions, query)) tier = 1;
+        else if (tier === undefined && instructions.includes(query)) tier = 2;
+      }
+      if (tier !== undefined) tiers[tier].push(c);
+    }
+  }
+  const matches = tiers.find((tier) => tier.length > 0) ?? [];
   if (matches.length === 1) return matches[0];
 
   const names = all.map((c) => `"${c.trigger.displayName}"`).join(", ");
