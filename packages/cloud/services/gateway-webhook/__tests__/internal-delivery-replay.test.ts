@@ -410,7 +410,7 @@ test("unhashed legacy Network acceptance stays unknown for direct and receipt-on
   }
 });
 
-test("a receipt hashed before connector and thread binding still replays and never resends", async () => {
+test("a receipt without connector and thread binding stays unknown and never resends", async () => {
   const { readInternalDeliveryReceipt } = await import(
     "../src/internal-delivery"
   );
@@ -460,16 +460,36 @@ test("a receipt hashed before connector and thread binding still replays and nev
     }),
   );
   const replay = await deliverInternalMessage(request(payload), { redis });
-  expect(replay.status).toBe(200);
+  expect(replay.status).toBe(202);
   expect(await replay.json()).toMatchObject({
-    replayed: true,
-    providerMessageIds: ["msg-before-binding"],
+    acceptance: "unknown",
+    retryable: false,
   });
   const receipt = await readInternalDeliveryReceipt(
     request(payload, "/internal/deliver/receipt"),
     { redis },
   );
-  expect(receipt.status).toBe(200);
+  expect(receipt.status).toBe(202);
+  const changedConnector = {
+    ...payload,
+    connectorAccountId: "blooio:+14155558888",
+  };
+  const redirected = await deliverInternalMessage(request(changedConnector), {
+    redis,
+  });
+  expect(redirected.status).toBe(202);
+  expect(await redirected.json()).toMatchObject({
+    acceptance: "unknown",
+    retryable: false,
+  });
+  expect(
+    (
+      await readInternalDeliveryReceipt(
+        request(changedConnector, "/internal/deliver/receipt"),
+        { redis },
+      )
+    ).status,
+  ).toBe(202);
   // A different message under the same key is still a conflict.
   const otherText = { ...payload, text: "Reminder: call dad" };
   expect(

@@ -273,8 +273,8 @@ async function deliveryHash(
 /**
  * Receipts written before connector and thread binding (gateway until
  * 2026-10-12) hashed six slots. They stay valid for DELIVERY_RECEIPT_TTL_SECONDS
- * after the deploy, so a delivery the provider already accepted must replay,
- * not conflict or resend. Remove once every such receipt has expired.
+ * after the deploy, but cannot prove connector or thread binding. Keep their
+ * outcome unknown without resending. Remove after every such receipt expires.
  */
 async function deliveryHashBeforeBinding(
   delivery: InternalWebhookDelivery,
@@ -296,10 +296,7 @@ async function receiptMatches(
   delivery: InternalWebhookDelivery,
 ): Promise<boolean> {
   if (!receipt?.hash) return false;
-  return (
-    receipt.hash === (await deliveryHash(delivery)) ||
-    receipt.hash === (await deliveryHashBeforeBinding(delivery))
-  );
+  return receipt.hash === (await deliveryHash(delivery));
 }
 
 const notClaimed = () =>
@@ -539,6 +536,18 @@ export async function deliverInternalMessage(
   }
   const existing = parseReceipt(existingValue);
   const existingMatches = await receiptMatches(existing, delivery);
+  if (
+    existing?.hash &&
+    !existingMatches &&
+    existing.hash === (await deliveryHashBeforeBinding(delivery))
+  ) {
+    // A legacy receipt cannot prove the requested connector/thread binding.
+    // Keep the outcome unknown and never resend or claim confirmed delivery.
+    return Response.json(
+      { success: false, acceptance: "unknown", retryable: false },
+      { status: 202 },
+    );
+  }
   if (existing?.hash && !existingMatches)
     return Response.json(
       {
