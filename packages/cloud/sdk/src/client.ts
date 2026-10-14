@@ -1644,7 +1644,11 @@ export class ElizaCloudClient {
     );
   }
 
-  /** Replace the agent's environment variables; the agent route itself does not accept them. */
+  /**
+   * Set or remove the named environment variables; a `null` value removes that
+   * variable and variables not named are kept. The agent route itself does not
+   * accept environment variables.
+   */
   updateAgentEnvironment(
     agentId: string,
     request: UpdateAgentEnvironmentRequest,

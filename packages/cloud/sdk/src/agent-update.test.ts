@@ -10,6 +10,7 @@ interface Captured {
 function clientCapturing(
   captured: Captured[],
   body: unknown,
+  status = 200,
 ): ElizaCloudClient {
   return new ElizaCloudClient({
     baseUrl: "http://cloud.test",
@@ -20,7 +21,7 @@ function clientCapturing(
         path: new URL(String(input)).pathname,
         body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
       });
-      return Response.json(body);
+      return Response.json(body, { status });
     }) as unknown as typeof fetch,
   });
 }
@@ -103,4 +104,18 @@ test("updateAgentEnvironment sends null to remove a variable and reports it remo
   });
   expect(response.data?.removedKeys).toEqual(["OPENAI_API_KEY"]);
   expect(response.data?.updatedKeys).toEqual([]);
+});
+
+test("updateAgent throws the route's error body instead of returning it", async () => {
+  const captured: Captured[] = [];
+  const client = clientCapturing(
+    captured,
+    { success: false, error: "Provide agentName and/or agentConfig" },
+    400,
+  );
+
+  await expect(client.updateAgent("agent-1", {})).rejects.toThrow(
+    "Provide agentName and/or agentConfig",
+  );
+  expect(captured).toHaveLength(1);
 });
