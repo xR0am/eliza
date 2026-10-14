@@ -180,22 +180,33 @@ export class XDmAdapter extends BaseMessageAdapter {
       : [undefined];
     const refs: MessageRef[] = [];
     for (const accountId of accountIds) {
+      // The listing includes the account's own sent DMs; the inbox holds only
+      // messages from others, like the Discord triage adapter. Fetch the
+      // service's full window before filtering, so recent replies do not push
+      // older inbound DMs out of the result.
       const memories = await service.fetchDirectMessagesForAccount(accountId, {
         participantId: undefined,
-        limit,
       });
-      refs.push(...memories.map(memoryToMessageRef));
+      const candidates = memories
+        .filter((memory) => memory.entityId !== runtime.agentId)
+        .map(memoryToMessageRef)
+        .filter(
+          (ref) =>
+            sinceMs === undefined ||
+            !Number.isFinite(ref.receivedAtMs) ||
+            ref.receivedAtMs >= sinceMs,
+        );
+      refs.push(...candidates);
     }
-    return refs.filter((ref) => {
-      if (
-        sinceMs !== undefined &&
-        Number.isFinite(ref.receivedAtMs) &&
-        ref.receivedAtMs < sinceMs
-      ) {
-        return false;
-      }
-      return true;
-    });
+    const newest = refs
+      .map((ref, index) => ({ ref, index }))
+      .sort(
+        (left, right) =>
+          right.ref.receivedAtMs - left.ref.receivedAtMs ||
+          left.index - right.index,
+      )
+      .map(({ ref }) => ref);
+    return limit === undefined ? newest : newest.slice(0, limit);
   }
 
   protected async getMessageImpl(
