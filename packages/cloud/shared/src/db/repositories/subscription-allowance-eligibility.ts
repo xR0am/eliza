@@ -177,11 +177,19 @@ export async function observeSubscriptionAllowanceEligibility(
   tx: DbTransaction,
   organizationId: string,
   now: Date,
+  /** Policy the caller already read in this transaction at `now`. */
+  observedPolicy?: OrganizationQuotaPolicy,
 ): Promise<SubscriptionAllowanceEligibility> {
   try {
     return {
       status: "available",
-      period: await readEligibleSubscriptionAllowance(tx, organizationId, now, false),
+      period: await readEligibleSubscriptionAllowance(
+        tx,
+        organizationId,
+        now,
+        false,
+        observedPolicy,
+      ),
     };
   } catch (error) {
     // error-policy:J4 Preserve ledger visibility while new allowance admission is unavailable.

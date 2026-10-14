@@ -1,7 +1,8 @@
 /**
  * Shared handler for the /api/v1/maps routes. Order: authenticate the account,
  * read the configured provider, check the subscription entitlement, ask the
- * admission hook, then call the provider. Location data stays in POST bodies,
+ * admission hook (the plan burst and sustained buckets, in memory), then call
+ * the provider. Location data stays in POST bodies,
  * is passed only to the provider and is never logged.
  */
 import { requireUserOrApiKeyWithOrg } from "@elizaos/cloud-shared/auth";
@@ -23,6 +24,10 @@ import {
   mapsTextSearchRequestSchema,
 } from "@elizaos/cloud-shared/lib/services/maps/contract";
 import { osmMapsProviderFromEnv } from "@elizaos/cloud-shared/lib/services/maps/osm-provider";
+import {
+  consumePlanRequest,
+  readPlanRequestLimitConfig,
+} from "@elizaos/cloud-shared/lib/services/plan-request-limiter";
 import { readOrganizationEntitlementSummary } from "@elizaos/cloud-shared/lib/services/subscription-entitlement-token";
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import type {
@@ -35,8 +40,8 @@ const NO_STORE = { "Cache-Control": "no-store" } as const;
 
 export interface MapsRouteDependencies {
   authenticate(c: AppContext): Promise<{ id: string; organization_id: string }>;
-  /** True when the organization's plan is active or trialing. */
-  entitled(organizationId: string): Promise<boolean>;
+  /** Whether the organization's plan is active or trialing, and the policy that keys its buckets. */
+  entitlement(organizationId: string): Promise<MapsPlanEntitlement>;
   admit: MapsAdmissionHook;
   /** The configured provider, or null while Maps is not provisioned. */
   provider(): MapsProviderAdapter | null;
@@ -64,18 +69,67 @@ function configuredProvider(): MapsProviderAdapter | null {
   return cachedProvider.provider;
 }
 
+export interface MapsPlanEntitlement {
+  entitled: boolean;
+  planKey: string | null;
+  planEffectiveUntil: string | null;
+}
+
+/**
+ * Admission by the plan burst and sustained buckets (same configuration as
+ * inference, separate Maps buckets). Admits everything while
+ * ELIZA_CLOUD_PLAN_RATE_LIMITS is unset.
+ */
+export const admitMapsByPlanBuckets: MapsAdmissionHook = async (request) => {
+  const config = readPlanRequestLimitConfig();
+  if (!config) return admitAllMapsRequests(request);
+  const decision = consumePlanRequest(
+    {
+      service: "maps",
+      organizationId: request.organizationId,
+      userId: request.userId,
+      planKey: request.planKey,
+      planEffectiveUntil: request.planEffectiveUntil,
+    },
+    config,
+  );
+  return decision.allowed
+    ? { allowed: true }
+    : {
+        allowed: false,
+        retryAfterSeconds: Math.max(
+          1,
+          Math.ceil(decision.retryAfterMs / 1_000),
+        ),
+      };
+};
+
 export const defaultMapsRouteDependencies: MapsRouteDependencies = {
   authenticate: requireUserOrApiKeyWithOrg,
-  entitled: async (organizationId) => {
-    const { plan } = await readOrganizationEntitlementSummary(organizationId);
-    return plan.status === "active" || plan.status === "trialing";
+  entitlement: async (organizationId) => {
+    const { plan, rateTier, effectiveUntil } =
+      await readOrganizationEntitlementSummary(organizationId);
+    return {
+      entitled: plan.status === "active" || plan.status === "trialing",
+      planKey: rateTier ?? null,
+      planEffectiveUntil: effectiveUntil?.toISOString() ?? null,
+    };
   },
-  admit: admitAllMapsRequests,
+  admit: admitMapsByPlanBuckets,
   provider: configuredProvider,
 };
 
 function failure(c: AppContext, error: MapsServiceError) {
-  return c.json({ error: error.message, code: error.code }, error.status, {
+  // The retry time is in the body too: native clients read the body only.
+  const body =
+    error.retryAfterSeconds === undefined
+      ? { error: error.message, code: error.code }
+      : {
+          error: error.message,
+          code: error.code,
+          retryAfterSeconds: error.retryAfterSeconds,
+        };
+  return c.json(body, error.status, {
     ...NO_STORE,
     ...(error.retryAfterSeconds !== undefined
       ? { "Retry-After": String(error.retryAfterSeconds) }
@@ -207,9 +261,9 @@ export function createMapsRoute(
           "Eliza Cloud Maps is not configured.",
         ),
       );
-    let entitled: boolean;
+    let entitlement: MapsPlanEntitlement;
     try {
-      entitled = await dependencies.entitled(user.organization_id);
+      entitlement = await dependencies.entitlement(user.organization_id);
     } catch (error) {
       // error-policy:J1 an entitlement read failure refuses the request; it never admits it.
       logger.error("[Maps] Entitlement unavailable", {
@@ -227,7 +281,7 @@ export function createMapsRoute(
         ),
       );
     }
-    if (!entitled)
+    if (!entitlement.entitled)
       return failure(
         c,
         new MapsServiceError(
@@ -239,6 +293,8 @@ export function createMapsRoute(
       organizationId: user.organization_id,
       userId: user.id,
       operation,
+      planKey: entitlement.planKey,
+      planEffectiveUntil: entitlement.planEffectiveUntil,
     });
     if (!decision.allowed)
       return failure(

@@ -1,6 +1,9 @@
 /**
- * Burst and sustained token buckets for assistant inference, keyed by
- * organization, user and plan (AlphaCompute/alphaphone#410).
+ * Burst and sustained token buckets for assistant inference and Eliza Cloud
+ * Maps, keyed by service, organization, user and plan
+ * (AlphaCompute/alphaphone#410). Each service has its own buckets, so Maps
+ * lookups never use up chat requests. Maps uses a plan's optional `maps`
+ * limits, or the plan's own limits when that entry is absent.
  *
  * The decision uses process memory only. It never reads billing, Postgres, KV
  * or a Durable Object, so it adds no network round trip to an assistant turn.
@@ -14,13 +17,26 @@
  *   unset or empty  the limiter is off (no invented number is enforced)
  *   `placeholder`   {@link UNSELECTED_PLAN_REQUEST_LIMITS}, for staging and benchmarks
  *   JSON            `{"selected":bool,"plans":{"default":{...},"<plan_key>":{...}}}`
- *                   where each plan is `{"burst":B,"sustained":B}` and B is
- *                   `{"capacity":int>=1,"refillPerSecond":number>0}`.
+ *                   where each plan is `{"burst":B,"sustained":B,"maps"?:{"burst":B,"sustained":B}}`
+ *                   and B is `{"capacity":int>=1,"refillPerSecond":number>0}`.
  *
  * Plan resolution: the snapshot plan key when it is configured and its policy
  * window has not ended; otherwise `default`. So a cache miss (no snapshot), an
  * expired plan window and a billing outage all decide from memory with the
  * `default` limits.
+ *
+ * Cap semantics: the buckets live in one Worker isolate. A caller whose
+ * requests reach N isolates gets up to N full buckets. A bucket evicted from
+ * the bounded map (MAX_BUCKETS, shared by every service) also starts full
+ * again. So the buckets bound bursts; they are not an exact global cap. The
+ * organization Durable Object window (`completionsRpm`) is the cross-isolate
+ * cap for inference; Maps has only these buckets and the per-credential
+ * route limit. There is no shared bucket backend: KV is
+ * eventually consistent and cannot count, and a Durable Object or Redis
+ * bucket is a network round trip on every turn. The one shared option with no
+ * added round trip is to carry the buckets in the organization gate's existing
+ * `/rate-limit` call; that runs only after the policy read, so a refusal would
+ * no longer be free.
  */
 import { getCloudAwareEnv } from "../runtime/cloud-bindings";
 
@@ -32,9 +48,14 @@ export interface TokenBucketLimit {
   refillPerSecond: number;
 }
 
-export interface PlanRequestLimits {
+export interface ServiceRequestLimits {
   burst: TokenBucketLimit;
   sustained: TokenBucketLimit;
+}
+
+export interface PlanRequestLimits extends ServiceRequestLimits {
+  /** Maps limits for this plan; Maps uses the plan's own limits when absent. */
+  maps?: ServiceRequestLimits;
 }
 
 export interface PlanRequestLimitConfig {
@@ -97,11 +118,18 @@ export function parsePlanRequestLimitConfig(raw: string): PlanRequestLimitConfig
     throw new PlanRequestLimitConfigError("`selected` must be a boolean");
   const plans: Record<string, PlanRequestLimits> = {};
   for (const [key, value] of Object.entries(root.plans as Record<string, unknown>)) {
-    const row = value as { burst?: unknown; sustained?: unknown } | null;
+    const row = value as { burst?: unknown; sustained?: unknown; maps?: unknown } | null;
     plans[key] = {
       burst: bucketLimit(row?.burst, `plans.${key}.burst`),
       sustained: bucketLimit(row?.sustained, `plans.${key}.sustained`),
     };
+    if (row?.maps !== undefined) {
+      const maps = row.maps as { burst?: unknown; sustained?: unknown } | null;
+      plans[key].maps = {
+        burst: bucketLimit(maps?.burst, `plans.${key}.maps.burst`),
+        sustained: bucketLimit(maps?.sustained, `plans.${key}.maps.sustained`),
+      };
+    }
   }
   if (!plans[DEFAULT_PLAN_LIMIT_KEY])
     throw new PlanRequestLimitConfigError(`needs a plans.${DEFAULT_PLAN_LIMIT_KEY} entry`);
@@ -126,7 +154,11 @@ export function readPlanRequestLimitConfig(
   return config;
 }
 
+export type PlanRequestService = "inference" | "maps";
+
 export interface PlanRequestIdentity {
+  /** Defaults to inference. Each service has its own buckets. */
+  service?: PlanRequestService;
   organizationId: string;
   userId?: string | null;
   /** Plan key from the cached admission snapshot; absent on a cache miss. */
@@ -183,8 +215,10 @@ export function consumePlanRequest(
   now: number = Date.now(),
 ): PlanRequestDecision {
   const plan = resolvePlan(identity, config, now);
-  const limits = config.plans[plan];
-  const key = `${identity.organizationId}\0${identity.userId ?? ""}\0${plan}`;
+  const planLimits = config.plans[plan];
+  const limits: ServiceRequestLimits =
+    identity.service === "maps" ? (planLimits.maps ?? planLimits) : planLimits;
+  const key = `${identity.service ?? "inference"}\0${identity.organizationId}\0${identity.userId ?? ""}\0${plan}`;
   let state = buckets.get(key);
   if (state) {
     buckets.delete(key);

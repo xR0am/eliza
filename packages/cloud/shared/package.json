@@ -492,6 +492,7 @@
     "./lib/services/pii-scrub-executor": "./src/lib/services/pii-scrub-executor.ts",
     "./lib/services/pii-scrub-jobs": "./src/lib/services/pii-scrub-jobs.ts",
     "./lib/services/plaid-connections": "./src/lib/services/plaid-connections.ts",
+    "./lib/services/plan-request-limiter": "./src/lib/services/plan-request-limiter.ts",
     "./lib/services/press-releases": "./src/lib/services/press-releases.ts",
     "./lib/services/provisioning-agent-chat": "./src/lib/services/provisioning-agent-chat.ts",
     "./lib/services/provisioning-job-types": "./src/lib/services/provisioning-job-types.ts",
