@@ -69,14 +69,15 @@ export const MAX_STANDALONE_TOKENS = 4;
  * normalized text (punctuation-insensitive); these patterns find the same
  * phrases in the original text so `stripExitPhrase` can slice original offsets.
  */
-const EXIT_PHRASE_PATTERNS: readonly RegExp[] = EXIT_PHRASES.map((phrase) =>
-  new RegExp(
-    phrase
-      .split(" ")
-      .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("[\\s.,!?;:'\"]+"),
-    "i",
-  ),
+const EXIT_PHRASE_PATTERNS: readonly RegExp[] = EXIT_PHRASES.map(
+  (phrase) =>
+    new RegExp(
+      phrase
+        .split(" ")
+        .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("[\\s.,!?;:'\"]+"),
+      "i",
+    ),
 );
 
 function normalize(text: string): string {
