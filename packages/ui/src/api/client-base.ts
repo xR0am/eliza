@@ -31,6 +31,7 @@ import {
   isElizaCloudControlPlaneHostname,
   isElizaDedicatedAgentHostname,
 } from "@elizaos/plugin-elizacloud/cloud-config/domain-contract";
+import { readStoredStewardToken } from "@elizaos/plugin-elizacloud/steward-session-client";
 import { invokeDesktopBridgeRequest } from "../bridge/electrobun-rpc";
 import { getBootConfig, setBootConfig } from "../config/boot-config-store";
 import { NETWORK_STATUS_CHANGE_EVENT } from "../events";
@@ -44,6 +45,7 @@ import {
   saveAgentProfileRegistry,
   upsertAndActivateAgentProfile,
 } from "../state/agent-profiles";
+import { isPlainWebPlatform } from "../state/loopback-steward-development";
 import {
   clearPersistedActiveServer,
   createPersistedActiveServer,
@@ -58,6 +60,7 @@ import {
 import { shellLocalStorage } from "../surface-realm-channel";
 import {
   directCloudSharedAgentIdFromBase,
+  isManagedCloudSharedAgentBase,
   isPersonalSharedElizaId,
 } from "../utils/cloud-agent-base";
 import { mergeStreamingText } from "../utils/streaming-text.js";
@@ -1002,6 +1005,11 @@ export class ElizaClient {
         return activeServer.accessToken?.trim() || null;
       }
       return null;
+    }
+    // Managed web Shared requests use the account's current authority. A
+    // refresh or logout must not leave an older installed bearer in use.
+    if (isPlainWebPlatform() && isManagedCloudSharedAgentBase(this.baseUrl)) {
+      return readStoredStewardToken()?.trim() || null;
     }
     if (this._token) return this._token;
     const bootToken = getBootConfig().apiToken;
