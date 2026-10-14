@@ -467,7 +467,7 @@ function publicIMessageToMemory(
   const entityId = message.isFromMe
     ? runtime.agentId
     : (createUniqueUuid(runtime, handle || message.chatId || message.id) as UUID);
-  const channelType = message.chatId.includes(";+;") ? ChannelType.GROUP : ChannelType.DM;
+  const channelType = isGroupIMessage(message) ? ChannelType.GROUP : ChannelType.DM;
 
   return {
     id: createUniqueUuid(runtime, `imessage-public:${message.id}`) as UUID,
@@ -934,7 +934,7 @@ export class IMessageService extends Service implements IIMessageService {
                   IMESSAGE_LOCAL_ACCOUNT_ID
                 ),
                 label: contacts.get(normalizeContactHandle(handle))?.name ?? message.handle,
-                kind: message.chatId.includes(";+;") ? "group" : contactKind(handle),
+                kind: isGroupIMessage(message) ? "group" : contactKind(handle),
                 score: 0.68,
                 metadata: {
                   accountId: IMESSAGE_LOCAL_ACCOUNT_ID,
@@ -3010,6 +3010,15 @@ function mimeToContentType(mimeType: string | null, uti: string | null): Content
  * Exported so the test suite can exercise it in isolation without
  * spinning up a full runtime + service instance.
  */
+/**
+ * chat.db rows carry the chat kind; an AppleScript row only has its guid,
+ * where a group chat contains ";+;". A chat.db group identifier ("chat…")
+ * never contains it.
+ */
+function isGroupIMessage(message: IMessageMessage): boolean {
+  return message.chatType ? message.chatType === "group" : message.chatId.includes(";+;");
+}
+
 export function chatDbMessageToPublicShape(row: ChatDbMessage): IMessageMessage {
   return {
     id: String(row.rowId),
@@ -3018,6 +3027,7 @@ export function chatDbMessageToPublicShape(row: ChatDbMessage): IMessageMessage 
     chatId: row.chatId,
     timestamp: row.timestamp,
     isFromMe: row.isFromMe,
+    chatType: row.chatType,
     hasAttachments: row.attachments.length > 0,
     ...(row.attachments.length > 0
       ? {
