@@ -56,6 +56,12 @@ describe("stripExitPhrase", () => {
     );
   });
 
+  it("preserves original offsets when lowercasing expands a character", () => {
+    const text = "İstanbul stop, transcription";
+    expect(isTranscriptionExitPhrase(text)).toBe(true);
+    expect(stripExitPhrase(text)).toBe("İstanbul");
+  });
+
   it("returns empty string for empty input", () => {
     expect(stripExitPhrase("")).toBe("");
     expect(stripExitPhrase(null)).toBe("");

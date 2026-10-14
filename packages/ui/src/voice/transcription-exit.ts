@@ -75,6 +75,7 @@ const EXIT_PHRASE_PATTERNS: readonly RegExp[] = EXIT_PHRASES.map((phrase) =>
       .split(" ")
       .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
       .join("[\\s.,!?;:'\"]+"),
+    "i",
   ),
 );
 
@@ -126,10 +127,9 @@ export function isTranscriptionStartPhrase(
 export function stripExitPhrase(text: string | null | undefined): string {
   const raw = text ?? "";
   if (!raw.trim()) return "";
-  const lower = raw.toLowerCase();
   let cut = -1;
   for (const pattern of EXIT_PHRASE_PATTERNS) {
-    const at = lower.search(pattern);
+    const at = raw.search(pattern);
     if (at >= 0 && (cut === -1 || at < cut)) cut = at;
   }
   if (cut >= 0) return raw.slice(0, cut).trim();
