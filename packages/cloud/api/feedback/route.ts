@@ -36,7 +36,7 @@ app.post("/", async (c) => {
   }
   const body = decodedBody.value;
   let name: string;
-  let email: string;
+  let email: string | undefined;
   let comment: string;
   try {
     ({ name, email, comment } = feedbackSchema.parse(body));
