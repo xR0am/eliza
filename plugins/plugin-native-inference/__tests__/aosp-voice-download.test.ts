@@ -11,10 +11,16 @@ import {
 import os from "node:os";
 import path from "node:path";
 import {
+  AOSP_ESPEAK_GROUP,
   AOSP_VOICE_GROUPS,
   AOSP_VOICE_RECORD,
+  aospAsrModelPath,
+  aospEspeakDataParent,
+  aospParadeePaths,
   aospVoiceFiles,
   aospVoiceGroupFiles,
+  aospVoiceGroupNeedsStaging,
+  aospVoiceGroups,
   downloadAospVoiceAsset,
   expectedAospVoicePin,
   readAospVoiceLocalSource,
@@ -27,6 +33,8 @@ import {
 import {
   isPublishedMobileVoiceFile,
   type MobileVoiceFile,
+  mobileAsrBackend,
+  mobileVoiceBundle,
 } from "../src/model-catalog/voice-models.js";
 
 const roots: string[] = [];
@@ -201,8 +209,16 @@ describe("pinned mobile voice bundle", () => {
 
   it("pins every catalog row it would download and keeps ONNX out", () => {
     const files = aospVoiceFiles();
-    expect(files.map((f) => f.role).sort()).toEqual(
-      ["asr-mmproj", "asr-text", "g2p-lexicon", "tts", "vad"].sort(),
+    expect([...new Set(files.map((f) => f.role))].sort()).toEqual(
+      [
+        "asr-mmproj",
+        "asr-parakeet",
+        "asr-text",
+        "g2p-espeak-data",
+        "g2p-lexicon",
+        "tts",
+        "vad",
+      ].sort(),
     );
     for (const file of files) {
       expect(file.path.toLowerCase()).not.toContain(".onnx");
@@ -210,20 +226,28 @@ describe("pinned mobile voice bundle", () => {
       if (file.status === "published") {
         expect(isPublishedMobileVoiceFile(file)).toBe(true);
       } else {
-        // Unpublished rows carry no URL or hash, so nothing can download them.
+        // Unpublished rows carry no URL, so nothing can download them. A row
+        // with a byte-reproducible build pins its sha256 and size.
         expect(file.url).toBeNull();
-        expect(file.sha256).toBeNull();
+        expect(file.revision).toBeNull();
+        expect(isPublishedMobileVoiceFile(file)).toBe(false);
         expect(file.localFrom).toBeTruthy();
+        expect(file.sha256 === null).toBe(file.bytes === null);
       }
     }
-    for (const group of AOSP_VOICE_GROUPS) {
-      expect(aospVoiceGroupFiles(group).length).toBe(group.roles.length);
+    for (const backend of ["parakeet", "qwen3"] as const) {
+      for (const group of aospVoiceGroups(backend)) {
+        const rows = aospVoiceGroupFiles(group);
+        if (group === AOSP_ESPEAK_GROUP) expect(rows.length).toBe(7);
+        else expect(rows.length).toBe(group.roles.length);
+      }
     }
     const asr = files.filter((f) => f.role.startsWith("asr-"));
     expect(asr.map((f) => f.sha256).sort()).toEqual(
       [
         "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
         "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+        "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
       ].sort(),
     );
     const vad = files.find((f) => f.role === "vad");
@@ -231,6 +255,366 @@ describe("pinned mobile voice bundle", () => {
       "d348cd6d87ea53dcd3e6680698c88be326082e27dae899adef653d090bee4995",
     );
     expect(vad?.revision).toBe("1e4c73713e11f7ff42bc2a686cc5b178c8cac14f");
+  });
+
+  it("names the Paradee GGUF and eSpeak NG data the way every loader expects", () => {
+    const repo = path.resolve(import.meta.dir, "../../..");
+    const read = (rel: string) => readFileSync(path.join(repo, rel), "utf8");
+    const files = aospVoiceFiles();
+    const tts = files.find((f) => f.role === "tts");
+    const lexicon = files.find((f) => f.role === "g2p-lexicon");
+    // packages/app/platforms/android/paradee-voice/inputs.json is what the
+    // paradee-voice build stages; the catalog must name the same files.
+    const inputs = JSON.parse(
+      read("packages/app/platforms/android/paradee-voice/inputs.json"),
+    );
+    expect(tts?.path).toBe("tts/paradee/paradee-8m-v1_0.gguf");
+    expect(tts?.path).toBe(inputs.paradee.path);
+    expect(tts?.hfPath).toBe("voice/paradee/paradee-8m-v1_0.gguf");
+    expect({ sha256: tts?.sha256, bytes: tts?.bytes }).toEqual({
+      sha256: inputs.paradee.sha256,
+      bytes: inputs.paradee.bytes,
+    });
+    expect(lexicon?.path).toBe(inputs.lexicon.path);
+    expect({ sha256: lexicon?.sha256, bytes: lexicon?.bytes }).toEqual({
+      sha256: inputs.lexicon.sha256,
+      bytes: inputs.lexicon.bytes,
+    });
+    // ElizaBionicInferenceServer and the host worker load the same name.
+    expect(
+      read(
+        "packages/app/platforms/android/app/src/main/java/ai/elizaos/app/ElizaBionicInferenceServer.java",
+      ),
+    ).toContain(`PARADEE_MODEL = "${path.posix.basename(tts?.path ?? "")}"`);
+    expect(
+      read("plugins/plugin-local-inference/src/host-tts-worker.ts"),
+    ).toContain(`path: "${path.posix.basename(tts?.path ?? "")}"`);
+    const catalog = read(
+      "plugins/plugin-native-inference/src/model-catalog/voice-model-versions.json",
+    );
+    expect(catalog).not.toContain("paradee-8m-v1.0.gguf");
+    expect(aospParadeePaths("/b").gguf).toBe(
+      path.join("/b", "tts", "paradee", "paradee-8m-v1_0.gguf"),
+    );
+
+    // eSpeak NG data: the files inputs.json builds, with the host worker's pins.
+    const espeak = files.filter((f) => f.role === "g2p-espeak-data");
+    expect(espeak.map((f) => f.path).sort()).toEqual(
+      (inputs.espeak.data as string[])
+        .map((rel) => `tts/paradee/espeak-ng-data/${rel}`)
+        .sort(),
+    );
+    const worker = read(
+      "plugins/plugin-local-inference/src/host-tts-worker.ts",
+    );
+    for (const row of espeak) {
+      expect(row.status).toBe("unpublished");
+      expect(row.license).toBe("GPL-3.0-or-later");
+      expect(row.licenseFlags?.length).toBeGreaterThan(0);
+      const rel = row.path.slice("tts/paradee/".length);
+      expect(worker).toMatch(
+        new RegExp(
+          `path: "${rel}",\\s*sha256: "${row.sha256}",\\s*bytes: ${String(row.bytes).replace(/\B(?=(\d{3})+(?!\d))/g, "_")},`,
+        ),
+      );
+    }
+    const groups = aospVoiceGroups();
+    expect(groups.indexOf(AOSP_ESPEAK_GROUP)).toBe(
+      groups.findIndex((g) => g.dir === "tts/paradee") + 1,
+    );
+  });
+
+  it("stages the nested eSpeak NG group only after tts/paradee and reports its directory", async () => {
+    const data = {
+      phontab: Buffer.from("phontab"),
+      "lang/gmw/en": Buffer.from("en voice"),
+    };
+    const rows: MobileVoiceFile[] = Object.entries(data).map(([rel, buf]) => ({
+      ...unpublished(
+        `espeak-${rel}`,
+        "g2p-espeak-data",
+        `tts/paradee/espeak-ng-data/${rel}`,
+      ),
+      sha256: sha(buf),
+      bytes: buf.length,
+      license: "GPL-3.0-or-later",
+    }));
+    const source = bundleRoot();
+    for (const [rel, buf] of Object.entries(data)) {
+      const file = path.join(source, "tts", "paradee", "espeak-ng-data", rel);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, buf);
+    }
+    const local = readAospVoiceLocalSource(source);
+    const root = bundleRoot();
+    // tts/paradee is not staged: nothing is written, so the outer group
+    // cannot look present.
+    const early = await stageAospVoiceGroup(root, AOSP_ESPEAK_GROUP, {
+      files: rows,
+      local,
+    });
+    expect(early.status).toBe("unavailable");
+    expect(existsSync(path.join(root, "tts"))).toBe(false);
+    expect(aospEspeakDataParent(root, rows)).toBeNull();
+
+    mkdirSync(path.join(root, "tts", "paradee"), { recursive: true });
+    const staged = await stageAospVoiceGroup(root, AOSP_ESPEAK_GROUP, {
+      files: rows,
+      local,
+    });
+    expect(staged.status).toBe("staged");
+    expect(
+      readFileSync(
+        path.join(
+          root,
+          "tts",
+          "paradee",
+          "espeak-ng-data",
+          "lang",
+          "gmw",
+          "en",
+        ),
+      ),
+    ).toEqual(data["lang/gmw/en"]);
+    expect(
+      existsSync(path.join(root, "tts", "paradee", "espeak-ng-data.staging")),
+    ).toBe(false);
+    expect(aospEspeakDataParent(root, rows)).toBe(
+      path.join(root, "tts", "paradee"),
+    );
+    expect(
+      (await stageAospVoiceGroup(root, AOSP_ESPEAK_GROUP, { files: rows }))
+        .status,
+    ).toBe("present");
+
+    writeFileSync(
+      path.join(root, "tts", "paradee", "espeak-ng-data", "phontab"),
+      "tampered",
+    );
+    await expect(
+      stageAospVoiceGroup(root, AOSP_ESPEAK_GROUP, { files: rows }),
+    ).rejects.toThrow("does not match its pin");
+
+    const escaping = {
+      ...rows[0],
+      path: "tts/paradee/espeak-ng-data/../paradee.gguf",
+    } as MobileVoiceFile;
+    expect(() => aospVoiceGroupFiles(AOSP_ESPEAK_GROUP, [escaping])).toThrow(
+      "outside group",
+    );
+    const nestedSingle = unpublished("x", "tts", "tts/paradee/sub/x.gguf");
+    expect(() =>
+      aospVoiceGroupFiles({ dir: "tts/paradee", roles: ["tts"] }, [
+        nestedSingle,
+      ]),
+    ).toThrow("outside group");
+  });
+
+  it("restages a group whose recorded file name differs from the catalog", async () => {
+    const gguf = Buffer.from("paradee gguf");
+    const oldRow: MobileVoiceFile = {
+      ...unpublished("paradee", "tts", "tts/paradee/paradee-8m-v1.0.gguf"),
+      sha256: sha(gguf),
+      bytes: gguf.length,
+    };
+    const newRow: MobileVoiceFile = {
+      ...oldRow,
+      path: "tts/paradee/paradee-8m-v1_0.gguf",
+    };
+    const group = { dir: "tts/paradee", roles: ["tts"] } as const;
+    const oldSource = bundleRoot();
+    mkdirSync(path.join(oldSource, "tts", "paradee"), { recursive: true });
+    writeFileSync(
+      path.join(oldSource, "tts", "paradee", "paradee-8m-v1.0.gguf"),
+      gguf,
+    );
+    const root = bundleRoot();
+    await stageAospVoiceGroup(root, group, {
+      files: [oldRow],
+      local: readAospVoiceLocalSource(oldSource),
+    });
+    expect(aospVoiceGroupNeedsStaging(root, group, [oldRow])).toBe(false);
+    expect(aospVoiceGroupNeedsStaging(root, group, [newRow])).toBe(true);
+
+    const newSource = bundleRoot();
+    mkdirSync(path.join(newSource, "tts", "paradee"), { recursive: true });
+    writeFileSync(
+      path.join(newSource, "tts", "paradee", "paradee-8m-v1_0.gguf"),
+      gguf,
+    );
+    const result = await stageAospVoiceGroup(root, group, {
+      files: [newRow],
+      local: readAospVoiceLocalSource(newSource),
+    });
+    expect(result.status).toBe("staged");
+    expect(
+      existsSync(path.join(root, "tts", "paradee", "paradee-8m-v1_0.gguf")),
+    ).toBe(true);
+    expect(
+      existsSync(path.join(root, "tts", "paradee", "paradee-8m-v1.0.gguf")),
+    ).toBe(false);
+  });
+
+  it("makes Phonon-2 the default ASR and keeps Qwen3-ASR selectable", () => {
+    const bundle = mobileVoiceBundle();
+    expect(bundle.version).toBe("1.1.0");
+    const phonon = aospVoiceFiles().find((f) => f.role === "asr-parakeet");
+    expect(phonon).toMatchObject({
+      id: "phonon-2-fv5",
+      asrBackend: "parakeet",
+      path: "asr/phonon-2-fv5.gguf",
+      sha256:
+        "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
+      bytes: 330632256,
+      license: "CC-BY-4.0",
+      status: "unpublished",
+      notice: {
+        path: "NOTICE",
+        sha256:
+          "00624a5043e7ce74029317b024132ca5286116d6fbf3191d226374bc8273789f",
+        bytes: 2741,
+        ggufKey: "parakeet.notice",
+      },
+      source: {
+        repo: "FermionResearch/Phonon-2",
+        revision: "7e153e4054c0a10db6d47d6fff5c062d4c77c154",
+      },
+    });
+    expect(phonon?.attribution).toContain("CC-BY-4.0");
+    expect(phonon?.source.converterCommand).toContain(
+      "convert_phonon2_to_gguf.py --archive phonon-2.bps.tar.zst",
+    );
+    expect(phonon?.source.files?.[0]).toEqual({
+      path: "phonon-2.bps.tar.zst",
+      sha256:
+        "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+      bytes: 163515201,
+    });
+
+    expect(mobileAsrBackend({})).toBe("parakeet");
+    expect(mobileAsrBackend({ ELIZA_ASR_BACKEND: "auto" })).toBe("parakeet");
+    expect(mobileAsrBackend({ ELIZA_ASR_BACKEND: " Qwen3 " })).toBe("qwen3");
+    expect(mobileAsrBackend({ ELIZA_ASR_BACKEND: "mtmd" })).toBe("qwen3");
+    expect(AOSP_VOICE_GROUPS.find((g) => g.dir === "asr")?.roles).toEqual([
+      "asr-parakeet",
+    ]);
+    expect(
+      aospVoiceGroups("qwen3").find((g) => g.dir === "asr")?.roles,
+    ).toEqual(["asr-text", "asr-mmproj"]);
+    for (const file of aospVoiceGroupFiles(
+      aospVoiceGroups("qwen3").find(
+        (g) => g.dir === "asr",
+      ) as (typeof AOSP_VOICE_GROUPS)[number],
+    )) {
+      expect(file.asrBackend).toBe("qwen3");
+    }
+    expect(aospAsrModelPath("/b", "parakeet")).toBe(
+      path.join("/b", "asr", "phonon-2-fv5.gguf"),
+    );
+    expect(aospAsrModelPath("/b", "qwen3")).toBe(
+      path.join("/b", "asr", "Qwen3-ASR-0.6B-Q8_0.gguf"),
+    );
+  });
+
+  it("stages a catalog-pinned unpublished row from a local copy without voice-pins.json", async () => {
+    const gguf = Buffer.from("phonon gguf");
+    const row: MobileVoiceFile = {
+      ...unpublished("phonon", "asr-parakeet", "asr/phonon.gguf"),
+      sha256: sha(gguf),
+      bytes: gguf.length,
+    };
+    const group = { dir: "asr", roles: ["asr-parakeet"] } as const;
+    const source = bundleRoot();
+    mkdirSync(path.join(source, "asr"));
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), gguf);
+    expect(expectedAospVoicePin(row)).toEqual({
+      sha256: sha(gguf),
+      bytes: gguf.length,
+    });
+    expect(() =>
+      expectedAospVoicePin(row, {
+        dir: source,
+        pins: { phonon: { sha256: "0".repeat(64), bytes: gguf.length } },
+      }),
+    ).toThrow("disagrees with the catalog");
+
+    const root = bundleRoot();
+    // No local source: never downloaded.
+    expect(
+      (await stageAospVoiceGroup(root, group, { files: [row] })).status,
+    ).toBe("unavailable");
+    const result = await stageAospVoiceGroup(root, group, {
+      files: [row],
+      local: readAospVoiceLocalSource(source),
+    });
+    expect(result.status).toBe("staged");
+    expect(readFileSync(path.join(root, "asr", "phonon.gguf"))).toEqual(gguf);
+    expect(
+      (await stageAospVoiceGroup(root, group, { files: [row] })).status,
+    ).toBe("present");
+
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), "tampered!!!");
+    const other = bundleRoot();
+    await expect(
+      stageAospVoiceGroup(other, group, {
+        files: [row],
+        local: readAospVoiceLocalSource(source),
+      }),
+    ).rejects.toThrow("does not match its pin");
+    expect(existsSync(path.join(other, "asr"))).toBe(false);
+  });
+
+  it("replaces asr/ when the ASR backend changes, and keeps it until the new rows exist", async () => {
+    const text = Buffer.from("qwen text");
+    const proj = Buffer.from("qwen proj");
+    const gguf = Buffer.from("phonon gguf");
+    const files: MobileVoiceFile[] = [
+      published("q", "asr-text", "asr/text.gguf", text),
+      published("m", "asr-mmproj", "asr/mmproj.gguf", proj),
+      {
+        ...unpublished("phonon", "asr-parakeet", "asr/phonon.gguf"),
+        sha256: sha(gguf),
+        bytes: gguf.length,
+      },
+    ];
+    const qwen = { dir: "asr", roles: ["asr-text", "asr-mmproj"] } as const;
+    const parakeet = { dir: "asr", roles: ["asr-parakeet"] } as const;
+    const root = bundleRoot();
+    await stageAospVoiceGroup(root, qwen, {
+      ...allowedNetwork,
+      files,
+      fetchImpl: (async (url: string) =>
+        new Response(
+          String(url).endsWith("mmproj.gguf") ? proj : text,
+        )) as unknown as typeof fetch,
+    });
+    expect(aospVoiceGroupNeedsStaging(root, qwen, files)).toBe(false);
+    expect(aospVoiceGroupNeedsStaging(root, parakeet, files)).toBe(true);
+
+    // Without a local Phonon-2 copy the Qwen3 group stays and keeps working.
+    expect((await stageAospVoiceGroup(root, parakeet, { files })).status).toBe(
+      "unavailable",
+    );
+    expect(readFileSync(path.join(root, "asr", "text.gguf"))).toEqual(text);
+
+    const source = bundleRoot();
+    mkdirSync(path.join(source, "asr"));
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), gguf);
+    const result = await stageAospVoiceGroup(root, parakeet, {
+      files,
+      local: readAospVoiceLocalSource(source),
+    });
+    expect(result.status).toBe("staged");
+    expect(readFileSync(path.join(root, "asr", "phonon.gguf"))).toEqual(gguf);
+    // The other backend's files are gone, so the library's picker sees one model.
+    expect(existsSync(path.join(root, "asr", "text.gguf"))).toBe(false);
+    expect(existsSync(path.join(root, "asr", "mmproj.gguf"))).toBe(false);
+    expect(existsSync(path.join(root, "asr.staging"))).toBe(false);
+    expect(existsSync(path.join(root, "asr.retired.staging"))).toBe(false);
+    expect(aospVoiceGroupNeedsStaging(root, parakeet, files)).toBe(false);
+    expect((await stageAospVoiceGroup(root, parakeet, { files })).status).toBe(
+      "present",
+    );
   });
 
   it("downloads a published group into place atomically with a record", async () => {

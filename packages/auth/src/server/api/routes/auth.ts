@@ -56,6 +56,7 @@ import {
   type EmailAuth,
   EmailDeliveryError,
   EmailDeliveryNotConfiguredError,
+  type EmailLoginDelivery,
   evaluateSiwePolicy,
   type FarcasterLoginPayload,
   generateApiKey,
@@ -9426,8 +9427,11 @@ auth.post("/passkey/login/verify", async (c) => {
 
 /**
  * POST /email/send
- * Body: { email, tenantId? }
- * Sends a magic link email, returns expiry time.
+ * Body: { email, tenantId?, captchaToken?, delivery? }
+ * Sends a sign-in email, returns expiry time. By default the email carries a
+ * magic link and a six-digit code. `delivery: "code"` sends only the code (no
+ * link token is issued), for native apps that redeem it through
+ * /email/code/verify and must not hand the sign-in to a browser.
  */
 auth.post("/email/send", async (c) => {
   // Tiered limits: the per-IP burst is generous (30/min) because one IP is
@@ -9444,10 +9448,23 @@ auth.post("/email/send", async (c) => {
     email: string;
     tenantId?: string;
     captchaToken?: string;
+    delivery?: unknown;
   }>(c);
   if (!body?.email) {
     return c.json<ApiResponse>({ ok: false, error: "email is required" }, 400);
   }
+  if (
+    body.delivery !== undefined &&
+    body.delivery !== "code" &&
+    body.delivery !== "link_and_code"
+  ) {
+    return c.json<ApiResponse>(
+      { ok: false, error: 'delivery must be "code" or "link_and_code"' },
+      400,
+    );
+  }
+  const delivery: EmailLoginDelivery =
+    body.delivery === "code" ? "code" : "link_and_code";
 
   const email = body.email.toLowerCase().trim();
   const headerTenantId = c.req.header("X-Steward-Tenant")?.trim();
@@ -9507,7 +9524,10 @@ auth.post("/email/send", async (c) => {
   const emailAuth = await getEmailAuthForTenant(resolvedTenantId);
   let sent: Awaited<ReturnType<EmailAuth["sendMagicLink"]>>;
   try {
-    sent = await emailAuth.sendMagicLink(email, { tenantId: resolvedTenantId });
+    sent = await emailAuth.sendMagicLink(email, {
+      tenantId: resolvedTenantId,
+      delivery,
+    });
   } catch (err) {
     // Fail closed: ok:true only after the provider accepted the message. On
     // typed delivery failures the challenge is not redeemable (never issued
@@ -10494,6 +10514,33 @@ auth.post("/guest/upgrade", async (c) => {
 // ── OAuth authorization-code flow ─────────────────────────────────────────────
 
 /**
+ * Provider `prompt` values an /authorize caller may pass through. Native
+ * clients use `select_account` so the provider always shows an account picker:
+ * the user picks the intended Google account, and the final redirect follows a
+ * user gesture, which is what lets Android deliver it to a verified App Link.
+ * Anything not listed (including `none`, which would silently reuse a session)
+ * is rejected rather than dropped, so a caller never believes a prompt was
+ * honoured when it was not.
+ */
+const OAUTH_PROMPT_PASSTHROUGH: Readonly<Record<string, ReadonlySet<string>>> =
+  {
+    google: new Set(["select_account", "consent", "select_account consent"]),
+  };
+
+export function resolveOAuthPromptPassthrough(
+  providerName: string,
+  rawPrompt: string | undefined,
+): { ok: true; prompt?: string } | { ok: false; error: string } {
+  if (rawPrompt === undefined) return { ok: true };
+  const prompt = rawPrompt.trim().replace(/\s+/g, " ");
+  if (!prompt) return { ok: true };
+  if (!OAUTH_PROMPT_PASSTHROUGH[providerName]?.has(prompt)) {
+    return { ok: false, error: "prompt is not supported for this provider" };
+  }
+  return { ok: true, prompt };
+}
+
+/**
  * GET /oauth/:provider/authorize
  * Query: ?redirect_uri=<url>&tenant_id=<id>
  *
@@ -10526,6 +10573,13 @@ auth.get("/oauth/:provider/authorize", async (c) => {
 
   const redirectUri = c.req.query("redirect_uri");
   const appState = c.req.query("state")?.trim() || undefined;
+  const promptResult = resolveOAuthPromptPassthrough(
+    providerName,
+    c.req.query("prompt"),
+  );
+  if (!promptResult.ok) {
+    return c.json<ApiResponse>({ ok: false, error: promptResult.error }, 400);
+  }
   // Accept both `tenant_id` (snake_case, canonical) and `tenantId` (camelCase)
   // so integrators sending either shape land on the right tenant. Whitespace
   // is trimmed defensively for the same reason we trim headers elsewhere.
@@ -10645,6 +10699,11 @@ auth.get("/oauth/:provider/authorize", async (c) => {
   if (oidcNonce) {
     const url = new URL(authUrl);
     url.searchParams.set("nonce", oidcNonce);
+    authUrl = url.toString();
+  }
+  if (promptResult.prompt) {
+    const url = new URL(authUrl);
+    url.searchParams.set("prompt", promptResult.prompt);
     authUrl = url.toString();
   }
 

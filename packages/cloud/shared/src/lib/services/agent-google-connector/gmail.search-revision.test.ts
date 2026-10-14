@@ -52,8 +52,18 @@ function installGmail(pages: Record<string, { ids: string[]; next?: string }>) {
   globalThis.fetch = mock(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(String(input));
     requests.push(url.pathname);
+    if (url.pathname.endsWith("/labels"))
+      return Response.json({
+        labels: [
+          { id: "Label_123", name: "Team / Projects", type: "user" },
+          { id: "CATEGORY_SOCIAL", name: "CATEGORY_SOCIAL", type: "system" },
+        ],
+      });
     if (url.pathname.endsWith("/profile")) return Response.json({ historyId: mailboxHistoryId });
     if (url.pathname.endsWith("/messages")) {
+      if (url.searchParams.has("labelIds"))
+        requests.push(`label:${url.searchParams.get("labelIds")}`);
+      requests.push(`spam:${url.searchParams.get("includeSpamTrash")}`);
       const page = pages[url.searchParams.get("pageToken") ?? ""];
       return Response.json({
         messages: page.ids.map((id) => ({ id, threadId: `thread-${id}` })),
@@ -222,4 +232,86 @@ describe("Gmail reading failure and authority boundaries", () => {
         expect(result.error.status).toBe(409);
       }
     });
+});
+
+describe("Gmail folder catalog", () => {
+  test("owner discovers labels and filters with the exact provider ID", async () => {
+    installGmail({ "": { ids: ["m1"] } });
+    const page = await fetchManagedGoogleGmailSearch({
+      ...SEARCH,
+      labelId: "Label_123",
+      includeLabels: true,
+    });
+    expect(page.labels?.[0]).toEqual({ id: "Label_123", name: "Team / Projects", type: "user" });
+    expect(requests).toContain("label:Label_123");
+    expect(requests.filter((path) => path.endsWith("/labels"))).toHaveLength(1);
+  });
+  test("ordinary pages do not fetch the catalog", async () => {
+    installGmail({ "": { ids: ["m1"] } });
+    const page = await fetchManagedGoogleGmailSearch(SEARCH);
+    expect(page.labels).toBeUndefined();
+    expect(requests.some((path) => path.endsWith("/labels"))).toBe(false);
+  });
+  for (const query of ["in:spam", "in:trash", "in:anywhere"])
+    test(`${query} includes spam and trash`, async () => {
+      installGmail({ "": { ids: [] } });
+      await fetchManagedGoogleGmailSearch({ ...SEARCH, query });
+      expect(requests).toContain("spam:true");
+    });
+  test("categories keep ordinary mailbox exclusions", async () => {
+    installGmail({ "": { ids: [] } });
+    await fetchManagedGoogleGmailSearch({ ...SEARCH, query: "in:inbox category:primary" });
+    expect(requests).toContain("spam:false");
+  });
+  test("malformed labels and agent catalog requests are rejected before provider reads", async () => {
+    await expect(
+      fetchManagedGoogleGmailSearch({ ...SEARCH, labelId: "Label_123&in:anywhere" }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      fetchManagedGoogleGmailSearch({ ...SEARCH, side: "agent", includeLabels: true }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(requests).toHaveLength(0);
+  });
+});
+
+describe("Gmail label payload authority", () => {
+  test("catalog refuses a grant withdrawn during the provider response", async () => {
+    installGmail({ "": { ids: [] } });
+    const provider = globalThis.fetch;
+    globalThis.fetch = mock(async (input, init) => {
+      const response = await provider(input, init);
+      if (String(input).includes("/labels?")) connectionStatus = "disconnected";
+      return response;
+    });
+    await expect(
+      fetchManagedGoogleGmailSearch({ ...SEARCH, includeLabels: true }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+  test("malformed catalog never becomes usable labels", async () => {
+    installGmail({ "": { ids: [] } });
+    const provider = globalThis.fetch;
+    globalThis.fetch = mock(async (input, init) =>
+      String(input).includes("/labels?")
+        ? Response.json({
+            labels: [
+              { id: "Label_123", name: "Projects", type: "user" },
+              { id: "Label_123", name: "Duplicate", type: "user" },
+            ],
+          })
+        : provider(input, init),
+    );
+    await expect(
+      fetchManagedGoogleGmailSearch({ ...SEARCH, includeLabels: true }),
+    ).rejects.toMatchObject({ status: 502 });
+  });
+  test("human read preserves original HTML", async () => {
+    installGmail({ "": { ids: [] } });
+    const pending = readManagedGoogleGmailMessage({ ...SEARCH, messageId: "m1" });
+    await new Promise<void>((resolve) => {
+      fullReadReached = resolve;
+    });
+    finishFullRead?.();
+    const result = await pending;
+    expect(result.bodyHtml).toBe("<p>Owned HTML body</p>");
+  });
 });

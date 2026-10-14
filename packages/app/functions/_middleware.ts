@@ -44,6 +44,10 @@ interface MiddlewareContext {
 const OIDC_PROTOCOL_PATHS = new Set([
   "/.well-known/openid-configuration",
   "/.well-known/oidc/jwks.json",
+  // Android App Link verification fetches this from the link host itself and
+  // does not follow redirects, so it must be proxied here (never the SPA's
+  // index.html, which would fail verification with a 200 text/html body).
+  "/.well-known/assetlinks.json",
 ]);
 function isProtocolPath(pathname: string): boolean {
   return (
@@ -213,6 +217,92 @@ export const swapCspFrameAncestors = (
   }
   return directives.join("; ");
 };
+// ── Native sign-in callback fallback ─────────────────────────────────────────
+//
+// Alpha Phone's in-app sign-in returns from Google through the verified App
+// Link `https://<host>/alphaphone/auth/callback`. Android hands that URL to the
+// app before any page loads. This page renders only when the link was NOT
+// intercepted (verification pending or failed, "open supported links" turned
+// off, a redirect without a user gesture, or the app is not installed).
+//
+// It never forwards the sign-in result. An `intent://` hand-off is matched on
+// package name only, not on the signing certificate, so a sideloaded app that
+// reuses the package name could start its own authorize with its own PKCE
+// verifier and receive the victim's code from this page. PKCE does not help
+// when the attacker started the flow. Success returns therefore rely solely on
+// the verified App Link. This page offers a parameterless hand-off that only
+// brings the app forward so the user can start again, and one hash-pinned
+// inline script removes the fragment (where Steward puts the code) and the
+// query from session history. It renders no SPA, calls no API and sets no
+// cookie.
+export const NATIVE_SIGN_IN_CALLBACK_PATH = "/alphaphone/auth/callback";
+export const NATIVE_SIGN_IN_PACKAGE = "ai.elizaresearch.alphaphone";
+export const NATIVE_CALLBACK_SCRUB_SCRIPT =
+  '(function(){if(location.hash||location.search)history.replaceState(null,"",location.pathname)})();';
+// sha256 of NATIVE_CALLBACK_SCRUB_SCRIPT; the test recomputes it.
+const NATIVE_CALLBACK_SCRIPT_HASH =
+  "sha256-e2Hmsqcl42QmMY6SHTpg9eTdQUJU1/rmfFSpC+kCe4M=";
+const NATIVE_CALLBACK_CSP = `default-src 'none'; script-src '${NATIVE_CALLBACK_SCRIPT_HASH}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+/**
+ * Build the `intent://` URL that brings the app forward. It never carries a
+ * query: no `code`, `state` or `error` from the callback URL is forwarded,
+ * whatever shape the request has.
+ */
+export function buildNativeSignInIntentUrl(url: URL): string {
+  return `intent://${url.host}${NATIVE_SIGN_IN_CALLBACK_PATH}#Intent;scheme=https;package=${NATIVE_SIGN_IN_PACKAGE};end`;
+}
+
+export function nativeSignInCallbackFallback(url: URL): Response {
+  const href = escapeHtml(buildNativeSignInIntentUrl(url));
+  const body = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Return to Alpha Phone</title>
+<style>
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+main { max-width: 420px; text-align: center; line-height: 1.5; }
+a { display: inline-block; margin-top: 16px; padding: 14px 22px; border-radius: 10px; background: #111; color: #fff; font-weight: 600; text-decoration: none; }
+@media (prefers-color-scheme: dark) { a { background: #f4f4f4; color: #111; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Sign-in did not finish</h1>
+<p>Alpha Phone did not open automatically, so this sign-in was not completed. Return to Alpha Phone and start sign-in again.</p>
+<p>If this keeps happening, open Android Settings, then Apps, Alpha Phone, Open by default, and allow it to open its supported links.</p>
+<a id="open" href="${href}">Return to Alpha Phone</a>
+<script>${NATIVE_CALLBACK_SCRUB_SCRIPT}</script>
+</main>
+</body>
+</html>`;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": NATIVE_CALLBACK_CSP,
+      "Content-Type": "text/html; charset=utf-8",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "X-Robots-Tag": "noindex, nofollow",
+    },
+  });
+}
+
 const isEmbedPath = (pathname: string): boolean =>
   pathname === "/embed" || pathname.startsWith("/embed/");
 export const onRequest = async (
@@ -228,6 +318,9 @@ export const onRequest = async (
   }
   if (url.pathname.startsWith(ASSETS_PREFIX)) {
     return serveAsset(context);
+  }
+  if (url.pathname === NATIVE_SIGN_IN_CALLBACK_PATH) {
+    return nativeSignInCallbackFallback(url);
   }
   // A single lookup decides both that this is a crawl asset and what type it
   // must be served as, so the two can never drift apart.

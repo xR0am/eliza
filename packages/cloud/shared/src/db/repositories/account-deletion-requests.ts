@@ -1,3 +1,4 @@
+import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 /** Persists durable deletion receipts and generation-fenced worker state transitions. */
 
 import { createHash } from "node:crypto";
@@ -17,7 +18,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { DbTransaction } from "../client";
-import { dbRead, dbWrite } from "../helpers";
+import { dbRead, dbWrite, writeTransaction } from "../helpers";
 import {
   type AccountDeletionExport,
   accountDeletionExports,
@@ -414,7 +415,9 @@ export class AccountDeletionRequestsRepository {
       return { outcome: "account_unavailable" };
     }
 
-    return await dbWrite.transaction(async (tx) => {
+    return await writeTransaction(async (tx) => {
+      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+
       const [organization] = await tx
         .select()
         .from(organizations)
@@ -640,7 +643,9 @@ export class AccountDeletionRequestsRepository {
       return { outcome: "account_unavailable" };
     }
 
-    return await dbWrite.transaction(async (tx) => {
+    return await writeTransaction(async (tx) => {
+      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+
       const [organization] = await tx
         .select()
         .from(organizations)
@@ -1137,7 +1142,9 @@ export class AccountDeletionRequestsRepository {
       return { outcome: "account_unavailable" };
     }
 
-    return await dbWrite.transaction(async (tx) => {
+    return await writeTransaction(async (tx) => {
+      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+
       const [organization] = await tx
         .select()
         .from(organizations)
@@ -1983,7 +1990,9 @@ export class AccountDeletionRequestsRepository {
       return false;
     }
 
-    return await dbWrite.transaction(async (tx) => {
+    return await writeTransaction(async (tx) => {
+      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+
       const [organization] = await tx
         .select()
         .from(organizations)

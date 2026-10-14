@@ -550,7 +550,17 @@ export async function fetchManagedGoogleGmailSearch(args: {
   query: string;
   maxResults: number;
   pageToken?: string;
-}): Promise<ManagedGoogleGmailSearchResult> {
+  labelId?: string;
+  includeLabels?: boolean;
+}): Promise<
+  ManagedGoogleGmailSearchResult & {
+    labels?: { id: string; name: string; type: "system" | "user" }[];
+  }
+> {
+  if (args.labelId !== undefined && !/^[A-Za-z0-9_-]{1,256}$/.test(args.labelId))
+    fail(400, "Invalid Gmail label ID.");
+  if (args.includeLabels && args.side !== "owner")
+    fail(403, "Gmail label discovery is owner-only.");
   const maxResults = Math.min(Math.max(args.maxResults, 1), 50);
   const query = args.query.trim();
   if (query.length === 0) {
@@ -592,8 +602,10 @@ export async function fetchManagedGoogleGmailSearch(args: {
   if (typeof mailboxHistoryId !== "string" || !/^\d{1,20}$/.test(mailboxHistoryId))
     fail(502, "Invalid Gmail mailbox revision.");
 
-  return {
-    ...(await fetchManagedGoogleGmailMessages({
+  // One catalog read only when the client requests it, overlapping the page read.
+  // No persistent cache of private label names or tokens.
+  const [page, labels] = await Promise.all([
+    fetchManagedGoogleGmailMessages({
       organizationId: args.organizationId,
       userId: args.userId,
       side: args.side,
@@ -603,7 +615,61 @@ export async function fetchManagedGoogleGmailSearch(args: {
       selfEmail,
       query,
       pageToken: args.pageToken,
-    })),
+      labelIds: args.labelId ? [args.labelId] : undefined,
+    }),
+    args.includeLabels
+      ? (async () => {
+          const response = await googleFetch({
+            organizationId: args.organizationId,
+            userId: args.userId,
+            side: args.side,
+            grantId: args.grantId,
+            personalContextRead: args.personalContextRead,
+            url: "https://gmail.googleapis.com/gmail/v1/users/me/labels?fields=labels(id,name,type)",
+            maxResponseBytes: 2 * 1024 * 1024,
+          });
+          const payload = (await response.json()) as { labels?: unknown };
+          if (!payload || !Array.isArray(payload.labels) || payload.labels.length > 10000)
+            fail(502, "Invalid Gmail label catalog.");
+          const seen = new Set<string>();
+          const result = payload.labels.map((value: unknown) => {
+            if (!value || typeof value !== "object") fail(502, "Invalid Gmail label.");
+            const row = value as Record<string, unknown>;
+            if (
+              typeof row.id !== "string" ||
+              !/^[A-Za-z0-9_-]{1,256}$/.test(row.id) ||
+              typeof row.name !== "string" ||
+              !row.name ||
+              row.name.length > 1024 ||
+              (row.type !== "user" && row.type !== "system") ||
+              seen.has(row.id)
+            )
+              fail(502, "Invalid Gmail label.");
+            seen.add(row.id);
+            return { id: row.id, name: row.name, type: row.type as "user" | "system" };
+          });
+          return result;
+        })()
+      : undefined,
+  ]);
+  if (args.includeLabels || args.labelId) {
+    const current = await getManagedGoogleConnectorStatus({
+      organizationId: args.organizationId,
+      userId: args.userId,
+      side: args.side,
+      grantId: args.grantId,
+      personalContextRead: args.personalContextRead,
+    });
+    if (
+      !current.connected ||
+      current.connectionId !== connectorStatus.connectionId ||
+      !hasGmailBodyReadScope(current.grantedScopes)
+    )
+      fail(409, "Google connection changed during label discovery.");
+  }
+  return {
+    ...page,
+    ...(labels ? { labels } : {}),
     mailboxHistoryId,
     syncedAt: new Date().toISOString(),
     supportsSpamTrash: true,

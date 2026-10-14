@@ -5,6 +5,7 @@
  */
 import { ElizaError } from "@elizaos/core";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 import { assertOrganizationSubscription } from "../../lib/services/organization-subscription-source";
 import {
   bindRenewalInvoiceAuthority,
@@ -201,7 +202,10 @@ export interface FinalizeAllowanceInput {
   purchasedCreditRefundTransactionId: string | null;
 }
 
-type AuthorityResult = {
+const LOCKED_FUNDING_TRANSACTION = Symbol("lockedFundingTransaction");
+
+export type AllowanceFundingAuthority = {
+  readonly [LOCKED_FUNDING_TRANSACTION]: DbTransaction;
   reservation: typeof billingFundingReservations.$inferSelect;
   allocations: (typeof billingFundingAllocations.$inferSelect)[];
   period: typeof subscriptionAllowancePeriods.$inferSelect;
@@ -232,6 +236,28 @@ async function findAllowancePeriodId(
 }
 
 export class SubscriptionAllowanceRepository {
+  /** Reuses only rows locked by this repository in the same transaction and scope. */
+  assertLockedAuthority(
+    tx: DbTransaction,
+    organizationId: string,
+    authority: AllowanceFundingAuthority,
+    billingScope?: BillingFundingScope,
+  ): void {
+    const rows = [authority.reservation, authority.period, ...authority.allocations];
+    if (
+      authority[LOCKED_FUNDING_TRANSACTION] !== tx ||
+      rows.some(
+        (row) =>
+          row.organization_id !== organizationId ||
+          row.billing_scope_id !== (billingScope?.scopeId ?? null) ||
+          row.merchant_key !== (billingScope?.merchantKey ?? "platform"),
+      )
+    )
+      conflict("Funding authority does not belong to this transaction and scope", {
+        organizationId,
+      });
+  }
+
   /** Opens one paid renewal bucket under the caller's organization/source/receipt transaction. Mutable consumption never participates in grant replay identity. */
   async grantRenewalInTransaction(
     tx: DbTransaction,
@@ -245,6 +271,8 @@ export class SubscriptionAllowanceRepository {
       databaseNow: Date;
     },
   ) {
+    await ensureInferencePolicyMutation(tx, input.source.organization_id);
+
     const { source } = input;
     assertOrganizationSubscription(source);
     requireDigest(input.requestDigest);
@@ -257,7 +285,9 @@ export class SubscriptionAllowanceRepository {
         )
       : undefined;
     if (input.invoiceDetails && !invoiceAuthority)
-      conflict("Invoice details require original invoice authority", { subscriptionId: source.id });
+      conflict("Invoice details require original invoice authority", {
+        subscriptionId: source.id,
+      });
     const invoiceDetails =
       input.invoiceDetails && invoiceAuthority
         ? bindRenewalInvoiceDetails(input.invoiceDetails, invoiceAuthority)
@@ -395,7 +425,9 @@ export class SubscriptionAllowanceRepository {
           originalAuthority,
         );
         if (settlementDetails && retained.digest !== settlementDetails.digest)
-          conflict("Settlement details differ from original grant", { subscriptionId: source.id });
+          conflict("Settlement details differ from original grant", {
+            subscriptionId: source.id,
+          });
       }
       return { period: existing, replayed: true };
     }
@@ -535,6 +567,8 @@ export class SubscriptionAllowanceRepository {
     retired: boolean;
     forfeitedAmount: CanonicalMoney;
   }> {
+    await ensureInferencePolicyMutation(tx, input.organizationId);
+
     const databaseNow = await lockOrganization(tx, input.organizationId);
     const [scope] = await tx
       .select({
@@ -746,7 +780,10 @@ export class SubscriptionAllowanceRepository {
     return stats;
   }
 
-  async reserve(tx: DbTransaction, input: ReserveAllowanceInput): Promise<AuthorityResult> {
+  async reserve(
+    tx: DbTransaction,
+    input: ReserveAllowanceInput,
+  ): Promise<AllowanceFundingAuthority> {
     requireDigest(input.requestDigest);
     const databaseNow = await lockOrganization(tx, input.organizationId);
     const [existing] = await tx
@@ -781,7 +818,7 @@ export class SubscriptionAllowanceRepository {
         purchasedCreditReservationTransactionId: input.purchasedCreditReservationTransactionId,
         expiresAt: input.expiresAt ?? period.expires_at,
       });
-      return { ...replay, period, replayed: true, databaseNow };
+      return { ...replay, period, replayed: true, databaseNow, [LOCKED_FUNDING_TRANSACTION]: tx };
     }
     const period = await lockPeriod(tx, input.organizationId, input.periodId, input.billingScope);
     if (
@@ -862,11 +899,21 @@ export class SubscriptionAllowanceRepository {
       request_digest: input.requestDigest,
       occurred_at: databaseNow,
     });
-    return { ...funding, period: updatedPeriod, replayed: false, databaseNow };
+    return {
+      ...funding,
+      period: updatedPeriod,
+      replayed: false,
+      databaseNow,
+      [LOCKED_FUNDING_TRANSACTION]: tx,
+    };
   }
 
-  async finalize(tx: DbTransaction, input: FinalizeAllowanceInput): Promise<AuthorityResult> {
-    return this.finish(tx, input, "settlement");
+  async finalize(
+    tx: DbTransaction,
+    input: FinalizeAllowanceInput,
+    authority?: AllowanceFundingAuthority,
+  ): Promise<AllowanceFundingAuthority> {
+    return this.finish(tx, input, "settlement", authority);
   }
 
   async cancel(
@@ -875,7 +922,7 @@ export class SubscriptionAllowanceRepository {
       FinalizeAllowanceInput,
       "actualAllowanceAmount" | "actualPurchasedCreditAmount" | "uncollectedOverageAmount"
     >,
-  ): Promise<AuthorityResult> {
+  ): Promise<AllowanceFundingAuthority> {
     return this.finish(
       tx,
       {
@@ -892,22 +939,38 @@ export class SubscriptionAllowanceRepository {
     tx: DbTransaction,
     input: FinalizeAllowanceInput,
     kind: "settlement" | "cancellation",
-  ): Promise<AuthorityResult> {
+    authority?: AllowanceFundingAuthority,
+  ): Promise<AllowanceFundingAuthority> {
     requireDigest(input.requestDigest);
-    const databaseNow = await lockOrganization(tx, input.organizationId);
-    const periodId = await findAllowancePeriodId(
-      tx,
-      input.organizationId,
-      input.reservationId,
-      input.billingScope,
-    );
-    const period = await lockPeriod(tx, input.organizationId, periodId, input.billingScope);
-    const locked = await subscriptionFundingReservationsRepository.lockById(
-      tx,
-      input.organizationId,
-      input.reservationId,
-      input.billingScope,
-    );
+    if (authority) {
+      this.assertLockedAuthority(tx, input.organizationId, authority, input.billingScope);
+      if (authority.reservation.id !== input.reservationId)
+        conflict("Funding authority belongs to another reservation", {
+          reservationId: input.reservationId,
+        });
+    }
+    const databaseNow = authority
+      ? await readPostLockDatabaseNow(tx)
+      : await lockOrganization(tx, input.organizationId);
+    const periodId =
+      authority?.period.id ??
+      (await findAllowancePeriodId(
+        tx,
+        input.organizationId,
+        input.reservationId,
+        input.billingScope,
+      ));
+    const period =
+      authority?.period ??
+      (await lockPeriod(tx, input.organizationId, periodId, input.billingScope));
+    const locked =
+      authority ??
+      (await subscriptionFundingReservationsRepository.lockById(
+        tx,
+        input.organizationId,
+        input.reservationId,
+        input.billingScope,
+      ));
     const allowanceAllocation = locked.allocations.find((row) => row.source === "allowance");
     if (!allowanceAllocation) throw new Error("Allowance allocation disappeared");
     if (locked.reservation.status !== "reserved") {
@@ -924,7 +987,7 @@ export class SubscriptionAllowanceRepository {
         conflict("Reservation has a different terminal result", {
           reservationId: locked.reservation.id,
         });
-      return { ...locked, period, replayed: true, databaseNow };
+      return { ...locked, period, replayed: true, databaseNow, [LOCKED_FUNDING_TRANSACTION]: tx };
     }
     const reserved = moneyToMicros(
       allowanceAllocation.reserved_amount,
@@ -1030,7 +1093,14 @@ export class SubscriptionAllowanceRepository {
       purchasedCreditRefundTransactionId: input.purchasedCreditRefundTransactionId,
       databaseNow,
     });
-    return { ...terminal, period: updatedPeriod, databaseNow };
+    const result = {
+      ...terminal,
+      period: updatedPeriod,
+      databaseNow,
+      [LOCKED_FUNDING_TRANSACTION]: tx,
+    };
+    if (authority) Object.assign(authority, result);
+    return result;
   }
 }
 

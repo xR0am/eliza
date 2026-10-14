@@ -9,6 +9,20 @@ local bindings are derived from root .env/.env.local. Add routes in the file-bas
 tree and run the package codegen script. The build script checks types; typecheck also
 validates router and Worker bundling contracts.
 
+Delegated inference budgets are off by default. Apply shared migrations 0544–0545
+before setting `INFERENCE_FUNDED_BUDGET_ADMISSION=true`. Keep strong revocation
+enabled and configure the same `INFERENCE_FUNDING_BUDGET_SEAL_SECRET` on the
+Worker and accounting hosts. Enroll an organization through the internal
+`withInferencePolicyMutation({organizationIds, enable: true}, ...)` transaction.
+All policy writers must use the managed mutation service; the database rejects
+an unfenced change for an enrolled organization.
+
+Bounded, direct Cerebras chat requests use the delegated path. The refill amount
+is a target, not a request limit: a larger request can claim the full available
+balance. Other operations retain primary admission and can reclaim idle funds.
+Funds backing active requests remain reserved. Drain and reconcile all grants,
+then use `disableInferenceBudgetAdmission` before turning off the mode.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
@@ -21,7 +35,10 @@ bun run --cwd packages/cloud/api test   # tests
 ## Independent native App Auth clients
 
 `ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` optionally registers additional native clients.
-It is a server-owned JSON array of `{clientId, appId, redirectUri, enabled}` records.
+It is a server-owned JSON array of `{clientId, appId, redirectUri, enabled,
+credentialTtlSeconds?}` records. `credentialTtlSeconds` sets the lifetime of the
+client's `eliza_mobile_` credential: an integer from one day to 90 days, 30 days
+when absent.
 Client IDs, app UUIDs and canonical HTTPS return URLs must be unique, including
 against the existing `ai.elizaos.app` registration. Unknown and disabled clients
 fail closed; malformed additional configuration does not change the legacy client.
@@ -35,6 +52,69 @@ before shipping. The app UUID and server secrets must not be included in the
 native configuration. Retain the existing S256 grant, inactive exchange, durable
 receipt acknowledgment, self-revocation and account recovery contracts. `cloud:user`
 is the existing broad user/organization capability, not a narrower permission claim.
+
+The release workflow publishes the registry from the protected
+`ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` environment secret. The
+`Mobile App Auth Registration Admin` workflow diagnoses or repairs a client's
+`apps` row: choose the client (`ai.elizaresearch.alphaphone` for Alpha Phone);
+additional clients take their app UUID from the same registry entry, which must
+be enabled and bound to that environment's callback.
+
+### Alpha Phone in-app sign-in
+
+Alpha Phone signs in natively: email codes go straight to Steward, and Google
+uses a Custom Tab whose redirect is the verified App Link
+`https://eliza.app/alphaphone/auth/callback` (staging:
+`https://staging.eliza.app/alphaphone/auth/callback`). The device redeems the
+Steward code with its PKCE verifier, then trades the Steward session for an
+`eliza_mobile_` credential through `POST /api/v1/app-auth/connect`
+(`flow: "mobile_pkce"`, Bearer Steward token), `mobile/token` and `mobile/ack`.
+Steward returns a successful code and state in the URL fragment.
+
+Native email sign-in sends `delivery: "code"` to `POST /steward/auth/email/send`.
+That email carries only the six-digit code, using the sign-in code template with
+no link, and no link token is issued for the challenge. The code is redeemed
+through `/steward/auth/email/code/verify`. Without `delivery: "code"` the email
+also carries a magic link to Steward's `/callback/email`, which signs in the
+browser rather than the phone.
+
+Operator configuration per environment:
+
+- `ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` (GitHub Environment secret on `staging` /
+  `production`) registers `ai.elizaresearch.alphaphone` with that environment's
+  callback. Leave `credentialTtlSeconds` unset (30-day default) while the
+  device's `eliza_mobile_` key remains readable by the app renderer. Then run the
+  admin workflow's repair for that client.
+- `ELIZA_ANDROID_ASSET_LINKS_JSON` is a GitHub **variable** (`vars.`), defined on
+  the `staging` / `production` GitHub Environment or at repository level. The
+  release workflow publishes it to the Worker as a Worker secret. It is a JSON
+  array of `{package_name, sha256_cert_fingerprints[], relations?}` served at
+  `/.well-known/assetlinks.json` on the API host and, through the Pages proxy, on
+  `eliza.app` and `staging.eliza.app`. Malformed values publish `[]`. Without
+  the release signer's fingerprint, App Link verification fails on every phone:
+  do not promote native sign-in to production until it is set and
+  `adb shell pm get-app-links ai.elizaresearch.alphaphone` shows the host as
+  `verified`.
+- The Steward tenant `elizacloud` must list the callback in its
+  `allowedRedirectUrls`. `/auth/oauth/:provider/authorize` receives an explicit
+  `tenant_id`, so `STEWARD_OAUTH_ALLOWED_REDIRECTS` does not apply to it.
+- Steward (`packages/auth`) deploys separately from `cloud-cf-deploy`. The
+  Google `prompt=select_account` passthrough and `delivery: "code"` reach a
+  device only after that deployment.
+
+If Android does not intercept the App Link, the Pages route
+`/alphaphone/auth/callback` serves a static, no-store page. It never forwards
+the code, state or error: an `intent://` hand-off is matched on package name
+only, so a sideloaded app with the same package name could otherwise collect a
+code from an authorize it started itself. The page tells the user to return to
+Alpha Phone and start again, offers a parameterless hand-off that only brings
+the app forward, and removes the fragment and query from history. Success
+returns rely solely on the verified App Link.
+
+Remaining Cloud-hosted pages a native sign-in can still reach: this fallback
+page, and Steward's OAuth error page inside the Custom Tab (including
+`mfa_required`; Google accounts with MFA must use email sign-in until native
+MFA is returned through the exchange).
 
 ## Subscription grant codes and entitlements
 
@@ -53,7 +133,13 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   as 0 and I/L as 1.
 - `GET /api/v1/subscription/entitlement` returns `{entitlement}`, a 30-minute
   ES256 JWS (`typ` `eliza-entitlement+jwt`, `aud` `eliza-alpha-phone`). It
-  never expires after the plan window it reports.
+  never expires after the plan window or allowance period it reports. Format
+  `ver: 2` adds `plan_allowance` `{unit: "usd_micros", granted, remaining,
+  periodStart, resetsAt}` when the plan has a current allowance period.
+  Amounts are integer millionths of a US dollar, Cloud's own allowance unit;
+  `remaining` excludes amounts Cloud has reserved but not spent. Tokens without `ver` are v1. A new
+  claim name keeps v1 clients working, because they reject an `allowance`
+  claim whose unit is not requests or tokens.
 - `GET /api/v1/subscription/entitlement-keys` (public, cached 60 s) returns the
   current, previous and next public keys. Both entitlement routes return 503
   until the `ELIZA_ENTITLEMENT_*` secrets are set; redeem needs
@@ -65,6 +151,23 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   `insufficient_quota` with `code: "allowance_exhausted"` and `resetsAt`
   (402, not 429, keeps existing OpenAI-style clients). 429 bodies add
   `retryAfterSeconds`.
+- Plan request buckets: completions pass a burst and a sustained token bucket
+  per organization, user and plan before the policy transaction. The check is
+  in memory (per Worker isolate) and adds no round trip; the Durable Object
+  per-minute window stays the global limit. A refusal is 429 with
+  `Retry-After` and `error.code: "rate_limited"`, `retryAfterSeconds`,
+  `retryAfterMs`, `retryAt`, `plan.id` and `limit`. A cache miss, an ended
+  plan window or a billing outage decides from memory with the `default`
+  limits. Maps has its own buckets, with a plan's optional `maps` limits or
+  else the plan's limits. The buckets are per isolate, so they bound bursts
+  but are not an exact global cap: a caller spread over N isolates can get N
+  full buckets. There is no shared bucket store, because KV cannot count
+  atomically and a Durable Object or Redis bucket adds a round trip to every
+  turn (see `plan-request-limiter.ts`).
+  Set `ELIZA_CLOUD_PLAN_RATE_LIMITS` (see `shared/.env.example`); it is
+  off while unset. The numbers are not selected yet; `placeholder` enables
+  unselected test values only. Latency benchmark:
+  `bun --conditions=eliza-source packages/cloud/scripts/plan-request-limit-latency.ts`.
 
 Scripts (same `DATABASE_URL` and pepper as the target environment; apply
 migration `0542_subscription_grant_codes` first):
@@ -188,3 +291,37 @@ characters and records to 2,048; exceeding a limit fails rather than truncates.
 Cancellation aborts the provider transport. Provider errors after response headers
 error the stream without a completion record; existing synthesis billing semantics
 remain unchanged. This endpoint alone does not provide client streaming playback.
+
+## Maps
+
+`/api/v1/maps/*` is the shared Maps data service for agents. `GET capabilities`
+returns the provider, dataset revision, regions, travel modes and attribution.
+`POST geocode`, `reverse`, `places/search`, `places/details` and `routes` take
+the query or coordinates in the JSON body, so location data is not in URLs or
+logs. Each route needs an API key or session, an active or trialing plan
+(`403 subscription_required`) and the per-credential rate limit. The
+`admit` hook in `src/lib/maps-route.ts` applies the plan request buckets while
+`ELIZA_CLOUD_PLAN_RATE_LIMITS` is set: `429 rate_limited` with `Retry-After`
+and `retryAfterSeconds` in the body. The buckets run after the plan read, so a
+refused Maps request still costs that database read.
+Success bodies name the provider and carry its attribution. Failures are typed:
+`422 unsupported_region | unsupported_mode | no_route`, `503 maps_not_configured
+| provider_unavailable` (with `Retry-After`), `502 provider_invalid_response`.
+Cloud never returns guessed places or routes. Navigation and GPS stay on the device.
+
+The provider is OpenStreetMap data on a self-hosted Nominatim (search, geocode,
+reverse, details) and GraphHopper (routes, profiles `car`, `foot`, `bike`). Ops
+must provision, for each environment:
+
+- `ELIZA_MAPS_GEOCODER_URL`: HTTPS Nominatim 4.3 or later loaded with the region
+  extracts.
+- `ELIZA_MAPS_ROUTER_URL`: HTTPS GraphHopper with the same extracts and the
+  `car`, `foot` and `bike` profiles; optional `ELIZA_MAPS_ROUTER_API_KEY`.
+  Set `ELIZA_MAPS_ROUTE_ALTERNATIVES=false` if the deployment cannot compute
+  alternative routes.
+- `ELIZA_MAPS_COVERAGE_JSON`: the regions both services cover, as
+  `[{"id","name","bounds":[west,south,east,north]}]`.
+- `ELIZA_MAPS_DATASET_REVISION`: the extract date or version that is served.
+
+Ops also own the update schedule (dataset freshness), monitoring, capacity and
+ODbL obligations. Transit, traffic and map tiles are not served.

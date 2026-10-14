@@ -875,7 +875,9 @@ function isFrontendAliasBackendPath(url: URL): boolean {
     // every other well-known path on the alias hosts off the SPA, including
     // publishing the internal-service JWKS where it is not published today.
     url.pathname === "/.well-known/openid-configuration" ||
-    url.pathname === "/.well-known/oidc/jwks.json"
+    url.pathname === "/.well-known/oidc/jwks.json" ||
+    // Android App Link verification for native sign-in redirects on this host.
+    url.pathname === "/.well-known/assetlinks.json"
   );
 }
 export function getFrontendAliasApiProxyTarget(url: URL): URL | null {

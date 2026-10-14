@@ -775,9 +775,31 @@ export function splitTelegramMessage(
   const chunks: string[] = [];
   let remaining = text;
   while (remaining.length > 0) {
-    const head = truncateWellFormedTelegram(remaining, maxLength);
+    let head = truncateWellFormedTelegram(remaining, maxLength);
     if (head.length === 0) {
       throw new RangeError("telegram chunk limit made no UTF-16 progress");
+    }
+    if (head.length < remaining.length) {
+      // Break after the last newline, else the last whitespace, in the second
+      // half of the chunk, so a word or URL stays whole; chunks still join
+      // exactly. A break that would split a grapheme (CR LF, or a combining
+      // mark after the space) is skipped.
+      const floor = Math.floor(maxLength / 2);
+      const splitsGrapheme = (index: number) =>
+        (remaining[index - 1] === "\r" && remaining[index] === "\n") ||
+        /(?:\p{M}|\u200d|\ufe0e|\ufe0f)/u.test(
+          String.fromCodePoint(remaining.codePointAt(index) ?? 0),
+        );
+      let cut = -1;
+      for (let index = head.length - 1; index >= floor && cut < 0; index -= 1) {
+        if (head[index] === "\n" && !splitsGrapheme(index + 1)) cut = index + 1;
+      }
+      for (let index = head.length - 1; index >= floor && cut < 0; index -= 1) {
+        if (/\s/.test(head[index] ?? "") && !splitsGrapheme(index + 1)) {
+          cut = index + 1;
+        }
+      }
+      if (cut > 0) head = head.slice(0, cut);
     }
     chunks.push(head);
     remaining = remaining.slice(head.length);
