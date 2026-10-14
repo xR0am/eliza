@@ -5,6 +5,7 @@
  */
 import { ElizaError } from "@elizaos/core";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 import { assertOrganizationSubscription } from "../../lib/services/organization-subscription-source";
 import {
   bindRenewalInvoiceAuthority,
@@ -270,6 +271,8 @@ export class SubscriptionAllowanceRepository {
       databaseNow: Date;
     },
   ) {
+    await ensureInferencePolicyMutation(tx, input.source.organization_id);
+
     const { source } = input;
     assertOrganizationSubscription(source);
     requireDigest(input.requestDigest);
@@ -282,7 +285,9 @@ export class SubscriptionAllowanceRepository {
         )
       : undefined;
     if (input.invoiceDetails && !invoiceAuthority)
-      conflict("Invoice details require original invoice authority", { subscriptionId: source.id });
+      conflict("Invoice details require original invoice authority", {
+        subscriptionId: source.id,
+      });
     const invoiceDetails =
       input.invoiceDetails && invoiceAuthority
         ? bindRenewalInvoiceDetails(input.invoiceDetails, invoiceAuthority)
@@ -420,7 +425,9 @@ export class SubscriptionAllowanceRepository {
           originalAuthority,
         );
         if (settlementDetails && retained.digest !== settlementDetails.digest)
-          conflict("Settlement details differ from original grant", { subscriptionId: source.id });
+          conflict("Settlement details differ from original grant", {
+            subscriptionId: source.id,
+          });
       }
       return { period: existing, replayed: true };
     }
@@ -560,6 +567,8 @@ export class SubscriptionAllowanceRepository {
     retired: boolean;
     forfeitedAmount: CanonicalMoney;
   }> {
+    await ensureInferencePolicyMutation(tx, input.organizationId);
+
     const databaseNow = await lockOrganization(tx, input.organizationId);
     const [scope] = await tx
       .select({

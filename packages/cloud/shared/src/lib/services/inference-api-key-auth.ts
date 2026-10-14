@@ -6,6 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
+import type { DbTransaction } from "../../db/client";
 import { apiKeysRepository } from "../../db/repositories/api-keys";
 import type { UserWithOrganization } from "../../db/repositories/users";
 import type { ApiKey } from "../../db/schemas/api-keys";
@@ -19,6 +20,7 @@ export interface InferenceApiKeyAuthTimingObserver {
 }
 
 export interface InferenceApiKeyAuthOptions {
+  tx?: DbTransaction;
   timing?: InferenceApiKeyAuthTimingObserver;
   /** Marks typed credential/account rejection without intercepting the throw. */
   rejected?(reason: InferenceAuthRejectionReason): void;
@@ -55,7 +57,7 @@ export async function requireInferenceApiKeyWithOrg(
   const identityStartedAt = performance.now();
   let identity: Awaited<ReturnType<typeof apiKeysRepository.findIdentityByHashConsistent>>;
   try {
-    identity = await apiKeysRepository.findIdentityByHashConsistent(keyHash);
+    identity = await apiKeysRepository.findIdentityByHashConsistent(keyHash, options.tx);
   } finally {
     options.timing?.identityLookup(performance.now() - identityStartedAt);
   }

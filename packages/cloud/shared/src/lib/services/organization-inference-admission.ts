@@ -121,6 +121,7 @@ import {
 } from "./subscriber-inference-funding";
 
 export type InferenceAdmissionMode =
+  | "durable_object_funded_budget"
   | "durable_object_debit"
   | "durable_object_affiliate_debit"
   | "durable_object_subscription_funding"
@@ -146,6 +147,11 @@ export interface OrganizationInferenceAdmission {
 }
 
 export interface OrganizationInferenceAdmissionParams {
+  /** Provider-enforced bounds, distinct from estimates used for unknown-outcome recovery. */
+  maximumInputTokens?: number;
+  maximumOutputTokens?: number;
+  fundedBudgetRateReceipt?: string;
+  fundedBudgetEndpointType?: "completions" | "embeddings" | "standard" | "strict";
   context: BillingContext & {
     provider: string;
     billingSource: string;
@@ -382,6 +388,68 @@ function attachInferenceAdmissionLease(
 export async function admitOrganizationInference(
   params: OrganizationInferenceAdmissionParams,
 ): Promise<OrganizationInferenceAdmission> {
+  try {
+    return await admitOrganizationInferenceOnce(params);
+  } catch (error) {
+    const bounded =
+      Boolean(params.flatCost) ||
+      (Number.isSafeInteger(params.maximumInputTokens) &&
+        params.maximumInputTokens! > 0 &&
+        Number.isSafeInteger(params.maximumOutputTokens) &&
+        params.maximumOutputTokens! > 0);
+    // Compatibility operations must not report an empty wallet merely because
+    // unused funds are held by delegated inference. Release idle grants before
+    // retrying the primary decision; busy grants remain a retryable handoff.
+    if (
+      !(error instanceof InsufficientCreditsError) ||
+      bounded ||
+      !params.admissionSnapshot?.fundedBudget?.enabled
+    )
+      throw error;
+    const { inferenceBudgetGateRequest, isFundedBudgetAdmissionEnabled } = await import(
+      "./inference-funded-budget-admission"
+    );
+    if (!isFundedBudgetAdmissionEnabled()) throw error;
+    const handoff = await inferenceBudgetGateRequest<{ released?: boolean; pending?: boolean }>(
+      params.context.organizationId,
+      "/budget/reclaim",
+      {},
+    );
+    if (handoff.pending === true) throw admissionUnavailable(params, error);
+    if (handoff.released !== true) throw admissionUnavailable(params, error);
+    return admitOrganizationInferenceOnce(params);
+  }
+}
+
+async function admitOrganizationInferenceOnce(
+  params: OrganizationInferenceAdmissionParams,
+): Promise<OrganizationInferenceAdmission> {
+  const {
+    isFundedBudgetAdmissionEnabled,
+    admitFundedBudgetInference,
+    InferenceFundingBudgetUnavailableError,
+  } = await import("./inference-funded-budget-admission");
+  if (
+    isFundedBudgetAdmissionEnabled() &&
+    params.admissionSnapshot?.fundedBudget?.enabled &&
+    params.executionCtx &&
+    params.credential?.kind === "api_key" &&
+    params.credential.rateLimit !== undefined &&
+    params.credential.expiresAt !== undefined &&
+    ((params.flatCost && params.flatCost.totalCost > 0) ||
+      (Number.isSafeInteger(params.maximumInputTokens) &&
+        params.maximumInputTokens! > 0 &&
+        Number.isSafeInteger(params.maximumOutputTokens) &&
+        params.maximumOutputTokens! > 0))
+  ) {
+    try {
+      return await admitFundedBudgetInference(params);
+    } catch (error) {
+      if (error instanceof InferenceFundingBudgetUnavailableError)
+        throw admissionUnavailable(params, error);
+      throw error;
+    }
+  }
   // KV/LRU entries are observations, never a CAS fence. Compare policy under
   // the same organization lock that serializes entitlement and override writes.
   const workerHotPath = typeof params.executionCtx?.waitUntil === "function";

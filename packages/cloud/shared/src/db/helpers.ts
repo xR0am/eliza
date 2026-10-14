@@ -30,8 +30,55 @@ import {
  *   await tx.insert(credits).values(creditData);
  * });
  */
+const beforeCommitCallbacks = new WeakMap<DbTransaction, Array<() => Promise<void>>>();
+
+export function registerBeforeCommit(tx: DbTransaction, callback: () => Promise<void>): void {
+  const callbacks = beforeCommitCallbacks.get(tx);
+  if (!callbacks) throw new UnmanagedWriteTransactionError();
+  callbacks.push(callback);
+}
+
+const afterCommitCallbacks = new WeakMap<DbTransaction, Array<() => Promise<void>>>();
+
+/** Register effects on the exact managed transaction; never run them before COMMIT. */
+export function registerAfterCommit(tx: DbTransaction, callback: () => Promise<void>): void {
+  const callbacks = afterCommitCallbacks.get(tx);
+  if (!callbacks) {
+    throw new UnmanagedWriteTransactionError();
+  }
+  callbacks.push(callback);
+}
+
+export class UnmanagedWriteTransactionError extends Error {
+  constructor() {
+    super("Policy mutation requires a managed writeTransaction transaction");
+    this.name = "UnmanagedWriteTransactionError";
+  }
+}
+
 export async function writeTransaction<T>(fn: (tx: DbTransaction) => Promise<T>): Promise<T> {
-  return observeDbOperation("transaction", "writeTransaction", () => dbWrite.transaction(fn));
+  const callbacks: Array<() => Promise<void>> = [];
+  const result = await observeDbOperation("transaction", "writeTransaction", () =>
+    dbWrite.transaction(async (tx) => {
+      const beforeCommit: Array<() => Promise<void>> = [];
+      afterCommitCallbacks.set(tx, callbacks);
+      beforeCommitCallbacks.set(tx, beforeCommit);
+      try {
+        const result = await fn(tx);
+        for (const callback of beforeCommit) await callback();
+        return result;
+      } finally {
+        afterCommitCallbacks.delete(tx);
+        beforeCommitCallbacks.delete(tx);
+      }
+    }),
+  );
+  // COMMIT has succeeded. A publication failure must remain visible to the caller.
+  const effects = await Promise.allSettled(callbacks.map((callback) => callback()));
+  for (const effect of effects) {
+    if (effect.status === "rejected") throw effect.reason;
+  }
+  return result;
 }
 
 // ============================================================================

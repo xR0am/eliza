@@ -2,7 +2,7 @@
 
 import { ElizaError } from "@elizaos/core";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { dbWrite } from "../../../../db/helpers";
+import { writeTransaction } from "../../../../db/helpers";
 import { type AgentSandbox } from "../../../../db/repositories/agent-sandboxes";
 import { agentComputeFunding } from "../../../../db/schemas/agent-compute-funding";
 import {
@@ -184,7 +184,7 @@ export class SandboxWarmClaim {
     agentId: string,
     organizationId: string,
   ): Promise<void> {
-    await dbWrite.transaction(async (tx) => {
+    await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) return;
@@ -236,7 +236,7 @@ export class SandboxWarmClaim {
   ): Promise<{ success: true } | { success: false; error: string }> {
     const prepaid = (await this.host.getProvider()).computeFundingCapability === "host-lease-v1";
     const retire = (expectedStopped?: AgentSandbox) =>
-      dbWrite.transaction(async (tx) => {
+      writeTransaction(async (tx) => {
         await this.host.lockLifecycle(tx, agentId, organizationId);
         const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
         if (current) {
@@ -385,7 +385,7 @@ export class SandboxWarmClaim {
     agentId: string,
     organizationId: string,
   ): Promise<boolean> {
-    const prepared = await dbWrite.transaction(async (tx) => {
+    const prepared = await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current || current.warm_claim_credential_state !== "failed") {
@@ -427,7 +427,7 @@ export class SandboxWarmClaim {
       await apiKeysService.purgeConfirmedRevokedAgentKeys(ownerId, hashes);
     }
 
-    return await dbWrite.transaction(async (tx) => {
+    return await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) return false;
@@ -473,7 +473,7 @@ export class SandboxWarmClaim {
     // invalidation can be repeated once the rotation is durable. Only ever
     // read after the transaction resolves.
     const rotatedKeyHashes: string[] = [];
-    const prepared = await dbWrite.transaction(async (tx) => {
+    const prepared = await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) {
@@ -773,7 +773,7 @@ export class SandboxWarmClaim {
       throw new Error("Warm-claim key push has no usable minted key/org for the claimed row");
     }
 
-    const attestedRevision = await dbWrite.transaction(async (tx) => {
+    const attestedRevision = await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (!current) return null;
@@ -870,7 +870,7 @@ export class SandboxWarmClaim {
     if (!expectedFingerprint || expectedEnvironmentRevision === null) {
       throw new Error("Warm-claim attestation metadata is incomplete");
     }
-    const revocation = await dbWrite.transaction(async (tx) => {
+    const revocation = await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (current) {
@@ -908,7 +908,7 @@ export class SandboxWarmClaim {
       );
     }
 
-    const finalized = await dbWrite.transaction(async (tx) => {
+    const finalized = await writeTransaction(async (tx) => {
       await this.host.lockLifecycle(tx, agentId, organizationId);
       const current = await this.host.getAgentForLifecycleMutation(tx, agentId, organizationId);
       if (current) {
