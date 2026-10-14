@@ -51,6 +51,28 @@ describe("bundle ASR provenance", () => {
 		expect(readBundleAsrProvenanceBlockers(root)).toEqual([]);
 	});
 
+	it("does not apply the Eliza-1 lineage block to the staged mobile voice ASR pair", () => {
+		// A strict Eliza-1 manifest with no ASR lineage, plus the Qwen3-ASR pair
+		// that the Android/AOSP agent stages from the mobile-voice catalog.
+		const root = writeManifest({ defaultEligible: true, version: "1.0.0" });
+		writeFileSync(path.join(root, "asr", "Qwen3-ASR-0.6B-Q8_0.gguf"), "m");
+		writeFileSync(
+			path.join(root, "asr", "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"),
+			"p",
+		);
+		writeFileSync(
+			path.join(root, "asr", "voice-files.json"),
+			JSON.stringify({
+				schema: "eliza-mobile-voice-group-v1",
+				dir: "asr",
+				files: [{ id: "qwen3-asr-0.6b-q8_0", role: "asr-text" }],
+			}),
+		);
+
+		expect(bundleHasAsrModelFiles(root)).toBe(true);
+		expect(readBundleAsrProvenanceBlockers(root)).toEqual([]);
+	});
+
 	it("keeps metadata-free manifests behind the production provenance bar", () => {
 		const root = writeManifest({
 			lineage: { asr: { base: "ggml-org/Qwen3-ASR" } },
