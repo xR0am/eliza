@@ -188,9 +188,12 @@ export function numericFactSignatureTokens(text: string): Set<string> | null {
 	const trimmed = text.trim();
 	if (trimmed.length === 0 || trimmed.length > NUMERIC_FACT_MAX_LEN)
 		return null;
+	// Keep words of every script; an ASCII-only class reduced non-Latin replies
+	// to bare numbers, so distinct replies sharing a number looked like subsets.
 	const tokens = trimmed
+		.normalize("NFKC")
 		.toLowerCase()
-		.replace(/[^a-z0-9., ]+/g, " ")
+		.replace(/[^\p{L}\p{N}\p{M}., ]+/gu, " ")
 		.split(/\s+/)
 		.map((token) => token.replace(/^[.,]+/, "").replace(/[.,]+$/, ""))
 		.filter(
