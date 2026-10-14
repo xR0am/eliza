@@ -56,6 +56,7 @@ import {
   type EmailAuth,
   EmailDeliveryError,
   EmailDeliveryNotConfiguredError,
+  type EmailLoginDelivery,
   evaluateSiwePolicy,
   type FarcasterLoginPayload,
   generateApiKey,
@@ -9426,8 +9427,11 @@ auth.post("/passkey/login/verify", async (c) => {
 
 /**
  * POST /email/send
- * Body: { email, tenantId? }
- * Sends a magic link email, returns expiry time.
+ * Body: { email, tenantId?, captchaToken?, delivery? }
+ * Sends a sign-in email, returns expiry time. By default the email carries a
+ * magic link and a six-digit code. `delivery: "code"` sends only the code (no
+ * link token is issued), for native apps that redeem it through
+ * /email/code/verify and must not hand the sign-in to a browser.
  */
 auth.post("/email/send", async (c) => {
   // Tiered limits: the per-IP burst is generous (30/min) because one IP is
@@ -9444,10 +9448,23 @@ auth.post("/email/send", async (c) => {
     email: string;
     tenantId?: string;
     captchaToken?: string;
+    delivery?: unknown;
   }>(c);
   if (!body?.email) {
     return c.json<ApiResponse>({ ok: false, error: "email is required" }, 400);
   }
+  if (
+    body.delivery !== undefined &&
+    body.delivery !== "code" &&
+    body.delivery !== "link_and_code"
+  ) {
+    return c.json<ApiResponse>(
+      { ok: false, error: 'delivery must be "code" or "link_and_code"' },
+      400,
+    );
+  }
+  const delivery: EmailLoginDelivery =
+    body.delivery === "code" ? "code" : "link_and_code";
 
   const email = body.email.toLowerCase().trim();
   const headerTenantId = c.req.header("X-Steward-Tenant")?.trim();
@@ -9507,7 +9524,10 @@ auth.post("/email/send", async (c) => {
   const emailAuth = await getEmailAuthForTenant(resolvedTenantId);
   let sent: Awaited<ReturnType<EmailAuth["sendMagicLink"]>>;
   try {
-    sent = await emailAuth.sendMagicLink(email, { tenantId: resolvedTenantId });
+    sent = await emailAuth.sendMagicLink(email, {
+      tenantId: resolvedTenantId,
+      delivery,
+    });
   } catch (err) {
     // Fail closed: ok:true only after the provider accepted the message. On
     // typed delivery failures the challenge is not redeemable (never issued
