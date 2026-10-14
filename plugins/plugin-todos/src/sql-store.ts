@@ -1366,10 +1366,12 @@ class SqlTodoStore<TSchema extends Record<string, unknown>>
           item.parentTodoId === undefined
             ? existing.parentTodoId
             : item.parentTodoId;
+        const activeForm =
+          item.activeForm === undefined ? existing.activeForm : item.activeForm;
         const needsUpdate =
           existing.content !== item.content ||
           existing.status !== item.status ||
-          existing.activeForm !== (item.activeForm ?? item.content) ||
+          existing.activeForm !== activeForm ||
           existing.parentTodoId !== parentTodoId;
         if (!needsUpdate) {
           after.push(existing);
@@ -1379,7 +1381,7 @@ class SqlTodoStore<TSchema extends Record<string, unknown>>
           .update(todosTable)
           .set({
             content: item.content,
-            activeForm: item.activeForm ?? item.content,
+            activeForm,
             status: item.status,
             ...(item.status !== existing.status
               ? {
