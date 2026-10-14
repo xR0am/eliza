@@ -1,3 +1,4 @@
+import {readGmailMetadataBatch} from "../../utils/gmail-metadata-batch";
 // Coordinates cloud service gmail behavior behind route handlers.
 import { stripHtmlRawTextElements } from "@elizaos/core";
 import {
@@ -8,6 +9,7 @@ import { gmailThreadSourceLink } from "@elizaos/plugin-google-workspace/gmail-so
 import {
   decodeEntities,
   extractGmailHtmlLinks,
+  extractGmailHtmlView,
   gmailHasAttachmentsHint,
   gmailSearchIncludesTrash,
 } from "../../utils/gmail-mime-text";
@@ -443,29 +445,13 @@ async function fetchManagedGoogleGmailMessages(args: {
   )
     fail(502, "Invalid Gmail continuation token.");
 
-  const messages = await Promise.all(
-    (listed.messages ?? []).map(async (messageRef) => {
-      const messageId = messageRef.id?.trim();
-      if (!messageId) fail(502, "Google Gmail returned a missing message identity.");
-      const params = new URLSearchParams({ format: "metadata" });
-      for (const header of GMAIL_METADATA_HEADERS) {
-        params.append("metadataHeaders", header);
-      }
-      const response = await googleFetch({
-        organizationId: args.organizationId,
-        userId: args.userId,
-        side: args.side,
-        grantId: args.grantId,
-        personalContextRead: args.personalContextRead,
-        url: `${GOOGLE_GMAIL_MESSAGES_ENDPOINT}/${encodeURIComponent(messageId)}?${params.toString()}`,
-      });
-      const parsed = (await response.json()) as GoogleGmailMetadataResponse;
-      const normalized = normalizeGoogleGmailMessage(parsed, args.selfEmail);
-      if (!normalized || normalized.externalId !== messageId)
-        fail(502, "Google Gmail returned a partial message payload.");
-      return normalized;
-    }),
-  );
+  const ids=(listed.messages??[]).map(row=>{const id=row.id?.trim();if(!id)fail(502,"Google Gmail returned a missing message identity.");return id;});
+  // Cost: list + one bounded metadata HTTP batch; quota remains per inner read.
+  // Each exchange retains the existing scoped grant/token authorization.
+  const raw=ids.length?await readGmailMetadataBatch(ids,GMAIL_METADATA_HEADERS,(url,options)=>googleFetch({organizationId:args.organizationId,userId:args.userId,side:args.side,grantId:args.grantId,personalContextRead:args.personalContextRead,url,options})):[];
+  const messages=raw.map((value,index)=>{const normalized=normalizeGoogleGmailMessage(value as GoogleGmailMetadataResponse,args.selfEmail);if(!normalized||normalized.externalId!==ids[index])fail(502,"Google Gmail returned a mismatched batch message.");return normalized;});
+  const current=await getManagedGoogleConnectorStatus({organizationId:args.organizationId,userId:args.userId,side:args.side,grantId:args.grantId,personalContextRead:args.personalContextRead});
+  if(!current.connected)fail(409,"Google connection changed during the mailbox read.");
 
   return { messages, nextPageToken: listed.nextPageToken ?? null };
 }
@@ -510,6 +496,7 @@ export async function fetchManagedGoogleGmailTriage(args: {
       return bSafe - aSafe;
     }),
     syncedAt: new Date().toISOString(),
+    supportsSpamTrash: true,
   };
 }
 
@@ -578,6 +565,7 @@ export async function fetchManagedGoogleGmailSearch(args: {
     })),
     mailboxHistoryId,
     syncedAt: new Date().toISOString(),
+    supportsSpamTrash: true,
   };
 }
 
@@ -692,9 +680,11 @@ export async function readManagedGoogleGmailMessage(args: {
     fail(502, "Google Gmail returned a partial message payload.");
   }
   const rawBody = parsed.payload ? extractBody(parsed.payload) : "";
+  const htmlView=args.side==="owner"?extractGmailHtmlView(parsed.payload):{html:null,status:"owner-only" as const};
   return {
     message,
     bodyText: normalizeManagedGmailBodyText(rawBody) || message.snippet,
+    bodyHtml:htmlView.html,bodyHtmlStatus:htmlView.status,
     links: parsed.payload ? extractGmailHtmlLinks(parsed.payload) : [],
     attachments: gmailAttachmentParts(parsed.payload).map((part) => part.descriptor),
   };
