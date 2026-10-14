@@ -3443,10 +3443,14 @@ export class TelegramService extends Service {
         text,
         threadId,
       );
-      // Telegram's editMessageText returns the edited Message; the orchestrator
-      // only needs the call to succeed for compact-edit mode, so no Memory is
-      // synthesized here (the original send already produced one).
-      return undefined;
+      // Return the stored message with the new text, so the caller updates the
+      // agent's memory of it like the Slack and Discord edits do.
+      const stored = await runtime.getMemoryById(
+        messageManager.messageMemoryId(chatId, params.messageId),
+      );
+      return stored
+        ? { ...stored, content: { ...stored.content, text } }
+        : undefined;
     });
   }
 

@@ -497,6 +497,14 @@ export class MessageManager {
     return `telegram:${this.accountId}:message:${chatId}:${messageId}`;
   }
 
+  /** Memory id of a message this account stored for a chat (sent or received). */
+  messageMemoryId(chatId: number | string, messageId: number | string): UUID {
+    return createUniqueUuid(
+      this.runtime,
+      this.telegramMessageMemoryKey(chatId, messageId),
+    );
+  }
+
   private telegramUpdateDedupeKey(
     chatId: number | string,
     messageId: number | string,
