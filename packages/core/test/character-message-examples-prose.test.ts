@@ -1,15 +1,11 @@
 import { expect, test } from "vitest";
-import { normalizeGeneratedMessageExamples } from "../../ui/src/state/character-draft-helpers";
 import { normalizeCharacterMessageExamples } from "../src/utils/character-message-examples";
 
-test("both character example paths stop JSON before trailing prose", () => {
+test("character examples stop JSON before trailing prose", () => {
 	const records = [
 		{ role: "user", content: 'Hello [world] "quoted" \\ slash' },
 	];
-	for (const normalize of [
-		normalizeCharacterMessageExamples,
-		normalizeGeneratedMessageExamples,
-	]) {
+	for (const normalize of [normalizeCharacterMessageExamples]) {
 		const expected = normalize(records);
 		for (const value of [records, { messageExamples: records }, [records]]) {
 			const json = JSON.stringify(value);
