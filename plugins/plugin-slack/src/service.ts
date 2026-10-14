@@ -1243,8 +1243,8 @@ export class SlackService extends Service implements ISlackService {
   }
 
   /**
-   * Returns the client that outbound user-action calls (currently
-   * chat.postMessage) should use for the given account. OWNER-role
+   * Returns the client that outbound user-action calls (chat.postMessage,
+   * chat.update, chat.delete) should use for the given account. OWNER-role
    * accounts with a configured xoxp- user token route through it so
    * the agent posts as the user; everything else stays on the bot
    * client. Falls back to `getClientForAccount` when no per-account
@@ -4302,7 +4302,9 @@ export class SlackService extends Service implements ISlackService {
     text: string,
     accountId?: string | null,
   ): Promise<void> {
-    const client = this.getClientForAccount(accountId);
+    // Slack lets a token change only its own posts, so use the client that
+    // posted: the owner's user token for OWNER accounts.
+    const client = this.getOutboundClient(accountId);
     if (!client) {
       throw new Error("Slack client not initialized");
     }
@@ -4322,7 +4324,9 @@ export class SlackService extends Service implements ISlackService {
     messageTs: string,
     accountId?: string | null,
   ): Promise<void> {
-    const client = this.getClientForAccount(accountId);
+    // Slack lets a token change only its own posts, so use the client that
+    // posted: the owner's user token for OWNER accounts.
+    const client = this.getOutboundClient(accountId);
     if (!client) {
       throw new Error("Slack client not initialized");
     }
