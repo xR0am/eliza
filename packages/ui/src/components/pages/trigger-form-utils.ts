@@ -248,7 +248,7 @@ export function formFromTrigger(trigger: TriggerSummary): TriggerFormState {
     triggerType: trigger.triggerType,
     eventKind: trigger.eventKind ?? "message.received",
     wakeMode: trigger.wakeMode,
-    scheduledAtIso: trigger.scheduledAtIso ?? "",
+    scheduledAtIso: localDateTimeInput(trigger.scheduledAtIso ?? ""),
     cronExpression: trigger.cronExpression ?? "0 * * * *",
     maxRuns: trigger.maxRuns ? String(trigger.maxRuns) : "",
     enabled: trigger.enabled,
@@ -256,6 +256,19 @@ export function formFromTrigger(trigger: TriggerSummary): TriggerFormState {
     durationUnit: unit,
     timezone: trigger.timezone,
   };
+}
+/**
+ * The `YYYY-MM-DDTHH:mm` wall-clock value a `datetime-local` input shows for a
+ * stored instant, in the browser zone. The input has no zone, so the form
+ * sends the instant it previews (see `buildCreateRequest`), not the raw text:
+ * the agent host can run in another zone.
+ */
+function localDateTimeInput(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return iso;
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
 }
 export function buildCreateRequest(
   form: TriggerFormState,
@@ -277,7 +290,9 @@ export function buildCreateRequest(
         ? durationToMs(Number(form.durationValue) || 1, form.durationUnit)
         : undefined,
     scheduledAtIso:
-      form.triggerType === "once" ? form.scheduledAtIso.trim() : undefined,
+      form.triggerType === "once"
+        ? new Date(form.scheduledAtIso.trim()).toISOString()
+        : undefined,
     cronExpression:
       form.triggerType === "cron" ? form.cronExpression.trim() : undefined,
     eventKind: form.triggerType === "event" ? form.eventKind.trim() : undefined,

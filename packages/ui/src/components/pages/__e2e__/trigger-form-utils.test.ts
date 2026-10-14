@@ -1,7 +1,7 @@
 /**
  * The Automations form builds the trigger request the server accepts: a text
- * automation is a prompt trigger, and a cron schedule carries the zone it is
- * previewed in.
+ * automation is a prompt trigger, a cron schedule carries the zone it is
+ * previewed in, and a one-time run carries the instant it is previewed at.
  */
 import { describe, expect, it } from "vitest";
 import type { TriggerSummary } from "../../../api/client-types-core";
@@ -78,6 +78,35 @@ describe("Automations trigger form", () => {
         triggerType: "interval",
       }).timezone,
     ).toBeUndefined();
+  });
+
+  it("sends a one-time run as the instant the browser previews", () => {
+    // A datetime-local input gives a wall-clock value with no zone. The agent
+    // host can run in another zone, so the request carries the instant.
+    const once: TriggerFormState = {
+      ...textCron,
+      triggerType: "once",
+      scheduledAtIso: "2026-10-14T09:00",
+    };
+    expect(validateForm(once, t)).toBeNull();
+    expect(buildCreateRequest(once).scheduledAtIso).toBe(
+      new Date("2026-10-14T09:00").toISOString(),
+    );
+  });
+
+  it("opens a stored one-time run as a local wall-clock time", () => {
+    const form = formFromTrigger({
+      ...storedPrompt,
+      triggerType: "once",
+      scheduledAtIso: "2026-10-14T16:00:00.000Z",
+    });
+    expect(form.scheduledAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    expect(new Date(form.scheduledAtIso).toISOString()).toBe(
+      "2026-10-14T16:00:00.000Z",
+    );
+    expect(buildUpdateRequest(form).scheduledAtIso).toBe(
+      "2026-10-14T16:00:00.000Z",
+    );
   });
 
   it("previews a cron schedule in the zone it runs in", () => {
