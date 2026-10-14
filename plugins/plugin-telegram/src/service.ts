@@ -3022,12 +3022,14 @@ export class TelegramService extends Service {
         const state = normalizedAccountId
           ? serviceInstance.getAccountState(normalizedAccountId)
           : serviceInstance.getDefaultAccountState();
-        const sendHandler = async (
+        // Forward the delivery receipt: a handler that returns nothing reports
+        // "unknown" acceptance, and reminders then re-send on every tick.
+        const sendHandler = (
           handlerRuntime: IAgentRuntime,
           target: TargetInfo,
           content: Content,
-        ): Promise<Memory | undefined> => {
-          await serviceInstance.handleSendMessage(
+        ): SendHandlerResult =>
+          serviceInstance.handleSendMessage(
             handlerRuntime,
             normalizedAccountId &&
               !(target as AccountScopedTargetInfo).accountId
@@ -3035,8 +3037,6 @@ export class TelegramService extends Service {
               : target,
             content,
           );
-          return undefined;
-        };
         const withContextAccount = (
           context: MessageConnectorQueryContext,
         ): MessageConnectorQueryContext =>
