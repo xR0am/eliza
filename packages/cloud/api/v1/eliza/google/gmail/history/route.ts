@@ -4,7 +4,7 @@ import {
   requireUserOrApiKeyWithOrg,
 } from "@elizaos/cloud-shared/auth";
 import { failureResponse } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
-import { fetchManagedGoogleGmailHistory } from "@elizaos/cloud-shared/lib/services/agent-google-connector/gmail-history";
+import { fetchManagedGoogleGmailHistory } from "@elizaos/cloud-shared/lib/services/agent-google-connector";
 import { AgentGoogleConnectorError } from "@elizaos/cloud-shared/lib/services/agent-google-connector/shared";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";

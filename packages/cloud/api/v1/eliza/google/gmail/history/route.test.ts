@@ -19,7 +19,7 @@ mock.module(
   () => ({ AgentGoogleConnectorError }),
 );
 mock.module(
-  "@elizaos/cloud-shared/lib/services/agent-google-connector/gmail-history",
+  "@elizaos/cloud-shared/lib/services/agent-google-connector",
   () => ({
     fetchManagedGoogleGmailHistory: async (input: unknown) => {
       calls.push(input);
