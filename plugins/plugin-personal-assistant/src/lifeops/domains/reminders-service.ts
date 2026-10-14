@@ -682,7 +682,16 @@ function normalizeOptionalNonNegativeInteger(
   value: unknown,
   field: string,
 ): number | null {
-  if (value === undefined || value === null) return null;
+  // Match the canonical LifeOps normalizer (@elizaos/contracts
+  // service-normalize, used by every sibling PA service): an empty
+  // string is absent (null), not 0 — Number("") === 0 would otherwise
+  // fabricate an idle time of 0 seconds for a field the caller never
+  // sent. A whitespace-only string is not absent either; the
+  // canonical copy rejects it, so reject it here too.
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "string" && value.trim().length === 0) {
+    fail(400, `${field} must be a non-negative integer`);
+  }
   const num = typeof value === "string" ? Number(value) : value;
   if (typeof num !== "number" || !Number.isInteger(num) || num < 0) {
     fail(400, `${field} must be a non-negative integer`);
