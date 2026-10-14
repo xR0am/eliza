@@ -46,8 +46,6 @@ app.get("/", (c) =>
     },
     features: [
       "Current conditions",
-      "16-day forecasts",
-      "Precipitation probability",
       "UV index",
       "Sunrise/sunset times",
       "Wind speed and direction",
