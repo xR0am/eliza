@@ -3595,6 +3595,12 @@ export async function startApiServer(opts?: {
       bindRuntimeStreams(state.runtime);
       wireModelRegistrationBroadcast(state.runtime);
       wireNativeBrowserPageReader(state.runtime);
+      if (state.runtime) {
+        // The new runtime has no dashboard chat delivery until it is
+        // registered again, as updateRuntime does.
+        registerClientChatSendHandler(state.runtime, state);
+        wireProactiveInteractionDecider(state.runtime, state);
+      }
       void wireCoordinatorBridgesWhenReady(state, {
         wireChatBridge: wireCodingAgentChatBridge,
         wireWsBridge: wireCodingAgentWsBridge,
