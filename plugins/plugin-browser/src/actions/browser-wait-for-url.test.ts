@@ -78,4 +78,59 @@ describe("BROWSER wait_for_url", () => {
       values: { status: "matched", matched: true },
     });
   });
+
+  it("stops when the turn is cancelled", async () => {
+    await executeBrowserWorkspaceCommand({
+      subaction: "open",
+      url: `${origin}/login`,
+      show: true,
+    });
+
+    const runtime = { getService: () => null } as unknown as IAgentRuntime;
+    const message = { content: { text: "" } } as Memory;
+    const controller = new AbortController();
+    const afterCancel: string[] = [];
+    const callback = async (content: { text?: string }) => {
+      if (controller.signal.aborted) {
+        afterCancel.push(content.text ?? "");
+        return [];
+      }
+      if (!content.text?.startsWith("⏳")) return [];
+      controller.abort();
+      // The page moves on after the user cancelled; that is not a match.
+      const seen = (await listBrowserWorkspaceTabs()).find(
+        (tab) => tab.visible,
+      );
+      if (!seen) throw new Error("No browser tab is visible to the user");
+      await navigateBrowserWorkspaceTab({
+        id: seen.id,
+        url: `${origin}/done`,
+      });
+      return [];
+    };
+
+    const startedAt = Date.now();
+    const result = await browserAction.handler?.(
+      runtime,
+      message,
+      undefined,
+      {
+        abortSignal: controller.signal,
+        parameters: {
+          action: "wait_for_url",
+          pattern: "/done",
+          timeoutMs: 5_000,
+          pollIntervalMs: 1_000,
+        },
+      },
+      callback,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      values: { status: "cancelled", matched: false },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(afterCancel).toEqual([]);
+  });
 });
