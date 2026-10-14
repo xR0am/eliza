@@ -92,6 +92,7 @@ const {
   orgRateLimitOverrides,
   organizationConfig,
   orgStorageQuota,
+  organizationEntitlements,
   organizationPaymentReversalHolds,
   autoTopUpAttempts,
 } = await import("@elizaos/cloud-shared/db/schemas");
@@ -107,6 +108,7 @@ const SEEDED_TABLES = new Set([
   "org_rate_limit_overrides",
   "organization_config",
   "org_storage_quota",
+  "organization_entitlements",
   "organization_payment_reversal_holds",
   "auto_top_up_attempts",
 ]);
@@ -139,6 +141,14 @@ beforeAll(async () => {
     if (foreignKey && !SEEDED_TABLES.has(foreignKey[1])) continue;
     await pg().exec(statement.replaceAll('"public".', ""));
   }
+  const { getTableConfig } = await import("drizzle-orm/pg-core");
+  await pg().exec(
+    `CREATE TABLE organization_entitlements (${getTableConfig(
+      organizationEntitlements,
+    )
+      .columns.map((column) => `"${column.name}" ${column.getSQLType()}`)
+      .join(",")})`,
+  );
   await pg().query(
     "INSERT INTO organizations(id,name,slug,credit_balance) VALUES ($1,'Speaker',$2,'10')",
     [orgId, `speaker-${orgId}`],
