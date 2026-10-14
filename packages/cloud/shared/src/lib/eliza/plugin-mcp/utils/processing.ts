@@ -12,7 +12,6 @@ import { composePromptFromState } from "@elizaos/plugin-assistant/text/template-
 import { resourceAnalysisTemplate } from "@elizaos/plugin-mcp/protocol-utils/prompts";
 import { createMcpMemory } from "./mcp";
 
-const MAX_TOOL_ATTACHMENTS = 4;
 function getMimeTypeToContentType(mimeType?: string): ContentType | undefined {
   if (!mimeType) return undefined;
   const normalizedMimeType = mimeType.toLowerCase();
@@ -83,7 +82,7 @@ export function processToolResult(
   for (const content of result.content) {
     if (content.type === "text") {
       appendToolOutput(content.text ?? "");
-    } else if (content.type === "image" && attachments.length < MAX_TOOL_ATTACHMENTS) {
+    } else if (content.type === "image") {
       hasAttachments = true;
       attachments.push({
         contentType: getMimeTypeToContentType(content.mimeType),
