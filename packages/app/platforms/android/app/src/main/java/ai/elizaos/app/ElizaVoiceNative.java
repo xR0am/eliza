@@ -36,7 +36,7 @@ final class ElizaVoiceNative {
         // The library reads the ASR backend and thread count from the process
         // environment, so set them before it loads.
         final String asrEnv = ElizaAsrNativeEnv.apply(
-            BuildConfig.ELIZA_ASR_BACKEND, BuildConfig.ELIZA_ASR_THREADS,
+            BuildConfig.ELIZA_ASR_THREADS,
             (key, value) -> android.system.Os.setenv(key, value, true));
         Log.i(TAG, "ASR env (ELIZA_ASR_BACKEND/ELIZA_ASR_THREADS): " + asrEnv);
         try {
@@ -264,9 +264,9 @@ final class ElizaVoiceNative {
     // ── Streaming ASR (Parakeet-TDT / Phonon-2 backend) ──────────────────
     //
     // open → feed* → partial* → finish → close. Streaming needs the bundle's
-    // asr/ region to be the parakeet backend (asr/phonon-2-fv5.gguf); with the
-    // Qwen3-ASR pair, open throws IllegalArgumentException and callers keep
-    // nativeAsrTranscribe. feed only buffers, so it may run on the audio
+    // asr/ region to be the parakeet backend (asr/phonon-2-fv5.gguf); a
+    // library built without it makes open throw IllegalArgumentException and
+    // callers keep nativeAsrTranscribe. feed only buffers, so it may run on the audio
     // thread while partial/finish decode on a worker. close must not race any
     // other call on the same stream. Token ids are not returned.
 

@@ -8,7 +8,7 @@ import java.io.IOException;
 
 /**
  * The only file here that touches the :paradee-voice API. Opens the packaged
- * voice bundle (Paradee GGUF + misaki lexicon, Qwen3-ASR pair, Silero VAD)
+ * voice bundle (Paradee GGUF + misaki lexicon, Phonon-2 GGUF, Silero VAD)
  * and exposes synthesis and transcription for the qualify tests.
  */
 final class QualifyVoice implements AutoCloseable {

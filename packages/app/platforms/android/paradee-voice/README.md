@@ -7,12 +7,13 @@ inference server, account or network use.
 - **Speech:** Paradee-8M v1.0 (one voice, `af_heart`, 24 kHz). Native misaki
   G2P makes the phonemes: the misaki lexicon and rules, with eSpeak NG only
   for words outside the lexicon.
-- **Transcription:** the ASR head of `libelizainference`. The default is
-  Phonon-2 (Parakeet-TDT 0.6B, five-value weights) at
-  `<bundle>/asr/phonon-2-fv5.gguf`: batch (16 kHz mono in) and streaming (any
-  rate). The Qwen3-ASR text + mmproj pair is the batch-only alternative
-  (`ELIZA_ASR_BACKEND=qwen3`). `asr/` holds one of the two, as the
-  `mobile-voice` catalog record pins it.
+- **Transcription:** the ASR head of `libelizainference` with Phonon-2
+  (Parakeet-TDT 0.6B, five-value weights) at `<bundle>/asr/phonon-2-fv5.gguf`:
+  batch (16 kHz mono in) and streaming (any rate). Phonon-2 is the only ASR
+  model; the `mobile-voice` catalog record pins it. `VoiceNative` sets
+  `ELIZA_ASR_BACKEND=parakeet` before it loads the library. The GGUF is not
+  published; build it with `bun packages/app/scripts/voice/build-phonon2-gguf.ts`
+  (it converts the pinned source and checks every sha256).
 
 ```java
 VoiceAssets.Bundle bundle = VoiceAssets.install(context); // worker thread
