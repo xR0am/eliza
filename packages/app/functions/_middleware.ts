@@ -221,27 +221,34 @@ export const swapCspFrameAncestors = (
 //
 // Alpha Phone's in-app sign-in returns from Google through the verified App
 // Link `https://<host>/alphaphone/auth/callback`. Android hands that URL to the
-// app before any page loads. This page exists only for the case the link is
-// NOT intercepted (verification still pending, user disabled "open supported
-// links", a browser that ignores App Links): it offers an explicit
-// `intent://` hand-off to the installed app. It renders no SPA, calls no API
-// and sets no cookie. The `code` it forwards is useless without the PKCE
-// verifier that never leaves the device.
+// app before any page loads. This page renders only when the link was NOT
+// intercepted (verification pending or failed, "open supported links" turned
+// off, a redirect without a user gesture, or the app is not installed).
 //
-// Steward returns a successful `code`/`state` in the URL FRAGMENT (it never
-// reaches this server), while its error recovery link uses the query. The
-// server builds the hand-off from the query; one hash-pinned inline script
-// rebuilds it from the fragment with the same validation, then drops the
-// fragment from session history. Both forms reach the app as query
-// parameters, because an `intent://` URI's own fragment is the intent spec.
+// It never forwards a sign-in code. An `intent://` hand-off is matched on
+// package name only, not on the signing certificate, so a sideloaded app that
+// reuses the package name could start its own authorize with its own PKCE
+// verifier and receive the victim's code from this page. PKCE does not help
+// when the attacker started the flow. Success returns therefore rely solely on
+// the verified App Link.
+//
+// The page's only control brings the app forward. Rendered by the server it
+// carries no parameters. One hash-pinned inline script then (a) points it at
+// `?error=app_link_unverified&state=<state>` when the fragment or query holds
+// a state of the contract's shape, so the app can match its pending attempt
+// and say the App Link was not verified, and (b) removes the fragment (where
+// Steward puts the code) and the query from session history. A state alone
+// cannot redeem anything. The page renders no SPA, calls no API and sets no
+// cookie. The shape is pinned by the shared contract fixture
+// test/fixtures/alphaphone-native-signin-callback.contract.json, which Alpha
+// Phone runs too.
 export const NATIVE_SIGN_IN_CALLBACK_PATH = "/alphaphone/auth/callback";
 export const NATIVE_SIGN_IN_PACKAGE = "ai.elizaresearch.alphaphone";
-const NATIVE_CALLBACK_PARAM_RE = /^[A-Za-z0-9._~-]{1,512}$/;
-export const NATIVE_CALLBACK_FRAGMENT_SCRIPT =
-  '(function(){var a=document.getElementById("open");if(!a)return;var p=new URLSearchParams(location.hash.slice(1));var re=/^[A-Za-z0-9._~-]{1,512}$/;var k=[];p.forEach(function(_v,n){k.push(n)});function exactly(names){return k.length===names.length&&names.every(function(n){return p.getAll(n).length===1&&re.test(p.get(n)||"")})}var q="";if(exactly(["code","state"]))q="?code="+p.get("code")+"&state="+p.get("state");else if(exactly(["error","state"]))q="?error="+p.get("error")+"&state="+p.get("state");if(q)a.href="intent://"+location.host+"/alphaphone/auth/callback"+q+"#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";if(location.hash)history.replaceState(null,"",location.pathname+location.search)})();';
-// sha256 of NATIVE_CALLBACK_FRAGMENT_SCRIPT; the test recomputes it.
+export const NATIVE_CALLBACK_SCRUB_SCRIPT =
+  '(function(){var R=/^[A-Za-z0-9_-]{43}$/,s=null;function f(t){t.split("&").forEach(function(p){var i=p.indexOf("=");if(s===null&&i>0&&p.slice(0,i)==="state"&&R.test(p.slice(i+1)))s=p.slice(i+1)})}f(location.hash.slice(1));f(location.search.slice(1));var a=document.getElementById("open");if(a&&s)a.href="intent://"+location.host+"/alphaphone/auth/callback?error=app_link_unverified&state="+s+"#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";if(location.hash||location.search)history.replaceState(null,"",location.pathname)})();';
+// sha256 of NATIVE_CALLBACK_SCRUB_SCRIPT; the test recomputes it.
 const NATIVE_CALLBACK_SCRIPT_HASH =
-  "sha256-g5syaXeBb9fFbF1Eer1KhY2UBUhmi1lr9uvo0+rLF7k=";
+  "sha256-Sl3P1xhyAntQj4SGXYMv7AXc7nf52KPt+v434UWVIrw=";
 const NATIVE_CALLBACK_CSP = `default-src 'none'; script-src '${NATIVE_CALLBACK_SCRIPT_HASH}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 const escapeHtml = (value: string): string =>
@@ -253,30 +260,14 @@ const escapeHtml = (value: string): string =>
     .replaceAll("'", "&#39;");
 
 /**
- * Build the `intent://` URL that re-dispatches the callback to the app. Only
- * the exact OAuth result shapes are forwarded (`code`+`state`, or
- * `error`+`state`), each limited to the URL-safe alphabet; anything else
- * opens the app's callback with no parameters, which the app rejects.
+ * Build the server-rendered `intent://` URL that brings the app forward. It
+ * never carries a query: no `code`, `state` or `error` from the callback URL
+ * is forwarded, whatever shape the request has. (The server cannot see the
+ * fragment; the pinned page script may add only `error=app_link_unverified`
+ * and a well-formed `state`, never a code.)
  */
 export function buildNativeSignInIntentUrl(url: URL): string {
-  const params = url.searchParams;
-  const keys = [...params.keys()];
-  const exactly = (expected: string[]) =>
-    keys.length === expected.length &&
-    expected.every(
-      (key) =>
-        params.getAll(key).length === 1 &&
-        NATIVE_CALLBACK_PARAM_RE.test(params.get(key) ?? ""),
-    );
-  // Values are restricted to the RFC 3986 unreserved alphabet, so they are
-  // forwarded byte-for-byte (URLSearchParams would re-encode `~`).
-  let query = "";
-  if (exactly(["code", "state"])) {
-    query = `?code=${params.get("code")}&state=${params.get("state")}`;
-  } else if (exactly(["error", "state"])) {
-    query = `?error=${params.get("error")}&state=${params.get("state")}`;
-  }
-  return `intent://${url.host}${NATIVE_SIGN_IN_CALLBACK_PATH}${query}#Intent;scheme=https;package=${NATIVE_SIGN_IN_PACKAGE};end`;
+  return `intent://${url.host}${NATIVE_SIGN_IN_CALLBACK_PATH}#Intent;scheme=https;package=${NATIVE_SIGN_IN_PACKAGE};end`;
 }
 
 export function nativeSignInCallbackFallback(url: URL): Response {
@@ -299,10 +290,11 @@ a { display: inline-block; margin-top: 16px; padding: 14px 22px; border-radius: 
 </head>
 <body>
 <main>
-<h1>Finish signing in on Alpha Phone</h1>
-<p>Your sign-in is ready. Open Alpha Phone to complete it. If the app is not installed on this device, start sign-in again from the phone.</p>
-<a id="open" href="${href}">Open Alpha Phone</a>
-<script>${NATIVE_CALLBACK_FRAGMENT_SCRIPT}</script>
+<h1>Sign-in did not finish</h1>
+<p>Alpha Phone did not open automatically, so this sign-in was not completed. Return to Alpha Phone and start sign-in again.</p>
+<p>If this keeps happening, open Android Settings, then Apps, Alpha Phone, Open by default, and allow it to open its supported links.</p>
+<a id="open" href="${href}">Return to Alpha Phone</a>
+<script>${NATIVE_CALLBACK_SCRUB_SCRIPT}</script>
 </main>
 </body>
 </html>`;

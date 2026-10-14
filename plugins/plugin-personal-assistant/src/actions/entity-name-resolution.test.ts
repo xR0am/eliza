@@ -306,6 +306,54 @@ describe("ENTITY structured-name resolution fails closed on ambiguity", () => {
     expect(loggedRelationshipIds).toEqual([]);
   });
 
+  it("does not log to a contact whose name is only part of the named word", async () => {
+    // "Ann" is inside "Joanna", "Hannah" and "Danny"; none of them names Ann.
+    directory = [
+      relationship("rel-ann", "Ann", "+15550000001"),
+      relationship("rel-bob", "Bob Smith", "@bobsmith"),
+    ];
+    for (const name of ["Joanna", "Hannah", "Danny"]) {
+      const outcome = await logNamedInteraction(makeRuntime(), { name });
+      expect(outcome.success, name).toBe(false);
+      expect(outcome.error, name).toBe("MISSING_EDGE_ID");
+    }
+    const fromBody = await logNamedInteraction(
+      makeRuntime(),
+      {},
+      "had coffee with Joanna",
+    );
+    expect(fromBody.success).toBe(false);
+    expect(loggedRelationshipIds).toEqual([]);
+  });
+
+  it("still logs from the message to the one contact it names as a whole word", async () => {
+    directory = [
+      relationship("rel-ann", "Ann", "+15550000001"),
+      relationship("rel-bob", "Bob Smith", "@bobsmith"),
+    ];
+    const outcome = await logNamedInteraction(
+      makeRuntime(),
+      {},
+      "had coffee with Ann today",
+    );
+    expect(outcome.interactionRelationshipId).toBe("rel-ann");
+    expect(loggedRelationshipIds).toEqual(["rel-ann"]);
+  });
+
+  it("does not pick the first of two contacts the message names", async () => {
+    directory = [
+      relationship("rel-ann", "Ann", "+15550000001"),
+      relationship("rel-bob", "Bob Smith", "@bobsmith"),
+    ];
+    const outcome = await logNamedInteraction(
+      makeRuntime(),
+      {},
+      "had coffee with Ann and Bob Smith",
+    );
+    expect(outcome.success).toBe(false);
+    expect(loggedRelationshipIds).toEqual([]);
+  });
+
   it("still logs through the address tier for a whole handle or email", async () => {
     directory = [
       relationship(
