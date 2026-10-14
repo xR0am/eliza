@@ -168,6 +168,9 @@ import {
   type SubscriptionCheckoutResponse,
   type SubscriptionPlansResponse,
   type SubscriptionPortalResponse,
+  type UpdateAgentEnvironmentRequest,
+  type UpdateAgentEnvironmentResponse,
+  type UpdateAgentRequest,
   type UpdateAppInput,
   type UpdateAppMonetizationInput,
   type UpdateCampaignDaypartingInput,
@@ -1633,11 +1636,27 @@ export class ElizaCloudClient {
 
   updateAgent(
     agentId: string,
-    request: Partial<CreateAgentRequest>,
+    request: UpdateAgentRequest,
   ): Promise<AgentResponse> {
     return this.requestData<AgentResponse>(
       "PATCH",
       `/api/v1/eliza/agents/${encodePathParam(agentId)}`,
+      { json: request },
+    );
+  }
+
+  /**
+   * Set or remove the named environment variables; a `null` value removes that
+   * variable and variables not named are kept. The agent route itself does not
+   * accept environment variables.
+   */
+  updateAgentEnvironment(
+    agentId: string,
+    request: UpdateAgentEnvironmentRequest,
+  ): Promise<UpdateAgentEnvironmentResponse> {
+    return this.requestData<UpdateAgentEnvironmentResponse>(
+      "PATCH",
+      `/api/v1/eliza/agents/${encodePathParam(agentId)}/environment`,
       { json: request },
     );
   }

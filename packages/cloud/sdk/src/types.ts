@@ -1073,6 +1073,32 @@ export interface CreateAgentRequest {
   autoProvision?: boolean;
 }
 
+/**
+ * Body for `PATCH /api/v1/eliza/agents/:agentId` edits: the route's edit schema
+ * reads only these two fields and drops any other key.
+ */
+export type UpdateAgentRequest = Partial<
+  Pick<CreateAgentRequest, "agentName" | "agentConfig">
+>;
+
+/** Body for `PATCH /api/v1/eliza/agents/:agentId/environment`; a `null` value removes that variable. */
+export interface UpdateAgentEnvironmentRequest {
+  environmentVars: Record<string, string | null>;
+}
+
+export interface UpdateAgentEnvironmentResponse {
+  success: boolean;
+  data?: {
+    agentId: string;
+    updatedKeys: string[];
+    removedKeys: string[];
+    status: string;
+    executionTier: string;
+    needsRestart: boolean;
+  };
+  error?: string;
+}
+
 export interface CreateAgentResponse {
   success: boolean;
   data?: {
