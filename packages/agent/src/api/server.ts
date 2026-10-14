@@ -1024,6 +1024,21 @@ function getOrCreateRuntimeOperationManager(
   return cachedRuntimeOperationManager;
 }
 
+/** API requests only the owner may make; reads of settings stay open. */
+function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
+  const write = method !== "GET" && method !== "HEAD";
+  const under = (base: string) =>
+    pathname === base || pathname.startsWith(`${base}/`);
+  return (
+    under("/api/memory") ||
+    under("/api/memories") ||
+    (write &&
+      (pathname.startsWith("/api/wallet/") ||
+        under("/api/config") ||
+        under("/api/character")))
+  );
+}
+
 // One process-wide governance gate shared across runtime (re)registrations, so a
 // restart doesn't reset the proactive-comment cooldowns/caps (#8792).
 const proactiveInteractionGate = new ProactiveInteractionGate();
@@ -1531,6 +1546,23 @@ async function handleRequestForViewClient(
     method !== "OPTIONS" &&
     (pathname === "/api/trajectories" ||
       pathname.startsWith("/api/trajectories/")) &&
+    !isTrajectoryOwnerRequest(
+      req,
+      method,
+      pathname,
+      await resolveHostSessionAuthorization(),
+    )
+  ) {
+    json(res, { error: "Owner role required" }, 403);
+    return;
+  }
+  // A paired USER session passes the shared gate above. Wallet writes sign,
+  // broadcast or replace the owner's keys; config and character writes change
+  // what the agent runs and who it sends model traffic to; memories are the
+  // owner's private store. Require the owner before any of them dispatch.
+  if (
+    method !== "OPTIONS" &&
+    isOwnerOnlyApiRequest(method, pathname) &&
     !isTrajectoryOwnerRequest(
       req,
       method,
