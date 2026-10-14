@@ -30,6 +30,7 @@ const COMMAND_CASES: Array<[transcript: string, name: string, command: string]> 
   ["Eliza, remind me at 3pm", "Eliza", "remind me at 3pm"],
   ["hey eliza", "Eliza", ""],
   ["Eliza,turn on the lights", "Eliza", "turn on the lights"],
+  ["Eliza\u0301,turn on lights", "Eliza", "turn on lights"],
   ["Eliza,what is 2+2?", "Eliza", "what is 2+2?"],
   ["hey Eliza -5 degrees", "Eliza", "-5 degrees"],
   ["hey Eliza 💡 on", "Eliza", "💡 on"],

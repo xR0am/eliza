@@ -171,6 +171,14 @@ function sourceOffsetForNormalized(
   for (const ch of word.source) {
     source += ch.length;
     if (normalizeForWake(word.source.slice(0, source)) === target) {
+      // Accent folding can match before the name's trailing combining marks.
+      // Keep those marks with the name rather than leaking them into the command.
+      for (const trailing of word.source.slice(source)) {
+        if (!/\p{M}/u.test(trailing)) break;
+        const end = source + trailing.length;
+        if (normalizeForWake(word.source.slice(0, end)) !== target) break;
+        source = end;
+      }
       return source;
     }
   }
