@@ -1063,7 +1063,30 @@ export class SlackService extends Service implements ISlackService {
         "Slack account started successfully",
       );
 
-      await this.ensureWorkspaceExists(accountId);
+      try {
+        await this.ensureWorkspaceExists(accountId);
+      } catch (error) {
+        // The Socket Mode connection is open. A failed start must close it:
+        // no service instance is kept, so nothing else can stop this app, and
+        // Slack would keep sending events to a connection no runtime handles.
+        await app.stop().catch((stopError: unknown) => {
+          this.runtime.logger.warn(
+            {
+              src: "plugin:slack",
+              agentId: this.runtime.agentId,
+              accountId,
+              error:
+                stopError instanceof Error
+                  ? stopError.message
+                  : String(stopError),
+            },
+            "Failed to stop the Slack app after a failed start",
+          );
+        });
+        this.accountStates.delete(accountId);
+        this.syncDefaultAccountAliases();
+        throw error;
+      }
       return state;
     })();
 
