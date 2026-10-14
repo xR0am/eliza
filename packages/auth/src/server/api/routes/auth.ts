@@ -10494,6 +10494,33 @@ auth.post("/guest/upgrade", async (c) => {
 // ── OAuth authorization-code flow ─────────────────────────────────────────────
 
 /**
+ * Provider `prompt` values an /authorize caller may pass through. Native
+ * clients use `select_account` so the provider always shows an account picker:
+ * the user picks the intended Google account, and the final redirect follows a
+ * user gesture, which is what lets Android deliver it to a verified App Link.
+ * Anything not listed (including `none`, which would silently reuse a session)
+ * is rejected rather than dropped, so a caller never believes a prompt was
+ * honoured when it was not.
+ */
+const OAUTH_PROMPT_PASSTHROUGH: Readonly<Record<string, ReadonlySet<string>>> =
+  {
+    google: new Set(["select_account", "consent", "select_account consent"]),
+  };
+
+export function resolveOAuthPromptPassthrough(
+  providerName: string,
+  rawPrompt: string | undefined,
+): { ok: true; prompt?: string } | { ok: false; error: string } {
+  if (rawPrompt === undefined) return { ok: true };
+  const prompt = rawPrompt.trim().replace(/\s+/g, " ");
+  if (!prompt) return { ok: true };
+  if (!OAUTH_PROMPT_PASSTHROUGH[providerName]?.has(prompt)) {
+    return { ok: false, error: "prompt is not supported for this provider" };
+  }
+  return { ok: true, prompt };
+}
+
+/**
  * GET /oauth/:provider/authorize
  * Query: ?redirect_uri=<url>&tenant_id=<id>
  *
@@ -10526,6 +10553,13 @@ auth.get("/oauth/:provider/authorize", async (c) => {
 
   const redirectUri = c.req.query("redirect_uri");
   const appState = c.req.query("state")?.trim() || undefined;
+  const promptResult = resolveOAuthPromptPassthrough(
+    providerName,
+    c.req.query("prompt"),
+  );
+  if (!promptResult.ok) {
+    return c.json<ApiResponse>({ ok: false, error: promptResult.error }, 400);
+  }
   // Accept both `tenant_id` (snake_case, canonical) and `tenantId` (camelCase)
   // so integrators sending either shape land on the right tenant. Whitespace
   // is trimmed defensively for the same reason we trim headers elsewhere.
@@ -10645,6 +10679,11 @@ auth.get("/oauth/:provider/authorize", async (c) => {
   if (oidcNonce) {
     const url = new URL(authUrl);
     url.searchParams.set("nonce", oidcNonce);
+    authUrl = url.toString();
+  }
+  if (promptResult.prompt) {
+    const url = new URL(authUrl);
+    url.searchParams.set("prompt", promptResult.prompt);
     authUrl = url.toString();
   }
 

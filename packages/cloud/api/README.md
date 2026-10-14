@@ -21,7 +21,10 @@ bun run --cwd packages/cloud/api test   # tests
 ## Independent native App Auth clients
 
 `ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` optionally registers additional native clients.
-It is a server-owned JSON array of `{clientId, appId, redirectUri, enabled}` records.
+It is a server-owned JSON array of `{clientId, appId, redirectUri, enabled,
+credentialTtlSeconds?}` records. `credentialTtlSeconds` sets the lifetime of the
+client's `eliza_mobile_` credential: an integer from one day to 90 days, 30 days
+when absent.
 Client IDs, app UUIDs and canonical HTTPS return URLs must be unique, including
 against the existing `ai.elizaos.app` registration. Unknown and disabled clients
 fail closed; malformed additional configuration does not change the legacy client.
@@ -35,6 +38,41 @@ before shipping. The app UUID and server secrets must not be included in the
 native configuration. Retain the existing S256 grant, inactive exchange, durable
 receipt acknowledgment, self-revocation and account recovery contracts. `cloud:user`
 is the existing broad user/organization capability, not a narrower permission claim.
+
+The release workflow publishes the registry from the protected
+`ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` environment secret. The
+`Mobile App Auth Registration Admin` workflow diagnoses or repairs a client's
+`apps` row: choose the client (`ai.elizaresearch.alphaphone` for Alpha Phone);
+additional clients take their app UUID from the same registry entry, which must
+be enabled and bound to that environment's callback.
+
+### Alpha Phone in-app sign-in
+
+Alpha Phone signs in natively: email codes go straight to Steward, and Google
+uses a Custom Tab whose redirect is the verified App Link
+`https://eliza.app/alphaphone/auth/callback` (staging:
+`https://staging.eliza.app/alphaphone/auth/callback`). The device redeems the
+Steward code with its PKCE verifier, then trades the Steward session for an
+`eliza_mobile_` credential through `POST /api/v1/app-auth/connect`
+(`flow: "mobile_pkce"`, Bearer Steward token), `mobile/token` and `mobile/ack`.
+Steward returns a successful code and state in the URL fragment.
+
+Operator configuration per environment:
+
+- `ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON` registers `ai.elizaresearch.alphaphone`
+  with that environment's callback (and `credentialTtlSeconds: 7776000` for
+  90-day keys). Then run the admin workflow's repair for that client.
+- `ELIZA_ANDROID_ASSET_LINKS_JSON` (environment variable, public) is a JSON array
+  of `{package_name, sha256_cert_fingerprints[], relations?}` served at
+  `/.well-known/assetlinks.json` on the API host and, through the Pages proxy, on
+  `eliza.app` and `staging.eliza.app`. Malformed values publish `[]`.
+- The Steward tenant `elizacloud` must list the callback in its
+  `allowedRedirectUrls`. `/auth/oauth/:provider/authorize` receives an explicit
+  `tenant_id`, so `STEWARD_OAUTH_ALLOWED_REDIRECTS` does not apply to it.
+
+If Android does not intercept the App Link, the Pages route
+`/alphaphone/auth/callback` serves a static, no-store page whose only action is an
+`intent://` hand-off to the installed app.
 
 ## Subscription grant codes and entitlements
 
