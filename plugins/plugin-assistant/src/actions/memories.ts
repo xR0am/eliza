@@ -1719,7 +1719,15 @@ function mutationQueryFromMessage(
         );
     }
   }
-  text = text.replace(/\s+/g, " ").trim();
+  // Strip only a command prefix from the fallback. Literal words in explicit
+  // queries, quotes, and the target itself remain part of every-term matching.
+  text = text
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(
+      /^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:delete|remove|erase)\b[\s,:-]*/i,
+      "",
+    );
   if (!text || scoreQueryTerms(text).length === 0) return undefined;
   logger.info(
     "[MEMORY] delete carried no query; using the user's message text",
