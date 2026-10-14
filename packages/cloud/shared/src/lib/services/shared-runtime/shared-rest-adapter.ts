@@ -17,18 +17,25 @@
  */
 
 import { ChannelType, MESSAGE_SOURCE_CLIENT_CHAT } from "@elizaos/core";
-import { type SharedReminderDelivery } from "@elizaos/plugin-scheduling";
-import { type RuntimeDurableObjectNamespace } from "../../../types/cloud-worker-env";
+import type { SharedReminderDelivery } from "@elizaos/plugin-scheduling";
+import type { RuntimeDurableObjectNamespace } from "../../../types/cloud-worker-env";
 import { InsufficientCreditsError } from "../../api/errors";
 import { logger } from "../../utils/logger";
-import { type BridgeRequest } from "../eliza-sandbox";
-import { coordinateSharedBridge, coordinateSharedHistory } from "./conversation-coordinator";
+import type { BridgeRequest } from "../eliza-sandbox";
+import {
+  coordinateSharedBridge,
+  coordinateSharedHistory,
+} from "./conversation-coordinator";
+import type { NetworkAdmissionEnvelope } from "./network-shared-admission";
 import type { NetworkSharedTurnObservation } from "./network-shared-context";
-import { type PersonalSharedFallbackAccountState } from "./personal-fallback-account-state";
-import { type SharedAgentCharacter } from "./run-shared-agent-turn";
-import { type SharedRuntimeAgent } from "./shared-runtime-agent";
-import { type SharedRuntimeChannel } from "./shared-runtime-channel";
-import { type BridgeExecutionContext, sharedRuntimeChatService } from "./shared-runtime-chat";
+import type { PersonalSharedFallbackAccountState } from "./personal-fallback-account-state";
+import type { SharedAgentCharacter } from "./run-shared-agent-turn";
+import type { SharedRuntimeAgent } from "./shared-runtime-agent";
+import type { SharedRuntimeChannel } from "./shared-runtime-channel";
+import {
+  type BridgeExecutionContext,
+  sharedRuntimeChatService,
+} from "./shared-runtime-chat";
 import {
   parseSharedProviderTimingReceipt,
   type SharedProviderTimingReceipt,
@@ -36,7 +43,9 @@ import {
 
 const BRIDGE_INSUFFICIENT_CREDITS_CODE = -32002;
 /** Serialize the privacy-bounded provider receipt into finite Server-Timing metrics. */
-export function sharedTurnServerTiming(receipt: SharedProviderTimingReceipt | undefined): string {
+export function sharedTurnServerTiming(
+  receipt: SharedProviderTimingReceipt | undefined,
+): string {
   if (!receipt) return "";
   return `shared_model;dur=${receipt.durationMs.toFixed(1)};desc="provider=${receipt.selectedProvider} calls=${receipt.callCount} fallbacks=${receipt.fallbackCount} replayed=${receipt.replayed ? 1 : 0} clamped=${receipt.clamped ? 1 : 0}"`;
 }
@@ -73,7 +82,13 @@ function makeConversation(
 ): SharedRestConversation {
   const id = canonicalConversationId(agentId);
   // updatedAt === createdAt: the canonical conversation is never renamed/moved.
-  return { id, title: agentName || "Chat", roomId: id, createdAt, updatedAt: createdAt };
+  return {
+    id,
+    title: agentName || "Chat",
+    roomId: id,
+    createdAt,
+    updatedAt: createdAt,
+  };
 }
 /** GET .../api/health — the agent is in-Worker; if it resolves, it's up. */
 export function sharedRestHealth(): {
@@ -95,7 +110,11 @@ export function sharedRestStatus(agentName: string): {
   agentName: string;
   canRespond: true;
 } {
-  return { state: "running", agentName: agentName || "Eliza", canRespond: true };
+  return {
+    state: "running",
+    agentName: agentName || "Eliza",
+    canRespond: true,
+  };
 }
 // ---------------------------------------------------------------------------
 // Shell-endpoint defaults (mobile/web startup-coordinator unblock)
@@ -176,7 +195,8 @@ const SHARED_CHAT_VIEW: SharedRestViewRegistration = {
   id: "chat",
   label: "Chat",
   viewType: "gui",
-  description: "Conversations with your agent, inbound messages from every connector",
+  description:
+    "Conversations with your agent, inbound messages from every connector",
   icon: "MessageSquare",
   path: SHARED_CHAT_VIEW_PATH,
   available: true,
@@ -427,7 +447,12 @@ export function sharedRestAuthMe(
       kind: "machine",
     },
     session: { id: "bearer", kind: "machine", expiresAt: null },
-    access: { mode: "bearer", role: "USER", passwordConfigured: false, ownerConfigured: false },
+    access: {
+      mode: "bearer",
+      role: "USER",
+      passwordConfigured: false,
+      ownerConfigured: false,
+    },
   };
 }
 /**
@@ -468,7 +493,10 @@ export async function sharedRestCharacter(
   character: SharedAgentCharacter;
   agentName: string;
 }> {
-  const character = await sharedRuntimeChatService.getCharacter(agent, executionCtx);
+  const character = await sharedRuntimeChatService.getCharacter(
+    agent,
+    executionCtx,
+  );
   return { character, agentName: agentName || "Eliza" };
 }
 /** GET .../api/conversations — always the one canonical conversation. */
@@ -508,7 +536,9 @@ export function sharedRestConversationUpdate(
   conversation: SharedRestConversation;
 } {
   const title =
-    typeof patch?.title === "string" && patch.title.trim() ? patch.title.trim() : agentName;
+    typeof patch?.title === "string" && patch.title.trim()
+      ? patch.title.trim()
+      : agentName;
   return { conversation: makeConversation(agentId, title, createdAt) };
 }
 /**
@@ -527,7 +557,11 @@ function sharedRestMessageTimestamp(
   index: number,
   total: number,
 ): number {
-  if (typeof turn.createdAt === "number" && Number.isFinite(turn.createdAt) && turn.createdAt > 0) {
+  if (
+    typeof turn.createdAt === "number" &&
+    Number.isFinite(turn.createdAt) &&
+    turn.createdAt > 0
+  ) {
     return turn.createdAt;
   }
   // Legacy shared-runtime history rows predate createdAt. Keep them finite but
@@ -547,7 +581,9 @@ export async function sharedRestMessagesGet(
 ): Promise<{
   messages: SharedRestMessage[];
 }> {
-  const history = await coordinateSharedHistory(agentId, conversationId, { namespace });
+  const history = await coordinateSharedHistory(agentId, conversationId, {
+    namespace,
+  });
   // Lifecycle system events shape model continuity but are not authored chat
   // bubbles, so keep them private to the canonical history/prompt boundary.
   const visibleHistory = history.filter(
@@ -562,7 +598,9 @@ export async function sharedRestMessagesGet(
     role: turn.role,
     text: turn.content,
     timestamp: sharedRestMessageTimestamp(turn, index, visibleHistory.length),
-    ...(turn.role === "assistant" && turn.interrupted ? { interrupted: true } : {}),
+    ...(turn.role === "assistant" && turn.interrupted
+      ? { interrupted: true }
+      : {}),
   }));
   return { messages };
 }
@@ -592,6 +630,7 @@ export async function sharedRestMessageSend(
   trustedNetworkContext?: NetworkSharedTurnObservation,
   /** The Network service's open-turn context (takeover); read only for personal shared turns. */
   trustedNetworkTurn?: unknown,
+  trustedNetworkAdmission?: NetworkAdmissionEnvelope,
 ): Promise<{
   text: string;
   agentName: string;
@@ -626,6 +665,7 @@ export async function sharedRestMessageSend(
     ...(trustedAccountState ? { trustedAccountState } : {}),
     ...(trustedNetworkContext ? { trustedNetworkContext } : {}),
     ...(trustedNetworkTurn !== undefined ? { trustedNetworkTurn } : {}),
+    ...(trustedNetworkAdmission ? { trustedNetworkAdmission } : {}),
     channel: trustedChannel ?? {
       type: ChannelType.DM,
       source: trustedDelivery?.platform ?? MESSAGE_SOURCE_CLIENT_CHAT,
@@ -661,15 +701,20 @@ export async function sharedRestMessageSend(
             mediaUrl?: unknown;
           }
         ).mediaUrl;
-        return typeof mediaUrl === "string" && mediaUrl.trim() ? [mediaUrl.trim()] : [];
+        return typeof mediaUrl === "string" && mediaUrl.trim()
+          ? [mediaUrl.trim()]
+          : [];
       })
     : [];
   const timing = parseSharedProviderTimingReceipt(result.timing);
   if (result.timing !== undefined && timing === undefined) {
-    logger.warn("[shared-runtime REST] message.send returned an invalid timing receipt", {
-      agentId: agent.id,
-      conversationId,
-    });
+    logger.warn(
+      "[shared-runtime REST] message.send returned an invalid timing receipt",
+      {
+        agentId: agent.id,
+        conversationId,
+      },
+    );
   }
   return {
     text: replyText,

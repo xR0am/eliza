@@ -22,7 +22,7 @@ import {
   readPersonalSharedFailureMetadata,
 } from "@elizaos/cloud-services-common/transport";
 import type { NetworkServiceClient } from "@elizaos/plugin-network/client";
-import { svcSign } from "@elizaos/plugin-network/svc-auth";
+import { SVC_MIN_SECRET, svcSign } from "@elizaos/plugin-network/svc-auth";
 import type {
   ChatEvent,
   Platform,
@@ -53,8 +53,11 @@ import {
 } from "./network-compliance";
 import {
   type NetworkOpenTurn,
+  networkIngressMatchesPolicy,
   networkServiceFromEnv,
+  parseNetworkAdmissionPolicy,
   runNetworkServiceTurn,
+  turnRequestFor,
 } from "./network-service";
 import type { GatewayRedis } from "./redis";
 import {
@@ -1283,16 +1286,55 @@ async function processMessage(
   const reauth = deps.reacquireAuthHeader ?? reacquireAuthHeader;
   const authHeader = getAuthHeader();
 
+  // Shared proof-bearing links precede intake; legacy Network keeps intake first.
+  const linkAttempt = isNetworkProject(project)
+    ? undefined
+    : await tryConfirmIdentityLink(
+        { redis, cloudBaseUrl, getAuthHeader },
+        adapter.platform,
+        event.senderId,
+        event.senderName,
+        event.text,
+      );
   // The Network takeover: a direct message goes to the Network service's
   // deterministic loop first (routing, STOP/HELP/START, join, onboarding).
   // A handled turn is answered here with no model call; an open turn carries
   // the service's member context into the agent turn.
   let networkTurn: NetworkOpenTurn | undefined;
-  const networkEligible = networkTakeoverAppliesTo(
-    project,
-    event,
-    explicitAgentId,
-  );
+  const networkEligible =
+    !linkAttempt?.handled &&
+    networkTakeoverAppliesTo(project, event, explicitAgentId);
+  if (networkEligible && !isNetworkProject(project)) {
+    const connectorAccountId = resolveConnectorAccountId(
+      adapter.platform,
+      config,
+    );
+    const policy = parseNetworkAdmissionPolicy(
+      process.env.NETWORK_OWNED_INGRESS_POLICY,
+    );
+    if (
+      adapter.platform !== "blooio" ||
+      event.chatType !== "private" ||
+      !connectorAccountId ||
+      !process.env.SERVICE_TURN_SECRET ||
+      process.env.SERVICE_TURN_SECRET.length < SVC_MIN_SECRET ||
+      !networkIngressMatchesPolicy(
+        {
+          project,
+          platform: adapter.platform,
+          connectorAccountId,
+          phoneNumber: event.senderId,
+          messageId: `${adapter.platform}:${project}:${event.messageId}`,
+          message: event.text,
+        },
+        policy,
+        process.env.NETWORK_PERSONAL_CONTINUITY_ENABLED,
+      )
+    )
+      throw new PersonalSharedPreEgressError(
+        "Network Shared ingress authority does not match",
+      );
+  }
   const networkService =
     deps.networkService === undefined
       ? networkServiceFromEnv()
@@ -1332,6 +1374,9 @@ async function processMessage(
         phoneNumber: event.senderId,
         messageId: `${outcome.request.channel}:${project}:${event.messageId}`,
         message: event.text,
+        ...(!isNetworkProject(project)
+          ? { transport: outcome.request.transport }
+          : {}),
         networkHandled: { request: outcome.request, response: outcome.handled },
       });
       let delivered: Record<string, unknown> | undefined;
@@ -1464,19 +1509,21 @@ async function processMessage(
   // handle currently resolves to a provisional onboarding account. Inspect
   // them before every personal or agent route so no existing row can swallow
   // the challenge as ordinary agent text.
-  const linkAttempt = await tryConfirmIdentityLink(
-    { redis, cloudBaseUrl, getAuthHeader },
-    adapter.platform,
-    event.senderId,
-    event.senderName,
-    event.text,
-  );
-  if (linkAttempt.handled && linkAttempt.reply) {
+  const resolvedLinkAttempt =
+    linkAttempt ??
+    (await tryConfirmIdentityLink(
+      { redis, cloudBaseUrl, getAuthHeader },
+      adapter.platform,
+      event.senderId,
+      event.senderName,
+      event.text,
+    ));
+  if (resolvedLinkAttempt.handled && resolvedLinkAttempt.reply) {
     await sendReplyWithRequiredReceipt(
       adapter,
       config,
       event,
-      linkAttempt.reply,
+      resolvedLinkAttempt.reply,
       deliveryHooks,
     );
     return;
@@ -2031,6 +2078,9 @@ async function sendPersonalSharedReply(
                 message: event.text,
                 // The Network service's open-turn context (takeover only).
                 ...(networkTurn ? { networkTurn } : {}),
+                ...(networkTurn && !isNetworkProject(project)
+                  ? { transport: turnRequestFor(event).transport }
+                  : {}),
                 // Only Blooio media URLs are provider-hosted and fetchable
                 // by the cloud vision path; other platforms keep text-only.
                 ...(isMediaTurn && event.mediaUrls?.length

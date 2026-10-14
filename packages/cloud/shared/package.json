@@ -524,6 +524,7 @@
     "./lib/services/shared-runtime/cached-agent-dates": "./src/lib/services/shared-runtime/cached-agent-dates.ts",
     "./lib/services/shared-runtime/canonical-scoped-stream": "./src/lib/services/shared-runtime/canonical-scoped-stream.ts",
     "./lib/services/shared-runtime/conversation-coordinator": "./src/lib/services/shared-runtime/conversation-coordinator.ts",
+    "./lib/services/shared-runtime/network-shared-admission": "./src/lib/services/shared-runtime/network-shared-admission.ts",
     "./lib/services/shared-runtime/group-participant-labels": "./src/lib/services/shared-runtime/group-participant-labels.ts",
     "./lib/services/shared-runtime/personal-fallback-account-state": "./src/lib/services/shared-runtime/personal-fallback-account-state.ts",
     "./lib/services/shared-runtime/personal-shared-agent": "./src/lib/services/shared-runtime/personal-shared-agent.ts",
