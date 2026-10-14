@@ -482,6 +482,8 @@ export class PromptBatcher {
       validate: opts.validate,
       maxRetries: opts.maxRetries,
       execOptions: opts.execOptions,
+    }).catch((error) => {
+      this.runtime.reportError("PromptBatcher.think", error, { sectionId: id });
     });
   }
 
