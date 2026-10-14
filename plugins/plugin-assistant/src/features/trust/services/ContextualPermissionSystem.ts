@@ -413,6 +413,7 @@ export class ContextualPermissionSystem {
         target.revoked = true;
         target.revokedAt = Date.now();
         target.revokedBy = revokedBy;
+        this.invalidatePermissionCache();
         return true;
       }
     }
