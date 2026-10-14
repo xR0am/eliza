@@ -222,8 +222,9 @@ export function reconcileDirectTextModelSettings(
   );
   const explicit = collectConfigEnvVars(current);
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    const ownsPrevious =
-      before[key] !== undefined && runtime.getSetting(key) === before[key];
+    // Read the live value once, before cleanup below mutates it.
+    const live = runtime.getSetting(key);
+    const ownsPrevious = before[key] !== undefined && live === before[key];
     if (ownsPrevious) {
       // initialize() can mirror constructor pins into both secret locations.
       // Remove only matching copies; setSetting(secret=true) would also erase
@@ -233,7 +234,6 @@ export function reconcileDirectTextModelSettings(
       const nestedSecrets = runtime.character.settings?.secrets;
       if (nestedSecrets?.[key] === before[key]) delete nestedSecrets[key];
     }
-    const live = runtime.getSetting(key);
     const canApply =
       before[key] !== undefined
         ? String(live) === String(before[key])
