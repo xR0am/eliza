@@ -101,6 +101,47 @@ test("owner grant returns stable events and a final checkpoint without provider 
     true,
   );
 });
+test("message events preserve mailbox labels and label changes preserve only changed labels", async () => {
+  response = async () =>
+    Response.json({
+      historyId: "120",
+      history: [
+        {
+          id: "101",
+          messagesAdded: [
+            { message: { id: "incoming", threadId: "thread-1", labelIds: ["INBOX", "UNREAD"] } },
+            { message: { id: "outgoing", threadId: "thread-2", labelIds: ["SENT"] } },
+          ],
+          labelsRemoved: [
+            {
+              message: { id: "incoming", threadId: "thread-1", labelIds: ["INBOX"] },
+              labelIds: ["UNREAD"],
+            },
+          ],
+        },
+      ],
+    });
+  expect(
+    (await fetchManagedGoogleGmailHistory(input)).events.map(({ labelIds }) => labelIds),
+  ).toEqual([["INBOX", "UNREAD"], ["SENT"], ["UNREAD"]]);
+  response = async () =>
+    Response.json({
+      historyId: "120",
+      history: [
+        {
+          id: "101",
+          messagesAdded: [
+            {
+              message: { id: "incoming", threadId: "thread-1", labelIds: Array(101).fill("INBOX") },
+            },
+          ],
+        },
+      ],
+    });
+  await expect(fetchManagedGoogleGmailHistory(input)).rejects.toThrow(
+    "Invalid Gmail history labels.",
+  );
+});
 test("intermediate pages cannot advance checkpoint and baseline does not claim backfill", async () => {
   response = async () =>
     Response.json({ historyId: "120", history: [event()], nextPageToken: "second" });

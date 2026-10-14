@@ -165,7 +165,7 @@ export async function fetchManagedGoogleGmailHistory(
           !opaque.test(message.threadId)
         )
           fail(502, "Invalid Gmail history message identity.");
-        const labels = detail.labelIds ?? [];
+        const labels = detail.labelIds ?? message.labelIds ?? [];
         if (
           !Array.isArray(labels) ||
           labels.length > 100 ||
