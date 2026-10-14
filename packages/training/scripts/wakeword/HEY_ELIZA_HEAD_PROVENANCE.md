@@ -180,7 +180,7 @@ Publish status:
    `plugins/plugin-native-inference/src/model-catalog/voice-models.ts` (sha256s above +
    that `hfRevision`), via `append_voice_model_version.py`.
 3. ⏳ **REMAINING (gated)** — assemble the three GGUFs into each tier bundle's
-   `wake/` dir through `packages/training/scripts/publish_all_eliza1.sh` (the bundles reach `elizaos/eliza-1` ONLY
+   `wake/` dir through `packages/training/scripts/publish_all_eliza1.sh` (the `packages/training/AGENTS.md` §6 citation was stale — that file does not exist; the bundles reach `elizaos/eliza-1` ONLY
    through that gated flow — hardware verification + eval gates + manifest
    regeneration; do NOT hand-assemble bundles).
 4. ⏳ **THEN** remove `hey-eliza` from `OPENWAKEWORD_PLACEHOLDER_HEADS`.
