@@ -142,7 +142,7 @@ export function ApiExplorerSurface() {
   useDocumentTitle("API Explorer");
 
   const [activeTab, setActiveTab] = useState<TabValue>("endpoints");
-  const [selectedEndpoint, setSelectedEndpoint] = useState<ApiEndpoint | null>(
+  const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(
     null,
   );
   const [searchQuery, setSearchQuery] = useState("");
@@ -166,6 +166,10 @@ export function ApiExplorerSurface() {
     ...endpoint,
     pricing: livePricing[endpoint.id] ?? endpoint.pricing,
   }));
+  const selectedEndpoint =
+    endpointsWithLivePricing.find(
+      (endpoint) => endpoint.id === selectedEndpointId,
+    ) ?? null;
   const filteredEndpoints = endpointsWithLivePricing.filter((endpoint) => {
     const categoryMatches =
       selectedCategory === "All" || endpoint.category === selectedCategory;
@@ -256,7 +260,7 @@ export function ApiExplorerSurface() {
               <Button
                 variant="ghostMuted"
                 type="button"
-                onClick={() => setSelectedEndpoint(null)}
+                onClick={() => setSelectedEndpointId(null)}
               >
                 <ChevronLeft className="size-4" />
                 Back to endpoints
@@ -420,7 +424,7 @@ export function ApiExplorerSurface() {
                   <EndpointCard
                     key={endpoint.id}
                     endpoint={endpoint}
-                    onSelect={setSelectedEndpoint}
+                    onSelect={(endpoint) => setSelectedEndpointId(endpoint.id)}
                     getMethodColor={getMethodColor}
                     getCategoryIcon={getCategoryIcon}
                   />
