@@ -352,10 +352,7 @@ export class PersonalTelegramDelivery {
         } catch {
           // error-policy:J3 malformed requests are rejected explicitly instead
           // of falling through to the 502 transport failure below.
-          return Response.json(
-            { error: "Invalid JSON body" },
-            { status: 400 },
-          );
+          return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
         if (!isDeliveryRequest(body)) {
           return Response.json(
