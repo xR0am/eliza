@@ -649,7 +649,6 @@ export interface Bindings {
   /** Delegated, primary-backed inference budgets; enroll organizations only after validation. */
   INFERENCE_FUNDED_BUDGET_ADMISSION?: string;
   INFERENCE_FUNDING_BUDGET_SEAL_SECRET?: string;
-  INFERENCE_FUNDING_BUDGET_TARGET_MICROS?: string;
   /**
    * "true" serves warm Worker admission from the published admission snapshot:
    * no policy or dispatch-policy transaction runs before provider dispatch. The

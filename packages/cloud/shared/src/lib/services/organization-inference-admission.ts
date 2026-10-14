@@ -29,11 +29,13 @@
  */
 
 import { ElizaError } from "@elizaos/core";
-import { writeTransaction } from "../../db/helpers";
+import { and, eq, isNull } from "drizzle-orm";
+import { dbWrite, writeTransaction } from "../../db/helpers";
 import {
   lockOrganizationPolicy,
   lockOrganizationPolicyForRead,
 } from "../../db/repositories/organization-policy-generation";
+import { inferenceFundingBudgetGrants } from "../../db/schemas/inference-funding-budgets";
 import { CacheTTL } from "../cache/keys";
 import { observeInferenceDependency } from "../observability/cloud-backend-observability";
 import { calculateCost, normalizeModelName } from "../pricing";
@@ -391,25 +393,27 @@ export async function admitOrganizationInference(
   try {
     return await admitOrganizationInferenceOnce(params);
   } catch (error) {
-    const bounded =
-      Boolean(params.flatCost) ||
-      (Number.isSafeInteger(params.maximumInputTokens) &&
-        params.maximumInputTokens! > 0 &&
-        Number.isSafeInteger(params.maximumOutputTokens) &&
-        params.maximumOutputTokens! > 0);
-    // Compatibility operations must not report an empty wallet merely because
-    // unused funds are held by delegated inference. Release idle grants before
-    // retrying the primary decision; busy grants remain a retryable handoff.
-    if (
-      !(error instanceof InsufficientCreditsError) ||
-      bounded ||
-      !params.admissionSnapshot?.fundedBudget?.enabled
-    )
-      throw error;
+    if (!(error instanceof InsufficientCreditsError)) throw error;
     const { inferenceBudgetGateRequest, isFundedBudgetAdmissionEnabled } = await import(
       "./inference-funded-budget-admission"
     );
     if (!isFundedBudgetAdmissionEnabled()) throw error;
+    // A compatibility caller may have no usable budget snapshot while its
+    // funds remain held by delegated inference. Check the primary before 402.
+    const hasOpenEscrow = async (): Promise<boolean> => {
+      const [grant] = await dbWrite
+        .select({ id: inferenceFundingBudgetGrants.id })
+        .from(inferenceFundingBudgetGrants)
+        .where(
+          and(
+            eq(inferenceFundingBudgetGrants.organization_id, params.context.organizationId),
+            isNull(inferenceFundingBudgetGrants.closed_at),
+          ),
+        )
+        .limit(1);
+      return grant !== undefined;
+    };
+    if (!(await hasOpenEscrow())) throw error;
     const handoff = await inferenceBudgetGateRequest<{ released?: boolean; pending?: boolean }>(
       params.context.organizationId,
       "/budget/reclaim",
@@ -417,7 +421,13 @@ export async function admitOrganizationInference(
     );
     if (handoff.pending === true) throw admissionUnavailable(params, error);
     if (handoff.released !== true) throw admissionUnavailable(params, error);
-    return admitOrganizationInferenceOnce(params);
+    try {
+      return await admitOrganizationInferenceOnce(params);
+    } catch (retryError) {
+      if (retryError instanceof InsufficientCreditsError && (await hasOpenEscrow()))
+        throw admissionUnavailable(params, retryError);
+      throw retryError;
+    }
   }
 }
 
