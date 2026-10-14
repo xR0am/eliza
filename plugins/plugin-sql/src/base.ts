@@ -6178,7 +6178,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           entityId: task.entityId as UUID,
           tags: task.tags,
           metadata: metadata,
-          createdAt: now,
+          // Preserve a caller-supplied createdAt (agent import replays the
+          // original task row, and sqlite keeps it too). Stamp now only
+          // when the caller did not provide one.
+          createdAt: task.createdAt !== undefined ? new Date(Number(task.createdAt)) : now,
           updatedAt: now,
           agentId: this.agentId as UUID,
         };
