@@ -271,7 +271,10 @@ function highlightedPredictionOutcome(market: PolymarketMarketRecord): {
 
   if (highestIndex >= 0) {
     return {
-      label: market.outcomeLabels[highestIndex] ?? "Top",
+      // An outcome whose label was invalid keeps its index with an empty
+      // label (see mapPolymarketMarket); name it with the same placeholder
+      // as a missing label instead of publishing an empty label.
+      label: market.outcomeLabels[highestIndex] || "Top",
       probability: market.outcomeProbabilities[highestIndex] ?? null,
     };
   }
