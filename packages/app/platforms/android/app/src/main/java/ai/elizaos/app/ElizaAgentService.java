@@ -644,6 +644,159 @@ public class ElizaAgentService extends Service {
         }
     }
 
+    /** Idle budget for an event feed; the agent sends a keepalive every 15 s. */
+    static final int LOCAL_EVENT_IDLE_TIMEOUT_MS = 45_000;
+    private static final int LOCAL_EVENT_CONNECT_TIMEOUT_MS = 10_000;
+    private static final int LOCAL_EVENT_STREAM_LIMIT = 16;
+    private static final java.util.regex.Pattern LOCAL_EVENT_STREAM_NAME =
+        java.util.regex.Pattern.compile("^[a-z0-9][a-z0-9_.:-]{0,63}$");
+
+    /**
+     * Live agent-event feed over the private IPC ({@code events_subscribe}).
+     *
+     * The port-free app has no WebSocket, so this is how WS-only
+     * {@code agent_event} envelopes (e.g. the ephemeral {@code voice-transcript}
+     * stream: speech-start | partial | final | error) reach it. {@code requestJson}
+     * is {@code {"streams":["voice-transcript", ...]}} (required exact-match
+     * filter, 1-16 names). Blocks the calling thread until the feed ends and
+     * reports, in order:
+     *   {"type":"subscribed","streams":[..]}                        (once, first)
+     *   {"type":"event","event":{agent_event envelope}}             (per event)
+     *   {"type":"dropped","count":n}                                (agent skipped an oversized event)
+     *   {"type":"end"}  or  {"type":"end","error":".."}              (terminal, exactly once)
+     *
+     * Live only: nothing is replayed, so after an {@code end} with an error the
+     * caller resubscribes and treats any in-progress turn as unknown. Event
+     * payloads are never logged here. {@link LocalStreamHandle#cancel} ends the
+     * feed with a plain {@code end}.
+     */
+    public static void subscribeLocalAgentEvents(
+        String requestJson,
+        java.util.function.Consumer<String> onEvent,
+        LocalStreamHandle handle
+    ) {
+        try {
+            JSONObject payload = buildEventSubscriptionPayload(requestJson, currentLocalAgentToken);
+            handle.check();
+            subscribeOverSocket(payload, onEvent, handle);
+        } catch (Exception error) {
+            boolean cancelled;
+            try { handle.check(); cancelled = false; } catch (IOException closed) { cancelled = true; }
+            emitEventEnd(onEvent, cancelled ? null
+                : (error.getMessage() == null ? "Local agent event feed failed" : error.getMessage()));
+        }
+    }
+
+    /** Validate the stream filter and build the {@code events_subscribe} payload. */
+    static JSONObject buildEventSubscriptionPayload(String requestJson, String token) throws JSONException {
+        JSONObject request = requestJson == null || requestJson.trim().isEmpty()
+            ? new JSONObject()
+            : new JSONObject(requestJson);
+        org.json.JSONArray raw = request.optJSONArray("streams");
+        if (raw == null || raw.length() == 0 || raw.length() > LOCAL_EVENT_STREAM_LIMIT) {
+            throw new IllegalArgumentException("Event subscription requires 1-16 stream names");
+        }
+        java.util.LinkedHashSet<String> unique = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < raw.length(); i++) {
+            Object value = raw.opt(i);
+            if (!(value instanceof String) || !LOCAL_EVENT_STREAM_NAME.matcher((String) value).matches()) {
+                throw new IllegalArgumentException("Invalid event stream name");
+            }
+            unique.add((String) value);
+        }
+        org.json.JSONArray streams = new org.json.JSONArray();
+        for (String name : unique) streams.put(name);
+        JSONObject headers = new JSONObject();
+        if (token != null && !token.trim().isEmpty()) {
+            headers.put("Authorization", "Bearer " + token.trim());
+        }
+        return new JSONObject().put("streams", streams).put("headers", headers);
+    }
+
+    /**
+     * Translate one agent subscription frame into the caller envelope.
+     * Returns null for frames the caller never sees (keepalive, unknown).
+     * A returned {@code end} envelope is terminal.
+     */
+    static JSONObject translateEventSubscriptionFrame(String line) throws JSONException {
+        JSONObject frame = new JSONObject(line);
+        String event = frame.optString("event", "");
+        switch (event) {
+            case "subscribed": {
+                org.json.JSONArray streams = frame.optJSONArray("streams");
+                return new JSONObject().put("type", "subscribed")
+                    .put("streams", streams == null ? new org.json.JSONArray() : streams);
+            }
+            case "agent_event": {
+                JSONObject data = frame.optJSONObject("data");
+                if (data == null || !"agent_event".equals(data.optString("type"))) {
+                    throw new JSONException("Invalid agent event frame");
+                }
+                return new JSONObject().put("type", "event").put("event", data);
+            }
+            case "dropped":
+                return new JSONObject().put("type", "dropped").put("count", frame.optInt("count"));
+            case "error":
+                return new JSONObject().put("type", "end")
+                    .put("error", frame.optString("error", "Local agent refused event feed"));
+            default:
+                return null;
+        }
+    }
+
+    private static void subscribeOverSocket(
+        JSONObject payload,
+        java.util.function.Consumer<String> onEvent,
+        LocalStreamHandle handle
+    ) throws IOException, JSONException {
+        JSONObject frame = new JSONObject()
+            .put("id", nextFrameId())
+            .put("method", "events_subscribe")
+            .put("payload", payload);
+        LocalSocket socket = connectLocalAgentSocket(
+            SystemClock.elapsedRealtime() + LOCAL_EVENT_CONNECT_TIMEOUT_MS, handle);
+        try {
+            handle.attach(socket);
+            writeFrameLine(socket.getOutputStream(), frame);
+            InputStream in = socket.getInputStream();
+            boolean subscribed = false;
+            while (true) {
+                // Rolling idle deadline: any frame (keepalives included) renews it.
+                long idleDeadline = SystemClock.elapsedRealtime() + LOCAL_EVENT_IDLE_TIMEOUT_MS;
+                String line = readFrameLine(socket, in, idleDeadline);
+                if (line == null) break;
+                if (line.isEmpty()) continue;
+                JSONObject envelope = translateEventSubscriptionFrame(line);
+                if (envelope == null) continue;
+                String type = envelope.optString("type");
+                if ("end".equals(type)) {
+                    onEvent.accept(envelope.toString());
+                    return;
+                }
+                if ("subscribed".equals(type)) {
+                    if (subscribed) throw new IOException("Duplicate event subscription ack");
+                    subscribed = true;
+                } else if (!subscribed) {
+                    throw new IOException("Agent event before subscription ack");
+                }
+                onEvent.accept(envelope.toString());
+            }
+            throw new IOException("Local agent event feed ended; resubscribe (no replay)");
+        } finally {
+            closeQuietly(socket);
+        }
+    }
+
+    private static void emitEventEnd(java.util.function.Consumer<String> onEvent, String error) {
+        try {
+            JSONObject end = new JSONObject().put("type", "end");
+            if (error != null) end.put("error", error);
+            onEvent.accept(end.toString());
+        } catch (JSONException ignored) {
+            onEvent.accept("{\"type\":\"end\"}");
+        }
+    }
+
     private static boolean isSafeLocalAgentPath(String path) {
         return path != null
             && path.startsWith("/")
