@@ -490,6 +490,13 @@ export class MessageManager {
     }
   }
 
+  /** Upgraded groups seen by this process: old chat id → supergroup chat id. */
+  private readonly migratedChatIds = new Map<string, number>();
+
+  private currentChatId(chatId: number | string): number | string {
+    return this.migratedChatIds.get(String(chatId)) ?? chatId;
+  }
+
   private telegramMessageMemoryKey(
     chatId: number | string,
     messageId: number | string,
@@ -1092,9 +1099,11 @@ export class MessageManager {
   private async sendWithRetry<T>(
     send: () => Promise<T>,
     plainTextFallback?: () => Promise<T>,
+    chat?: { id: number | string },
   ): Promise<T> {
     const MAX_RATE_LIMIT_RETRIES = 2;
     const MAX_RETRY_AFTER_SECONDS = 30;
+    let migrated = false;
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await send();
@@ -1104,11 +1113,37 @@ export class MessageManager {
             response?: {
               error_code?: number;
               description?: string;
-              parameters?: { retry_after?: number };
+              parameters?: {
+                retry_after?: number;
+                migrate_to_chat_id?: number;
+              };
             };
           }
         ).response;
         const code = response?.error_code;
+        // A basic group upgraded to a supergroup has a new chat id; Telegram
+        // names it in the error. Send there once and remember it for the chat.
+        const migrateTo = response?.parameters?.migrate_to_chat_id;
+        if (
+          code === 400 &&
+          chat &&
+          typeof migrateTo === "number" &&
+          !migrated
+        ) {
+          logger.warn(
+            {
+              src: "plugin:telegram",
+              agentId: this.runtime.agentId,
+              fromChatId: chat.id,
+              toChatId: migrateTo,
+            },
+            "Telegram group was upgraded to a supergroup; sending to its new chat id",
+          );
+          this.migratedChatIds.set(String(chat.id), migrateTo);
+          chat.id = migrateTo;
+          migrated = true;
+          continue;
+        }
         if (code === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
           const retryAfter = Math.min(
             response?.parameters?.retry_after ?? 1,
@@ -1303,7 +1338,7 @@ export class MessageManager {
             ? Markup.inlineKeyboard(keyboardRows).reply_markup
             : undefined;
 
-        const chatId = ctx.chat.id;
+        const chat = { id: this.currentChatId(ctx.chat.id) };
         const sendOptions = {
           reply_parameters:
             i === 0 && replyToMessageId
@@ -1317,7 +1352,7 @@ export class MessageManager {
         try {
           const sentMessage = (await this.sendWithRetry(
             () =>
-              ctx.telegram.sendMessage(chatId, chunk, {
+              ctx.telegram.sendMessage(chat.id, chunk, {
                 ...sendOptions,
                 parse_mode: "MarkdownV2",
               }),
@@ -1327,10 +1362,11 @@ export class MessageManager {
             // the editMessage fallback, which sends cleanText(text).
             () =>
               ctx.telegram.sendMessage(
-                chatId,
+                chat.id,
                 cleanText(chunks[i]),
                 sendOptions,
               ),
+            chat,
           )) as Message.TextMessage;
 
           sentMessages.push(sentMessage);
@@ -1343,7 +1379,7 @@ export class MessageManager {
               [],
               cause,
               this.accountId,
-              String(chatId),
+              String(chat.id),
             );
           throw cause;
         }
