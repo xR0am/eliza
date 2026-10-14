@@ -7,9 +7,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 
-const _OUT =
-  "/tmp/claude-0/-root-eliza/91acb0da-5ca9-4ee1-99fb-4ae04156250d/scratchpad/hunt-empty/probe-output.txt";
-
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
