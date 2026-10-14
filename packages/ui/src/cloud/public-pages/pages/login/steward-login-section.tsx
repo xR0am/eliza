@@ -667,7 +667,10 @@ export default function StewardLoginSection({
     return {
       auth: privateAuth(stewardApiUrl, STEWARD_TENANT_ID),
       phoneAuth: privateAuth(
-        resolveStewardAuthEndpoint("/steward/cloud-owner-phone"),
+        new URL(
+          resolveStewardAuthEndpoint("/steward/cloud-owner-phone"),
+          typeof window === "undefined" ? undefined : window.location.origin,
+        ).href,
       ),
     };
   }, [stewardApiUrl]);

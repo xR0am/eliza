@@ -163,6 +163,15 @@ export async function listDocumentRecords(
   return memories.map(toDocumentRecord);
 }
 
+/** Number of documents in the scope, over the same filter `listDocumentRecords` pages. */
+export async function countDocumentRecords(scope: DocumentScope) {
+  return memoriesRepository.countByType(
+    scope.agentId,
+    "documents",
+    scope.roomId,
+  );
+}
+
 /**
  * Every document record in the scope, newest first, read in keyset pages so a
  * document added or removed during the scan can neither repeat nor hide

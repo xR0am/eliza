@@ -6,7 +6,10 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Client } from "pg";
-import { installBillingCommandEvidenceTestColumns } from "../../testing";
+import {
+  installBillingCommandEvidenceTestColumns,
+  installSubscriptionGrantTestSchema,
+} from "../../testing";
 
 const postgresUrl = process.env.APP_FUNDING_TEST_POSTGRES_URL;
 const schema = `app_funding_${randomUUID().replaceAll("-", "_")}`;
@@ -104,6 +107,7 @@ beforeAll(async () => {
       if (statement.trim()) await client.exec(statement.replaceAll('"public".', ""));
   }
   await installBillingCommandEvidenceTestColumns((statement) => client.exec(statement));
+  await installSubscriptionGrantTestSchema((statement) => client.exec(statement));
   await client.query(
     `INSERT INTO billing_merchants(id,organization_id,provider_account_key,stripe_account_id,livemode,enabled) VALUES ($1,$2,'platform','acct_platform',false,true)`,
     [merchant, org],
