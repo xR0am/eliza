@@ -238,16 +238,20 @@ export async function withInferenceUserPolicyMutation<T>(
   userId: string,
   additionalOrganizationIds: string[],
   fn: (tx: DbTransaction) => Promise<T>,
+  transaction?: DbTransaction,
 ): Promise<T> {
-  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true") return writeTransaction(fn);
+  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true")
+    return transaction ? fn(transaction) : writeTransaction(fn);
   const rows = await sqlRows<{ organization_id: string }>(
-    dbWrite,
+    transaction ?? dbWrite,
     sql`SELECT organization_id FROM users WHERE id = ${userId}::uuid AND organization_id IS NOT NULL UNION SELECT organization_id FROM api_keys WHERE user_id = ${userId}::uuid`,
   );
-  return withInferencePolicyMutation(
-    { organizationIds: [...rows.map((row) => row.organization_id), ...additionalOrganizationIds] },
-    fn,
-  );
+  const options = {
+    organizationIds: [...rows.map((row) => row.organization_id), ...additionalOrganizationIds],
+  };
+  return transaction
+    ? withInferencePolicyMutationInTransaction(transaction, options, fn)
+    : withInferencePolicyMutation(options, fn);
 }
 
 /** Authorize subsequent policy writes through the exact outer transaction's COMMIT. */

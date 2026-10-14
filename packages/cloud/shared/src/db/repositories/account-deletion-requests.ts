@@ -1,4 +1,4 @@
-import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
+import { withInferenceUserPolicyMutation } from "../../lib/services/inference-policy-fence";
 /** Persists durable deletion receipts and generation-fenced worker state transitions. */
 
 import { createHash } from "node:crypto";
@@ -416,7 +416,12 @@ export class AccountDeletionRequestsRepository {
     }
 
     return await writeTransaction(async (tx) => {
-      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+      await withInferenceUserPolicyMutation(
+        observed.user_id!,
+        [observed.organization_id!],
+        async () => {},
+        tx,
+      );
 
       const [organization] = await tx
         .select()
@@ -644,7 +649,12 @@ export class AccountDeletionRequestsRepository {
     }
 
     return await writeTransaction(async (tx) => {
-      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+      await withInferenceUserPolicyMutation(
+        observed.user_id!,
+        [observed.organization_id!],
+        async () => {},
+        tx,
+      );
 
       const [organization] = await tx
         .select()
@@ -1143,7 +1153,12 @@ export class AccountDeletionRequestsRepository {
     }
 
     return await writeTransaction(async (tx) => {
-      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+      await withInferenceUserPolicyMutation(
+        observed.user_id!,
+        [observed.organization_id!],
+        async () => {},
+        tx,
+      );
 
       const [organization] = await tx
         .select()
@@ -1991,7 +2006,12 @@ export class AccountDeletionRequestsRepository {
     }
 
     return await writeTransaction(async (tx) => {
-      await ensureInferencePolicyMutation(tx, observed.organization_id!);
+      await withInferenceUserPolicyMutation(
+        observed.user_id!,
+        [observed.organization_id!],
+        async () => {},
+        tx,
+      );
 
       const [organization] = await tx
         .select()
