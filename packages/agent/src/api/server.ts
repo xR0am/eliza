@@ -3592,6 +3592,8 @@ export async function startApiServer(opts?: {
     onRuntimeActivated,
     onRuntimeSwapped: () => {
       bindInProcessApi();
+      if (state.runtime)
+        state.connectorHealthMonitor?.setRuntime(state.runtime);
       bindRuntimeStreams(state.runtime);
       wireModelRegistrationBroadcast(state.runtime);
       wireNativeBrowserPageReader(state.runtime);
@@ -4965,6 +4967,7 @@ export async function startApiServer(opts?: {
     });
     state.runtime = rt;
     bindInProcessApi();
+    state.connectorHealthMonitor?.setRuntime(rt);
     state.chatConnectionReady = null;
     state.chatConnectionPromise = null;
     bindRuntimeStreams(rt);
