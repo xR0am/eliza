@@ -193,6 +193,10 @@ const SEARCH_QUERY_STOP_WORDS = new Set([
   // ("remember that my favorite tea is yerba" → forget-by-query, live
   // 2026-09-10): they never appear in the stored fact, and delete needs every
   // remaining term to match, so one such word sank an otherwise exact hit.
+  // The mutation verbs "delete"/"remove"/"erase" land here rather than in a
+  // position-bound strip: the drop applies wherever the verb sits in the
+  // sentence ("please delete my API key" → still found), and search keeps a
+  // single rule for this word class.
   "remember",
   "remembered",
   "forget",
@@ -204,6 +208,9 @@ const SEARCH_QUERY_STOP_WORDS = new Set([
   "saved",
   "store",
   "stored",
+  "delete",
+  "remove",
+  "erase",
   "please",
   "know",
   "knew",
@@ -1720,16 +1727,6 @@ function mutationQueryFromMessage(
     }
   }
   text = text.replace(/\s+/g, " ").trim();
-  // Mutation verbs the planner copies from the user's sentence ("delete my API
-  // key" → forget-by-query): they never appear in the stored fact, and delete
-  // needs every remaining term to match, so a leading one sank an otherwise
-  // exact hit below the delete threshold. Strip only the leading verb: quoted
-  // targets ("delete key"), mid-sentence verbs, and requester/confirmation
-  // phrasing stay intact.
-  text = text
-    .replace(/^(?:delete|remove|erase)\b\s*/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
   if (!text || scoreQueryTerms(text).length === 0) return undefined;
   logger.info(
     "[MEMORY] delete carried no query; using the user's message text",
