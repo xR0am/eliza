@@ -3766,6 +3766,30 @@ export class DiscordService extends Service implements IDiscordService {
 			params.target,
 			params,
 		);
+		// A bot cannot leave one channel of a server; it stops listening only
+		// when a channel allowlist excludes the channel. Say so instead of
+		// reporting a leave that changes nothing.
+		const configured =
+			this.getAccountState(accountId)?.allowedChannelIds ??
+			this.allowedChannelIds;
+		if (!configured) {
+			throw new ElizaError(
+				"Discord listens in every channel because no CHANNEL_IDS allowlist is set, so leaving one channel has no effect.",
+				{
+					code: "DISCORD_LEAVE_NO_CHANNEL_ALLOWLIST",
+					context: { accountId, channelId: channel.id },
+				},
+			);
+		}
+		if (configured.includes(channel.id)) {
+			throw new ElizaError(
+				"This Discord channel is listed in CHANNEL_IDS. Remove it from the configuration to leave it.",
+				{
+					code: "DISCORD_LEAVE_CONFIGURED_CHANNEL",
+					context: { accountId, channelId: channel.id },
+				},
+			);
+		}
 		this.removeAllowedChannel(channel.id, accountId);
 	}
 
