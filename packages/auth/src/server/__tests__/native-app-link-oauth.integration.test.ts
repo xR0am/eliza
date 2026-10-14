@@ -17,6 +17,7 @@ import {
   test,
 } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { createLoginApp } from "../app";
 import type { createPGLiteDb } from "../db/pglite";
 
@@ -422,6 +423,123 @@ describe("native App Link OAuth (Alpha Phone)", () => {
     }
   }, 30_000);
 
+  test("mfa=exchange returns a TOTP account's challenge through the PKCE exchange", async () => {
+    const identity = {
+      sub: "google-sub-mfa",
+      email: "mfa-owner@example.test",
+      email_verified: true,
+    };
+    // Sign in once and enrol TOTP through the real endpoints.
+    const first = await completeProviderRoundTrip("google", identity);
+    const firstCode = readHandOff(first.handOff).code;
+    const session = await (
+      await nativePost("/auth/oauth/exchange", {
+        code: firstCode,
+        redirectUri: APP_LINK,
+        tenantId: TENANT_ID,
+        codeVerifier: first.verifier,
+      })
+    ).json();
+    const bearer = (path: string, body: object) =>
+      app.request(`${ROUTER_ORIGIN}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify(body),
+      });
+    const enrol = await bearer("/auth/mfa/totp/enroll", {});
+    expect(enrol.status).toBe(200);
+    const { secret } = (await enrol.json()) as { secret: string };
+    const { generateTotp } = await import("../auth/totp");
+    const confirm = await bearer("/auth/mfa/totp/verify", {
+      code: await generateTotp(secret),
+    });
+    expect(confirm.status).toBe(200);
+
+    // Without the opt-in the account still gets Steward's error response.
+    const legacyVerifier = base64url(randomBytes(48));
+    const legacyAuthorize = await nativeGet(
+      `/auth/oauth/google/authorize?${authorizeQuery({ code_challenge: s256(legacyVerifier) })}`,
+    );
+    const legacyProviderCode = base64url(randomBytes(16));
+    identities.set(legacyProviderCode, identity);
+    const legacy = await nativeGet(
+      `/auth/oauth/google/callback?code=${legacyProviderCode}&state=${new URL(legacyAuthorize.headers.get("location") ?? "").searchParams.get("state")}`,
+    );
+    expect(legacy.status).toBe(403);
+    expect(legacy.headers.get("location")).toBeNull();
+
+    // With mfa=exchange the app gets a contract success return...
+    const verifier = base64url(randomBytes(48));
+    const appState = base64url(randomBytes(32));
+    const authorize = await nativeGet(
+      `/auth/oauth/google/authorize?${authorizeQuery({
+        code_challenge: s256(verifier),
+        state: appState,
+        prompt: "select_account",
+        mfa: "exchange",
+      })}`,
+    );
+    expect(authorize.status).toBe(302);
+    const providerCode = base64url(randomBytes(16));
+    identities.set(providerCode, identity);
+    const callback = await nativeGet(
+      `/auth/oauth/google/callback?code=${providerCode}&state=${new URL(authorize.headers.get("location") ?? "").searchParams.get("state")}`,
+    );
+    expect(callback.status).toBe(302);
+    const handOff = callback.headers.get("location") ?? "";
+    const outcome = classifyCallback(handOff, "production");
+    expect(outcome).toMatchObject({ kind: "success", state: appState });
+    const code = outcome.kind === "success" ? outcome.code : "";
+
+    // ...whose code still needs the verifier, and redeems to the challenge only.
+    const wrong = await nativePost("/auth/oauth/exchange", {
+      code,
+      redirectUri: APP_LINK,
+      tenantId: TENANT_ID,
+      codeVerifier: base64url(randomBytes(48)),
+    });
+    expect(wrong.status).toBe(401);
+    const exchange = await nativePost("/auth/oauth/exchange", {
+      code,
+      redirectUri: APP_LINK,
+      tenantId: TENANT_ID,
+      codeVerifier: verifier,
+    });
+    expect(exchange.status).toBe(200);
+    const challenge = (await exchange.json()) as Record<string, unknown>;
+    expect(challenge.mfaRequired).toBe(true);
+    expect(challenge.token).toBeUndefined();
+    expect(challenge.refreshToken).toBeUndefined();
+    const mfa = challenge.mfa as { type: string; challengeId: string };
+    expect(mfa.type).toBe("totp");
+
+    const complete = await nativePost("/auth/mfa/totp/complete", {
+      challengeId: mfa.challengeId,
+      code: await generateTotp(secret, { time: Date.now() + 30_000 }),
+    });
+    expect(complete.status).toBe(200);
+    const completed = (await complete.json()) as Record<string, unknown>;
+    expect(typeof completed.token).toBe("string");
+
+    const replay = await nativePost("/auth/oauth/exchange", {
+      code,
+      redirectUri: APP_LINK,
+      tenantId: TENANT_ID,
+      codeVerifier: verifier,
+    });
+    expect(replay.status).toBe(401);
+  }, 30_000);
+
+  test("authorize refuses an unknown mfa mode", async () => {
+    const response = await nativeGet(
+      `/auth/oauth/google/authorize?${authorizeQuery({ mfa: "inline" })}`,
+    );
+    expect(response.status).toBe(400);
+  });
+
   test("authorize is rate limited per client address", async () => {
     const priorProxyHops = process.env.STEWARD_TRUSTED_PROXY_HOPS;
     process.env.STEWARD_TRUSTED_PROXY_HOPS = "1";
@@ -456,4 +574,200 @@ describe("native App Link OAuth (Alpha Phone)", () => {
       else process.env.STEWARD_TRUSTED_PROXY_HOPS = priorProxyHops;
     }
   }, 30_000);
+});
+
+// ── Shared callback contract with Alpha Phone ────────────────────────────────
+//
+// packages/app/test/fixtures/alphaphone-native-signin-callback.contract.json
+// is committed byte for byte in AlphaCompute/alphaphone, whose native parser
+// runs the same vectors. These tests feed Steward's real hand-offs (success
+// and the error page's recovery link) through the fixture's rules and keep
+// its error allowlist in step with the codes Steward can return to the app.
+
+type ContractEnv = "production" | "staging";
+type ContractOutcome =
+  | { kind: "success"; code: string; state: string }
+  | { kind: "error"; error: string; state: string }
+  | { kind: "empty" }
+  | { kind: "reject" };
+const contract = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../app/test/fixtures/alphaphone-native-signin-callback.contract.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as {
+  hosts: Record<ContractEnv, string>;
+  path: string;
+  allowedKeys: string[];
+  codePattern: string;
+  statePattern: string;
+  errorAllowlist: string[];
+  stewardCodesWithoutReturn: string[];
+  authorize: {
+    requiredParams: Record<string, string>;
+    redirectUri: Record<ContractEnv, string>;
+  };
+  cases: {
+    name: string;
+    env: ContractEnv;
+    url: string;
+    expect: ContractOutcome;
+  }[];
+};
+
+/** The fixture's `rules`, applied to the raw URL text (same as Alpha's parser). */
+function classifyCallback(url: string, env: ContractEnv): ContractOutcome {
+  const reject: ContractOutcome = { kind: "reject" };
+  const base = `https://${contract.hosts[env]}${contract.path}`;
+  if (!url.startsWith(base)) return reject;
+  const rest = url.slice(base.length);
+  let query = "";
+  let fragment = "";
+  if (rest.startsWith("?")) {
+    const hash = rest.indexOf("#");
+    query = hash === -1 ? rest.slice(1) : rest.slice(1, hash);
+    fragment = hash === -1 ? "" : rest.slice(hash + 1);
+  } else if (rest.startsWith("#")) {
+    fragment = rest.slice(1);
+  } else if (rest !== "") {
+    return reject;
+  }
+  if (query === "" && fragment === "") return { kind: "empty" };
+  if (query !== "" && fragment !== "") return reject;
+  const values = new Map<string, string>();
+  for (const pair of (query || fragment).split("&")) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0 || pair.indexOf("=", separator + 1) !== -1)
+      return reject;
+    const key = pair.slice(0, separator);
+    const value = pair.slice(separator + 1);
+    if (!contract.allowedKeys.includes(key) || value === "" || values.has(key))
+      return reject;
+    values.set(key, value);
+  }
+  const state = values.get("state");
+  if (
+    values.size !== 2 ||
+    !state ||
+    !new RegExp(contract.statePattern).test(state)
+  )
+    return reject;
+  const code = values.get("code");
+  if (code !== undefined) {
+    return fragment !== "" && new RegExp(contract.codePattern).test(code)
+      ? { kind: "success", code, state }
+      : reject;
+  }
+  const error = values.get("error");
+  return error !== undefined && contract.errorAllowlist.includes(error)
+    ? { kind: "error", error, state }
+    : reject;
+}
+
+describe("Alpha Phone callback contract (shared fixture)", () => {
+  test("the reference classifier matches every fixture vector", () => {
+    expect(contract.authorize.redirectUri.production).toBe(APP_LINK);
+    for (const entry of contract.cases) {
+      expect({
+        name: entry.name,
+        outcome: classifyCallback(entry.url, entry.env),
+      }).toEqual({ name: entry.name, outcome: entry.expect });
+    }
+  });
+
+  test("authorize accepts exactly the parameters the contract makes Alpha send", async () => {
+    const query = authorizeQuery(contract.authorize.requiredParams);
+    const response = await nativeGet(`/auth/oauth/google/authorize?${query}`);
+    expect(response.status).toBe(302);
+    const provider = new URL(response.headers.get("location") ?? "");
+    expect(provider.searchParams.get("prompt")).toBe("select_account");
+  });
+
+  test("Steward's success hand-off is a contract success return", async () => {
+    const { handOff, appState } = await completeProviderRoundTrip(
+      "google",
+      {
+        sub: "google-sub-contract",
+        email: "contract@example.test",
+        email_verified: true,
+      },
+      { prompt: "select_account" },
+    );
+    const outcome = classifyCallback(handOff.toString(), "production");
+    expect(outcome.kind).toBe("success");
+    expect(outcome).toMatchObject({ state: appState });
+  }, 30_000);
+
+  test("Steward's error page links back with a contract error return", async () => {
+    const appState = base64url(randomBytes(32));
+    const authorize = await nativeGet(
+      `/auth/oauth/google/authorize?${authorizeQuery({ state: appState, prompt: "select_account" })}`,
+    );
+    expect(authorize.status).toBe(302);
+    const stewardState = new URL(
+      authorize.headers.get("location") ?? "",
+    ).searchParams.get("state");
+    const page = await app.request(
+      `${ROUTER_ORIGIN}/auth/oauth/google/callback?error=access_denied&state=${stewardState}`,
+      {
+        method: "GET",
+        headers: { accept: "text/html", "sec-fetch-mode": "navigate" },
+      },
+    );
+    expect(page.status).toBe(400);
+    const html = await page.text();
+    const href = html.match(
+      /class="stwd-oauth-error__action" href="([^"]+)"/,
+    )?.[1];
+    expect(href).toBeDefined();
+    const recovery = (href ?? "").replaceAll("&amp;", "&");
+    expect(classifyCallback(recovery, "production")).toEqual({
+      kind: "error",
+      error: "oauth_authorization_failed",
+      state: appState,
+    });
+  }, 30_000);
+
+  test("every code the OAuth callback can return to the app is in the allowlist", () => {
+    const source = readFileSync(
+      new URL("../api/routes/auth.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf('auth.get("/oauth/:provider/callback"');
+    const end = source.indexOf('auth.post("/oauth/exchange"', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const handler = source.slice(start, end);
+    const calls = handler.split("oauthCallbackFailure(c, {").slice(1);
+    expect(calls.length).toBeGreaterThan(10);
+    const returned = new Set<string>();
+    const notReturned = new Set<string>();
+    for (const call of calls) {
+      const body = call.slice(0, call.indexOf("});"));
+      const codes = [...body.matchAll(/"((?:oauth|mfa)_[a-z_]+)"/g)].map(
+        (match) => match[1],
+      );
+      expect(codes.length).toBeGreaterThan(0);
+      const returnsToApp = /\bredirectUrl\b|\.\.\.recovery/.test(body);
+      for (const code of codes)
+        (returnsToApp ? returned : notReturned).add(code);
+    }
+    for (const code of returned) {
+      expect({
+        code,
+        allowlisted: contract.errorAllowlist.includes(code),
+      }).toEqual({ code, allowlisted: true });
+    }
+    for (const code of notReturned) {
+      expect({
+        code,
+        classified:
+          contract.errorAllowlist.includes(code) ||
+          contract.stewardCodesWithoutReturn.includes(code),
+      }).toEqual({ code, classified: true });
+    }
+  });
 });

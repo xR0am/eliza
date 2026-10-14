@@ -71,12 +71,43 @@ Steward code with its PKCE verifier, then trades the Steward session for an
 (`flow: "mobile_pkce"`, Bearer Steward token), `mobile/token` and `mobile/ack`.
 Steward returns a successful code and state in the URL fragment.
 
-Native email sign-in sends `delivery: "code"` to `POST /steward/auth/email/send`.
-That email carries only the six-digit code, using the sign-in code template with
-no link, and no link token is issued for the challenge. The code is redeemed
-through `/steward/auth/email/code/verify`. Without `delivery: "code"` the email
-also carries a magic link to Steward's `/callback/email`, which signs in the
-browser rather than the phone.
+The callback contract (success `#code=..&state=..` only in the fragment, error
+`{error,state}` from a fixed allowlist, the fallback page's hand-off, and the
+authorize parameters Alpha sends) is pinned by
+`packages/app/test/fixtures/alphaphone-native-signin-callback.contract.json`.
+The same file is committed in AlphaCompute/alphaphone, whose callback parser
+runs every vector. Here `packages/app/test/alphaphone-callback-contract.test.ts`
+runs it against the fallback page, and
+`packages/auth/src/server/__tests__/native-app-link-oauth.integration.test.ts`
+against Steward's real success and error hand-offs and its error codes. Change
+both copies together.
+
+Alpha authorizes with `prompt=select_account` (so the final redirect follows a
+user gesture and Chrome hands it to the App Link) and `mfa=exchange`. With
+`mfa=exchange`, an account with a second factor gets the normal success return;
+`POST /steward/auth/oauth/exchange` then answers
+`{ok: true, mfaRequired: true, mfa: {type, challengeId, expiresAt}, user}` with
+no tokens, and the app finishes through `/steward/auth/mfa/{type}/complete`.
+
+Native email sign-in is a six-digit code typed into the app:
+
+- `POST /steward/auth/email/code/send` with `{email, tenantId?, captchaToken?}`
+  answers `{ok: true, data: {expiresAt, codeLength: 6}}`. The email carries only
+  the code (sign-in code template, no link); no link token is issued. The code
+  is crypto-random, valid 10 minutes, stored only as an HMAC bound to the
+  address and tenant, single use, replaced by a later send, and locked after 5
+  wrong attempts. Limits: 30/min per IP, 5 per 10 minutes per address (shared
+  with `/email/send`), 120/min per tenant. Errors: 400 (bad body, tenant email
+  policy, captcha), 403 (email login disabled for the tenant, or an SSO-only
+  domain), 404 (unknown tenant hint), 429, 502/503 (delivery).
+- `POST /steward/auth/email/code/verify` with `{email, code, tenantId?}` answers
+  the Steward session `{ok: true, token, refreshToken, expiresIn, user}` (or
+  `{ok: true, mfaRequired: true, mfa, user}`), which the app passes as Bearer
+  to `mobile_pkce` connect. Wrong or expired codes are 401; lockout and rate
+  limits (10/min per IP, 5 per 10 minutes per tenant and address) are 429.
+- `delivery: "code"` on `POST /steward/auth/email/send` remains as an older
+  spelling of the code-only email under the same limits. Without it, that
+  endpoint keeps sending the web magic link plus code.
 
 Operator configuration per environment:
 
@@ -99,22 +130,23 @@ Operator configuration per environment:
   `allowedRedirectUrls`. `/auth/oauth/:provider/authorize` receives an explicit
   `tenant_id`, so `STEWARD_OAUTH_ALLOWED_REDIRECTS` does not apply to it.
 - Steward (`packages/auth`) deploys separately from `cloud-cf-deploy`. The
-  Google `prompt=select_account` passthrough and `delivery: "code"` reach a
-  device only after that deployment.
+  Google `prompt=select_account` passthrough, `mfa=exchange` and
+  `/email/code/send` reach a device only after that deployment.
 
 If Android does not intercept the App Link, the Pages route
-`/alphaphone/auth/callback` serves a static, no-store page. It never forwards
-the code, state or error: an `intent://` hand-off is matched on package name
-only, so a sideloaded app with the same package name could otherwise collect a
-code from an authorize it started itself. The page tells the user to return to
-Alpha Phone and start again, offers a parameterless hand-off that only brings
-the app forward, and removes the fragment and query from history. Success
-returns rely solely on the verified App Link.
+`/alphaphone/auth/callback` serves a static, no-store page. It never forwards a
+code: an `intent://` hand-off is matched on package name only, so a sideloaded
+app with the same package name could otherwise collect a code from an authorize
+it started itself. The page tells the user to return to Alpha Phone and start
+again. Its one control opens the app with no parameters, or with
+`?error=app_link_unverified&state=<state>` when the fragment or query holds a
+well-formed state (a state alone redeems nothing), and a pinned script removes
+the fragment and query from history. Success returns rely solely on the
+verified App Link.
 
 Remaining Cloud-hosted pages a native sign-in can still reach: this fallback
-page, and Steward's OAuth error page inside the Custom Tab (including
-`mfa_required`; Google accounts with MFA must use email sign-in until native
-MFA is returned through the exchange).
+page, and Steward's OAuth error page inside the Custom Tab for non-MFA failures
+(its "Return and try again" link is a contract error return).
 
 ## Subscription grant codes and entitlements
 

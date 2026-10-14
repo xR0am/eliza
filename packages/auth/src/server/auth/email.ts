@@ -121,6 +121,13 @@ function keyedHash(secret: string, value: string): string {
   return createHmac("sha256", secret).update(value).digest("hex");
 }
 
+/** Constant-time equality for two hex digests. */
+function hexDigestsEqual(actual: string, expected: string): boolean {
+  const a = Buffer.from(actual, "hex");
+  const b = Buffer.from(expected, "hex");
+  return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
+}
+
 function buildMagicLink(
   baseUrl: string,
   callbackPath: string,
@@ -1275,7 +1282,10 @@ export class EmailAuth {
     if (
       !normalizedEmail ||
       (payload.tenantId ?? undefined) !== (resolvedTenantId ?? undefined) ||
-      payload.emailHash !== this.emailHash(normalizedEmail, resolvedTenantId)
+      !hexDigestsEqual(
+        this.emailHash(normalizedEmail, resolvedTenantId),
+        payload.emailHash,
+      )
     ) {
       return { email: "", valid: false };
     }
@@ -1335,7 +1345,7 @@ export class EmailAuth {
     if (
       payload?.status !== "active" ||
       (payload.tenantId ?? undefined) !== (tenantId ?? undefined) ||
-      payload.emailHash !== this.emailHash(email, tenantId)
+      !hexDigestsEqual(this.emailHash(email, tenantId), payload.emailHash)
     ) {
       return { email: "", valid: false };
     }
