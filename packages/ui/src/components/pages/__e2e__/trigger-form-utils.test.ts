@@ -109,6 +109,32 @@ describe("Automations trigger form", () => {
     );
   });
 
+  it("saves an unchanged repeated fall-back time as the stored instant", () => {
+    // 01:30 happens twice in New York on 2026-11-01. The input text names
+    // the first one; an edit that leaves the field alone keeps the second.
+    const zone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const form = formFromTrigger({
+        ...storedPrompt,
+        triggerType: "once",
+        scheduledAtIso: "2026-11-01T06:30:00.000Z",
+      });
+      expect(form.scheduledAtIso).toBe("2026-11-01T01:30");
+      expect(buildUpdateRequest(form).scheduledAtIso).toBe(
+        "2026-11-01T06:30:00.000Z",
+      );
+      // A new time typed into the field is read in the browser zone.
+      expect(
+        buildUpdateRequest({ ...form, scheduledAtIso: "2026-11-01T03:00" })
+          .scheduledAtIso,
+      ).toBe("2026-11-01T08:00:00.000Z");
+    } finally {
+      if (zone === undefined) delete process.env.TZ;
+      else process.env.TZ = zone;
+    }
+  });
+
   it("previews a cron schedule in the zone it runs in", () => {
     const from = new Date("2026-10-11T00:00:00.000Z");
     expect(
