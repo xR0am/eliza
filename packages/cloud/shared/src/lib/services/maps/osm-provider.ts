@@ -168,6 +168,20 @@ function boundedText(value: unknown, max: number): string | undefined {
   return text && text.length <= max && !/[\u0000-\u001f]/.test(text) ? text : undefined;
 }
 
+/** Use explicit address components; a digit-prefixed display label is not necessarily a house. */
+function addressName(address: unknown, displayName: string | undefined): string | undefined {
+  if (address && typeof address === "object" && !Array.isArray(address)) {
+    const fields = address as Record<string, unknown>;
+    const houseNumber = boundedText(fields.house_number, 300);
+    const road = boundedText(fields.road, 300);
+    if (houseNumber && road) {
+      const label = boundedText(`${houseNumber} ${road}`, 300);
+      if (label) return label;
+    }
+  }
+  return boundedText(displayName?.split(",")[0], 300);
+}
+
 /** Only well-formed source values; malformed tags are omitted, never guessed. */
 function placeExtras(tags: unknown): Pick<MapsPlace, "phone" | "website" | "openingHours"> {
   if (!tags || typeof tags !== "object") return {};
@@ -489,7 +503,7 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     if (!prefix || osmId === undefined || !Number.isSafeInteger(osmId) || osmId <= 0 || !coordinate)
       return undefined;
     const displayName = boundedText(entry.display_name, 1000);
-    const name = boundedText(entry.name, 300) ?? boundedText(displayName?.split(",")[0], 300);
+    const name = boundedText(entry.name, 300) ?? addressName(entry.address, displayName);
     if (!name) return undefined;
     return {
       providerId: OSM_MAPS_PROVIDER_ID,
@@ -515,6 +529,7 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     const url = new URL(path, this.geocoder);
     url.searchParams.set("format", "jsonv2");
     url.searchParams.set("extratags", "1");
+    url.searchParams.set("addressdetails", "1");
     return url;
   }
 

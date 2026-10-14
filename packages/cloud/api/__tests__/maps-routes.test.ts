@@ -307,7 +307,90 @@ describe("Eliza Cloud Maps routes", () => {
       },
     );
     expect(calls[0]?.searchParams.get("layer")).toBe("address");
+    expect(calls[0]?.searchParams.get("addressdetails")).toBe("1");
   });
+
+  test("an unnamed address is named by its house number and street", async () => {
+    const res = await call(
+      "geocode",
+      deps({
+        provider: () =>
+          provider(() =>
+            Response.json([
+              {
+                ...NOMINATIM_CASINO,
+                osm_type: "way",
+                osm_id: 555,
+                name: "",
+                display_name: "12, Place du Casino, Monte-Carlo, Monaco",
+                address: { house_number: "12", road: "Place du Casino" },
+              },
+            ]),
+          ),
+      }),
+      { query: "12 Place du Casino" },
+    );
+    expect(res.status).toBe(200);
+    expect((await json(res)).places).toMatchObject([
+      {
+        id: "W555",
+        name: "12 Place du Casino",
+        address: "12, Place du Casino, Monte-Carlo, Monaco",
+      },
+    ]);
+  });
+
+  for (const fixture of [
+    {
+      display_name: "A12, High Street, Monaco",
+      address: { house_number: "A12", road: "High Street" },
+      expected: "A12 High Street",
+    },
+    {
+      display_name: "12345678901, High Street, Monaco",
+      address: { house_number: "12345678901", road: "High Street" },
+      expected: "12345678901 High Street",
+    },
+    {
+      display_name: "12th Street, Monaco",
+      address: { road: "12th Street" },
+      expected: "12th Street",
+    },
+    {
+      display_name: "12, Monaco",
+      address: { house_number: "12" },
+      expected: "12",
+    },
+    {
+      display_name: "12, High Street, Monaco",
+      address: { house_number: {}, road: "High Street" },
+      expected: "12",
+    },
+  ]) {
+    test(`address labels use explicit components for ${fixture.display_name}`, async () => {
+      const res = await call(
+        "geocode",
+        deps({
+          provider: () =>
+            provider(() =>
+              Response.json([
+                {
+                  ...NOMINATIM_CASINO,
+                  name: "",
+                  display_name: fixture.display_name,
+                  address: fixture.address,
+                },
+              ]),
+            ),
+        }),
+        { query: fixture.display_name },
+      );
+      expect(res.status).toBe(200);
+      expect((await json(res)).places).toMatchObject([
+        { name: fixture.expected, address: fixture.display_name },
+      ]);
+    });
+  }
 
   test("details and reverse include verified source extras or an honest null", async () => {
     const details = await json(
