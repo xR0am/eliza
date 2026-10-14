@@ -1588,8 +1588,15 @@ export class MessageManager {
 			}
 		}
 
+		// Discord autocomplete offers the bot's managed integration role under the
+		// bot's own name, so `<@&role>` for that role is a mention of the bot.
+		// (`mentions.has()` would also match other roles the bot holds and
+		// @everyone.)
+		const botRoleId = message.guild?.members.me?.roles.botRole?.id;
 		const isBotPlatformMentioned = !!(
-			clientUser?.id && message.mentions.users?.has(clientUser.id)
+			clientUser?.id &&
+			(message.mentions.users?.has(clientUser.id) ||
+				(botRoleId && message.mentions.roles?.has(botRoleId)))
 		);
 		const isReplyToBot =
 			!!message.reference?.messageId &&
