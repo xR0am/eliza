@@ -51,6 +51,7 @@ import {
   runWithActionRoutingContext,
   ServiceType,
   searchCanonicalConversationMemories,
+  selectBestRankedRecallItems,
   stringToUuid,
   toWellFormedUnicode,
 } from "@elizaos/core";
@@ -4156,15 +4157,26 @@ async function handleReadChannel(
       accountId?: string;
       count: number;
     }> = [];
-    for (const result of results) {
+    const failedSources: Array<{
+      source: string;
+      accountId?: string;
+      error: string;
+    }> = [];
+    for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
+        const connector = hookConnectors[index];
+        const error =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
         logger.warn(
-          `[MESSAGE/read_channel] recent connector read failed: ${
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason)
-          }`,
+          `[MESSAGE/read_channel] recent connector read failed: ${error}`,
         );
+        failedSources.push({
+          source: connector.source,
+          accountId: connector.accountId,
+          error,
+        });
         continue;
       }
       memories.push(...result.value.memories);
@@ -4174,14 +4186,29 @@ async function handleReadChannel(
         count: result.value.memories.length,
       });
     }
+    const failedLabels = failedSources
+      .map(({ source, error }) => `${source} (${error})`)
+      .join(", ");
+    // Every connector failed: that is a read failure, not an empty inbox.
+    if (sources.length === 0 && failedSources.length > 0) {
+      return opFailure(
+        "read_channel",
+        "MESSAGE_READ_CHANNEL_FAILED",
+        `MESSAGE op=read_channel failed: no connector could be read: ${failedLabels}`,
+        { failedSources },
+      );
+    }
     memories.sort(compareMemoryByCreatedAtDesc);
     const limited = limit === undefined ? memories : memories.slice(0, limit);
+    const readText = limited.length
+      ? `Read ${limited.length} recent messages across ${sources.length} connectors.`
+      : "No recent conversations found.";
     return opSuccess(
       "read_channel",
-      limited.length
-        ? `Read ${limited.length} recent messages across ${sources.length} connectors.`
-        : "No recent conversations found.",
-      { sources, memories: limited },
+      failedSources.length
+        ? `${readText} Could not read: ${failedLabels}.`
+        : readText,
+      { sources, memories: limited, failedSources },
     );
   }
 
@@ -4601,11 +4628,14 @@ async function handleSearch(
       source,
     });
 
-    const matchingResults = recall.items
-      .map((item) => item.memory)
-      .filter((m) => m.content.text);
-    const results =
-      limit === undefined ? matchingResults : matchingResults.slice(0, limit);
+    const matchingItems = recall.items.filter(
+      (item) => item.memory.content.text,
+    );
+    const results = (
+      limit === undefined
+        ? matchingItems
+        : selectBestRankedRecallItems(matchingItems, limit)
+    ).map((item) => item.memory);
     return opSuccess(
       "search",
       conversationSearchText(query, results.length, recall.availability),

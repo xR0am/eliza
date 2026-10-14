@@ -345,16 +345,18 @@ it.each(["import", "provision"])(
         hostConfig: loadElizaConfig(),
         skipDeferredStartupWork: true,
       });
+      if (!server) throw new Error("API server failed to start");
+      const activeServer = server;
       // Load the optional wallet route before opening the concurrency window.
       const warm = await fetch(
-        `http://127.0.0.1:${server.port}/api/wallet/config`,
+        `http://127.0.0.1:${activeServer.port}/api/wallet/config`,
         {
           headers: { Authorization: `Bearer ${token}` },
         },
       );
       expect(warm.status).toBe(200);
       const request = (privateKey: string) =>
-        fetch(`http://127.0.0.1:${server!.port}/api/wallet/import`, {
+        fetch(`http://127.0.0.1:${activeServer.port}/api/wallet/import`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -365,7 +367,7 @@ it.each(["import", "provision"])(
       const first =
         firstRoute === "import"
           ? request(firstKey)
-          : fetch(`http://127.0.0.1:${server.port}/api/wallet/keys`, {
+          : fetch(`http://127.0.0.1:${activeServer.port}/api/wallet/keys`, {
               headers: { Authorization: `Bearer ${token}` },
             });
       await firstEntered;

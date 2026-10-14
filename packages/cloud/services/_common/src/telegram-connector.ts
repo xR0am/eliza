@@ -146,6 +146,40 @@ export interface TelegramMessage {
     mime_type?: string;
     file_size?: number;
   };
+  photo?: unknown[];
+  video?: unknown;
+  video_note?: unknown;
+  animation?: unknown;
+  audio?: { file_name?: string };
+  document?: { file_name?: string };
+  sticker?: unknown;
+}
+
+/**
+ * The note that tells the agent which file the user sent. The gateway does not
+ * download Telegram photos, videos or documents (voice notes are transcribed
+ * separately), so without it a captioned photo reached the agent as plain
+ * text and an uncaptioned one was dropped with no reply.
+ */
+function telegramMediaNote(message: TelegramMessage): string | undefined {
+  const named = (kind: string, name?: string) =>
+    name ? `${kind} ("${name}")` : kind;
+  const kind = message.photo?.length
+    ? "a photo"
+    : message.video || message.video_note
+      ? "a video"
+      : message.animation
+        ? "a GIF"
+        : message.document
+          ? named("a document", message.document.file_name)
+          : message.audio
+            ? named("an audio file", message.audio.file_name)
+            : message.sticker
+              ? "a sticker"
+              : undefined;
+  return kind
+    ? `[The user sent ${kind} on Telegram. This connector cannot open Telegram files yet.]`
+    : undefined;
 }
 
 interface TelegramUpdate {
@@ -367,13 +401,15 @@ export function parseTelegramWebhook(
     logger?.warn("Rejected invalid Telegram message thread identifier");
     return null;
   }
-  const text = message.text || message.caption || "";
+  const caption = message.text || message.caption || "";
+  const mediaNote = telegramMediaNote(message);
+  const text = [caption, mediaNote].filter(Boolean).join("\n");
   const voice = message.voice;
   if (!text && !voice) return null;
   if (message.from?.is_bot) return null;
   const groupInvocation =
     isGroup && groupPolicy
-      ? classifyTelegramGroupInvocation(message, text, groupPolicy)
+      ? classifyTelegramGroupInvocation(message, caption, groupPolicy)
       : null;
   if (isGroup && !groupInvocation) {
     return null;

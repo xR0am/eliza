@@ -83,6 +83,8 @@ export async function installSubscriptionGrantTestSchema(
     .filter(Boolean)
     .map((statement) => `EXECUTE $grant_statement$${statement}$grant_statement$;`);
   await execute(
-    `DO $install_grants$ BEGIN IF to_regclass('subscription_grants') IS NULL THEN ${statements.join("\n")} END IF; END $install_grants$`,
+    // Check only the fixture's own schema: a search_path fallback to a
+    // migrated public schema must not skip installing the columns here.
+    `DO $install_grants$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname = 'subscription_grants') THEN ${statements.join("\n")} END IF; END $install_grants$`,
   );
 }
