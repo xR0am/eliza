@@ -13,7 +13,21 @@ inference server, account or network use.
   model; the `mobile-voice` catalog record pins it. `VoiceNative` sets
   `ELIZA_ASR_BACKEND=parakeet` before it loads the library. The GGUF is not
   published; build it with `bun packages/app/scripts/voice/build-phonon2-gguf.ts`
-  (it converts the pinned source and checks every sha256).
+  (it converts the pinned source and checks every sha256). Use `--help` for paths.
+
+To build the unpublished ASR model, initialize the native submodule and use a
+Python environment with the native `gguf-py` package, `zstandard`, and `librosa`:
+
+```bash
+python3 -m venv .cache/phonon-python
+.cache/phonon-python/bin/pip install ./plugins/plugin-local-inference/native/llama.cpp/gguf-py zstandard librosa
+bun packages/app/scripts/voice/build-phonon2-gguf.ts --python .cache/phonon-python/bin/python
+```
+
+The default output is `.cache/phonon-2/bundle/asr/`, with the GGUF, NOTICE,
+and weight license. Set `ELIZA_VOICE_BUNDLE_FROM=.cache/phonon-2/bundle`
+when staging. This command builds ASR only; TTS and VAD still need their
+pinned files. It performs no upload or device installation.
 
 ```java
 VoiceAssets.Bundle bundle = VoiceAssets.install(context); // worker thread

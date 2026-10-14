@@ -209,13 +209,7 @@ describe("pinned mobile voice bundle", () => {
   it("pins every catalog row it would download and keeps ONNX out", () => {
     const files = aospVoiceFiles();
     expect([...new Set(files.map((f) => f.role))].sort()).toEqual(
-      [
-        "asr-parakeet",
-        "g2p-espeak-data",
-        "g2p-lexicon",
-        "tts",
-        "vad",
-      ].sort(),
+      ["asr-parakeet", "g2p-espeak-data", "g2p-lexicon", "tts", "vad"].sort(),
     );
     for (const file of files) {
       expect(file.path.toLowerCase()).not.toContain(".onnx");

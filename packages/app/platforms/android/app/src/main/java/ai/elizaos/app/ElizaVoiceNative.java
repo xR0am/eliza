@@ -35,18 +35,18 @@ final class ElizaVoiceNative {
         }
         // The library reads the ASR backend and thread count from the process
         // environment, so set them before it loads.
-        final String asrEnv = ElizaAsrNativeEnv.apply(
-            BuildConfig.ELIZA_ASR_THREADS,
-            (key, value) -> android.system.Os.setenv(key, value, true));
-        Log.i(TAG, "ASR env (ELIZA_ASR_BACKEND/ELIZA_ASR_THREADS): " + asrEnv);
         try {
+            final String asrEnv = ElizaAsrNativeEnv.apply(
+                BuildConfig.ELIZA_ASR_THREADS,
+                (key, value) -> android.system.Os.setenv(key, value, true));
+            Log.i(TAG, "ASR env (ELIZA_ASR_BACKEND/ELIZA_ASR_THREADS): " + asrEnv);
             System.loadLibrary("elizainference");
             Log.i(TAG, "Loaded fused voice engine: libelizainference.so");
             System.loadLibrary("elizavoicejni");
             Log.i(TAG, "Loaded JNI bridge: libelizavoicejni.so");
             loaded = true;
             loadError = null;
-        } catch (UnsatisfiedLinkError e) {
+        } catch (UnsatisfiedLinkError | IllegalStateException e) {
             loadError = e.getMessage();
             Log.e(TAG, "Failed to load fused voice native libraries", e);
             loaded = false;

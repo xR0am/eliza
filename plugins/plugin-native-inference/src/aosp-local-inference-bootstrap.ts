@@ -91,9 +91,9 @@ import {
 } from "./aosp-model-paths.js";
 import { createAospNetworkAdmissionCheck } from "./aosp-network-admission.js";
 import {
+  AOSP_VOICE_GROUPS,
   aospEspeakDataParent,
   aospParadeePaths,
-  AOSP_VOICE_GROUPS,
   aospVoiceGroupNeedsStaging,
   readAospVoiceLocalSource,
   stageAospVoiceGroup,

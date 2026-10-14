@@ -16,7 +16,7 @@ final class VoiceNative {
         try {
             android.system.Os.setenv("ELIZA_ASR_BACKEND", "parakeet", true);
         } catch (android.system.ErrnoException unset) {
-            // The library then picks the parakeet GGUF under asr/ itself.
+            throw new IllegalStateException("Cannot configure the Phonon-2 ASR backend", unset);
         }
         System.loadLibrary("elizainference");
         System.loadLibrary("paradeevoicejni");

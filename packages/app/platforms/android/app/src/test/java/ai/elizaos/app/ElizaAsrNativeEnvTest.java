@@ -43,4 +43,10 @@ public final class ElizaAsrNativeEnvTest {
         }
         assertTrue(summary.startsWith("parakeet/"));
     }
+    @Test(expected = IllegalStateException.class)
+    public void backendWriteFailurePreventsLoadingWithAStaleBackend() {
+        ElizaAsrNativeEnv.apply("2", (key, value) -> {
+            throw new java.io.IOException("environment write refused");
+        });
+    }
 }

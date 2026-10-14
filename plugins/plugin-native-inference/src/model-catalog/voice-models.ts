@@ -49,6 +49,7 @@ export type VoiceModelQuant =
   | "q5_k_m"
   | "q6_k"
   | "q8_0"
+  | "fv5-pair16-v1"
   | "gguf-fp32"
   | "fp16"
   | "onnx-fp32"
@@ -189,9 +190,8 @@ export type MobileVoiceFileRole =
 /** Roles of the retired Qwen3-ASR pair (catalog history only). */
 export type RetiredMobileVoiceFileRole = "asr-text" | "asr-mmproj";
 
-const RETIRED_MOBILE_VOICE_ROLES: ReadonlySet<MobileVoiceFileRole> = new Set<
-  MobileVoiceFileRole
->(["asr-text", "asr-mmproj"]);
+const RETIRED_MOBILE_VOICE_ROLES: ReadonlySet<MobileVoiceFileRole> =
+  new Set<MobileVoiceFileRole>(["asr-text", "asr-mmproj"]);
 
 /**
  * The libelizainference ASR backend an `asr/` row feeds. Phonon-2 on the

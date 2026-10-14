@@ -79,7 +79,7 @@ final class ElizaAsrNativeEnv {
         return b > 0 ? b : Math.max(1, bigCores);
     }
 
-    /** Set both variables in this process; returns "backend/threads". Never throws. */
+    /** Set both variables; fail before loading a library with the wrong backend. */
     static String apply(String buildThreads, EnvWriter env) {
         final int cpus = Runtime.getRuntime().availableProcessors();
         final int bigCores = bigCoreCount(
@@ -90,9 +90,7 @@ final class ElizaAsrNativeEnv {
             env.set("ELIZA_ASR_BACKEND", backend);
             env.set("ELIZA_ASR_THREADS", String.valueOf(threads));
         } catch (Exception e) {
-            // The library uses its own defaults (it picks the parakeet GGUF
-            // under asr/, big cores capped at 4).
-            return "unset (" + e.getClass().getSimpleName() + ")";
+            throw new IllegalStateException("Cannot configure the Phonon-2 ASR backend", e);
         }
         return backend + "/" + threads;
     }

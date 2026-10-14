@@ -4,7 +4,7 @@
  * with NDK 28.2 and stages it into the app's jniLibs (or --out). Speech is
  * Paradee-8M TTS with native misaki G2P (eSpeak NG 1.52.0 as the
  * out-of-lexicon fallback), Parakeet-TDT ASR (Phonon-2, batch and streaming)
- * with Qwen3-ASR as the selectable alternative, and VAD; no Kokoro voice ships. The
+ * and VAD; no Kokoro voice ships. The
  * CPU variant statically links ggml/llama/mtmd; the Vulkan variant stages
  * their shared backends and requires host shader tooling supplied by the
  * documented ELIZA_* overrides. Every library is 16 KiB page aligned.
@@ -400,9 +400,8 @@ if (arm64SimdFlags.length > 0) {
 // ASR: LLAMA_BUILD_PARAKEET=ON adds parakeet_lib, which omnivoice folds into
 // elizainference (ELIZA_ENABLE_PARAKEET). mmap_acquire("asr") then serves the
 // eliza_inference_asr_* surface, including asr_stream_*, from a parakeet-tdt
-// GGUF under <bundle>/asr/ (Phonon-2, the default mobile ASR), and keeps the
-// Qwen3-ASR mtmd path for a bundle that carries that pair instead
-// (ELIZA_ASR_BACKEND=qwen3|parakeet overrides, ELIZA_ASR_THREADS sets threads).
+// GGUF under <bundle>/asr/ (Phonon-2, the only mobile ASR).
+// ELIZA_ASR_THREADS sets decode threads.
 // The parakeet kernels pick dotprod/i8mm (arm64) or AVX2 (x86_64) at runtime
 // and compile those files with their own target flags, so the SIMD floor
 // above is unchanged.
