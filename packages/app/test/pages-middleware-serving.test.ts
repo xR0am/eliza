@@ -5,10 +5,14 @@
  * Cloudflare Pages actually supports. Drives the real onRequest handler with a
  * hand-rolled next() — no module mocks.
  */
+
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildNativeSignInIntentUrl,
+  NATIVE_CALLBACK_FRAGMENT_SCRIPT,
   onRequest,
   resolveCanonicalPageRedirect,
 } from "../functions/_middleware";
@@ -242,6 +246,7 @@ describe("unified host migration", () => {
       "/steward",
       "/.well-known/openid-configuration",
       "/.well-known/oidc/jwks.json",
+      "/.well-known/assetlinks.json",
     ]) {
       const response = await run(
         new Request(`${ORIGIN}${path}`),
@@ -256,7 +261,56 @@ describe("unified host migration", () => {
       "/steward",
       "/.well-known/openid-configuration",
       "/.well-known/oidc/jwks.json",
+      "/.well-known/assetlinks.json",
     ]);
+  });
+
+  it("never redirects App Link verification or the native callback on the link hosts", () => {
+    for (const host of ["https://eliza.app", "https://staging.eliza.app"]) {
+      for (const path of [
+        "/.well-known/assetlinks.json",
+        "/alphaphone/auth/callback?code=a&state=b",
+      ]) {
+        expect(resolveCanonicalPageRedirect(`${host}${path}`)).toBeNull();
+      }
+    }
+  });
+
+  it("serves assetlinks.json from the API Worker on eliza.app and staging.eliza.app, never the SPA", async () => {
+    for (const origin of ["https://eliza.app", "https://staging.eliza.app"]) {
+      const forwarded: Request[] = [];
+      let nextCalled = false;
+      const response = await run(
+        new Request(`${origin}/.well-known/assetlinks.json`),
+        async () => {
+          nextCalled = true;
+          return spaFallback();
+        },
+        {
+          API_WORKER: {
+            fetch: async (request: Request) => {
+              forwarded.push(request);
+              return Response.json([], {
+                headers: { "Cache-Control": "public, max-age=3600" },
+              });
+            },
+          },
+        },
+      );
+      expect(nextCalled).toBe(false);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain(
+        "application/json",
+      );
+      expect(await response.json()).toEqual([]);
+      expect(forwarded).toHaveLength(1);
+      expect(new URL(forwarded[0]?.url ?? "").origin).toBe(
+        origin === "https://eliza.app"
+          ? "https://api.eliza.app"
+          : "https://api-staging.eliza.app",
+      );
+      expect(forwarded[0]?.redirect).toBe("manual");
+    }
   });
 
   it("preserves the canonical browser origin across the Steward service binding", async () => {
@@ -463,5 +517,128 @@ describe("pages config files stay within Cloudflare Pages semantics", () => {
     const lines = configLines(redirects);
 
     expect(lines.at(-1)).toBe("/*  /index.html  200");
+  });
+});
+
+describe("native sign-in callback fallback", () => {
+  const CALLBACK = "https://eliza.app/alphaphone/auth/callback";
+
+  it("serves a static no-store, noindex hand-off page instead of the SPA", async () => {
+    let nextCalled = false;
+    const response = await run(
+      new Request(`${CALLBACK}?code=abc_DEF-123&state=s7ate~value.x`),
+      async () => {
+        nextCalled = true;
+        return spaFallback();
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+    const csp = response.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("default-src 'none'");
+    // Exactly one script may run: the pinned fragment hand-off.
+    const scriptHash = createHash("sha256")
+      .update(NATIVE_CALLBACK_FRAGMENT_SCRIPT)
+      .digest("base64");
+    expect(csp).toContain(`script-src 'sha256-${scriptHash}';`);
+    const html = await response.text();
+    expect(html.match(/<script>/g)).toHaveLength(1);
+    expect(html).toContain(
+      `<script>${NATIVE_CALLBACK_FRAGMENT_SCRIPT}</script>`,
+    );
+    expect(html).not.toMatch(/fetch\(|XMLHttpRequest|document\.cookie/);
+    expect(html).toContain(
+      'href="intent://eliza.app/alphaphone/auth/callback?code=abc_DEF-123&amp;state=s7ate~value.x#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end"',
+    );
+    expect(html).toContain("Open Alpha Phone");
+  });
+
+  it("forwards only exact code+state or error+state shapes", () => {
+    const intent = (query: string) =>
+      buildNativeSignInIntentUrl(new URL(`${CALLBACK}${query}`));
+    const bare =
+      "intent://eliza.app/alphaphone/auth/callback#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";
+    expect(intent("?error=oauth_state_expired&state=abc")).toContain(
+      "?error=oauth_state_expired&state=abc#Intent",
+    );
+    // Extra, missing, duplicated or non URL-safe parameters are all dropped.
+    expect(intent("")).toBe(bare);
+    expect(intent("?code=a")).toBe(bare);
+    expect(intent("?code=a&state=b&token=c")).toBe(bare);
+    expect(intent("?code=a&code=b&state=c")).toBe(bare);
+    expect(intent('?code=a"><script>&state=b')).toBe(bare);
+    expect(intent(`?code=${"a".repeat(513)}&state=b`)).toBe(bare);
+  });
+
+  it("keeps the staging host in the hand-off link", () => {
+    expect(
+      buildNativeSignInIntentUrl(
+        new URL(
+          "https://staging.eliza.app/alphaphone/auth/callback?code=a&state=b",
+        ),
+      ),
+    ).toBe(
+      "intent://staging.eliza.app/alphaphone/auth/callback?code=a&state=b#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end",
+    );
+  });
+
+  it("rebuilds the hand-off from Steward's fragment and drops it from history", () => {
+    const runScript = (hash: string) => {
+      const anchor = { href: "server-built" };
+      const replaced: string[] = [];
+      new Function(
+        "document",
+        "location",
+        "history",
+        NATIVE_CALLBACK_FRAGMENT_SCRIPT,
+      )(
+        { getElementById: (id: string) => (id === "open" ? anchor : null) },
+        {
+          hash,
+          host: "eliza.app",
+          pathname: "/alphaphone/auth/callback",
+          search: "",
+        },
+        {
+          replaceState: (_state: unknown, _title: string, url: string) =>
+            replaced.push(url),
+        },
+      );
+      return { href: anchor.href, replaced };
+    };
+    expect(runScript("#code=Ab-_9&state=s~t.1")).toEqual({
+      href: "intent://eliza.app/alphaphone/auth/callback?code=Ab-_9&state=s~t.1#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end",
+      replaced: ["/alphaphone/auth/callback"],
+    });
+    expect(runScript("#error=mfa_required&state=s").href).toContain(
+      "?error=mfa_required&state=s#Intent",
+    );
+    // Malformed fragments leave the server-built link alone but still leave history.
+    for (const hash of [
+      "#code=a",
+      "#code=a&state=b&token=c",
+      "#code=a%22%3E&state=b",
+      "#code=a&code=b&state=c",
+    ]) {
+      expect(runScript(hash)).toEqual({
+        href: "server-built",
+        replaced: ["/alphaphone/auth/callback"],
+      });
+    }
+    expect(runScript("")).toEqual({ href: "server-built", replaced: [] });
+  });
+
+  it("does not claim neighbouring paths", async () => {
+    const response = await run(
+      new Request("https://eliza.app/alphaphone/auth/callback/extra"),
+      async () => spaFallback(),
+    );
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    expect(await response.text()).toContain("app");
+    expect(response.headers.get("X-Robots-Tag")).toBeNull();
   });
 });

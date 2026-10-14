@@ -44,6 +44,10 @@ interface MiddlewareContext {
 const OIDC_PROTOCOL_PATHS = new Set([
   "/.well-known/openid-configuration",
   "/.well-known/oidc/jwks.json",
+  // Android App Link verification fetches this from the link host itself and
+  // does not follow redirects, so it must be proxied here (never the SPA's
+  // index.html, which would fail verification with a 200 text/html body).
+  "/.well-known/assetlinks.json",
 ]);
 function isProtocolPath(pathname: string): boolean {
   return (
@@ -213,6 +217,109 @@ export const swapCspFrameAncestors = (
   }
   return directives.join("; ");
 };
+// ── Native sign-in callback fallback ─────────────────────────────────────────
+//
+// Alpha Phone's in-app sign-in returns from Google through the verified App
+// Link `https://<host>/alphaphone/auth/callback`. Android hands that URL to the
+// app before any page loads. This page exists only for the case the link is
+// NOT intercepted (verification still pending, user disabled "open supported
+// links", a browser that ignores App Links): it offers an explicit
+// `intent://` hand-off to the installed app. It renders no SPA, calls no API
+// and sets no cookie. The `code` it forwards is useless without the PKCE
+// verifier that never leaves the device.
+//
+// Steward returns a successful `code`/`state` in the URL FRAGMENT (it never
+// reaches this server), while its error recovery link uses the query. The
+// server builds the hand-off from the query; one hash-pinned inline script
+// rebuilds it from the fragment with the same validation, then drops the
+// fragment from session history. Both forms reach the app as query
+// parameters, because an `intent://` URI's own fragment is the intent spec.
+export const NATIVE_SIGN_IN_CALLBACK_PATH = "/alphaphone/auth/callback";
+export const NATIVE_SIGN_IN_PACKAGE = "ai.elizaresearch.alphaphone";
+const NATIVE_CALLBACK_PARAM_RE = /^[A-Za-z0-9._~-]{1,512}$/;
+export const NATIVE_CALLBACK_FRAGMENT_SCRIPT =
+  '(function(){var a=document.getElementById("open");if(!a)return;var p=new URLSearchParams(location.hash.slice(1));var re=/^[A-Za-z0-9._~-]{1,512}$/;var k=[];p.forEach(function(_v,n){k.push(n)});function exactly(names){return k.length===names.length&&names.every(function(n){return p.getAll(n).length===1&&re.test(p.get(n)||"")})}var q="";if(exactly(["code","state"]))q="?code="+p.get("code")+"&state="+p.get("state");else if(exactly(["error","state"]))q="?error="+p.get("error")+"&state="+p.get("state");if(q)a.href="intent://"+location.host+"/alphaphone/auth/callback"+q+"#Intent;scheme=https;package=ai.elizaresearch.alphaphone;end";if(location.hash)history.replaceState(null,"",location.pathname+location.search)})();';
+// sha256 of NATIVE_CALLBACK_FRAGMENT_SCRIPT; the test recomputes it.
+const NATIVE_CALLBACK_SCRIPT_HASH =
+  "sha256-g5syaXeBb9fFbF1Eer1KhY2UBUhmi1lr9uvo0+rLF7k=";
+const NATIVE_CALLBACK_CSP = `default-src 'none'; script-src '${NATIVE_CALLBACK_SCRIPT_HASH}'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+
+const escapeHtml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+/**
+ * Build the `intent://` URL that re-dispatches the callback to the app. Only
+ * the exact OAuth result shapes are forwarded (`code`+`state`, or
+ * `error`+`state`), each limited to the URL-safe alphabet; anything else
+ * opens the app's callback with no parameters, which the app rejects.
+ */
+export function buildNativeSignInIntentUrl(url: URL): string {
+  const params = url.searchParams;
+  const keys = [...params.keys()];
+  const exactly = (expected: string[]) =>
+    keys.length === expected.length &&
+    expected.every(
+      (key) =>
+        params.getAll(key).length === 1 &&
+        NATIVE_CALLBACK_PARAM_RE.test(params.get(key) ?? ""),
+    );
+  // Values are restricted to the RFC 3986 unreserved alphabet, so they are
+  // forwarded byte-for-byte (URLSearchParams would re-encode `~`).
+  let query = "";
+  if (exactly(["code", "state"])) {
+    query = `?code=${params.get("code")}&state=${params.get("state")}`;
+  } else if (exactly(["error", "state"])) {
+    query = `?error=${params.get("error")}&state=${params.get("state")}`;
+  }
+  return `intent://${url.host}${NATIVE_SIGN_IN_CALLBACK_PATH}${query}#Intent;scheme=https;package=${NATIVE_SIGN_IN_PACKAGE};end`;
+}
+
+export function nativeSignInCallbackFallback(url: URL): Response {
+  const href = escapeHtml(buildNativeSignInIntentUrl(url));
+  const body = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Return to Alpha Phone</title>
+<style>
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+main { max-width: 420px; text-align: center; line-height: 1.5; }
+a { display: inline-block; margin-top: 16px; padding: 14px 22px; border-radius: 10px; background: #111; color: #fff; font-weight: 600; text-decoration: none; }
+@media (prefers-color-scheme: dark) { a { background: #f4f4f4; color: #111; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Finish signing in on Alpha Phone</h1>
+<p>Your sign-in is ready. Open Alpha Phone to complete it. If the app is not installed on this device, start sign-in again from the phone.</p>
+<a id="open" href="${href}">Open Alpha Phone</a>
+<script>${NATIVE_CALLBACK_FRAGMENT_SCRIPT}</script>
+</main>
+</body>
+</html>`;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": NATIVE_CALLBACK_CSP,
+      "Content-Type": "text/html; charset=utf-8",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "X-Robots-Tag": "noindex, nofollow",
+    },
+  });
+}
+
 const isEmbedPath = (pathname: string): boolean =>
   pathname === "/embed" || pathname.startsWith("/embed/");
 export const onRequest = async (
@@ -228,6 +335,9 @@ export const onRequest = async (
   }
   if (url.pathname.startsWith(ASSETS_PREFIX)) {
     return serveAsset(context);
+  }
+  if (url.pathname === NATIVE_SIGN_IN_CALLBACK_PATH) {
+    return nativeSignInCallbackFallback(url);
   }
   // A single lookup decides both that this is a crawl asset and what type it
   // must be served as, so the two can never drift apart.

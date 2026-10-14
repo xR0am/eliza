@@ -142,6 +142,7 @@
     "./lib/auth-anonymous": "./src/lib/auth-anonymous.ts",
     "./lib/auth/admin": "./src/lib/auth/admin.ts",
     "./lib/auth/agent-token": "./src/lib/auth/agent-token.ts",
+    "./lib/auth/android-asset-links": "./src/lib/auth/android-asset-links.ts",
     "./lib/auth/app-delegation-auth": "./src/lib/auth/app-delegation-auth.ts",
     "./lib/auth/app-key-scope": "./src/lib/auth/app-key-scope.ts",
     "./lib/auth/browser-origin-policy": "./src/lib/auth/browser-origin-policy.ts",
