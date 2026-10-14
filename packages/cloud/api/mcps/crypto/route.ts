@@ -56,7 +56,6 @@ app.get("/", (c) =>
       "All-time high/low tracking",
       "Trending coins by search popularity",
       "Support for thousands of coins",
-      "Symbol and name lookups",
     ],
     status: "live",
   }),
