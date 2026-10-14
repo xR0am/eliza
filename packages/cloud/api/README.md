@@ -179,6 +179,11 @@ a grant redeemed during a paid plan runs at the same time and serves only after
 the paid plan stops serving (lapse, cancellation or expiry) inside the grant
 window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
 
+An administrator can mint a lifetime code with `--lifetime`. Its grant has
+`endsAt: null` and remains active until revoked. The plan's monthly allowance
+still resets each month without rollover. The billing reconciliation cron keeps
+the current and next two monthly periods funded; missed months do not accumulate.
+
 - `POST /api/v1/subscription/redeem` with `{code, idempotencyKey}`, using an API
   key or a session. Replays return the original grant. Unknown, expired,
   disabled and used-up codes return one generic 400. Limited per credential
@@ -223,10 +228,11 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   `bun --conditions=eliza-source packages/cloud/scripts/plan-request-limit-latency.ts`.
 
 Scripts (same `DATABASE_URL` and pepper as the target environment; apply
-migration `0542_subscription_grant_codes` first):
+migrations through `0546_lifetime_subscription_grants` first):
 
 - Mint: `bun --conditions=eliza-source packages/cloud/scripts/admin/mint-subscription-grant-codes.ts --count N`.
   Codes print once; only HMACs are stored.
+  Add `--lifetime` for no expiry, or `--duration-days N` for a bounded grant.
 - Revoke: `bun --conditions=eliza-source packages/cloud/scripts/admin/revoke-subscription-grants.ts --reason "..." --code XXXX-XXXX-XXXX-XXXX`
   (or `--grant-id`). Service stops at once; `--code` also disables the code.
 - Staging: mint with the `Cloud staging mint grant codes` workflow, which seals
