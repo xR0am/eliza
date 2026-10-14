@@ -24,7 +24,9 @@ const graphemeSegmenter = new GraphemeSegmenter("en", {
 /** True when a cut before `index` would split a grapheme (CR LF, a combining mark). */
 function continuesGrapheme(text: string, index: number): boolean {
   const next = text[index] ?? "";
-  return (text[index - 1] === "\r" && next === "\n") || /[\p{M}\u200d\ufe0e\ufe0f]/u.test(next);
+  return (
+    (text[index - 1] === "\r" && next === "\n") || /(?:\p{M}|\u200d|\ufe0e|\ufe0f)/u.test(next)
+  );
 }
 
 /**

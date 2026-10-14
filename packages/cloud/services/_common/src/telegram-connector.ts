@@ -751,7 +751,7 @@ export function splitTelegramMessage(
       const floor = Math.floor(maxLength / 2);
       const splitsGrapheme = (index: number) =>
         (remaining[index - 1] === "\r" && remaining[index] === "\n") ||
-        /[\p{M}\u200d\ufe0e\ufe0f]/u.test(remaining[index] ?? "");
+        /(?:\p{M}|\u200d|\ufe0e|\ufe0f)/u.test(remaining[index] ?? "");
       let cut = -1;
       for (let index = head.length - 1; index >= floor && cut < 0; index -= 1) {
         if (head[index] === "\n" && !splitsGrapheme(index + 1)) cut = index + 1;
