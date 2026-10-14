@@ -5255,9 +5255,25 @@ async function handleMessageMutation(
     op,
   );
   if (resolved.error) return resolved.error;
+  // Without a target parameter, the message being changed is in the current
+  // conversation when it runs on the connector and account the message came
+  // in on; every connector resolves a roomId to its channel.
+  const routedAccountId =
+    connector.accountId ?? accountIdFromParams(params, message);
+  const trustedSource = trustedConnectorSource(message);
+  const trustedAccountId = trustedConnectorAccountId(message);
+  const inCurrentRoom =
+    trustedSource !== undefined &&
+    normalizeComparable(trustedSource) ===
+      normalizeComparable(connector.source) &&
+    (routedAccountId === undefined ||
+      trustedAccountId === undefined ||
+      normalizeComparable(routedAccountId) ===
+        normalizeComparable(trustedAccountId));
   const target = resolved.target ?? {
     source: connector.source,
-    accountId: connector.accountId ?? accountIdFromParams(params, message),
+    accountId: routedAccountId,
+    ...(inCurrentRoom ? { roomId: message.roomId } : {}),
   };
 
   try {
