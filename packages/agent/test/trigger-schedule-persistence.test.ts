@@ -513,12 +513,7 @@ it("sets a second relative reminder asked later, and replays only an immediate r
       },
     });
   const fireTimes = async () =>
-    (
-      await fixture.runtime.getTasks({
-        tags: [...TRIGGER_TASK_TAGS],
-        agentIds: [fixture.runtime.agentId],
-      })
-    )
+    (await fixture.runtime.getTasks({ tags: [...TRIGGER_TASK_TAGS] }))
       .map((task) => readTriggerConfig(task))
       .filter(
         (cfg) => cfg?.instructions === "Remind the user to move the laundry.",
@@ -530,7 +525,9 @@ it("sets a second relative reminder asked later, and replays only an immediate r
   try {
     const first = await remindInAnHour();
     expect(first, first?.text).toMatchObject({ success: true });
-    createdIds.push((first?.data as { taskId: UUID }).taskId);
+    createdIds.push(
+      (first?.data as { taskId: UUID } | undefined)?.taskId as UUID,
+    );
 
     // A planner retry of the same call a moment later is the same reminder.
     const retry = await remindInAnHour();
@@ -543,7 +540,9 @@ it("sets a second relative reminder asked later, and replays only an immediate r
     vi.restoreAllMocks();
     expect(later, later?.text).toMatchObject({ success: true });
     expect(later?.text).not.toBe("Already set — you're covered.");
-    createdIds.push((later?.data as { taskId: UUID }).taskId);
+    createdIds.push(
+      (later?.data as { taskId: UUID } | undefined)?.taskId as UUID,
+    );
     const times = (await fireTimes()).map((iso) => Date.parse(iso ?? ""));
     expect(times).toHaveLength(2);
     expect(times[1] - times[0]).toBeGreaterThanOrEqual(39 * 60_000);
