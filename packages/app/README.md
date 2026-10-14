@@ -259,8 +259,7 @@ companion APKs. Linked-library compilation and companion asset isolation are che
 Reports go to root `test-results/android-consumer-host`. This is build/manifest
 qualification, not installed service, HOME-role, AOSP or device acceptance.
 
-Shared local speech sources and reproducible runtime/model tooling are documented
-in [local speech](scripts/local-speech/README.md). The source-export resolver in
+The source-export resolver in
 `scripts/lib/consumer-source-resolver.mjs` composes declared Eliza source exports
 for independent Bun hosts; consumers retain their source pin, credentials and policy. `scripts/lib/immutable-workspace-source.mjs`
 authenticates prepared workspace files against an exact commit, including ignored
@@ -283,7 +282,12 @@ There are no default command/instrumentation deadlines: callers may supply
 AbortSignal. ADB/AAPT work is cancellable; cleanup ignores the aborted operation
 signal, force-stops owned targets and uses its separate caller deadline. If either
 stop fails, it retains both packages and reports `cleanupDeferred`; recover the
-owned fixture explicitly before another run. Callbacks
+owned fixture explicitly before another run. A failed or cancelled install without
+an acknowledged success also defers cleanup and reports `unacknowledgedInstalls`
+with the expected APK hashes. Android can finish that install after the host ADB
+process exits, so an absent package at cleanup is not proof that the fixture is
+clean. Recover only the exact owned fixture and verified artifact before retrying.
+Callbacks
 receive the signal and must cooperate with cancellation before returning. The
 lease follows the caller environment and remains held for a live process, rather
 than expiring during long instrumentation. Product callbacks own controlled
@@ -409,3 +413,26 @@ UI context and cancellation. The process-local usage ceiling is 60 input-audio
 minutes per UTC day per host/owner; restarting resets that local counter.
 Hosts configured with mandatory `hostAdmission` currently refuse this optional
 protocol until continuous protected-host admission is implemented.
+
+Consumer `runIsolatedAndroidTest` can alternatively select a caller-owned disposable
+Cuttlefish on `127.0.0.1:PORT`: omit `expectedAvdName` and supply
+`expectedCuttlefish: {callerOwned: true, serialNumber, fingerprint}` with exact
+`ro.serialno` and `ro.build.fingerprint` values. This lane requires a booted vsoc
+instance, enforcing SELinux, the requested ABI and foreground owner user 0. It
+pins the kernel boot ID and rechecks instance/image/user/boot before each runner
+command, including `context.run` callbacks and cancellation cleanup. Reconnection or reboot
+retains installations for explicit recovery rather than deleting from a changed
+instance. HOME and browser roles must remain unchanged; the runner does not
+repair unrelated role policy. SDK AVD admission is unchanged. Caller ownership
+is an explicit assertion, not inferred from a loopback address, and this lane
+proves only the selected APK scenarios, not product-image or live integrations.
+
+`buildConsumerAndroidRuntime` accepts `targetAbi: "x86_64"` for an emulator or
+Cuttlefish bundle; the default remains `"arm64-v8a"`. The reviewed upstream stager
+selects the matching Bun, musl loader and libraries, and the consumer builder
+checks their target ELF machine and records the ABI in provenance. A supplied
+`bunArchiveFile` uses the selected architecture's verified local archive input.
+The host gateway callback receives `{targetAbi}` as its third argument so it can
+stage ABI-specific dependencies. Hosts must also select that ABI for runtime
+inventory, native document assets and APK packaging. This is bundle integrity
+support; installed execution, live services and image boot remain separate tests.

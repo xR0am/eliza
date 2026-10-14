@@ -15,6 +15,7 @@ import {
 import { appBillingScopes } from "./app-billing";
 import { billingSubscriptionRevisions, billingSubscriptions } from "./billing-subscriptions";
 import { organizations } from "./organizations";
+import { subscriptionGrants } from "./subscription-grants";
 
 export const SUBSCRIPTION_ALLOWANCE_PERIOD_STATES = [
   "open",
@@ -34,16 +35,18 @@ export const subscriptionAllowancePeriods = pgTable(
     organization_id: uuid("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
-    subscription_id: uuid("subscription_id").notNull(),
-    subscription_revision: bigint("subscription_revision", { mode: "number" }).notNull(),
+    /** Null only for a `promo_grant` bucket, which names its grant instead. */
+    subscription_id: uuid("subscription_id"),
+    subscription_revision: bigint("subscription_revision", { mode: "number" }),
     provider: text("provider").notNull().default("stripe"),
     provider_environment: text("provider_environment").notNull(),
     stripe_invoice_id: text("stripe_invoice_id"),
     grant_source: text("grant_source")
-      .$type<"paid_invoice" | "trial_claim">()
+      .$type<"paid_invoice" | "trial_claim" | "promo_grant">()
       .notNull()
       .default("paid_invoice"),
     trial_claim_id: uuid("trial_claim_id"),
+    promo_grant_id: uuid("promo_grant_id"),
     plan_key: text("plan_key").notNull(),
     catalog_version: text("catalog_version").notNull(),
     period_start: timestamp("period_start", { withTimezone: true }).notNull(),
@@ -89,6 +92,14 @@ export const subscriptionAllowancePeriods = pgTable(
       ],
       name: "subscription_allowance_periods_revision_tenant_fk",
     }).onDelete("restrict"),
+    promo_grant_tenant_fk: foreignKey({
+      columns: [table.promo_grant_id, table.organization_id],
+      foreignColumns: [subscriptionGrants.id, subscriptionGrants.organization_id],
+      name: "subscription_allowance_periods_promo_grant_tenant_fk",
+    }).onDelete("restrict"),
+    promo_grant_period_unique: uniqueIndex("subscription_allowance_periods_promo_grant_period_idx")
+      .on(table.promo_grant_id, table.period_start)
+      .where(sql`${table.promo_grant_id} IS NOT NULL`),
     id_organization_unique: uniqueIndex("subscription_allowance_periods_id_org_idx").on(
       table.id,
       table.organization_id,
@@ -110,7 +121,7 @@ export const subscriptionAllowancePeriods = pgTable(
     ),
     invoice_id_check: check(
       "subscription_allowance_periods_invoice_id_check",
-      sql`${table.provider} = 'stripe' AND ${table.provider_environment} IN ('test','live') AND ((${table.grant_source} = 'paid_invoice' AND ${table.stripe_invoice_id} IS NOT NULL AND ${table.stripe_invoice_id} ~ '^in_[A-Za-z0-9]+$' AND ${table.trial_claim_id} IS NULL) OR (${table.grant_source} = 'trial_claim' AND ${table.billing_scope_id} IS NOT NULL AND ${table.stripe_invoice_id} IS NULL AND ${table.trial_claim_id} IS NOT NULL))`,
+      sql`(${table.provider} = 'stripe' AND ${table.provider_environment} IN ('test','live') AND ${table.subscription_id} IS NOT NULL AND ${table.subscription_revision} IS NOT NULL AND ${table.promo_grant_id} IS NULL AND ((${table.grant_source} = 'paid_invoice' AND ${table.stripe_invoice_id} IS NOT NULL AND ${table.stripe_invoice_id} ~ '^in_[A-Za-z0-9]+$' AND ${table.trial_claim_id} IS NULL) OR (${table.grant_source} = 'trial_claim' AND ${table.billing_scope_id} IS NOT NULL AND ${table.stripe_invoice_id} IS NULL AND ${table.trial_claim_id} IS NOT NULL))) OR (${table.grant_source} = 'promo_grant' AND ${table.provider} = 'eliza' AND ${table.provider_environment} IN ('test','live') AND ${table.billing_scope_id} IS NULL AND ${table.merchant_key} = 'platform' AND ${table.subscription_id} IS NULL AND ${table.subscription_revision} IS NULL AND ${table.stripe_invoice_id} IS NULL AND ${table.trial_claim_id} IS NULL AND ${table.promo_grant_id} IS NOT NULL)`,
     ),
     period_check: check(
       "subscription_allowance_periods_period_check",

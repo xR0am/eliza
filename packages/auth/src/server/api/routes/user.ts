@@ -1140,8 +1140,8 @@ async function lockTenantOwnerLifecycle(
 
 function clampLimit(value: string | null, fallback = 50): number {
   const parsed = value ? Number(value) : fallback;
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), 100);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, 100);
 }
 
 function parseBoundedOffset(value: string | null): number {

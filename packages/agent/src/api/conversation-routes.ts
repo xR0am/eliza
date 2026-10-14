@@ -2737,6 +2737,8 @@ type ConversationRouteMessageRecord = {
   from?: string;
   fromUserName?: string;
   avatarUrl?: string;
+  /** The sender's `clientMessageId`, so a client can find its own turn after a Stop. */
+  clientMessageId?: string;
   replyToMessageId?: string;
   replyToSenderName?: string;
   replyToSenderUserName?: string;
@@ -3673,6 +3675,19 @@ async function listConversationMessages(
                   : undefined,
               )
             : undefined;
+        // Only a marker bound to this row's own ID names its client turn.
+        const chatMarker =
+          role === "user"
+            ? readDurableConversationChatMarker(content.chatIdempotency)
+            : undefined;
+        const clientMessageId =
+          chatMarker &&
+          conversationClientUserMemoryId(
+            chatMarker.scope,
+            chatMarker.clientMessageId,
+          ) === m.id
+            ? chatMarker.clientMessageId
+            : undefined;
         const interrupted = content.interrupted === true;
         const rawText = formatConversationMessageText(
           (
@@ -3720,6 +3735,7 @@ async function listConversationMessages(
           role,
           text,
           ...(userTextFormat ? { userTextFormat } : {}),
+          ...(clientMessageId ? { clientMessageId } : {}),
           ...(role === "assistant" &&
           typeof content.planningAcknowledgment === "string"
             ? { planningAcknowledgment: content.planningAcknowledgment }
@@ -6957,11 +6973,14 @@ async function patchConversation(
     return true;
   }
   const body = parsedPatch.data;
+  // A title or metadata change is persisted on the conversation's room, so it
+  // needs the runtime: changing only the in-process record would show the
+  // new value until the next restart and then serve the old one.
+  if (!state.runtime) {
+    error(res, "Agent is not running", 503);
+    return true;
+  }
   if (body.generate) {
-    if (!state.runtime) {
-      error(res, "Agent is not running", 503);
-      return true;
-    }
     // Get the last user message to use as the prompt for generation
     let prompt = "A generic conversation";
     const memories = await state.runtime.getMemories({
@@ -7127,6 +7146,13 @@ async function deleteConversation(
   if (convId === null) return true;
   const conv = await getConversationWithRestore(state, convId);
   const runtime = state.runtime;
+  if (conv?.roomId && !runtime) {
+    // The room and its messages can only be deleted through the runtime. A
+    // tombstone without that deletion would hide the conversation until the
+    // tombstone expires and keep its messages in search and the memory feed.
+    error(res, "Agent is not running", 503);
+    return true;
+  }
   if (conv?.roomId && runtime) {
     const deleteConversationAbortTracker = createRequestDisconnectAbortTracker({
       req,

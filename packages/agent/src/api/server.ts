@@ -972,6 +972,7 @@ export interface RuntimeRestartOptions {
   disposeCurrentBeforeBuild?: boolean;
 }
 interface RequestContext {
+  getAuthenticationRuntime?: () => AgentRuntime | null;
   composeStatus?: ApiStatusComposer;
   hostRuntimeMode?: RuntimeModeSnapshot;
   restartRequiresRuntimeDisposal?: boolean;
@@ -1235,6 +1236,10 @@ async function handleRequestForViewClient(
   ctx?: RequestContext,
 ): Promise<void> {
   bindViewRequestHost(req, state);
+  const authenticationRuntime = () =>
+    ctx?.getAuthenticationRuntime
+      ? ctx.getAuthenticationRuntime()
+      : state.runtime;
   const method = req.method ?? "GET";
   let url: URL;
   try {
@@ -1304,7 +1309,7 @@ async function handleRequestForViewClient(
       else if (typeof resolveAuthorization === "function") {
         hostSessionAuthorization = await resolveAuthorization(
           req,
-          state.runtime,
+          authenticationRuntime(),
           {
             allowCookieAuth: allowHostCookieAuth,
             allowTrustedLocalBypass: !requiresDeviceIdentity(req, pathname),
@@ -1318,7 +1323,7 @@ async function handleRequestForViewClient(
         // standalone bearer schemes are evaluated by the normal server gates.
         const authorized =
           allowHostCookieAuth && typeof authorize === "function"
-            ? await authorize(req, state.runtime)
+            ? await authorize(req, authenticationRuntime())
             : false;
         // Legacy boolean-only hosts can still pass the coarse request gate, but
         // cannot claim OWNER authority for a sensitive account-selection action.
@@ -1561,7 +1566,7 @@ async function handleRequestForViewClient(
     const strictResolver = getAgentHostBridge().resolveHttpRequestAuthorization;
     const ownerAuthorization = hasPresentedCredential
       ? strictResolver
-        ? await strictResolver(req, state.runtime, {
+        ? await strictResolver(req, authenticationRuntime(), {
             allowCookieAuth: allowHostCookieAuth,
             allowTrustedLocalBypass: false,
             allowBearerAuth: true,
@@ -3289,6 +3294,8 @@ export async function startApiServer(opts?: {
   onRestart?: (options?: RuntimeRestartOptions) => Promise<AgentRuntime | null>;
   /** Fully disposes a live runtime before the lifecycle route reports stopped. */
   onStop?: (runtime: AgentRuntime) => Promise<void>;
+  /** Host-owned session storage while services are stopped. Never used for runtime work. */
+  getAuthenticationRuntime?: () => AgentRuntime | null;
   /** A replacement shares the exact physical store and cannot overlap its predecessor. */
   restartRequiresRuntimeDisposal?: boolean;
   /** Runs after the server atomically publishes the replacement runtime. */
@@ -3572,7 +3579,10 @@ export async function startApiServer(opts?: {
     `[eliza-api] Creating http server (${Date.now() - apiStartTime}ms)`,
   );
   apiLap("pre-createServer (route imports + middleware setup done)");
+  const getAuthenticationRuntime =
+    opts?.getAuthenticationRuntime ?? (() => state.runtime);
   const requestContext: RequestContext = {
+    getAuthenticationRuntime,
     composeStatus: opts?.composeStatus,
     hostRuntimeMode:
       hostConfig === undefined ? undefined : resolveRuntimeMode(hostConfig),
@@ -3582,9 +3592,17 @@ export async function startApiServer(opts?: {
     onRuntimeActivated,
     onRuntimeSwapped: () => {
       bindInProcessApi();
+      if (state.runtime)
+        state.connectorHealthMonitor?.setRuntime(state.runtime);
       bindRuntimeStreams(state.runtime);
       wireModelRegistrationBroadcast(state.runtime);
       wireNativeBrowserPageReader(state.runtime);
+      if (state.runtime) {
+        // The new runtime has no dashboard chat delivery until it is
+        // registered again, as updateRuntime does.
+        registerClientChatSendHandler(state.runtime, state);
+        wireProactiveInteractionDecider(state.runtime, state);
+      }
       void wireCoordinatorBridgesWhenReady(state, {
         wireChatBridge: wireCodingAgentChatBridge,
         wireWsBridge: wireCodingAgentWsBridge,
@@ -3774,7 +3792,7 @@ export async function startApiServer(opts?: {
         const generation = session.generation;
         const authorized = await isWebSocketSessionTokenAuthorized(
           session.token,
-          state.runtime,
+          getAuthenticationRuntime(),
         );
         if (
           !authorized ||
@@ -4160,7 +4178,7 @@ export async function startApiServer(opts?: {
             if (
               await isWebSocketSessionTokenAuthorized(
                 handshakeToken,
-                state.runtime,
+                getAuthenticationRuntime(),
               )
             ) {
               markWebSocketUpgradeSessionAuthorized(request);
@@ -4481,7 +4499,7 @@ export async function startApiServer(opts?: {
             try {
               authorized = await isWebSocketSessionTokenAuthorized(
                 providedToken,
-                state.runtime,
+                getAuthenticationRuntime(),
               );
               if (authorized)
                 wsSessions.set(ws, {
@@ -4949,6 +4967,7 @@ export async function startApiServer(opts?: {
     });
     state.runtime = rt;
     bindInProcessApi();
+    state.connectorHealthMonitor?.setRuntime(rt);
     state.chatConnectionReady = null;
     state.chatConnectionPromise = null;
     bindRuntimeStreams(rt);

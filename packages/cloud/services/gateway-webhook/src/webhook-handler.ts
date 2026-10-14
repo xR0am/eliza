@@ -47,6 +47,7 @@ import {
   isNetworkProject,
   type NetworkConsentLedger,
   type NetworkInboundCompliance,
+  networkTakeoverAppliesTo,
   redisNetworkConsentLedger,
   sendWithTwilioReplyFence,
 } from "./network-compliance";
@@ -54,10 +55,10 @@ import {
   type NetworkOpenTurn,
   networkServiceFromEnv,
   runNetworkServiceTurn,
-  takeoverAppliesTo,
 } from "./network-service";
 import type { GatewayRedis } from "./redis";
 import {
+  type AgentReply,
   forwardToServer,
   refreshKedaActivity,
   resolveAgentServer,
@@ -283,7 +284,22 @@ async function sendReplyWithRequiredReceipt(
   text: string,
   deliveryHooks?: TelegramDeliveryHooks,
   mediaUrls?: readonly string[],
-): Promise<string[]> {
+  networkEgress?: {
+    deps: HandlerDeps;
+    project: string;
+    app?: NetworkOpenTurn["app"];
+  },
+): Promise<string[] | false> {
+  if (
+    networkEgress &&
+    (await isNetworkAddressOptedOut(
+      networkConsentLedger(networkEgress.deps),
+      networkEgress.project,
+      event.senderId,
+      networkEgress.app,
+    ))
+  )
+    return false;
   if (!adapter.sendReplyWithReceipt) {
     throw new PlatformDeliveryError(
       `${adapter.platform} adapter does not expose provider receipts`,
@@ -327,8 +343,17 @@ async function sendDirectReply(
   text: string,
   deliveryHooks?: TelegramDeliveryHooks,
   mediaUrls?: readonly string[],
+  networkAdmission?: { app?: NetworkOpenTurn["app"]; compliance?: true },
 ): Promise<void> {
-  if (adapter.platform === "twilio" && isNetworkProject(project)) {
+  const networkScoped =
+    isNetworkProject(project) ||
+    networkAdmission !== undefined ||
+    networkTakeoverAppliesTo(project, event);
+  const networkEgress =
+    networkScoped && !networkAdmission?.compliance
+      ? { deps, project, app: networkAdmission?.app }
+      : undefined;
+  if (adapter.platform === "twilio" && networkScoped) {
     const outcome = await sendWithTwilioReplyFence(
       deps.redis,
       project,
@@ -341,6 +366,7 @@ async function sendDirectReply(
           text,
           deliveryHooks,
           mediaUrls,
+          networkEgress,
         ),
       (error) =>
         error instanceof PlatformDeliveryError &&
@@ -362,6 +388,7 @@ async function sendDirectReply(
     text,
     deliveryHooks,
     mediaUrls,
+    networkEgress,
   );
 }
 
@@ -809,10 +836,7 @@ export async function handleWebhook(
     }
   }
 
-  if (
-    isNetworkProject(project) &&
-    (adapter.platform === "blooio" || adapter.platform === "twilio")
-  ) {
+  if (networkTakeoverAppliesTo(project, event, agentId)) {
     // A retry must retain the exact service request body. This is metadata of
     // the existing authenticated ingress ledger, not a second turn cache.
     const timeKey = `${dedupKey}:received-at`;
@@ -1264,6 +1288,11 @@ async function processMessage(
   // A handled turn is answered here with no model call; an open turn carries
   // the service's member context into the agent turn.
   let networkTurn: NetworkOpenTurn | undefined;
+  const networkEligible = networkTakeoverAppliesTo(
+    project,
+    event,
+    explicitAgentId,
+  );
   const networkService =
     deps.networkService === undefined
       ? networkServiceFromEnv()
@@ -1271,13 +1300,11 @@ async function processMessage(
   const isDirect = !(
     event.chatType === "group" || event.chatType === "supergroup"
   );
-  if (
-    isNetworkProject(project) &&
-    networkService &&
-    isDirect &&
-    !event.membershipChange &&
-    takeoverAppliesTo(event.senderId)
-  ) {
+  if (networkEligible && !networkService)
+    throw new PersonalSharedPreEgressError(
+      "Network takeover authority is not configured",
+    );
+  if (networkEligible && networkService && isDirect) {
     let outcome: Awaited<ReturnType<typeof runNetworkServiceTurn>>;
     try {
       outcome = await runNetworkServiceTurn(
@@ -1300,10 +1327,10 @@ async function processMessage(
       const path = "/api/internal/eliza-app/personal-shared/messages";
       const body = JSON.stringify({
         platform: outcome.request.channel,
-        project: "network",
+        project,
         connectorAccountId: resolveConnectorAccountId(adapter.platform, config),
         phoneNumber: event.senderId,
-        messageId: `${outcome.request.channel}:network:${event.messageId}`,
+        messageId: `${outcome.request.channel}:${project}:${event.messageId}`,
         message: event.text,
         networkHandled: { request: outcome.request, response: outcome.handled },
       });
@@ -1381,7 +1408,7 @@ async function processMessage(
     }
     if (outcome.kind === "open") networkTurn = outcome.turn;
   }
-  if (isNetworkProject(project) && !networkTurn) {
+  if ((isNetworkProject(project) || networkEligible) && !networkTurn) {
     // The Network without a service-owned turn (legacy, or a turn the service
     // ignored): carrier keywords (STOP/HELP/START) and the consent ledger run
     // before any identity, account, or agent work, so an ignored STOP is
@@ -1411,6 +1438,8 @@ async function processMessage(
         project,
         compliance.text,
         deliveryHooks,
+        undefined,
+        { compliance: true },
       );
       logger.info("Network keyword handled", {
         project,
@@ -1475,6 +1504,7 @@ async function processMessage(
         trace.traceId,
         deliveryHooks,
         networkTurn,
+        networkEligible,
       );
       logger.info("Personal Eliza connector message completed", {
         project,
@@ -1520,6 +1550,10 @@ async function processMessage(
           event,
           personalSharedFailureReply(error.failure),
           deliveryHooks,
+          undefined,
+          networkEligible
+            ? { deps, project, app: networkTurn?.app }
+            : undefined,
         );
         return;
       }
@@ -1642,10 +1676,10 @@ async function processMessage(
     });
   });
 
-  let responseText: string;
+  let reply: AgentReply;
   stageStartedAt = Date.now();
   try {
-    responseText = await forwardToServer(
+    reply = await forwardToServer(
       server.serverUrl,
       server.serverName,
       agentId,
@@ -1673,13 +1707,38 @@ async function processMessage(
   }
   const forwardMs = Date.now() - stageStartedAt;
 
-  // An empty responseText is a deliberate no-response from the agent (mute /
-  // shouldRespond=no), not content: forwarding it would make platform adapters
-  // (WhatsApp/Twilio/Telegram) attempt an invalid empty send. Skip the reply so
-  // "agent chose silence" sends nothing, staying distinct from a forward
-  // failure (which returned above) and from a real reply.
+  // A reply with no text and no sendable media is a deliberate no-response
+  // from the agent (mute / shouldRespond=no), not content: forwarding it would
+  // make platform adapters (WhatsApp/Twilio/Telegram) attempt an invalid empty
+  // send. Skip the reply so "agent chose silence" sends nothing, staying
+  // distinct from a forward failure (which returned above) and from a real reply.
+  const mediaUrls = parsePersonalSharedMediaUrls({
+    mediaUrls: reply.mediaUrls,
+  });
+  // Adapters can only pass on public HTTPS links. Inline (data:) or local
+  // attachments are not sent; record that instead of dropping them silently.
+  const undeliverableSchemes = reply.mediaUrls.flatMap((url) => {
+    try {
+      const { protocol } = new URL(url.trim());
+      return protocol === "https:" ? [] : [protocol];
+    } catch {
+      // error-policy:J3 a relative or malformed reference is not a public link.
+      return ["relative"];
+    }
+  });
+  if (undeliverableSchemes.length > 0) {
+    logger.warn(
+      "Agent reply attachments are not public HTTPS links; not sent",
+      {
+        agentId,
+        platform: adapter.platform,
+        count: undeliverableSchemes.length,
+        schemes: [...new Set(undeliverableSchemes)],
+      },
+    );
+  }
   // error-policy:J5 no-op — deliberate agent silence, nothing to deliver.
-  if (responseText.length === 0) {
+  if (reply.text.length === 0 && mediaUrls.length === 0) {
     logger.debug("Agent produced no reply; skipping send", {
       agentId,
       platform: adapter.platform,
@@ -1693,8 +1752,9 @@ async function processMessage(
       adapter,
       config,
       event,
-      responseText,
+      reply.text,
       deliveryHooks,
+      mediaUrls,
     );
     logger.info("Connector message completed", {
       project,
@@ -1790,19 +1850,27 @@ function beginTypingFeedback(
   if (adapter.platform === "telegram") {
     return startTypingRefreshLoop(adapter, config, event);
   }
-  adapter.sendTypingIndicator(config, event).catch((err) => {
-    logger.debug("sendTypingIndicator failed", {
-      platform: adapter.platform,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
-  return () => {
-    adapter.stopTypingIndicator?.(config, event).catch((err) => {
-      logger.debug("stopTypingIndicator failed", {
+  const startTyping = adapter
+    .sendTypingIndicator(config, event)
+    .catch((err) => {
+      logger.debug("sendTypingIndicator failed", {
         platform: adapter.platform,
         error: err instanceof Error ? err.message : String(err),
       });
     });
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    // Keep model/reply work independent, but never stop before a delayed start settles.
+    startTyping
+      .then(() => adapter.stopTypingIndicator?.(config, event))
+      .catch((err) => {
+        logger.debug("stopTypingIndicator failed", {
+          platform: adapter.platform,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   };
 }
 
@@ -1843,6 +1911,7 @@ async function sendPersonalSharedReply(
   traceId: string,
   deliveryHooks?: TelegramDeliveryHooks,
   networkTurn?: NetworkOpenTurn,
+  networkAdmitted = false,
 ): Promise<PersonalSharedDeliveryTiming> {
   const { cloudBaseUrl, getAuthHeader } = deps;
   const reauth = deps.reacquireAuthHeader ?? reacquireAuthHeader;
@@ -2162,7 +2231,7 @@ async function sendPersonalSharedReply(
   }
   // A STOP that landed while this Network turn was running wins: re-read the
   // ledger immediately before egress so no reply follows the confirmation.
-  if (isNetworkProject(project) && !isGroup) {
+  if ((isNetworkProject(project) || networkAdmitted) && !isGroup) {
     let optedOut: boolean;
     try {
       // An app-scoped START newer than a line-wide STOP reopens that app,
@@ -2464,6 +2533,7 @@ async function sendPersonalSharedReply(
       replyText,
       deliveryHooks,
       replyMediaUrls,
+      networkAdmitted ? { app: networkTurn?.app } : undefined,
     );
   }
   return {
