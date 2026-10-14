@@ -73,6 +73,8 @@ migration `0542_subscription_grant_codes` first):
   Codes print once; only HMACs are stored.
 - Revoke: `bun --conditions=eliza-source packages/cloud/scripts/admin/revoke-subscription-grants.ts --reason "..." --code XXXX-XXXX-XXXX-XXXX`
   (or `--grant-id`). Service stops at once; `--code` also disables the code.
+- Staging: mint with the `Cloud staging mint grant codes` workflow, which seals
+  the codes to your public key (see `packages/cloud/scripts/README.md`).
 
 Grant rows are retained billing records. Deleting the redeeming user clears
 `user_id`; an organization keeps its grant rows like its paid allowance history.
