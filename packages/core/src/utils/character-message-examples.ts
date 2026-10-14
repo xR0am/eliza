@@ -30,10 +30,6 @@ function extractLikelyJson(input: string): string {
 		.replace(/[ \t\r\n]{0,1024}```$/i, "")
 		.trim();
 
-	if (withoutFences.startsWith("{") || withoutFences.startsWith("[")) {
-		return withoutFences;
-	}
-
 	const firstBracket = withoutFences.indexOf("[");
 	const firstBrace = withoutFences.indexOf("{");
 	const starts = [firstBracket, firstBrace].filter((index) => index >= 0);
