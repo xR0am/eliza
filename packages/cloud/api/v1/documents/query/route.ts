@@ -9,8 +9,8 @@ import {
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
 import {
-  listDocumentRecords,
   resolveDocumentScope,
+  scanDocumentRecords,
   scoreDocumentText,
 } from "../_worker-documents";
 
@@ -19,9 +19,6 @@ interface DocumentQueryBody {
   limit?: number;
   characterId?: string;
 }
-
-/** Rows read from the document repository per round trip while scoring a scope. */
-const DOCUMENT_PAGE = 200;
 
 const app = new Hono<AppEnv>();
 
@@ -49,12 +46,7 @@ app.post("/", async (c) => {
     const limit = Math.min(Math.max(body.limit ?? 5, 1), 25);
     // Every document in the scope is scored: the match is decided here, not
     // by the repository, so a newest-first page would hide older documents.
-    const documents = [];
-    for (let offset = 0; ; offset += DOCUMENT_PAGE) {
-      const page = await listDocumentRecords(scope, DOCUMENT_PAGE, offset);
-      documents.push(...page);
-      if (page.length < DOCUMENT_PAGE) break;
-    }
+    const documents = await scanDocumentRecords(scope);
     const matches = documents
       .map((doc) => ({
         id: doc.id,

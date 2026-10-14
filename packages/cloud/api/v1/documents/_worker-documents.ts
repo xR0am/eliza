@@ -163,6 +163,34 @@ export async function listDocumentRecords(
   return memories.map(toDocumentRecord);
 }
 
+/**
+ * Every document record in the scope, newest first, read in keyset pages so a
+ * document added or removed during the scan can neither repeat nor hide
+ * another one.
+ */
+export async function scanDocumentRecords(
+  scope: DocumentScope,
+  pageSize = 200,
+) {
+  const records = [];
+  let after: { createdAt: number; id: string } | undefined;
+  for (;;) {
+    const page = await memoriesRepository.search({
+      agentId: scope.agentId,
+      roomId: scope.roomId,
+      type: "documents",
+      limit: pageSize,
+      after,
+    });
+    records.push(...page.map(toDocumentRecord));
+    const last = page.at(-1);
+    if (page.length < pageSize || !last?.id || last.createdAt === undefined)
+      break;
+    after = { createdAt: last.createdAt, id: last.id };
+  }
+  return records;
+}
+
 export async function createDocumentRecord(
   user: AuthedUser,
   scope: DocumentScope,

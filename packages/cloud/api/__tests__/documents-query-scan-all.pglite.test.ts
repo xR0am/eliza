@@ -4,7 +4,7 @@
  * and real document repository over PGlite; authentication and rate limiting
  * are stubbed.
  */
-import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, spyOn, test } from "bun:test";
 import { pushSchema } from "drizzle-kit/api";
 
 process.env.DATABASE_URL = "pglite://memory";
@@ -53,6 +53,10 @@ const { dbWrite, closeDatabaseConnectionsForTests } = await import(
 const { agentTable, entityTable, memoryTable, roomTable } = await import(
   "@elizaos/cloud-shared/db/schemas"
 );
+const { memoriesRepository } = await import(
+  "@elizaos/cloud-shared/db/repositories/agents/memories"
+);
+const { inArray } = await import("drizzle-orm");
 const { Hono } = await import("hono");
 const { default: queryRoute } = await import("../v1/documents/query/route");
 
@@ -130,4 +134,60 @@ test("total counts every matching document, not the returned page", async () => 
   const found = await query(COMMON, 5);
   expect(found.results).toHaveLength(5);
   expect(found.total).toBe(COMMON_COUNT);
+});
+
+/** Runs `change` once, right after the route has read its first page. */
+function afterFirstPage(change: () => Promise<unknown>) {
+  const original = memoriesRepository.search.bind(memoriesRepository);
+  let pages = 0;
+  const spy = spyOn(memoriesRepository, "search").mockImplementation(
+    async (options) => {
+      const page = await original(options);
+      pages += 1;
+      if (pages === 1) await change();
+      return page;
+    },
+  );
+  return spy;
+}
+
+test("a document uploaded between page reads does not repeat a match", async () => {
+  const spy = afterFirstPage(() =>
+    dbWrite.insert(memoryTable).values({
+      id: "44444444-4444-4444-8444-000000000001",
+      roomId: USER,
+      entityId: USER,
+      agentId: USER,
+      type: "documents",
+      content: { text: "a fresh upload" },
+      metadata: { filename: "fresh.txt" },
+      unique: false,
+      createdAt: new Date("2027-01-01T00:00:00.000Z"),
+    }),
+  );
+  try {
+    const found = await query(COMMON, 25);
+    const ids = found.results.map((result) => result.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(found.total).toBe(COMMON_COUNT);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("a document deleted between page reads does not hide an unread match", async () => {
+  // Two documents the first page already read are removed.
+  const readIds = [DOCUMENTS - 1, DOCUMENTS - 2].map(
+    (index) => `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+  );
+  const spy = afterFirstPage(() =>
+    dbWrite.delete(memoryTable).where(inArray(memoryTable.id, readIds)),
+  );
+  try {
+    const found = await query(RARE, 5);
+    expect(found.results.map((result) => result.id)).toEqual([OLDEST_ID]);
+    expect(found.total).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
 });
