@@ -1383,11 +1383,14 @@ export class CreditsService {
           WHERE stripe_payment_intent_id = ${originalPaymentIntentId}
           FOR UPDATE
         ),
+        -- A clawback's obligation is what it removed plus what it could not
+        -- recover (held as a shortfall). A reinstated dispute returns the
+        -- removed credits and releases its hold, so it no longer counts.
         prior_reversal AS (
           SELECT
-            COALESCE(SUM(-ct.amount), 0)::numeric AS total,
+            COALESCE(SUM(obligation.amount), 0)::numeric AS total,
             COALESCE(
-              SUM(-ct.amount) FILTER (
+              SUM(obligation.amount) FILTER (
                 WHERE ${reversalSeries}::text IS NULL
                   OR ct.stripe_payment_intent_id LIKE ${reversalSeries} || '%'
               ),
@@ -1396,10 +1399,15 @@ export class CreditsService {
           FROM org
           LEFT JOIN credit_transactions AS ct
             ON ct.metadata->>'payment_intent_id' = ${originalPaymentIntentId}
-            AND (
-              ct.type = 'clawback'
-              OR (ct.type = 'refund' AND ct.metadata->>'source' = 'charge.dispute.funds_reinstated')
+            AND ct.type = 'clawback'
+            AND NOT EXISTS (
+              SELECT 1 FROM credit_transactions AS reinstated
+              WHERE reinstated.stripe_payment_intent_id = ct.stripe_payment_intent_id || ':reinstated'
             )
+          LEFT JOIN LATERAL (
+            SELECT -ct.amount
+              + COALESCE(NULLIF(ct.metadata->>'unrecovered_clawback_usd', '')::numeric, 0) AS amount
+          ) AS obligation ON true
         ),
         candidate AS (
           SELECT

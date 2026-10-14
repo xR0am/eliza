@@ -398,6 +398,69 @@ test("a full refund after a lost full dispute does not claw back twice", async (
   expect(await holdRows(buyer.org)).toEqual([]);
 });
 
+test("a full refund after a lost dispute that left a shortfall does not book the debt twice", async () => {
+  // 500 credits bought for 10000 cents; the organization has used 400 of them.
+  const buyer = await purchase({
+    credits: "500",
+    cents: 10000,
+    balance: "100",
+  });
+  const disputeId = `dp_${randomUUID()}`;
+  for (const type of [
+    "charge.dispute.funds_withdrawn",
+    "charge.dispute.closed",
+  ] as const) {
+    expect(
+      await processStripeEvent(
+        disputeEvent(type, disputeId, 10000, buyer.paymentIntentId),
+      ),
+    ).toBe("ack");
+  }
+  const refund = refundEvent(
+    `ch_${randomUUID()}`,
+    10000,
+    buyer.paymentIntentId,
+  );
+  expect(await processStripeEvent(refund)).toBe("ack");
+  expect(await processStripeEvent(refund)).toBe("ack");
+
+  expect(await balance(buyer.org)).toBe(0);
+  expect(await ledger(buyer.org)).toEqual([
+    ["credit", 500],
+    ["clawback", -100],
+  ]);
+  expect(await holdRows(buyer.org)).toEqual([
+    {
+      reason: "reversal_shortfall",
+      shortfall: 400,
+      outstanding: 400,
+      releasedBy: null,
+    },
+  ]);
+});
+
+test("cumulative partial refunds on a low balance book each unrecovered credit once", async () => {
+  const buyer = await purchase({ credits: "500", cents: 10000, balance: "50" });
+  const chargeId = `ch_${randomUUID()}`;
+  // 2000 cents refunded (100 credits), then 5000 cumulative (250 credits).
+  for (const cents of [2000, 5000])
+    expect(
+      await processStripeEvent(
+        refundEvent(chargeId, cents, buyer.paymentIntentId),
+      ),
+    ).toBe("ack");
+
+  expect(await balance(buyer.org)).toBe(0);
+  const holds = await holdRows(buyer.org);
+  const applied = -(await ledger(buyer.org))
+    .filter(([type]) => type === "clawback")
+    .reduce((sum, [, amount]) => sum + amount, 0);
+  const unrecovered = holds.reduce((sum, hold) => sum + hold.shortfall, 0);
+  // Applied plus unrecovered equals the 250 credits Stripe reversed.
+  expect(applied).toBe(50);
+  expect(unrecovered).toBe(200);
+});
+
 function refundEvent(
   chargeId: string,
   amountRefundedCents: number,
