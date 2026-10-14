@@ -1,4 +1,5 @@
 import { SHARED_RUNTIME_TURN_DEADLINE_MS } from "./coordinator-fetch";
+import type { VerifiedNetworkAdmission } from "./network-shared-admission";
 import {
   createOwnerBoundSharedGooglePort,
   isPersonalGooglePrivateAudience,
@@ -359,6 +360,8 @@ export interface SharedTurnClaimStore {
 }
 
 export interface SharedRuntimeChatOptions {
+  /** Canonical ingress capability, reverified by the server at each process boundary. */
+  trustedNetworkAdmission?: VerifiedNetworkAdmission;
   /** Server-only capability reserved by the owning Personal Shared DO. */
   ownerCapture?: OwnerModelCapture;
   /** Standard request trace propagated through the conversation coordinator. */
@@ -621,6 +624,7 @@ export function sharedElizaRuntimeExecution(
   mobilePushDispatch?: SharedRuntimeChatOptions["mobilePushDispatch"],
   channel?: NonNullable<RunSharedAgentTurnInput["execution"]>["channel"],
   trustedNetworkTurn?: unknown,
+  trustedNetworkAdmission?: VerifiedNetworkAdmission,
 ): NonNullable<RunSharedAgentTurnInput["execution"]> {
   const personalShared = funding === "platform" && isCanonicalPersonalSharedAgent(agent);
   const runtimeChannel = channel ?? {
@@ -633,9 +637,12 @@ export function sharedElizaRuntimeExecution(
     agent,
     personalShared,
     runtimeChannel.type !== ChannelType.DM || roomId !== sharedRuntimeRoomKey(agent.id, agent.id),
-    serviceNetworkStoreFactory(personalShared ? trustedNetworkTurn : undefined),
+    serviceNetworkStoreFactory(
+      personalShared ? (trustedNetworkAdmission ?? trustedNetworkTurn) : undefined,
+    ),
     undefined,
-    personalShared ? networkVoiceApp(trustedNetworkTurn) : undefined,
+    personalShared ? networkVoiceApp(trustedNetworkAdmission ?? trustedNetworkTurn) : undefined,
+    personalShared ? trustedNetworkAdmission : undefined,
   );
   return {
     agentKey: agent.id,
@@ -650,7 +657,9 @@ export function sharedElizaRuntimeExecution(
     ...(personalShared &&
     isPersonalGooglePrivateAudience(agent, runtimeChannel, params) &&
     roomId === sharedRuntimeRoomKey(agent.id, agent.id)
-      ? { google: () => createOwnerBoundSharedGooglePort(agent, runtimeChannel, params) }
+      ? {
+          google: () => createOwnerBoundSharedGooglePort(agent, runtimeChannel, params),
+        }
       : {}),
     todos: {
       scope: sharedTodoStorageScope({
@@ -1543,6 +1552,7 @@ export class SharedRuntimeChatService {
           options.mobilePushDispatch,
           options.channel,
           options.trustedNetworkTurn,
+          options.trustedNetworkAdmission,
         ),
       });
     } catch (error) {
@@ -1866,6 +1876,7 @@ export class SharedRuntimeChatService {
             options.mobilePushDispatch,
             options.channel,
             options.trustedNetworkTurn,
+            options.trustedNetworkAdmission,
           ),
         }),
       );

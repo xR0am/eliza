@@ -1,4 +1,13 @@
 import {
+  type NetworkAdmissionEnvelope,
+  networkAccountMatchesPolicy,
+  parseNetworkAdmissionPolicy,
+  type VerifiedNetworkAdmission,
+  verifyNetworkAdmissionEnvelope,
+  verifyNetworkHandledEnvelope,
+  verifyNetworkServiceDeliveryEnvelope,
+} from "@elizaos/cloud-shared/lib/services/shared-runtime/network-shared-admission";
+import {
   isCanonicalPersonalSharedAgent,
   personalSharedAgentId,
 } from "@elizaos/cloud-shared/lib/services/shared-runtime/personal-shared-identity";
@@ -78,6 +87,8 @@ type ConversationRequest =
       agentId: string;
       roomId: string;
       delivery: SharedNetworkDelivery;
+      trustedNetworkAdmission?: NetworkAdmissionEnvelope;
+      trustedNetworkServiceDelivery?: NetworkAdmissionEnvelope;
     }
   | {
       operation: "bridge";
@@ -103,6 +114,7 @@ type ConversationRequest =
       trustedAccountState?: unknown;
       trustedNetworkContext?: unknown;
       trustedNetworkTurn?: unknown;
+      trustedNetworkAdmission?: NetworkAdmissionEnvelope;
     }
   | {
       operation: "stream";
@@ -128,6 +140,7 @@ type ConversationRequest =
       trustedAccountState?: unknown;
       trustedNetworkContext?: unknown;
       trustedNetworkTurn?: unknown;
+      trustedNetworkAdmission?: NetworkAdmissionEnvelope;
     }
   | {
       operation: "prewarm";
@@ -1691,7 +1704,7 @@ export class SharedRuntimeConversation {
     if (this.env.NETWORK_PERSONAL_CONTINUITY_ENABLED !== "true")
       return failure("network_personal_continuity_disabled", 503);
     if (
-      d?.project !== "network" ||
+      (d?.project !== "network" && d?.project !== "eliza-app") ||
       typeof d.text !== "string" ||
       (d.handled &&
         (typeof d.handled.messageId !== "string" ||
@@ -1702,7 +1715,8 @@ export class SharedRuntimeConversation {
           ) ||
           new Set(d.handled.replyIds).size !== d.handled.replyIds.length ||
           !d.inbound ||
-          d.inbound.id !== `${d.platform}:network:${d.handled.messageId}` ||
+          d.inbound.id !==
+            `${d.platform}:${d.project}:${d.handled.messageId}` ||
           (d.text.trim()
             ? d.handled.replyIds.length === 0
             : d.handled.replyIds.length !== 0))) ||
@@ -1772,9 +1786,106 @@ export class SharedRuntimeConversation {
         d.inbound ? [d.inbound.id, d.inbound.text] : null,
         d.handled ? [d.handled.messageId, d.handled.replyIds] : null,
         d.compliance ? [d.compliance.command, d.compliance.messageId] : null,
+        ...(d.project === "eliza-app"
+          ? [d.connectorAccountId, d.inbound?.transport ?? null]
+          : []),
       ]),
     );
     let intent = await this.state.storage.get<NetworkDeliveryIntent>(key);
+    if (d.project === "eliza-app" && d.handled) {
+      const verified = payload.trustedNetworkAdmission
+        ? await verifyNetworkHandledEnvelope(
+            payload.trustedNetworkAdmission,
+            this.env,
+          )
+        : undefined;
+      const policy = parseNetworkAdmissionPolicy(
+        this.env.NETWORK_OWNED_INGRESS_POLICY,
+      );
+      if (
+        !verified ||
+        !policy ||
+        !verified.handled.response.accountEligible ||
+        !networkAccountMatchesPolicy(
+          {
+            userId: d.userId,
+            organizationId: d.organizationId,
+            agentId: payload.agentId,
+            roomId: payload.roomId,
+          },
+          policy,
+        )
+      )
+        return failure("invalid_admission", 403);
+      const { ingress, handled } = verified;
+      if (
+        d.platform !== ingress.platform ||
+        d.project !== ingress.project ||
+        d.connectorAccountId !== ingress.connectorAccountId ||
+        d.phoneNumber !== ingress.phoneNumber ||
+        d.inbound?.id !== ingress.messageId ||
+        d.inbound?.text !== ingress.message ||
+        d.inbound?.createdAt !== handled.request.receivedAt ||
+        d.inbound?.transport !== handled.request.transport ||
+        d.handled?.messageId !== handled.request.messageId ||
+        JSON.stringify(d.handled.replyIds) !==
+          JSON.stringify(handled.response.replyIds) ||
+        d.text !== handled.response.replies.join("\n\n") ||
+        d.app !== (handled.response.app ?? undefined) ||
+        d.idempotencyKey !==
+          `network:handled:${d.platform}:${handled.request.messageId}`
+      )
+        return failure("invalid_admission", 403);
+      const command = ingress.message.trim().toLowerCase();
+      if (
+        d.compliance &&
+        (handled.response.replyKind !== "compliance" ||
+          d.compliance.command !== command ||
+          d.compliance.messageId !== ingress.messageId)
+      )
+        return failure("invalid_admission", 403);
+    }
+
+    if (d.project === "eliza-app" && !d.handled) {
+      const verified = payload.trustedNetworkServiceDelivery
+        ? await verifyNetworkServiceDeliveryEnvelope(
+            payload.trustedNetworkServiceDelivery,
+            this.env,
+          )
+        : undefined;
+      if (
+        !verified ||
+        !networkAccountMatchesPolicy(
+          {
+            userId: d.userId,
+            organizationId: d.organizationId,
+            agentId: payload.agentId,
+            roomId: payload.roomId,
+          },
+          verified.policy,
+        )
+      )
+        return failure("invalid_admission", 403);
+      const original = verified.delivery,
+        p = verified.policy;
+      if (
+        d.project !== p.project ||
+        d.connectorAccountId !== p.connectorAccountId ||
+        d.phoneNumber !== original.to ||
+        d.platform !== (original.channel ?? "blooio") ||
+        d.app !== original.app ||
+        d.text !== original.text ||
+        d.idempotencyKey !== `network:svc:${original.id}` ||
+        d.inbound ||
+        d.compliance
+      )
+        return failure("invalid_admission", 403);
+      if (
+        payload.trustedNetworkServiceDelivery!.path.endsWith("/receipt") &&
+        !payload.reconcileOnly
+      )
+        return failure("invalid_admission", 403);
+    }
     if (intent && intent.hash !== hash)
       return failure("delivery_conflict", 409);
     if (payload.reconcileOnly && (!intent || intent.state === "prepared"))
@@ -1900,6 +2011,9 @@ export class SharedRuntimeConversation {
             role: "user",
             content: intent.inbound.text,
             createdAt: intent.inbound.createdAt,
+            ...(intent.inbound.transport
+              ? { channel: intent.inbound.transport }
+              : {}),
           },
         ],
       );
@@ -1933,7 +2047,10 @@ export class SharedRuntimeConversation {
           NETWORK_DELIVERY_UNCLAIMED_GRACE_MS;
       const gatewayBody = JSON.stringify({
         platform: d.platform,
-        project: "network",
+        project: d.project,
+        ...(d.connectorAccountId
+          ? { connectorAccountId: d.connectorAccountId }
+          : {}),
         ...(d.app ? { app: d.app } : {}),
         phoneNumber: d.phoneNumber,
         text: d.text,
@@ -2171,6 +2288,49 @@ export class SharedRuntimeConversation {
         },
         { status: 400 },
       );
+    }
+
+    let verifiedNetworkAdmission: VerifiedNetworkAdmission | undefined;
+    if (
+      "trustedNetworkAdmission" in payload &&
+      payload.trustedNetworkAdmission
+    ) {
+      verifiedNetworkAdmission = await verifyNetworkAdmissionEnvelope(
+        payload.trustedNetworkAdmission,
+        this.env,
+      );
+      const policy = parseNetworkAdmissionPolicy(
+        this.env.NETWORK_OWNED_INGRESS_POLICY,
+      );
+      if (
+        !verifiedNetworkAdmission ||
+        !policy ||
+        !("agent" in payload) ||
+        !isCanonicalPersonalSharedAgent(payload.agent) ||
+        (payload.operation !== "personal-bridge" &&
+          payload.operation !== "personal-stream") ||
+        validatedChannel?.type !== ChannelType.DM ||
+        validatedChannel.source !==
+          verifiedNetworkAdmission.ingress.transport ||
+        payload.rpc.method !== "message.send" ||
+        (payload.trustedUserUtterance ?? payload.rpc.params?.text) !==
+          verifiedNetworkAdmission.ingress.message ||
+        payload.rpc.params?.clientMessageId !==
+          verifiedNetworkAdmission.ingress.messageId ||
+        !networkAccountMatchesPolicy(
+          {
+            userId: payload.agent.user_id,
+            organizationId: payload.agent.organization_id,
+            agentId: payload.agent.id,
+            roomId: String(payload.rpc.params?.roomId ?? payload.agent.id),
+          },
+          policy,
+        )
+      )
+        return Response.json(
+          { error: "Invalid Network capability" },
+          { status: 403 },
+        );
     }
 
     // Deletion fence: once the agent behind this room is purged, every later
@@ -2839,6 +2999,9 @@ export class SharedRuntimeConversation {
           trustedUserUtterance: payload.trustedUserUtterance,
           channel: validatedChannel,
           ...(networkContext ? { trustedNetworkContext: networkContext } : {}),
+          ...(verifiedNetworkAdmission
+            ? { trustedNetworkAdmission: verifiedNetworkAdmission }
+            : {}),
           ...(personal && "trustedNetworkTurn" in payload
             ? { trustedNetworkTurn: payload.trustedNetworkTurn }
             : {}),
@@ -2925,6 +3088,9 @@ export class SharedRuntimeConversation {
         result = await sharedRuntimeChatService.bridge(agent, payload.rpc, {
           ownerCapture: ownerCapture?.capture,
           ...(networkContext ? { trustedNetworkContext: networkContext } : {}),
+          ...(verifiedNetworkAdmission
+            ? { trustedNetworkAdmission: verifiedNetworkAdmission }
+            : {}),
           ...(personal && "trustedNetworkTurn" in payload
             ? { trustedNetworkTurn: payload.trustedNetworkTurn }
             : {}),

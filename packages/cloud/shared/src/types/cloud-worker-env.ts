@@ -31,6 +31,13 @@ export interface Bindings {
   NETWORK_MEMBERSHIP_SERVER_TOKEN?: string;
   /** Default off. Enable only after legacy Network history inventory/migration and staging qualification. */
   NETWORK_PERSONAL_CONTINUITY_ENABLED?: string;
+  /** Exact server-owned canonical Shared ingress scope; absent refuses supplied Network envelopes. */
+  NETWORK_OWNED_INGRESS_POLICY?: string;
+  /** Canonical service endpoint and shared server signing key; never client-visible. */
+  NETWORK_SERVICE_URL?: string;
+  SERVICE_TURN_SECRET?: string;
+  NETWORK_RELAY_ENABLED?: string;
+  NETWORK_AGENT_VOICE?: string;
   /** Default off. Destination-bound phone handoff is admitted only in staging. */
   NETWORK_SITE_AUTH_ENABLED?: string;
   /** One exact loopback Network site origin for staging qualification. */
