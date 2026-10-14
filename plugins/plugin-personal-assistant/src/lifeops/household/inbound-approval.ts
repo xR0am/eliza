@@ -6,7 +6,10 @@
  * message receipts make webhook redelivery and crash recovery idempotent.
  */
 import { randomUUID } from "node:crypto";
-import { normalizeEntityIdentityHandle } from "@elizaos/contracts";
+import {
+  normalizeEntityIdentityHandle,
+  normalizeEntityIdentityPlatform,
+} from "@elizaos/contracts";
 import {
   ElizaError,
   getConnectorIdentityMetadataMapping,
@@ -200,7 +203,7 @@ function uniqueClaims(
 ): Array<{ platform: string; handle: string }> {
   const seen = new Set<string>();
   return claims.filter((claim) => {
-    const platform = claim.platform.trim().toLowerCase();
+    const platform = normalizeEntityIdentityPlatform(claim.platform);
     const handle = claim.handle.trim().toLowerCase();
     if (!platform || !handle) return false;
     const key = `${platform}\0${handle}`;
@@ -580,8 +583,8 @@ export async function resolveVerifiedHouseholdInboundEntityId(
       // `@handle` and a connector claim of the bare `handle` are one identity.
       const verified = candidate.entity.identities.some(
         (stored) =>
-          stored.platform.trim().toLowerCase() ===
-            claim.platform.trim().toLowerCase() &&
+          normalizeEntityIdentityPlatform(stored.platform) ===
+            normalizeEntityIdentityPlatform(claim.platform) &&
           normalizeEntityIdentityHandle(stored.platform, stored.handle) ===
             normalizeEntityIdentityHandle(claim.platform, claim.handle) &&
           stored.verified,

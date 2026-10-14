@@ -18,6 +18,7 @@ import {
   type LifeOpsEntityVisibility as EntityVisibility,
   normalizeEntityConnectorAccountId,
   normalizeEntityIdentityHandle,
+  normalizeEntityIdentityPlatform,
   SELF_ENTITY_ID,
 } from "@elizaos/contracts";
 import type { IAgentRuntime } from "@elizaos/core";
@@ -597,7 +598,9 @@ export class EntityStore {
     }
     let entities = await this.listOperation(filters);
     if (query.identity) {
-      const platformKey = query.identity.platform.toLowerCase();
+      const platformKey = normalizeEntityIdentityPlatform(
+        query.identity.platform,
+      );
       const handleKey = normalizeEntityIdentityHandle(
         query.identity.platform,
         query.identity.handle,
@@ -608,7 +611,8 @@ export class EntityStore {
       entities = entities.filter((entity) =>
         entity.identities.some(
           (identity) =>
-            identity.platform.toLowerCase() === platformKey &&
+            normalizeEntityIdentityPlatform(identity.platform) ===
+              platformKey &&
             normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
               accountKey &&
             normalizeEntityIdentityHandle(
@@ -625,7 +629,9 @@ export class EntityStore {
         let safeToSend = false;
         if (query.identity) {
           const queryIdentity = query.identity;
-          const platformKey = queryIdentity.platform.trim().toLowerCase();
+          const platformKey = normalizeEntityIdentityPlatform(
+            queryIdentity.platform,
+          );
           const handleKey = normalizeEntityIdentityHandle(
             queryIdentity.platform,
             queryIdentity.handle,
@@ -635,7 +641,8 @@ export class EntityStore {
           );
           const match = entity.identities.find(
             (identity) =>
-              identity.platform.trim().toLowerCase() === platformKey &&
+              normalizeEntityIdentityPlatform(identity.platform) ===
+                platformKey &&
               normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
                 accountKey &&
               normalizeEntityIdentityHandle(

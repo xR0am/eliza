@@ -16,6 +16,7 @@ import {
   type EntityIdentity,
   normalizeEntityConnectorAccountId,
   normalizeEntityIdentityHandle,
+  normalizeEntityIdentityPlatform,
 } from "@elizaos/contracts";
 
 /**
@@ -49,7 +50,7 @@ export function findIdentityMatches(
   entities: Entity[],
   match: IdentityMatchInput,
 ): Entity[] {
-  const platformKey = match.platform.toLowerCase();
+  const platformKey = normalizeEntityIdentityPlatform(match.platform);
   const handleKey = normalizeEntityIdentityHandle(match.platform, match.handle);
   const accountKey = normalizeEntityConnectorAccountId(
     match.connectorAccountId,
@@ -57,7 +58,7 @@ export function findIdentityMatches(
   return entities.filter((entity) =>
     entity.identities.some(
       (identity) =>
-        identity.platform.toLowerCase() === platformKey &&
+        normalizeEntityIdentityPlatform(identity.platform) === platformKey &&
         normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
           accountKey &&
         normalizeEntityIdentityHandle(identity.platform, identity.handle) ===
@@ -119,12 +120,12 @@ export function foldIdentity(
   existing: EntityIdentity[],
   next: EntityIdentity,
 ): EntityIdentity[] {
-  const platformKey = next.platform.toLowerCase();
+  const platformKey = normalizeEntityIdentityPlatform(next.platform);
   const handleKey = normalizeEntityIdentityHandle(next.platform, next.handle);
   const accountKey = normalizeEntityConnectorAccountId(next.connectorAccountId);
   const matchIndex = existing.findIndex(
     (identity) =>
-      identity.platform.toLowerCase() === platformKey &&
+      normalizeEntityIdentityPlatform(identity.platform) === platformKey &&
       normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
         accountKey &&
       normalizeEntityIdentityHandle(identity.platform, identity.handle) ===
