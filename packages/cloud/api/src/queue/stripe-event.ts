@@ -1776,17 +1776,6 @@ function chargePaymentIntentId(charge: Stripe.Charge): string | undefined {
 }
 
 /**
- * Claw back org credits for the portion of a top-up charge that Stripe reversed.
- * Durable pack orders and fee-inclusive auto top-ups claw back the exact granted
- * credits in proportion to the reversed provider charge; legacy balance top-ups
- * remain 1:1. Credits are
- * removed up to the original grant and the org's current balance. Any
- * unrecovered portion is recorded on the clawback transaction metadata because
- * the organizations table has a nonnegative balance constraint. Only the DELTA
- * past what was already clawed for this payment intent is removed, so multiple
- * partial refunds and re-delivered webhooks are safe.
- */
-/**
  * Whether this payment intent belongs to a top-up whose credit grant has not
  * committed yet: a paid Checkout session for an unsettled order or a legacy
  * custom-amount purchase, a succeeded auto top-up payment intent, or
@@ -1833,6 +1822,17 @@ async function topUpGrantPending(paymentIntentId: string): Promise<boolean> {
   );
 }
 
+/**
+ * Claw back org credits for the portion of a top-up charge that Stripe reversed.
+ * Durable pack orders and fee-inclusive auto top-ups claw back the exact granted
+ * credits in proportion to the reversed provider charge; legacy balance top-ups
+ * remain 1:1. Credits are
+ * removed up to the original grant and the org's current balance. Any
+ * unrecovered portion is recorded on the clawback transaction metadata because
+ * the organizations table has a nonnegative balance constraint. Only the DELTA
+ * past what was already clawed for this payment intent is removed, so multiple
+ * partial refunds and re-delivered webhooks are safe.
+ */
 async function clawbackForReversal(params: {
   paymentIntentId: string | undefined;
   usdReversed: number;
