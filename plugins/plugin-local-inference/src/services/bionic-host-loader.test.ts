@@ -784,3 +784,12 @@ describeEncoderTransport(
 		});
 	},
 );
+
+describe("BionicHostLoader.synthesize without an active bundle", () => {
+	it("refuses before contacting the host instead of using the host default bundle", async () => {
+		const loader = new BionicHostLoader(`eliza-test-no-host-${process.pid}`);
+		await expect(loader.synthesize({ text: "Hello." })).rejects.toThrow(
+			/requires an active bundle/,
+		);
+	});
+});

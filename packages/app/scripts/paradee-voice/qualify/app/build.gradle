@@ -1,7 +1,7 @@
 apply plugin: 'com.android.application'
 
 // -PasrFixturesDir=<dir> adds the LibriSpeech + speech-fixture WAVs that
-// `host-wer-gate.ts --export-asr-fixtures <dir>` writes (asr-fixtures.json +
+// `host-wer-gate.ts --export-device-fixtures <dir>` writes (asr-fixtures.json +
 // 16 kHz PCM16 WAVs, pinned by fixtures.json) to the androidTest assets.
 def asrFixturesDir = providers.gradleProperty('asrFixturesDir').orNull
 

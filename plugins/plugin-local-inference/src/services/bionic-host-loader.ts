@@ -442,6 +442,13 @@ export class BionicHostLoader implements LocalInferenceLoader {
 		if (!text) {
 			throw new Error("[BionicHostLoader] host tts requires non-empty text");
 		}
+		if (!this.bundleDir) {
+			// Same rule as transcribe: an empty bundleDir would make the host
+			// synthesize from its own default bundle, not the active one.
+			throw new Error(
+				"[BionicHostLoader] host tts requires an active bundle (tts/paradee/); refusing to use the bionic host default bundle",
+			);
+		}
 		if (text.length > BIONIC_TTS_MAX_TEXT_CHARS) {
 			throw new Error(
 				`[BionicHostLoader] host tts text exceeds ${BIONIC_TTS_MAX_TEXT_CHARS} characters; split it into sentences`,
