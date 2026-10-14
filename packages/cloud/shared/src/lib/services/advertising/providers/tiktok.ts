@@ -91,6 +91,11 @@ export function validateTikTokCampaignBidControls(
   };
 }
 
+/** TikTok accepts the campaign budget as a decimal in the account currency, not in cents. */
+function tiktokBudgetAmount(amount: number): number {
+  return Number(amount.toFixed(2));
+}
+
 function mapCtaToTikTok(cta?: string): string {
   const mapping: Record<string, string> = {
     learn_more: "LEARN_MORE",
@@ -235,8 +240,8 @@ export const tiktokAdsProvider: AdProvider = {
 
     const objective = mapObjectiveToTikTok(input.objective);
 
-    // Convert budget to cents (TikTok uses smallest currency unit)
-    const budgetCents = Math.round(input.budgetAmount * 100);
+    // TikTok reads `budget` as a decimal amount in the advertiser's account currency.
+    const budget = tiktokBudgetAmount(input.budgetAmount);
 
     const data = await tiktokAdsRequest<{ campaign_id: string }>(
       "/campaign/create/",
@@ -248,7 +253,7 @@ export const tiktokAdsProvider: AdProvider = {
           campaign_name: input.name,
           objective_type: objective,
           budget_mode: input.budgetType === "daily" ? "BUDGET_MODE_DAY" : "BUDGET_MODE_TOTAL",
-          budget: budgetCents,
+          budget,
           operation_status: "DISABLE", // Start paused
         }),
       },
@@ -288,7 +293,7 @@ export const tiktokAdsProvider: AdProvider = {
     }
 
     if (input.budgetAmount) {
-      updatePayload.budget = Math.round(input.budgetAmount * 100);
+      updatePayload.budget = tiktokBudgetAmount(input.budgetAmount);
     }
 
     await tiktokAdsRequest("/campaign/update/", credentials.accessToken, {
