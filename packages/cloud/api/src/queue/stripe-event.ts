@@ -1524,8 +1524,15 @@ async function handlePaymentIntentSucceeded(
   }
 
   const affiliateFeeStr = paymentIntent.metadata?.affiliate_fee_amount;
+  // Number.parseFloat stops at the first non-digit ("25junk" -> 25), so a
+  // malformed metadata value was silently honored as a deliberate fee amount
+  // instead of being rejected. Require the whole trimmed value to be decimal,
+  // mirroring parseAndValidateCredits above.
+  const affiliateFeeTrimmed = affiliateFeeStr?.trim() ?? "";
   const affiliateFeeAmount = affiliateFeeStr
-    ? Number.parseFloat(affiliateFeeStr)
+    ? /^\+?\d+(?:\.\d+)?$/.test(affiliateFeeTrimmed)
+      ? Number(affiliateFeeTrimmed)
+      : Number.NaN
     : 0;
   const affiliateOwnerId = paymentIntent.metadata?.affiliate_owner_id;
   const affiliateCodeId = paymentIntent.metadata?.affiliate_code_id;

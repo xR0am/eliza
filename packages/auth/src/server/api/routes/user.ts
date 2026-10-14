@@ -1146,8 +1146,8 @@ function clampLimit(value: string | null, fallback = 50): number {
 
 function parseBoundedOffset(value: string | null): number {
   const parsed = value ? Number(value) : 0;
-  if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  return Math.min(Math.floor(parsed), 100_000);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
+  return Math.min(parsed, 100_000);
 }
 
 function escapeLikePattern(value: string): string {

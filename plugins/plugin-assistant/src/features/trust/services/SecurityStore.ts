@@ -94,14 +94,7 @@ export async function getTrustEvidence(
   entityId: UUID,
   evaluatorId?: UUID,
 ): Promise<Array<Record<string, unknown>>> {
-  const evidenceCondition = or(
-    eq(trustEvidence.targetEntityId, entityId),
-    eq(trustEvidence.sourceEntityId, entityId),
-  );
-  if (!evidenceCondition) {
-    return [];
-  }
-  const conditions: SQL[] = [evidenceCondition];
+  const conditions: SQL[] = [eq(trustEvidence.targetEntityId, entityId)];
   if (evaluatorId) {
     conditions.push(eq(trustEvidence.evaluatorId, evaluatorId));
   }

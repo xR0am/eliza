@@ -35,7 +35,8 @@ export type VoiceModelId =
   | "vad"
   | "wakeword"
   | "embedding"
-  | "asr";
+  | "asr"
+  | "mobile-voice";
 
 /**
  * Quant labels mirror `CatalogQuantizationVariant` ids used by the text
@@ -162,6 +163,81 @@ export interface VoiceModelVersion {
   readonly changelogEntry: string;
   /** Minimum `eliza1Manifest.version` this voice version is compatible with. */
   readonly minBundleVersion: string;
+  /**
+   * Per-file pins for a multi-repo bundle (`mobile-voice` only). The files
+   * come from several Hugging Face repos, so each row carries its own
+   * repository, revision and URL instead of the version-level `hfRepo`.
+   */
+  readonly files?: ReadonlyArray<MobileVoiceFile>;
+}
+
+/** What a mobile voice bundle file is for. */
+export type MobileVoiceFileRole =
+  | "tts"
+  | "g2p-lexicon"
+  | "asr-text"
+  | "asr-mmproj"
+  | "vad";
+
+/**
+ * One pinned file of the Android/AOSP voice bundle. `path` is relative to the
+ * bundle root the agent stages into (`tts/paradee/`, `asr/`, `vad/`).
+ *
+ * A `published` row has a resolvable `url`, `revision`, `sha256` and `bytes`.
+ * An `unpublished` row has them all null: the file is built locally from the
+ * pinned `source` (see `localFrom`) and must be supplied by path until the
+ * owner publishes it. Downloaders never fetch an unpublished row.
+ */
+export interface MobileVoiceFile {
+  readonly id: string;
+  readonly role: MobileVoiceFileRole;
+  readonly path: string;
+  readonly hfRepo: string;
+  readonly hfPath: string;
+  readonly url: string | null;
+  readonly revision: string | null;
+  readonly sha256: string | null;
+  readonly bytes: number | null;
+  readonly license: string;
+  readonly status: "published" | "unpublished";
+  readonly localFrom?: string;
+  readonly source: {
+    readonly repo: string;
+    readonly revision: string;
+    readonly files?: ReadonlyArray<{
+      readonly path: string;
+      readonly sha256: string;
+      readonly bytes?: number;
+    }>;
+    readonly converter?: string;
+  };
+}
+
+/** A mobile voice file that is safe to download: every pin is present. */
+export type PublishedMobileVoiceFile = MobileVoiceFile & {
+  readonly status: "published";
+  readonly url: string;
+  readonly revision: string;
+  readonly sha256: string;
+  readonly bytes: number;
+};
+
+export function isPublishedMobileVoiceFile(
+  file: MobileVoiceFile,
+): file is PublishedMobileVoiceFile {
+  return (
+    file.status === "published" &&
+    typeof file.url === "string" &&
+    typeof file.revision === "string" &&
+    file.url.startsWith(
+      `https://huggingface.co/${file.hfRepo}/resolve/${file.revision}/`,
+    ) &&
+    typeof file.sha256 === "string" &&
+    /^[0-9a-f]{64}$/.test(file.sha256) &&
+    typeof file.bytes === "number" &&
+    Number.isSafeInteger(file.bytes) &&
+    file.bytes > 0
+  );
 }
 
 /**
@@ -265,4 +341,21 @@ export function findVoiceModelVersion(
   version: string,
 ): VoiceModelVersion | undefined {
   return VOICE_MODEL_VERSIONS.find((v) => v.id === id && v.version === version);
+}
+
+/**
+ * The pinned Android/AOSP voice bundle (Paradee TTS + misaki lexicon,
+ * Qwen3-ASR pair, Silero VAD). Throws when the catalog has no `mobile-voice`
+ * entry with file rows, so a broken catalog cannot silently ship no voice.
+ */
+export function mobileVoiceBundle(): VoiceModelVersion & {
+  readonly files: ReadonlyArray<MobileVoiceFile>;
+} {
+  const latest = latestVoiceModelVersion("mobile-voice");
+  if (!latest?.files?.length) {
+    throw new Error("voice-model-versions.json has no mobile-voice file rows");
+  }
+  return latest as VoiceModelVersion & {
+    readonly files: ReadonlyArray<MobileVoiceFile>;
+  };
 }
