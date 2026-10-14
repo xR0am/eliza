@@ -1798,7 +1798,7 @@ export function parseExplicitLocalDate(
     : "";
   if (weekdayMatch && !CJK_UNRESOLVED_WEEK_QUALIFIER.test(beforeWeekday)) {
     const qualifier = CJK_NEXT_WEEK_QUALIFIER.test(beforeWeekday)
-      ? "next"
+      ? "next-week"
       : normalizeLookupKey(weekdayMatch[1] ?? "");
     const weekdayKey = normalizeLookupKey(weekdayMatch[2] ?? "");
     const targetWeekday = WEEKDAY_MAP[weekdayKey];
@@ -1814,6 +1814,11 @@ export function parseExplicitLocalDate(
       let delta = (targetWeekday - currentWeekday + 7) % 7;
       if (qualifier === "next") {
         delta = delta === 0 ? 7 : delta + 7;
+      } else if (qualifier === "next-week") {
+        // 下周 / 다음 주 name the weekday inside the following Monday-start
+        // week, so count to next Monday, then into that week.
+        const mondayIndex = (weekday: number) => (weekday + 6) % 7;
+        delta = 7 - mondayIndex(currentWeekday) + mondayIndex(targetWeekday);
       }
       return addDaysToLocalDate(
         {

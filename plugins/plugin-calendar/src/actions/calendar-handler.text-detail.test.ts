@@ -204,6 +204,23 @@ describe("parseExplicitLocalDate Intl names", () => {
         nextWeekFriday,
       );
     }
+    // The qualifier names the following Monday-start week, so a weekday
+    // earlier in the week than today is still in that week.
+    for (const text of ["下周一", "다음 주 월요일", "下星期一"]) {
+      expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual({
+        year: 2026,
+        month: 10,
+        day: 19,
+      });
+    }
+    const sunday = new Date("2026-10-18T03:00:00Z");
+    for (const text of ["下周一", "다음 주 월요일"]) {
+      expect(parseExplicitLocalDate(text, ZONE, sunday), text).toEqual({
+        year: 2026,
+        month: 10,
+        day: 19,
+      });
+    }
     for (const text of ["这周五", "这周星期五"]) {
       expect(parseExplicitLocalDate(text, ZONE, NOW), text).toEqual({
         year: 2026,
