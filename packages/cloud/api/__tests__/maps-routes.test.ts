@@ -127,6 +127,44 @@ const GRAPHHOPPER_PATH = (distance: number) => ({
 });
 
 describe("Eliza Cloud Maps routes", () => {
+  test("route identity binds geometry even when summary statistics match", async () => {
+    let changed = false;
+    const maps = provider(() => {
+      const path = GRAPHHOPPER_PATH(500);
+      if (changed) path.points.coordinates[1] = [7.425, 43.738];
+      return Response.json({ paths: [path] });
+    });
+    const request = { from: CASINO, to: PORT, mode: "walk" as const };
+    const [first] = await maps.routes(request);
+    const [replay] = await maps.routes(request);
+    expect(replay.id).toBe(first.id);
+    changed = true;
+    const [second] = await maps.routes(request);
+    expect(second.id).not.toBe(first.id);
+  });
+
+  test("malformed route collections and unexpected reverse errors remain failures", async () => {
+    for (const body of [{}, { paths: null }, { paths: "invalid" }]) {
+      const response = await call(
+        "routes",
+        deps({}, () => Response.json(body)),
+        {
+          from: CASINO,
+          to: PORT,
+          mode: "walk",
+        },
+      );
+      expect(response.status).toBe(502);
+      expect((await json(response)).code).toBe("provider_invalid_response");
+    }
+    const response = await call(
+      "reverse",
+      deps({}, () => Response.json({ error: "Database unavailable" })),
+      { coordinate: CASINO },
+    );
+    expect(response.status).toBe(502);
+    expect((await json(response)).code).toBe("provider_invalid_response");
+  });
   test("refuses an unauthenticated caller before any provider work", async () => {
     let providerRead = false;
     const res = await call(

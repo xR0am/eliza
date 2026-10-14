@@ -217,10 +217,18 @@ export class ElizaCloudMapsAdapter implements MapsProviderAdapter {
       );
     }
     const { query, near, limit } = parsed.data;
+    if (query.length > 300 || (limit !== undefined && limit > 20)) {
+      throw new MapsError(
+        "Cloud Maps supports queries up to 300 characters and limits up to 20.",
+        {
+          code: "MAPS_INVALID_INPUT",
+        },
+      );
+    }
     const body = await this.post("/api/v1/maps/places/search", placesResponse, {
-      query: query.slice(0, 300),
+      query,
       ...(near ? { near } : {}),
-      limit: Math.min(limit ?? 10, 20),
+      limit: limit ?? 10,
     });
     return {
       places: body.places.map((place) => this.placeRef(place)),

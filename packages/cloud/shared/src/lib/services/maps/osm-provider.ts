@@ -294,7 +294,10 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     url.searchParams.set("zoom", "18");
     const body = await this.getJson(url, signal);
     // Nominatim answers an empty area with `{"error":"Unable to geocode"}`.
-    if (body && typeof body === "object" && "error" in body) return null;
+    if (body && typeof body === "object" && "error" in body) {
+      if (body.error === "Unable to geocode") return null;
+      throw invalidResponse();
+    }
     return this.place(body, true) ?? null;
   }
 
@@ -348,7 +351,8 @@ export class OsmMapsProvider implements MapsProviderAdapter {
       throw new MapsServiceError("no_route", "No route is available between these places.");
     const body = await this.json(response);
     const paths = (body as { paths?: unknown })?.paths;
-    if (!Array.isArray(paths) || paths.length === 0)
+    if (!Array.isArray(paths)) throw invalidResponse();
+    if (paths.length === 0)
       throw new MapsServiceError("no_route", "No route is available between these places.");
     const fetchedAt = this.now();
     return Promise.all(
@@ -418,7 +422,17 @@ export class OsmMapsProvider implements MapsProviderAdapter {
     return {
       providerId: OSM_MAPS_PROVIDER_ID,
       id: await routeId(
-        `${this.revision}|${profile}|${index}|${distance}|${time}|${geometry.length}`,
+        JSON.stringify({
+          revision: this.revision,
+          profile,
+          index,
+          from: request.from,
+          to: request.to,
+          distance,
+          time,
+          geometry,
+          steps,
+        }),
       ),
       from: { ...request.from },
       to: { ...request.to },

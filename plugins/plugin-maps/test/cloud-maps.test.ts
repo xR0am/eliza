@@ -86,6 +86,25 @@ function message(content: Record<string, unknown>): Memory {
 }
 
 describe("ElizaCloudMapsAdapter", () => {
+  it("rejects unsupported query and result limits without changing the request", async () => {
+    const { adapter, requests } = cloud(() =>
+      Response.json({
+        providerId: "eliza-cloud-osm",
+        attribution: ELIZA_CLOUD_MAPS_ATTRIBUTION,
+        places: [],
+      }),
+    );
+    await expect(
+      adapter.searchPlaces({ query: "x".repeat(301) }),
+    ).rejects.toMatchObject({ code: "MAPS_INVALID_INPUT" });
+    await expect(
+      adapter.searchPlaces({ query: "exact", limit: 21 }),
+    ).rejects.toMatchObject({ code: "MAPS_INVALID_INPUT" });
+    expect(requests).toHaveLength(0);
+    const query = "x".repeat(300);
+    await adapter.searchPlaces({ query, limit: 20 });
+    expect(requests[0].body).toEqual({ query, limit: 20 });
+  });
   it("searches through POST bodies with the API key and maps device places", async () => {
     const { adapter, requests } = cloud(() =>
       Response.json({
@@ -228,6 +247,26 @@ describe("phone navigation actions", () => {
       },
     };
   }
+
+  it("does not report stopped when the phone returns an unknown state", async () => {
+    const service = new MapsService(undefined, unusedStore);
+    const phone = device();
+    phone.stop = async () =>
+      ({ state: "unexpected" }) as unknown as Awaited<
+        ReturnType<MapsDeviceNavigation["stop"]>
+      >;
+    service.registerDeviceNavigation(phone);
+    const result = await mapsNavigationAction.handler(
+      runtimeWith(service),
+      message({}),
+      undefined,
+      { parameters: { action: "stop" } },
+    );
+    expect(result).toMatchObject({
+      success: false,
+      data: { error: "MAPS_MALFORMED_RESPONSE" },
+    });
+  });
 
   it("refuses navigation honestly when no phone owns it", async () => {
     const service = new MapsService(undefined, unusedStore);

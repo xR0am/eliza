@@ -313,6 +313,20 @@ function deviceResult(
   action: string,
   status: MapsDeviceNavigationStatus,
 ): ActionResult {
+  if (
+    !status ||
+    ![
+      "selected",
+      "navigating",
+      "stopped",
+      "awaiting-location",
+      "awaiting-confirmation",
+    ].includes(status.state)
+  ) {
+    throw new MapsError("The phone returned an invalid navigation state.", {
+      code: "MAPS_MALFORMED_RESPONSE",
+    });
+  }
   const place = status.placeName ?? "the destination";
   const userFacingText =
     status.state === "selected"
