@@ -7,8 +7,12 @@ inference server, account or network use.
 - **Speech:** Paradee-8M v1.0 (one voice, `af_heart`, 24 kHz). Native misaki
   G2P makes the phonemes: the misaki lexicon and rules, with eSpeak NG only
   for words outside the lexicon.
-- **Transcription:** the ASR head of `libelizainference` (16 kHz mono in). It
-  needs an ASR pair under `<bundle>/asr/`; the ASR record names the pinned pair.
+- **Transcription:** the ASR head of `libelizainference`. The default is
+  Phonon-2 (Parakeet-TDT 0.6B, five-value weights) at
+  `<bundle>/asr/phonon-2-fv5.gguf`: batch (16 kHz mono in) and streaming (any
+  rate). The Qwen3-ASR text + mmproj pair is the batch-only alternative
+  (`ELIZA_ASR_BACKEND=qwen3`). `asr/` holds one of the two, as the
+  `mobile-voice` catalog record pins it.
 
 ```java
 VoiceAssets.Bundle bundle = VoiceAssets.install(context); // worker thread
@@ -16,6 +20,13 @@ ParadeeVoice voice = bundle.openVoice();
 ParadeeVoice.Audio audio = voice.synthesize("Hello.", 1.0f);
 NativeAsr asr = new NativeAsr(asrBundleDir); // a directory with asr/
 String text = asr.transcribe(pcm16kMono);
+if (asr.supportsStreaming()) {
+  try (NativeAsr.Stream stream = asr.openStream(48000)) {
+    stream.feed(chunk);              // audio thread: buffers only
+    String running = stream.partial(); // worker thread
+    String finalText = stream.finish();
+  }
+}
 ```
 
 `cancel()` on either object stops the running call from another thread; that
@@ -52,7 +63,11 @@ Store the model uncompressed in the APK (`androidResources { noCompress 'gguf', 
 
 The Java and C++ sources here are MIT. Paradee-8M v1.0 weights
 (sahilmahendrakar/Paradee-8M-v1.0) and the misaki lexicon data
-(hexgrad/misaki) are Apache-2.0. `libelizainference.so` links eSpeak NG
+(hexgrad/misaki) are Apache-2.0. Phonon-2 weights (FermionResearch/Phonon-2,
+derived from NVIDIA parakeet-tdt-0.6b-v3) are CC-BY-4.0: show the attribution
+and ship Fermion's NOTICE (also embedded in the GGUF as `parakeet.notice`). The
+NOTICE lists CHiME-6 (CC-BY-SA-4.0) and SPGISpeech (Kensho terms) training
+audio; that is flagged for review, not a blocker. `libelizainference.so` links eSpeak NG
 1.52.0 (GPL-3.0-or-later) statically as the out-of-lexicon fallback, so an APK
 that ships it must meet the GPL. The bundle `notices/` carry the eSpeak NG
 license, and the misaki (Apache-2.0) and spaCy (MIT) notices for the G2P

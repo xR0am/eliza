@@ -363,6 +363,15 @@ export const REQUIRED_ELIZA_INFERENCE_SYMBOLS = Object.freeze([
   "eliza_inference_asr_supported",
   "eliza_inference_asr_cancel",
   "eliza_inference_free_pcm",
+  // Streaming ASR (ABI v2 symbols; served by the Parakeet-TDT backend since
+  // the v18 fork). The Android JNI binds all six with RegisterNatives, so a
+  // library without them would fail the bridge load.
+  "eliza_inference_asr_stream_supported",
+  "eliza_inference_asr_stream_open",
+  "eliza_inference_asr_stream_feed",
+  "eliza_inference_asr_stream_partial",
+  "eliza_inference_asr_stream_finish",
+  "eliza_inference_asr_stream_close",
 ]);
 
 /** Oldest libelizainference ABI the Android voice bridge binds (Paradee, ASR cancel). */

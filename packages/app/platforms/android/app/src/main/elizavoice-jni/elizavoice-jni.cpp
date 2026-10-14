@@ -6,8 +6,9 @@
  * build time and do not rewrite this file:
  *   ELIZA_VOICE_JNI_CLASS   JNI class name, default ai/elizaos/app/ElizaVoiceNative
  *   ELIZA_VOICE_JNI_FULL    1 registers every native (the app host); 0 registers
- *                           only the voice subset (context, Paradee TTS, ASR,
- *                           cancel, memory regions) for library consumers.
+ *                           only the voice subset (context, Paradee TTS, ASR
+ *                           batch + streaming, cancel, memory regions) for
+ *                           library consumers.
  * Text crosses the boundary as standard UTF-8 byte arrays, never JNI modified
  * UTF-8. Voice failures log the stage and status code only, never text.
  */
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -1871,6 +1873,136 @@ jint nativeAsrCancel(JNIEnv* env, jclass, jlong ctxHandle) {
     return rc;
 }
 
+// ── Streaming ASR (Parakeet-TDT backend, ABI v18 fork) ───────────────────
+//
+// open → feed* → partial* → finish → close, on a context whose "asr" region
+// holds a parakeet-tdt GGUF (Phonon-2 under <bundle>/asr/). The Java handle
+// is a bridge-owned AsrStream that remembers the context, so cancel only
+// needs the stream handle. Thread rules (from the ABI): feed only buffers and
+// may run on the audio thread while partial/finish decode on another;
+// partial/finish/cancel never race close on the same handle — the caller
+// closes once, after the last call returns. Token ids are never returned.
+
+struct AsrStream {
+    EliInferenceContext* ctx;
+    EliAsrStream* stream;
+};
+
+// Running transcripts are short; 64 KiB covers well over the 60 s cap.
+constexpr size_t kAsrStreamTextBytes = 64 * 1024;
+
+AsrStream* asr_stream(JNIEnv* env, jlong handle, const char* stage) {
+    auto* s = reinterpret_cast<AsrStream*>(handle);
+    if (!s || !s->stream) throw_voice(env, stage, ELIZA_ERR_INVALID_ARG, nullptr);
+    return s;
+}
+
+// 1 when this library can stream: the parakeet backend is compiled in and
+// some context has it loaded (0 before the first "asr" acquire, after an
+// evict, and with the Qwen3-ASR backend, which only transcribes in batch).
+jint nativeAsrStreamSupported(JNIEnv*, jclass) {
+    return static_cast<jint>(eliza_inference_asr_stream_supported());
+}
+
+// Acquire the "asr" region (idempotent) and open a stream for PCM at
+// `sampleRate` Hz (the library resamples). Throws when the bundle's ASR is
+// not the parakeet backend; callers then keep the batch path.
+jlong nativeAsrStreamOpen(JNIEnv* env, jclass, jlong ctxHandle, jint sampleRate) {
+    auto* ctx = voice_context(env, ctxHandle, "asr_stream_open");
+    if (!ctx) return 0;
+    if (sampleRate <= 0) {
+        throw_voice(env, "asr_stream_open: sample rate", ELIZA_ERR_INVALID_ARG, nullptr);
+        return 0;
+    }
+    char* acqErr = nullptr;
+    const int acquired = eliza_inference_mmap_acquire(ctx, "asr", &acqErr);
+    if (acquired != ELIZA_OK) {
+        throw_voice(env, "asr mmap_acquire", acquired, acqErr);
+        return 0;
+    }
+    auto* wrapper = new (std::nothrow) AsrStream{ctx, nullptr};
+    if (!wrapper) {
+        throw_voice(env, "asr_stream_open", ELIZA_ERR_OOM, nullptr);
+        return 0;
+    }
+    char* err = nullptr;
+    wrapper->stream = eliza_inference_asr_stream_open(ctx, static_cast<int>(sampleRate), &err);
+    if (!wrapper->stream) {
+        delete wrapper;
+        // Not the parakeet backend (or evicted): a rejected request, not a fault.
+        throw_voice(env, "asr_stream_open", ELIZA_ERR_INVALID_ARG, err);
+        return 0;
+    }
+    LOGI("asr_stream_open: %d Hz", (int)sampleRate);
+    return reinterpret_cast<jlong>(wrapper);
+}
+
+// Buffer fp32 mono PCM at the stream's rate. Never decodes, so it is safe on
+// the audio thread. Returns the samples consumed.
+jint nativeAsrStreamFeed(JNIEnv* env, jclass, jlong streamHandle, jfloatArray jPcm) {
+    auto* s = asr_stream(env, streamHandle, "asr_stream_feed");
+    if (!s) return ELIZA_ERR_INVALID_ARG;
+    if (!jPcm) {
+        throw_voice(env, "asr_stream_feed: missing PCM", ELIZA_ERR_INVALID_ARG, nullptr);
+        return ELIZA_ERR_INVALID_ARG;
+    }
+    const std::vector<float> pcm = read_float_array(env, jPcm);
+    if (pcm.empty()) return 0;
+    char* err = nullptr;
+    const int rc = eliza_inference_asr_stream_feed(s->stream, pcm.data(), pcm.size(), &err);
+    if (rc < 0) throw_voice(env, "asr_stream_feed", rc, err);
+    return rc;
+}
+
+jstring asr_stream_text(JNIEnv* env, jlong streamHandle, bool finish) {
+    const char* stage = finish ? "asr_stream_finish" : "asr_stream_partial";
+    auto* s = asr_stream(env, streamHandle, stage);
+    if (!s) return nullptr;
+    std::vector<char> out(kAsrStreamTextBytes, 0);
+    size_t nTokens = 0;
+    char* err = nullptr;
+    const int rc = finish
+        ? eliza_inference_asr_stream_finish(s->stream, out.data(), out.size(), nullptr, &nTokens, &err)
+        : eliza_inference_asr_stream_partial(s->stream, out.data(), out.size(), nullptr, &nTokens, &err);
+    if (rc < 0) {
+        throw_voice(env, stage, rc, err);
+        return nullptr;
+    }
+    const size_t n = std::min(static_cast<size_t>(rc), out.size() - 1);
+    return utf8_to_jstring(env, out.data(), n);
+}
+
+// Decode what has been fed and return the running transcript.
+jstring nativeAsrStreamPartial(JNIEnv* env, jclass, jlong streamHandle) {
+    return asr_stream_text(env, streamHandle, false);
+}
+
+// Drain buffered audio, run the last decode and return the final transcript.
+// Later feeds fail; the handle stays valid until close.
+jstring nativeAsrStreamFinish(JNIEnv* env, jclass, jlong streamHandle) {
+    return asr_stream_text(env, streamHandle, true);
+}
+
+// Stop a partial/finish decoding on another thread; it throws
+// CancellationException. Uses the stream's context, so it also stops a batch
+// transcribe on that context. Cancelling nothing is not an error.
+jint nativeAsrStreamCancel(JNIEnv* env, jclass, jlong streamHandle) {
+    auto* s = asr_stream(env, streamHandle, "asr_stream_cancel");
+    if (!s) return ELIZA_ERR_INVALID_ARG;
+    char* err = nullptr;
+    const int rc = eliza_inference_asr_cancel(s->ctx, &err);
+    if (rc != ELIZA_OK) throw_voice(env, "asr_stream_cancel", rc, err);
+    return rc;
+}
+
+// Free the stream. Idempotent on 0. Must not race other calls on the handle.
+void nativeAsrStreamClose(JNIEnv*, jclass, jlong streamHandle) {
+    auto* s = reinterpret_cast<AsrStream*>(streamHandle);
+    if (!s) return;
+    eliza_inference_asr_stream_close(s->stream);
+    delete s;
+}
+
 // ── Voice memory regions ─────────────────────────────────────────────────
 //
 // Region names are the ABI set ("tts", "asr", "vad", "text", "dflash").
@@ -1966,6 +2098,13 @@ const JNINativeMethod kVoiceMethods[] = {
     ELIZA_NATIVE(nativeAsrSupported, "()I"),
     ELIZA_NATIVE(nativeAsrTranscribe, "(J[FI)Ljava/lang/String;"),
     ELIZA_NATIVE(nativeAsrCancel, "(J)I"),
+    ELIZA_NATIVE(nativeAsrStreamSupported, "()I"),
+    ELIZA_NATIVE(nativeAsrStreamOpen, "(JI)J"),
+    ELIZA_NATIVE(nativeAsrStreamFeed, "(J[F)I"),
+    ELIZA_NATIVE(nativeAsrStreamPartial, "(J)Ljava/lang/String;"),
+    ELIZA_NATIVE(nativeAsrStreamFinish, "(J)Ljava/lang/String;"),
+    ELIZA_NATIVE(nativeAsrStreamCancel, "(J)I"),
+    ELIZA_NATIVE(nativeAsrStreamClose, "(J)V"),
     ELIZA_NATIVE(nativeMmapAcquire, "(JLjava/lang/String;)I"),
     ELIZA_NATIVE(nativeMmapEvict, "(JLjava/lang/String;)I"),
 };

@@ -3,7 +3,8 @@
  * Cross-builds the fused inference library for Android arm64-v8a and x86_64
  * with NDK 28.2 and stages it into the app's jniLibs (or --out). Speech is
  * Paradee-8M TTS with native misaki G2P (eSpeak NG 1.52.0 as the
- * out-of-lexicon fallback), ASR and VAD; no Kokoro voice ships. The
+ * out-of-lexicon fallback), Parakeet-TDT ASR (Phonon-2, batch and streaming)
+ * with Qwen3-ASR as the selectable alternative, and VAD; no Kokoro voice ships. The
  * CPU variant statically links ggml/llama/mtmd; the Vulkan variant stages
  * their shared backends and requires host shader tooling supplied by the
  * documented ELIZA_* overrides. Every library is 16 KiB page aligned.
@@ -366,6 +367,16 @@ if (arm64SimdFlags.length > 0) {
 // confines find_library to the sysroot. assertAndroidVoiceLibrary below reads
 // paradee_supported() and asr_supported() from the built code and requires
 // both to return 1.
+//
+// ASR: LLAMA_BUILD_PARAKEET=ON adds parakeet_lib, which omnivoice folds into
+// elizainference (ELIZA_ENABLE_PARAKEET). mmap_acquire("asr") then serves the
+// eliza_inference_asr_* surface, including asr_stream_*, from a parakeet-tdt
+// GGUF under <bundle>/asr/ (Phonon-2, the default mobile ASR), and keeps the
+// Qwen3-ASR mtmd path for a bundle that carries that pair instead
+// (ELIZA_ASR_BACKEND=qwen3|parakeet overrides, ELIZA_ASR_THREADS sets threads).
+// The parakeet kernels pick dotprod/i8mm (arm64) or AVX2 (x86_64) at runtime
+// and compile those files with their own target flags, so the SIMD floor
+// above is unchanged.
 const espeakPrefix = await ensureEspeakNg({
   dir:
     espeakArg ||
@@ -397,6 +408,7 @@ const baseConfigure = [
   "-DKOKORO_ENABLE_ESPEAK=OFF",
   "-DLLAMA_BUILD_PARADEE=ON",
   "-DLLAMA_BUILD_MISAKI_G2P=ON",
+  "-DLLAMA_BUILD_PARAKEET=ON",
   "-DMISAKI_G2P_ESPEAK=ON",
   `-DMISAKI_ESPEAK_INCLUDE_DIR=${path.join(espeakPrefix, "include")}`,
   `-DMISAKI_ESPEAK_LIBRARY=${path.join(espeakPrefix, "lib", "libespeak-ng.a")}`,
@@ -475,6 +487,15 @@ if (!/\bespeak_TextToPhonemes\b/.test(builtSymbols)) {
   die(
     `${builtSo} does not link eSpeak NG; misaki would spell out words outside its lexicon`,
   );
+}
+// parakeet_lib is static and hidden too; without it asr_stream_supported()
+// stays 0 and the bundle's Phonon-2 GGUF would fall through to Qwen3-ASR.
+for (const symbol of ["pk_model_load", "pk_stream_open"]) {
+  if (!new RegExp(`\\b${symbol}\\b`).test(builtSymbols)) {
+    die(
+      `${builtSo} does not link parakeet_lib (${symbol}); configure with -DLLAMA_BUILD_PARAKEET=ON`,
+    );
+  }
 }
 log(
   `voice ABI ${voiceReport.abiVersion}: ${Object.entries(voiceReport.probes)

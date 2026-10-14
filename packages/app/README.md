@@ -181,7 +181,7 @@ Use `--speech-model-dir <directory>` instead of `--embedding` for CPU Kokoro
 transport and PCM diagnostics through the framed host. Supply `kokoro-82m-v1_0.gguf`
 (sha256 `165acd9d…`) and `af_sam.bin` (sha256 `68746708…`) from `elizaos/eliza-1` at
 revision `1e4c7371`. These are no longer the agent's voice: the AOSP agent now
-stages the pinned `mobile-voice` bundle (Paradee-8M + misaki lexicon, Qwen3-ASR-0.6B,
+stages the pinned `mobile-voice` bundle (Paradee-8M + misaki lexicon, Phonon-2 ASR,
 Silero VAD) from `plugins/plugin-native-inference/src/model-catalog/voice-model-versions.json`.
 The test verifies their hashes inside the installed APK, checks speed, input
 rejection and release/reload, and exports full PCM plus a playable WAV. A passing
@@ -194,7 +194,7 @@ physical speaker playback are outside this IPA-input diagnostic.
 
 ## Mobile voice quality gates
 
-The shipped mobile voice (Paradee-8M TTS and Qwen3-ASR-0.6B, both on
+The shipped mobile voice (Paradee-8M TTS and Phonon-2 ASR, both on
 libelizainference, no ONNX) is gated by `scripts/voice-quality/host-wer-gate.ts`
 on the host and by `scripts/paradee-voice/qualify` on a device. Both use the
 pins and thresholds in `scripts/voice-quality/fixtures.json`: TTS round-trip
@@ -202,6 +202,22 @@ WER <= 0.08 over the Paradee card samples, the 25 qualify sentences and the
 first 200 Paradee held-out sentences; ASR WER <= 0.06 over 100 LibriSpeech
 test-clean utterances and `speech-fixture/0.wav`; and an empty transcript for
 silence. RTF is reported. The host report goes to `test-results/voice-quality/`.
+
+ASR is Phonon-2 (`asr/phonon-2-fv5.gguf`, Parakeet-TDT 0.6B with five-value
+weights, 330,632,256 bytes, sha256 `dc552eb7…`) on the library's parakeet
+backend, which also streams (`ElizaVoiceNative.nativeAsrStream*`,
+`NativeAsr.openStream`). The GGUF is not published yet, so stage it by
+converting the pinned source and pass it through `ELIZA_VOICE_BUNDLE_FROM`
+(`<dir>/asr/phonon-2-fv5.gguf`; the catalog row pins its hash):
+`python tools/parakeet/convert_phonon2_to_gguf.py --archive phonon-2.bps.tar.zst
+--output phonon-2-fv5.gguf --verify` in the llama.cpp submodule, with the
+archive from `FermionResearch/Phonon-2@7e153e40`. `ELIZA_ASR_BACKEND=qwen3`
+stages the Qwen3-ASR-0.6B pair into `asr/` instead (batch only), and
+`ELIZA_ASR_THREADS` sets decode threads. Phonon-2 weights are CC-BY-4.0
+(derived from NVIDIA parakeet-tdt-0.6b-v3): ship the attribution and
+Fermion's NOTICE. The NOTICE lists CHiME-6 (CC-BY-SA-4.0) and SPGISpeech
+(Kensho terms) training audio, which is flagged for review and does not block
+a build.
 
 ```sh
 bun packages/app/scripts/voice-quality/host-wer-gate.ts --librispeech /data/LibriSpeech

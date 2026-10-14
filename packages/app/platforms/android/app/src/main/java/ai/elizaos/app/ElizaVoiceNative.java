@@ -255,6 +255,36 @@ final class ElizaVoiceNative {
      */
     static native int nativeAsrCancel(long ctxHandle);
 
+    // ── Streaming ASR (Parakeet-TDT / Phonon-2 backend) ──────────────────
+    //
+    // open → feed* → partial* → finish → close. Streaming needs the bundle's
+    // asr/ region to be the parakeet backend (asr/phonon-2-fv5.gguf); with the
+    // Qwen3-ASR pair, open throws IllegalArgumentException and callers keep
+    // nativeAsrTranscribe. feed only buffers, so it may run on the audio
+    // thread while partial/finish decode on a worker. close must not race any
+    // other call on the same stream. Token ids are not returned.
+
+    /** {@code eliza_inference_asr_stream_supported()}: 1 once a context has the parakeet backend loaded. */
+    static native int nativeAsrStreamSupported();
+
+    /** Acquire "asr" and open a stream for mono fp32 PCM at {@code sampleRate} Hz. Returns a stream handle. */
+    static native long nativeAsrStreamOpen(long ctxHandle, int sampleRate);
+
+    /** Buffer {@code pcm} (no decode); returns the samples consumed. */
+    static native int nativeAsrStreamFeed(long streamHandle, float[] pcm);
+
+    /** Decode what was fed and return the running transcript. */
+    static native String nativeAsrStreamPartial(long streamHandle);
+
+    /** Drain, decode and return the final transcript; later feeds throw. Close afterwards. */
+    static native String nativeAsrStreamFinish(long streamHandle);
+
+    /** Stop a partial/finish running on another thread; it throws CancellationException. */
+    static native int nativeAsrStreamCancel(long streamHandle);
+
+    /** Free the stream. Idempotent on 0. */
+    static native void nativeAsrStreamClose(long streamHandle);
+
     // ── Paradee-8M TTS with native misaki G2P (ABI v17) ──────────────────
 
     /** {@code eliza_inference_paradee_supported()}: 1 when this build links Paradee + misaki G2P. */

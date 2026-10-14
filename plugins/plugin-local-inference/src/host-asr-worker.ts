@@ -3,10 +3,15 @@
  * Protocol uses fd 3; diagnostics never reach callers.
  *
  * Environment: ELIZA_INFERENCE_LIBRARY + ELIZA_INFERENCE_LIBRARY_SHA256, and an
- * absolute ELIZA_ASR_MODEL_DIR holding the pinned Qwen3-ASR-0.6B Q8_0 pair as
- * `asr/eliza-1-asr.gguf`, `asr/eliza-1-asr-mmproj.gguf`, and
- * `vad/silero-vad-v5.gguf`. The worker loads
- * the ASR region and pinned Silero VAD; it never loads a text model, downloads or falls back.
+ * absolute ELIZA_ASR_MODEL_DIR holding `vad/silero-vad-v5.gguf` and one pinned
+ * ASR model under `asr/` (see host-asr-assets.ts):
+ *   - `asr/phonon-2-fv5.gguf`: Phonon-2 on the library's Parakeet-TDT backend,
+ *     used whenever it is present (CC-BY-4.0; the NOTICE ships with it);
+ *   - otherwise the Qwen3-ASR-0.6B Q8_0 pair as `asr/eliza-1-asr.gguf` +
+ *     `asr/eliza-1-asr-mmproj.gguf`.
+ * ELIZA_ASR_BACKEND=parakeet|qwen3 forces one and ELIZA_ASR_THREADS sets the
+ * decode threads; the library reads both. The worker loads the ASR region and
+ * pinned Silero VAD; it never loads a text model, downloads or falls back.
  *
  * Requests: `{id, op:"transcribe", pcm, encoding:"s16"|"f32", sampleRate}`
  * (`pcm` is base64 little-endian mono samples) returns `{id, text}` or
@@ -17,6 +22,11 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { isMainThread } from "node:worker_threads";
+import {
+	PHONON_ASR_ASSETS,
+	QWEN3_ASR_ASSETS,
+	selectHostAsrAssets,
+} from "./host-asr-assets";
 import {
 	type PinnedSpeechAsset,
 	serveSpeechEngine,
@@ -30,24 +40,10 @@ import {
 } from "./services/voice/ffi-bindings";
 import { resampleLinear } from "./services/voice/transcriber";
 
-/**
- * Qwen3-ASR-0.6B Q8_0 text GGUF + audio mmproj, the pair the fused ASR path
- * loads from `<bundle>/asr/`.
- * TODO: read these from the voice model registry record once it carries the
- * Qwen3-ASR pair, so the pins live in one place.
- */
-export const ASR_ASSETS: readonly PinnedSpeechAsset[] = [
-	{
-		path: "asr/eliza-1-asr.gguf",
-		sha256: "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
-		bytes: 804_749_248,
-	},
-	{
-		path: "asr/eliza-1-asr-mmproj.gguf",
-		sha256: "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
-		bytes: 214_392_480,
-	},
-];
+/** The Qwen3-ASR pair (kept for callers of the earlier export). */
+export const ASR_ASSETS: readonly PinnedSpeechAsset[] = QWEN3_ASR_ASSETS;
+export { PHONON_ASR_ASSETS };
+
 const VAD_ASSET: PinnedSpeechAsset = {
 	path: "vad/silero-vad-v5.gguf",
 	sha256: "d348cd6d87ea53dcd3e6680698c88be326082e27dae899adef653d090bee4995",
@@ -88,7 +84,8 @@ const library = isMainThread
 const root = process.env.ELIZA_ASR_MODEL_DIR || "";
 
 if (isMainThread) {
-	verifyPinnedAssets(root, [...ASR_ASSETS, VAD_ASSET]);
+	const asr = selectHostAsrAssets(root);
+	verifyPinnedAssets(root, [...asr.assets, VAD_ASSET]);
 	// The native VAD loader selects the first GGUF recursively. Ensure it can
 	// select only the model whose bytes were verified above.
 	const candidates = readdirSync(join(root, "vad"), {
