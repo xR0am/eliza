@@ -692,10 +692,9 @@ function clampLimit(value: string | null, fallback = 50): number {
 }
 
 function parseOffset(value: string | null): number {
-  if (!value) return 0;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, parsed);
+  const parsed = value ? Number(value) : 0;
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
+  return Math.min(parsed, 100_000);
 }
 
 function parseQueryList(value: string | undefined): string[] {
