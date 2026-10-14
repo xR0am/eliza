@@ -17,14 +17,14 @@ import { isBlockedHostname, isPrivateIpAddress } from "@elizaos/core";
 import {
     fetchKeylessWeb as fetchKeylessWebTransport,
     isKeylessWebSearchUnavailableError,
-    type KeylessWebSearchOptions,
+    type KeylessWebFetchOptions,
     searchKeylessWeb,
 } from "./keyless-web-search";
 
 /** Validates public destinations before asking the anonymous provider to read article URLs. */
 export async function fetchKeylessWeb(
     urls: readonly string[],
-    options: KeylessWebSearchOptions = {}
+    options: KeylessWebFetchOptions = {}
 ) {
     for (const url of urls) {
         if (publicHttpUrl(url) !== url) throw new Error("Canonical public article URL is required");
