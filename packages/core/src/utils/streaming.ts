@@ -989,6 +989,11 @@ export class ResponseSkeletonStreamExtractor implements IStreamExtractor {
 
 		while (this.buffer.length > 0) {
 			if (this.pendingEscape) {
+				if (this.pendingEscape === "\\" && this.buffer[0] === "u") {
+					this.pendingEscape = "\\u";
+					this.buffer = this.buffer.slice(1);
+					continue;
+				}
 				const needed = this.pendingEscape === "\\u" ? 4 : 1;
 				if (this.buffer.length < needed) {
 					flushPlain();
