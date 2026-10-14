@@ -13,8 +13,11 @@ import path from "node:path";
 import {
   AOSP_VOICE_GROUPS,
   AOSP_VOICE_RECORD,
+  aospAsrModelPath,
   aospVoiceFiles,
   aospVoiceGroupFiles,
+  aospVoiceGroupNeedsStaging,
+  aospVoiceGroups,
   downloadAospVoiceAsset,
   expectedAospVoicePin,
   readAospVoiceLocalSource,
@@ -27,6 +30,8 @@ import {
 import {
   isPublishedMobileVoiceFile,
   type MobileVoiceFile,
+  mobileAsrBackend,
+  mobileVoiceBundle,
 } from "../src/model-catalog/voice-models.js";
 
 const roots: string[] = [];
@@ -202,7 +207,14 @@ describe("pinned mobile voice bundle", () => {
   it("pins every catalog row it would download and keeps ONNX out", () => {
     const files = aospVoiceFiles();
     expect(files.map((f) => f.role).sort()).toEqual(
-      ["asr-mmproj", "asr-text", "g2p-lexicon", "tts", "vad"].sort(),
+      [
+        "asr-mmproj",
+        "asr-parakeet",
+        "asr-text",
+        "g2p-lexicon",
+        "tts",
+        "vad",
+      ].sort(),
     );
     for (const file of files) {
       expect(file.path.toLowerCase()).not.toContain(".onnx");
@@ -210,20 +222,26 @@ describe("pinned mobile voice bundle", () => {
       if (file.status === "published") {
         expect(isPublishedMobileVoiceFile(file)).toBe(true);
       } else {
-        // Unpublished rows carry no URL or hash, so nothing can download them.
+        // Unpublished rows carry no URL, so nothing can download them. A row
+        // with a byte-reproducible build pins its sha256 and size.
         expect(file.url).toBeNull();
-        expect(file.sha256).toBeNull();
+        expect(file.revision).toBeNull();
+        expect(isPublishedMobileVoiceFile(file)).toBe(false);
         expect(file.localFrom).toBeTruthy();
+        expect(file.sha256 === null).toBe(file.bytes === null);
       }
     }
-    for (const group of AOSP_VOICE_GROUPS) {
-      expect(aospVoiceGroupFiles(group).length).toBe(group.roles.length);
+    for (const backend of ["parakeet", "qwen3"] as const) {
+      for (const group of aospVoiceGroups(backend)) {
+        expect(aospVoiceGroupFiles(group).length).toBe(group.roles.length);
+      }
     }
     const asr = files.filter((f) => f.role.startsWith("asr-"));
     expect(asr.map((f) => f.sha256).sort()).toEqual(
       [
         "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
         "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+        "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
       ].sort(),
     );
     const vad = files.find((f) => f.role === "vad");
@@ -231,6 +249,166 @@ describe("pinned mobile voice bundle", () => {
       "d348cd6d87ea53dcd3e6680698c88be326082e27dae899adef653d090bee4995",
     );
     expect(vad?.revision).toBe("1e4c73713e11f7ff42bc2a686cc5b178c8cac14f");
+  });
+
+  it("makes Phonon-2 the default ASR and keeps Qwen3-ASR selectable", () => {
+    const bundle = mobileVoiceBundle();
+    expect(bundle.version).toBe("1.1.0");
+    const phonon = aospVoiceFiles().find((f) => f.role === "asr-parakeet");
+    expect(phonon).toMatchObject({
+      id: "phonon-2-fv5",
+      asrBackend: "parakeet",
+      path: "asr/phonon-2-fv5.gguf",
+      sha256:
+        "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
+      bytes: 330632256,
+      license: "CC-BY-4.0",
+      status: "unpublished",
+      notice: {
+        path: "NOTICE",
+        sha256:
+          "00624a5043e7ce74029317b024132ca5286116d6fbf3191d226374bc8273789f",
+        bytes: 2741,
+        ggufKey: "parakeet.notice",
+      },
+      source: {
+        repo: "FermionResearch/Phonon-2",
+        revision: "7e153e4054c0a10db6d47d6fff5c062d4c77c154",
+      },
+    });
+    expect(phonon?.attribution).toContain("CC-BY-4.0");
+    expect(phonon?.source.converterCommand).toContain(
+      "convert_phonon2_to_gguf.py --archive phonon-2.bps.tar.zst",
+    );
+    expect(phonon?.source.files?.[0]).toEqual({
+      path: "phonon-2.bps.tar.zst",
+      sha256:
+        "98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e",
+      bytes: 163515201,
+    });
+
+    expect(mobileAsrBackend({})).toBe("parakeet");
+    expect(mobileAsrBackend({ ELIZA_ASR_BACKEND: "auto" })).toBe("parakeet");
+    expect(mobileAsrBackend({ ELIZA_ASR_BACKEND: " Qwen3 " })).toBe("qwen3");
+    expect(mobileAsrBackend({ ELIZA_ASR_BACKEND: "mtmd" })).toBe("qwen3");
+    expect(AOSP_VOICE_GROUPS.find((g) => g.dir === "asr")?.roles).toEqual([
+      "asr-parakeet",
+    ]);
+    expect(
+      aospVoiceGroups("qwen3").find((g) => g.dir === "asr")?.roles,
+    ).toEqual(["asr-text", "asr-mmproj"]);
+    for (const file of aospVoiceGroupFiles(
+      aospVoiceGroups("qwen3")[2] as (typeof AOSP_VOICE_GROUPS)[number],
+    )) {
+      expect(file.asrBackend).toBe("qwen3");
+    }
+    expect(aospAsrModelPath("/b", "parakeet")).toBe(
+      path.join("/b", "asr", "phonon-2-fv5.gguf"),
+    );
+    expect(aospAsrModelPath("/b", "qwen3")).toBe(
+      path.join("/b", "asr", "Qwen3-ASR-0.6B-Q8_0.gguf"),
+    );
+  });
+
+  it("stages a catalog-pinned unpublished row from a local copy without voice-pins.json", async () => {
+    const gguf = Buffer.from("phonon gguf");
+    const row: MobileVoiceFile = {
+      ...unpublished("phonon", "asr-parakeet", "asr/phonon.gguf"),
+      sha256: sha(gguf),
+      bytes: gguf.length,
+    };
+    const group = { dir: "asr", roles: ["asr-parakeet"] } as const;
+    const source = bundleRoot();
+    mkdirSync(path.join(source, "asr"));
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), gguf);
+    expect(expectedAospVoicePin(row)).toEqual({
+      sha256: sha(gguf),
+      bytes: gguf.length,
+    });
+    expect(() =>
+      expectedAospVoicePin(row, {
+        dir: source,
+        pins: { phonon: { sha256: "0".repeat(64), bytes: gguf.length } },
+      }),
+    ).toThrow("disagrees with the catalog");
+
+    const root = bundleRoot();
+    // No local source: never downloaded.
+    expect(
+      (await stageAospVoiceGroup(root, group, { files: [row] })).status,
+    ).toBe("unavailable");
+    const result = await stageAospVoiceGroup(root, group, {
+      files: [row],
+      local: readAospVoiceLocalSource(source),
+    });
+    expect(result.status).toBe("staged");
+    expect(readFileSync(path.join(root, "asr", "phonon.gguf"))).toEqual(gguf);
+    expect(
+      (await stageAospVoiceGroup(root, group, { files: [row] })).status,
+    ).toBe("present");
+
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), "tampered!!!");
+    const other = bundleRoot();
+    await expect(
+      stageAospVoiceGroup(other, group, {
+        files: [row],
+        local: readAospVoiceLocalSource(source),
+      }),
+    ).rejects.toThrow("does not match its pin");
+    expect(existsSync(path.join(other, "asr"))).toBe(false);
+  });
+
+  it("replaces asr/ when the ASR backend changes, and keeps it until the new rows exist", async () => {
+    const text = Buffer.from("qwen text");
+    const proj = Buffer.from("qwen proj");
+    const gguf = Buffer.from("phonon gguf");
+    const files: MobileVoiceFile[] = [
+      published("q", "asr-text", "asr/text.gguf", text),
+      published("m", "asr-mmproj", "asr/mmproj.gguf", proj),
+      {
+        ...unpublished("phonon", "asr-parakeet", "asr/phonon.gguf"),
+        sha256: sha(gguf),
+        bytes: gguf.length,
+      },
+    ];
+    const qwen = { dir: "asr", roles: ["asr-text", "asr-mmproj"] } as const;
+    const parakeet = { dir: "asr", roles: ["asr-parakeet"] } as const;
+    const root = bundleRoot();
+    await stageAospVoiceGroup(root, qwen, {
+      ...allowedNetwork,
+      files,
+      fetchImpl: (async (url: string) =>
+        new Response(
+          String(url).endsWith("mmproj.gguf") ? proj : text,
+        )) as unknown as typeof fetch,
+    });
+    expect(aospVoiceGroupNeedsStaging(root, qwen, files)).toBe(false);
+    expect(aospVoiceGroupNeedsStaging(root, parakeet, files)).toBe(true);
+
+    // Without a local Phonon-2 copy the Qwen3 group stays and keeps working.
+    expect((await stageAospVoiceGroup(root, parakeet, { files })).status).toBe(
+      "unavailable",
+    );
+    expect(readFileSync(path.join(root, "asr", "text.gguf"))).toEqual(text);
+
+    const source = bundleRoot();
+    mkdirSync(path.join(source, "asr"));
+    writeFileSync(path.join(source, "asr", "phonon.gguf"), gguf);
+    const result = await stageAospVoiceGroup(root, parakeet, {
+      files,
+      local: readAospVoiceLocalSource(source),
+    });
+    expect(result.status).toBe("staged");
+    expect(readFileSync(path.join(root, "asr", "phonon.gguf"))).toEqual(gguf);
+    // The other backend's files are gone, so the library's picker sees one model.
+    expect(existsSync(path.join(root, "asr", "text.gguf"))).toBe(false);
+    expect(existsSync(path.join(root, "asr", "mmproj.gguf"))).toBe(false);
+    expect(existsSync(path.join(root, "asr.staging"))).toBe(false);
+    expect(existsSync(path.join(root, "asr.retired.staging"))).toBe(false);
+    expect(aospVoiceGroupNeedsStaging(root, parakeet, files)).toBe(false);
+    expect((await stageAospVoiceGroup(root, parakeet, { files })).status).toBe(
+      "present",
+    );
   });
 
   it("downloads a published group into place atomically with a record", async () => {

@@ -68,6 +68,7 @@ public class ElizaVoicePcmInstrumentedTest {
             () -> ElizaVoiceNative.nativeCancelTts(0),
             () -> ElizaVoiceNative.nativeAsrTranscribe(0, new float[16000], 16000),
             () -> ElizaVoiceNative.nativeAsrCancel(0),
+            () -> ElizaVoiceNative.nativeAsrStreamOpen(0, 16000),
             () -> ElizaVoiceNative.nativeMmapEvict(0, "tts"));
         for (org.junit.function.ThrowingRunnable call : calls) {
             RuntimeException error = assertThrows(RuntimeException.class, call);
@@ -75,6 +76,39 @@ public class ElizaVoicePcmInstrumentedTest {
         }
         assertTrue(ElizaVoiceNative.nativeParadeeSampleRate(0) < 0);
         assertTrue(ElizaVoiceNative.nativeParadeeG2pKind(0) < 0);
+    }
+
+    @Test
+    public void streamingAsrNativesAreRegisteredAndRejectMissingStreams() {
+        assertTrue(ElizaVoiceNative.ensureLoaded());
+        // No context has the parakeet backend loaded yet.
+        assertEquals(0, ElizaVoiceNative.nativeAsrStreamSupported());
+        java.util.List<org.junit.function.ThrowingRunnable> calls = java.util.List.of(
+            () -> ElizaVoiceNative.nativeAsrStreamFeed(0, new float[160]),
+            () -> ElizaVoiceNative.nativeAsrStreamPartial(0),
+            () -> ElizaVoiceNative.nativeAsrStreamFinish(0),
+            () -> ElizaVoiceNative.nativeAsrStreamCancel(0));
+        for (org.junit.function.ThrowingRunnable call : calls) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class, call);
+            assertTrue(error.getMessage(), error.getMessage().contains("rc=-2"));
+        }
+        // Close is idempotent on 0.
+        ElizaVoiceNative.nativeAsrStreamClose(0);
+    }
+
+    @Test
+    public void streamingAsrOpenRejectsAContextWithoutParakeet() throws Exception {
+        assertTrue(ElizaVoiceNative.ensureLoaded());
+        java.io.File bundle = java.nio.file.Files.createTempDirectory("asr-no-parakeet").toFile();
+        assertTrue(new java.io.File(bundle, "asr").mkdirs());
+        long ctx = ElizaVoiceNative.nativeContextCreate(bundle.getAbsolutePath());
+        try {
+            // An empty asr/ is neither backend: acquire fails before a stream opens.
+            assertThrows(RuntimeException.class, () -> ElizaVoiceNative.nativeAsrStreamOpen(ctx, 16000));
+            assertThrows(IllegalArgumentException.class, () -> ElizaVoiceNative.nativeAsrStreamOpen(ctx, 0));
+        } finally {
+            ElizaVoiceNative.nativeContextDestroy(ctx);
+        }
     }
 
     @Test

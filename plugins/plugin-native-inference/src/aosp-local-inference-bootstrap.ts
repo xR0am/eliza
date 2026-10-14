@@ -91,8 +91,9 @@ import {
 } from "./aosp-model-paths.js";
 import { createAospNetworkAdmissionCheck } from "./aosp-network-admission.js";
 import {
-  AOSP_VOICE_GROUPS,
   aospParadeePaths,
+  aospVoiceGroupNeedsStaging,
+  aospVoiceGroups,
   readAospVoiceLocalSource,
   stageAospVoiceGroup,
 } from "./aosp-voice-download.js";
@@ -1381,8 +1382,13 @@ function resolveBundledModelsDir(): string {
 // The on-device voice is the pinned `mobile-voice` bundle from
 // model-catalog/voice-model-versions.json: Paradee-8M TTS + misaki lexicon in
 // `tts/paradee/` (the dir ElizaBionicInferenceServer.tts() and the fused
-// Paradee loader read), Silero VAD in `vad/`, and the Qwen3-ASR-0.6B pair in
-// `asr/`. All of it runs on libelizainference. The voice is an ESSENTIAL
+// Paradee loader read), Silero VAD in `vad/`, and the ASR model in `asr/`:
+// Phonon-2 (Parakeet-TDT; the fused library's parakeet backend, batch and
+// streaming) by default, or the Qwen3-ASR-0.6B pair with
+// ELIZA_ASR_BACKEND=qwen3. Changing the backend re-stages `asr/`; until the
+// new rows are available the old group stays and keeps working.
+// ELIZA_ASR_THREADS is read by the fused library itself. All of it runs on
+// libelizainference. The voice is an ESSENTIAL
 // feature, so unlike the general recommended-model auto-download it fetches by
 // default; opt out with ELIZA_DISABLE_VOICE_AUTO_DOWNLOAD=1 (offline/kiosk).
 // ELIZA_VOICE_BUNDLE_FROM names a local directory laid out like the bundle
@@ -1393,12 +1399,12 @@ let voiceDownloadInflight: Promise<void> | null = null;
 function ensureAospVoiceAssetsInBackground(bundleRoot: string): void {
   if (process.env.ELIZA_DISABLE_VOICE_AUTO_DOWNLOAD?.trim() === "1") return;
   if (voiceDownloadInflight) return;
-  if (AOSP_VOICE_GROUPS.every((g) => existsSync(path.join(bundleRoot, g.dir))))
-    return;
+  const groups = aospVoiceGroups();
+  if (!groups.some((g) => aospVoiceGroupNeedsStaging(bundleRoot, g))) return;
   const fromDir = process.env.ELIZA_VOICE_BUNDLE_FROM?.trim();
   voiceDownloadInflight = (async () => {
     const local = fromDir ? readAospVoiceLocalSource(fromDir) : undefined;
-    for (const group of AOSP_VOICE_GROUPS) {
+    for (const group of groups) {
       try {
         const result = await stageAospVoiceGroup(bundleRoot, group, {
           local,
