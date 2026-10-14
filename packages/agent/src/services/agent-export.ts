@@ -994,19 +994,6 @@ async function extractAgentData(
     }
   }
 
-  const danglingReplyIds = new Set<string>();
-  for (const memory of allMemories) {
-    const inReplyTo = memory.content?.inReplyTo;
-    if (typeof inReplyTo === "string" && !memoryIdSet.has(inReplyTo)) {
-      danglingReplyIds.add(inReplyTo);
-    }
-  }
-  if (danglingReplyIds.size > 0) {
-    throw new AgentExportError(
-      `Messages reference memory ids that cannot be exported: ${[...danglingReplyIds].join(", ")}`,
-    );
-  }
-
   logger.info(`[agent-export] Found ${allMemories.length} memories`);
 
   // 7. Relationships. The reflection evaluator records relationships between
@@ -1379,7 +1366,10 @@ async function restoreAgentDataInScope(
   }
   logger.info(`[agent-import] Imported ${componentsImported} components`);
 
-  // 7. Create memories
+  // 7. Create memories. Reply targets may refer to deleted or external messages.
+  const exportedMemoryIds = new Set(
+    payload.memories.map((memory) => memory.id),
+  );
   let memoriesImported = 0;
   for (const mem of orderedMemories) {
     const tableName = resolveMemoryTableName(mem);
@@ -1391,8 +1381,10 @@ async function restoreAgentDataInScope(
       ...(mem.entityId ? { entityId: remap(mem.entityId) as UUID } : {}),
       ...(mem.roomId ? { roomId: remap(mem.roomId) as UUID } : {}),
       ...(mem.worldId ? { worldId: remap(mem.worldId) as UUID } : {}),
-      // A reply names the message it answers; the thread must survive.
-      ...(typeof mem.content?.inReplyTo === "string"
+      // Remap only targets carried in this bundle. Preserve external references
+      // instead of minting an id for a message that will never be restored.
+      ...(typeof mem.content?.inReplyTo === "string" &&
+      exportedMemoryIds.has(mem.content.inReplyTo)
         ? {
             content: {
               ...mem.content,

@@ -64,6 +64,7 @@ it("keeps world roles, reply threads and user relationships through a transfer",
       { sourceEntityId: owner, targetEntityId: contact, tags: ["colleague"] },
     ]);
     const firstId = stringToUuid("transfer-message-1");
+    const externalReplyId = stringToUuid("deleted-or-external-message");
     await adapter.createMemories([
       {
         memory: {
@@ -84,6 +85,23 @@ it("keeps world roles, reply threads and user relationships through a transfer",
           roomId,
           worldId,
           content: { text: "reply", inReplyTo: firstId },
+        } as Memory,
+        tableName: "messages",
+      },
+    ]);
+
+    await adapter.createMemories([
+      {
+        memory: {
+          id: stringToUuid("transfer-external-reply"),
+          agentId,
+          entityId: friend,
+          roomId,
+          worldId,
+          content: {
+            text: "reply to external message",
+            inReplyTo: externalReplyId,
+          },
         } as Memory,
         tableName: "messages",
       },
@@ -149,6 +167,13 @@ it("keeps world roles, reply threads and user relationships through a transfer",
       const reply = messages.find((memory) => memory.content.text === "reply");
       expect(first?.id).toBeTruthy();
       expect(reply?.content.inReplyTo).toBe(first?.id as UUID);
+      const externalReply = messages.find(
+        (memory) => memory.content.text === "reply to external message",
+      );
+      expect(externalReply?.content.inReplyTo).toBe(externalReplyId);
+      expect(messages.some((memory) => memory.id === externalReplyId)).toBe(
+        false,
+      );
 
       // The user-to-user relationship arrived with remapped endpoints.
       const relationships = await db.getRelationships({
