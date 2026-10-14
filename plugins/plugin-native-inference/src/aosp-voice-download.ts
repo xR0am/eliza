@@ -194,6 +194,9 @@ export interface StageAospVoiceGroupOptions
  * `<dir>.staging`, verifies it, writes the record and renames the staging
  * directory into place.
  */
+/** Existing files hashed in this process: path -> pin + stat signature. */
+const verifiedExistingFiles = new Map<string, string>();
+
 export async function stageAospVoiceGroup(
   bundleRoot: string,
   group: AospVoiceGroup,
@@ -258,16 +261,24 @@ export async function stageAospVoiceGroup(
         pin = { sha256: row.sha256, bytes: row.bytes };
       }
       const target = path.join(finalDir, path.posix.basename(file.path));
-      const stat = lstatSync(target);
+      const stat = lstatSync(target, { bigint: true });
+      // The bootstrap re-runs this for every group whenever any group is
+      // missing (and on each TTS request until tts/paradee/ lands), so a
+      // file already hashed in this process is not re-hashed (the ASR pair is
+      // ~1 GB) unless its inode, size, mtime or ctime changed.
+      const signature = `${pin.sha256}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      if (verifiedExistingFiles.get(target) === signature) continue;
+      verifiedExistingFiles.delete(target);
       if (
         !stat.isFile() ||
-        stat.size !== pin.bytes ||
+        stat.size !== BigInt(pin.bytes) ||
         (await sha256File(target)) !== pin.sha256
       ) {
         throw new Error(
           `[aosp-voice] existing ${file.id} does not match its pin`,
         );
       }
+      verifiedExistingFiles.set(target, signature);
     }
     return { status: "present", dir: finalDir };
   }
