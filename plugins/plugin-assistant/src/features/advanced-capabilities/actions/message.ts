@@ -3598,25 +3598,28 @@ function memoryScopeAllowsSameRoomRead(
   return false;
 }
 
-async function readAdapterlessStoredMemory(
+/**
+ * Loads a stored message by memory id for the requester: it must belong to
+ * this agent, be in the requester's current room, the requester must still be
+ * a participant, and its scope must allow a same-room read.
+ */
+async function authorizeStoredMessage(
   runtime: IAgentRuntime,
   message: Memory,
-  params: ParamRecord,
   memoryRef: UUID,
-): Promise<ActionResult> {
+): Promise<{ stored: Memory } | { code: string; text: string }> {
   const stored = await runtime.getMemoryById(memoryRef);
   if (!stored || stored.agentId !== runtime.agentId) {
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_NOT_FOUND",
-      "The stored message was not found.",
-    );
+    return {
+      code: "MESSAGE_MEMORY_NOT_FOUND",
+      text: "The stored message was not found.",
+    };
   }
-  if (stored.roomId !== message.roomId) {
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_ACCESS_DENIED",
-      "The stored message is not readable from this room.",
-    );
-  }
+  const denied = {
+    code: "MESSAGE_MEMORY_ACCESS_DENIED",
+    text: "The stored message is not readable from this room.",
+  };
+  if (stored.roomId !== message.roomId) return denied;
   let stillParticipant = false;
   try {
     stillParticipant = (
@@ -3626,20 +3629,31 @@ async function readAdapterlessStoredMemory(
     runtime.reportError("MESSAGE.readStoredMemory.authorization", error, {
       roomId: stored.roomId,
     });
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_AUTHORIZATION_UNAVAILABLE",
-      "Stored-message authorization is unavailable.",
-    );
+    return {
+      code: "MESSAGE_MEMORY_AUTHORIZATION_UNAVAILABLE",
+      text: "Stored-message authorization is unavailable.",
+    };
   }
   if (
     !stillParticipant ||
     !memoryScopeAllowsSameRoomRead(stored, message.entityId, runtime.agentId)
   ) {
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_ACCESS_DENIED",
-      "The stored message is not readable from this room.",
-    );
+    return denied;
   }
+  return { stored };
+}
+
+async function readAdapterlessStoredMemory(
+  runtime: IAgentRuntime,
+  message: Memory,
+  params: ParamRecord,
+  memoryRef: UUID,
+): Promise<ActionResult> {
+  const authorized = await authorizeStoredMessage(runtime, message, memoryRef);
+  if ("code" in authorized) {
+    return memoryReadFailure(authorized.code, authorized.text);
+  }
+  const { stored } = authorized;
   const offset = safeMemoryReadInteger(params.offset, "offset", 0);
   const limit = safeMemoryReadInteger(
     params.limit,
@@ -5190,13 +5204,36 @@ async function handleMessageMutation(
   params: ParamRecord,
   op: "react" | "edit" | "delete" | "pin",
 ): Promise<ActionResult> {
-  const messageId = textParam(params.messageId) ?? textParam(params.id);
+  let messageId = textParam(params.messageId) ?? textParam(params.id);
   if (!messageId) {
     return opFailure(
       op,
       "INVALID_PARAMETERS",
       `MESSAGE op=${op} requires messageId.`,
     );
+  }
+  // The parameter accepts a stored memory id (send results and read_channel
+  // return them). Connectors need the platform id the message was stored with.
+  if (isUuidLike(messageId)) {
+    const authorized = await authorizeStoredMessage(
+      runtime,
+      message,
+      messageId,
+    );
+    if ("code" in authorized) {
+      return opFailure(op, authorized.code, authorized.text);
+    }
+    const platformId = (
+      authorized.stored.metadata as Record<string, unknown> | undefined
+    )?.messageIdFull;
+    if (typeof platformId !== "string" || !platformId.trim()) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_NO_PLATFORM_ID",
+        "The stored message has no platform message id.",
+      );
+    }
+    messageId = platformId;
   }
   const hookName = (
     {
