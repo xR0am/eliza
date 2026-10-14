@@ -35,7 +35,7 @@ export class TalkModeWeb extends WebPlugin {
   // SpeechSynthesis queues later speak() calls behind the active one, so the
   // most recently submitted utterance is not necessarily the one playing.
   private activeUtterance: SpeechSynthesisUtterance | null = null;
-  // Wall-clock start of the ACTIVE utterance, in milliseconds, set by its
+  // Monotonic start of the ACTIVE utterance, in milliseconds, set by its
   // onstart event rather than at submission: a queued utterance has not
   // started playing yet. The native bridges report how far playback had
   // progressed when stopSpeaking() interrupts it (Android:
@@ -244,8 +244,9 @@ export class TalkModeWeb extends WebPlugin {
       // browser is actually playing. speak() calls queue behind it, so a
       // later submission must not restart the clock before it starts.
       utterance.onstart = () => {
+        if (outcome.cancelled || !this.pendingSpeech.has(utterance)) return;
         this.activeUtterance = utterance;
-        this.speechStartedAtMs = Date.now();
+        this.speechStartedAtMs = performance.now();
       };
 
       utterance.onend = () => {
@@ -302,7 +303,7 @@ export class TalkModeWeb extends WebPlugin {
       // cancelling, which clears the start time.
       const interruptedAt =
         this.activeUtterance !== null && this.speechStartedAtMs !== null
-          ? (Date.now() - this.speechStartedAtMs) / 1000
+          ? (performance.now() - this.speechStartedAtMs) / 1000
           : undefined;
       this.cancelPendingSpeech();
       // The cancelled utterance's own end event is stale from here on, so the
