@@ -196,10 +196,27 @@ const iso = (d: Date | null) => (d ? d.toISOString() : null);
 const END = String.raw`(?:until|till|til|'til|thru|through|back\s+(?:on|by|in)?|by)`;
 
 /**
+ * The start a member states for a stay ("from Monday", "starting December
+ * 1st", "on Nov 10"): a start word directly followed by a date.
+ */
+function statedStart(t: string, now: Date): Date | null {
+  for (const m of t.matchAll(
+    /\b(?:from|starting|beginning|on)\s+(?:on\s+)?(?:the\s+)?/g,
+  )) {
+    const rest = t.slice(m.index + m[0].length);
+    if (DATE_EXPR.exec(rest)?.index !== 0) continue;
+    const d = parseDateExpr(rest, now);
+    if (d) return d;
+  }
+  return null;
+}
+
+/**
  * Resolves a {from, until} window from the member's own words, or nulls when no
  * supported pattern is present. Callers prefer this over model-proposed dates.
- * A stated duration ("for two weeks") counts from `start` when the window has
- * one ("starting Monday"), else from today.
+ * A stated duration ("for two weeks") counts from the start the member states
+ * ("starting Monday"), else from `start` (the caller's window start), else
+ * from today.
  */
 export function resolveWindow(
   text: string,
@@ -236,7 +253,8 @@ export function resolveWindow(
     );
   if (dur?.[1]) {
     const n = /^\d+$/.test(dur[1]) ? Number(dur[1]) : (NUMBERS[dur[1]] ?? 1);
-    const base = start ?? today;
+    const stated = statedStart(t, now);
+    const base = stated ?? start ?? today;
     const until =
       dur[2] === "day"
         ? addDays(base, n)
@@ -262,7 +280,7 @@ export function resolveWindow(
                 (base.getTime() - startOfDay(base).getTime()) / 86_400_000,
               );
             })();
-    return { from: null, until: iso(until) };
+    return { from: iso(stated), until: iso(until) };
   }
   if (/\b(?:all\s+)?next\s+week\b/.test(t)) {
     const nextMonday = addDays(today, (8 - today.getUTCDay()) % 7 || 7);

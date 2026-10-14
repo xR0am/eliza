@@ -88,6 +88,64 @@ describe("Network stated duration", () => {
     }
   });
 
+  it("reads the start from the member's words when the model gives none", () => {
+    const now = new Date("2026-10-14T15:00:00Z");
+    for (const [text, modelFrom, from, until] of [
+      [
+        "From Monday I'm in Lisbon for a week",
+        undefined,
+        "2026-10-19",
+        "2026-10-26",
+      ],
+      [
+        "I'm in Tokyo for two weeks from October 20",
+        undefined,
+        "2026-10-20",
+        "2026-11-03",
+      ],
+      [
+        "Starting December 1st I'm traveling for a month",
+        undefined,
+        "2026-12-01",
+        "2027-01-01",
+      ],
+      [
+        "Heading to Paris on Nov 10 for 3 days",
+        undefined,
+        "2026-11-10",
+        "2026-11-13",
+      ],
+      // A model start that disagrees with the member's words loses.
+      [
+        "From Monday I'm in Lisbon for a week",
+        "2026-10-14",
+        "2026-10-19",
+        "2026-10-26",
+      ],
+    ] as const) {
+      const decision = authorizeSetState(
+        {
+          state: "traveling",
+          from: modelFrom,
+          until: "2026-10-30",
+          evidence: text,
+        },
+        text,
+        now,
+      );
+      assert.deepEqual(
+        decision,
+        {
+          allowed: true,
+          state: "traveling",
+          from: `${from}T00:00:00.000Z`,
+          until: `${until}T00:00:00.000Z`,
+        },
+        `${text} (model from ${modelFrom ?? "none"})`,
+      );
+    }
+  });
+
   it("counts a duration with no start from today", () => {
     const text = "I'm in Tokyo for two weeks";
     assert.deepEqual(
