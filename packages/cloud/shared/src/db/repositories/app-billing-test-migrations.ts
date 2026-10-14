@@ -63,4 +63,17 @@ export async function applyAppBillingTestMigrations(
   await execute(column.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS"));
   await installBillingCommandEvidenceTestColumns(execute);
   await installSubscriptionGrantTestSchema(execute);
+  // The pilot allowance migrations must follow the 0542 grant installer above:
+  // 0543 references the promo_grant_id column and invoice-check constraint it
+  // leaves behind, and the allowance repository now selects pilot_redemption_id
+  // on every read. Mirrors records-test-harness.ts (merged #36192).
+  for (const tag of [
+    "0534_subscription_allowance_invoice_authority",
+    "0541_app_pilot_redemptions",
+    "0543_app_pilot_allowance",
+  ]) {
+    const migration = await readFile(new URL(`../migrations/${tag}.sql`, import.meta.url), "utf8");
+    for (const statement of migration.split("--> statement-breakpoint"))
+      if (statement.trim()) await execute(statement.replaceAll('"public".', ""));
+  }
 }
