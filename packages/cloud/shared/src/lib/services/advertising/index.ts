@@ -1875,12 +1875,13 @@ class AdvertisingService {
     // Without a caller window this is the campaign's lifetime: the window the
     // spend accounting (credits_spent, delete refund) relies on. Adapters fall
     // back to a recent window when they get none, so the lifetime is explicit:
-    // from the campaign's scheduled start (or its creation) until now.
+    // from the campaign's creation until now. Not the scheduled start: a user
+    // can move that later, and spend from before it must still count.
     const lifetime = dateRange === undefined;
     const result = await provider.getCampaignMetrics(
       credentials,
       campaign.external_campaign_id,
-      dateRange ?? { start: campaign.start_date ?? campaign.created_at, end: new Date() },
+      dateRange ?? { start: campaign.created_at, end: new Date() },
     );
 
     if (!result.success || !result.metrics) {

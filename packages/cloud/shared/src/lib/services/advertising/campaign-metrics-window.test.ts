@@ -47,6 +47,7 @@ afterEach(() => {
   updates.length = 0;
   account.platform = "meta";
   campaign.start_date = new Date("2026-06-01T00:00:00.000Z");
+  campaign.created_at = new Date("2026-05-28T12:00:00.000Z");
   campaign.external_campaign_id = "acct/ext-1";
 });
 
@@ -84,7 +85,7 @@ test("a lifetime read asks the platform for the whole campaign and stores the to
 
   expect(metrics.spend).toBe(42.5);
   expect(ranges).toHaveLength(1);
-  expect(ranges[0]?.start).toEqual(campaign.start_date);
+  expect(ranges[0]?.start).toEqual(campaign.created_at);
   expect(ranges[0]?.end.getTime()).toBeGreaterThanOrEqual(before);
   expect(updates).toEqual([
     [
@@ -92,6 +93,17 @@ test("a lifetime read asks the platform for the whole campaign and stores the to
       { totalSpend: "42.5", totalImpressions: 1000, totalClicks: 50, totalConversions: 3 },
     ],
   ]);
+});
+
+test("a scheduled start moved after earlier spend does not shorten the lifetime", async () => {
+  const ranges = stubProvider();
+  // The campaign spent in June; the user later moved its scheduled start to October.
+  campaign.start_date = new Date("2026-10-01T00:00:00.000Z");
+
+  await advertisingService.getCampaignMetrics("campaign-1", "org-1");
+
+  expect(ranges[0]?.start).toEqual(new Date("2026-05-28T12:00:00.000Z"));
+  expect(updates).toHaveLength(1);
 });
 
 test("a windowed read passes the window through and leaves the stored totals alone", async () => {
@@ -115,7 +127,8 @@ test("an X campaign older than seven days refreshes its lifetime totals through 
   // X ids are account/campaign/line-item.
   campaign.external_campaign_id = "acct-1/c-1/li-1";
   const DAY_MS = 24 * 60 * 60 * 1000;
-  campaign.start_date = new Date(Date.now() - 134 * DAY_MS);
+  campaign.created_at = new Date(Date.now() - 134 * DAY_MS);
+  campaign.start_date = campaign.created_at;
   spies.push(
     spyOn(
       advertisingService as unknown as { getCredentials: () => Promise<unknown> },
