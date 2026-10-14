@@ -148,6 +148,8 @@ import {
   type OrganizationSubscriptionUpgradeQuoteRequest,
   type OrganizationSubscriptionUpgradeQuoteResponse,
   type PairingTokenResponse,
+  type PairingTokenResult,
+  type PairingTokenStarting,
   type PendingOrganizationPlanChangeCommandsResponse,
   type PendingSubscriptionCommandsResponse,
   type PollGatewayRelayResponse,
@@ -1723,13 +1725,23 @@ export class ElizaCloudClient {
     );
   }
 
-  getAgentPairingToken(agentId: string): Promise<PairingTokenResponse> {
-    return this.requestData<
-      PairingTokenResponse | { data: PairingTokenResponse }
-    >(
+  /**
+   * Issue a one-time token for the agent web UI. While the agent is not
+   * running the route answers 202 with a "starting" body and asks the caller
+   * to retry after `retryAfterMs`; that answer carries no token.
+   */
+  getAgentPairingToken(agentId: string): Promise<PairingTokenResult> {
+    type PairingBody = PairingTokenResponse | PairingTokenStarting;
+    return this.requestData<PairingBody | { data: PairingBody }>(
       "POST",
       `/api/v1/eliza/agents/${encodePathParam(agentId)}/pairing-token`,
-    ).then((response) => ("data" in response ? response.data : response));
+    ).then((response) => {
+      // Older deployments answered with the bare body; current ones wrap it.
+      const body = "data" in response ? response.data : response;
+      return "token" in body
+        ? { kind: "ready", ...body }
+        : { kind: "starting", ...body };
+    });
   }
 
   registerGatewayRelaySession(request: {
