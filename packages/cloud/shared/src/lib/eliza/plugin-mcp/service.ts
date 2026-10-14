@@ -299,10 +299,10 @@ export class McpService extends Service {
         /* ignore invalid URLs */
       }
     }
-    // Track API key used for this connection so we can detect rotation later
-    if (apiKey && typeof apiKey === "string") {
-      this.connectionApiKeys.set(name, apiKey);
-    }
+    // Track API key used for this connection so we can detect rotation later.
+    // Always record (empty string when no key was present) so that a missing
+    // map entry reliably means "stdio", which never records a key.
+    this.connectionApiKeys.set(name, apiKey && typeof apiKey === "string" ? apiKey : "");
     const opts = Object.keys(headers).length > 0 ? { requestInit: { headers } } : undefined;
     return new StreamableHTTPClientTransport(url, opts);
   }
@@ -554,8 +554,13 @@ export class McpService extends Service {
         : null;
     if (matchedKey) {
       const currentKey = this.runtime.getSetting("ELIZAOS_API_KEY") ?? "";
-      const storedKey = this.connectionApiKeys.get(matchedKey) ?? "";
-      if (currentKey !== storedKey) {
+      // connectionApiKeys is written by createHttpTransport for every HTTP
+      // connection (empty string when no key was present) and never for stdio.
+      // A missing entry therefore means "stdio": it must not count as a key
+      // rotation, otherwise every call tears down stdio connections whenever
+      // ELIZAOS_API_KEY is set.
+      const storedKey = this.connectionApiKeys.get(matchedKey);
+      if (storedKey !== undefined && currentKey !== storedKey) {
         logger.info(`[MCP] API key changed for ${matchedKey}, reconnecting`);
         await this.disconnect(matchedKey);
       } else {
