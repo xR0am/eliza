@@ -65,3 +65,33 @@ test("reads the documented report envelope and converts microcurrency spend", as
     "KEY_CONVERSION_TOTAL_COUNT",
   ]);
 });
+
+test("a report without its required data object is a failure, not a zero report", async () => {
+  spies.push(
+    spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ pagination: {} })),
+  );
+
+  const result = await redditAdsProvider.getCampaignMetrics(
+    { accessToken: "fixture-token" },
+    "acct-1/camp-1",
+  );
+
+  expect(result.success).toBe(false);
+  expect(result.metrics).toBeUndefined();
+});
+
+test("a report with no metrics rows is a zero report for a campaign with no activity", async () => {
+  spies.push(
+    spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ data: {}, pagination: {} }),
+    ),
+  );
+
+  const result = await redditAdsProvider.getCampaignMetrics(
+    { accessToken: "fixture-token" },
+    "acct-1/camp-1",
+  );
+
+  expect(result.success).toBe(true);
+  expect(result.metrics?.spend).toBe(0);
+});

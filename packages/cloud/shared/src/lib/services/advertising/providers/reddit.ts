@@ -620,7 +620,12 @@ export const redditAdsProvider: AdProvider = {
           }),
         },
       );
-      return { success: true, metrics: sumReportRows(response.data?.metrics ?? []) };
+      // `data` is required by the report schema; `data.metrics` is optional and
+      // absent when the campaign had no activity in the window.
+      if (!response.data) {
+        throw new Error("Reddit report response has no data");
+      }
+      return { success: true, metrics: sumReportRows(response.data.metrics ?? []) };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
