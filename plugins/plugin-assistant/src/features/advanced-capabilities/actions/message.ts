@@ -5223,9 +5223,15 @@ async function handleMessageMutation(
     if ("code" in authorized) {
       return opFailure(op, authorized.code, authorized.text);
     }
-    const platformId = (
-      authorized.stored.metadata as Record<string, unknown> | undefined
-    )?.messageIdFull;
+    const storedMetadata = (authorized.stored.metadata ?? {}) as Record<
+      string,
+      unknown
+    >;
+    // Same keys, in the same order, as the send result reads them.
+    const platformId =
+      typeof storedMetadata.platformMessageId === "string"
+        ? storedMetadata.platformMessageId
+        : storedMetadata.messageIdFull;
     if (typeof platformId !== "string" || !platformId.trim()) {
       return opFailure(
         op,
