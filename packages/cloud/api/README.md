@@ -65,6 +65,17 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   `insufficient_quota` with `code: "allowance_exhausted"` and `resetsAt`
   (402, not 429, keeps existing OpenAI-style clients). 429 bodies add
   `retryAfterSeconds`.
+- Plan request buckets: completions pass a burst and a sustained token bucket
+  per organization, user and plan before the policy transaction. The check is
+  in memory (per Worker isolate) and adds no round trip; the Durable Object
+  per-minute window stays the global limit. A refusal is 429 with
+  `Retry-After` and `error.code: "rate_limited"`, `retryAfterSeconds`,
+  `retryAfterMs`, `retryAt`, `plan.id` and `limit`. A cache miss, an ended
+  plan window or a billing outage decides from memory with the `default`
+  limits. Set `ELIZA_CLOUD_PLAN_RATE_LIMITS` (see `shared/.env.example`); it is
+  off while unset. The numbers are not selected yet; `placeholder` enables
+  unselected test values only. Latency benchmark:
+  `bun --conditions=eliza-source packages/cloud/scripts/plan-request-limit-latency.ts`.
 
 Scripts (same `DATABASE_URL` and pepper as the target environment; apply
 migration `0542_subscription_grant_codes` first):
