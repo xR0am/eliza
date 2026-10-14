@@ -458,3 +458,10 @@ it("only an opted-in host runner accepts explicit fallback selection", async () 
     });
     expect(network).not.toHaveBeenCalled();
 });
+
+it("refuses fallback opt-in without a host-authorized runner", () => {
+    expect(() => createWebSearchEdgePlugin(undefined, { fallbackEnabled: true })).toThrow(
+        "host-authorized runner"
+    );
+    expect(() => createWebSearchEdgePlugin(runWebSearchEdge, { fallbackEnabled: true })).toThrow();
+});
