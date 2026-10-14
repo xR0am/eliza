@@ -23,6 +23,27 @@ balance. Other operations retain primary admission and can reclaim idle funds.
 Funds backing active requests remain reserved. Drain and reconcile all grants,
 then use `disableInferenceBudgetAdmission` before turning off the mode.
 
+Account deletion must also withdraw delegated policy before resource cleanup.
+If an organization still has enabled authority after the global mode is turned
+off, restore the mode and complete the ordinary reclaim/rollback first; deletion
+fails closed until that acknowledgement succeeds. Already disabled authority
+still requires confirmed API-key cache withdrawal. Completed nonfinancial policy
+rows can then be removed with the mode on or off. Pending policy mutations and
+any retained funding grants or receipts block final erasure. Financial-history
+erasure requires its retained-audit owner and is not implemented by this cleanup.
+
+The native metadata regression is opt-in. CI does not currently provision its
+`INFERENCE_POLICY_TEST_POSTGRES_URL`; a green general pipeline is not proof that
+it ran. Use an isolated loopback PostgreSQL QA role whose name starts with `qa_`,
+set that variable, and run from the root:
+
+```bash
+bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/services/inference-policy-account-deletion.postgres.integration.test.ts
+```
+
+The suite creates and removes a unique schema and loads migrations 0544–0545.
+It must not point to a production database.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
