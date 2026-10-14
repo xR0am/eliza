@@ -87,6 +87,7 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
 
     const guestRequests: [string, RequestInit][] = [
       ["/api/memories/browse?q=private", {}],
+      ["/api/context/quick?q=private", {}],
       [`/api/memories/${memoryId}`, { method: "DELETE" }],
       [
         "/api/config",
