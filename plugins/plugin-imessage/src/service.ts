@@ -16,6 +16,7 @@ import {
   checkPairingAllowed,
   createUniqueUuid,
   DEFAULT_CONNECTOR_ATTACHMENT_MAX_BYTES,
+  detectMime,
   ElizaError,
   type Entity,
   type EventPayload,
@@ -1609,13 +1610,23 @@ export class IMessageService extends Service implements IIMessageService {
         return "ignored";
       }
 
-      const media: Media[] = inbound.mediaUrls.map((url, index) => ({
-        id: `${inbound.messageId}-${index}`,
-        url,
-        source: "imessage",
-        title: "Blooio attachment",
-        description: "Inbound Blooio attachment",
-      }));
+      // Type each attachment from its file name (or URL) so the message
+      // pipeline describes images and transcribes audio. A preset
+      // description would make it skip the image as already described.
+      const media: Media[] = await Promise.all(
+        inbound.attachments.map(async ({ url, name }, index) => {
+          const mimeType = await detectMime({ filePath: name ?? url });
+          return {
+            id: `${inbound.messageId}-${index}`,
+            url,
+            source: "imessage",
+            title: name ?? "Blooio attachment",
+            ...(name ? { filename: name } : {}),
+            ...(mimeType ? { mimeType } : {}),
+            contentType: mimeToContentType(mimeType ?? null, null),
+          };
+        })
+      );
       const row: ChatDbMessage = {
         rowId: inbound.timestamp,
         guid: inbound.messageId,
@@ -2302,9 +2313,9 @@ export class IMessageService extends Service implements IIMessageService {
           size: stored.size,
           contentType: mimeToContentType(attachment.mimeType, attachment.uti),
           source: "imessage",
-          description: attachment.isSticker
-            ? "sticker"
-            : (attachment.filename ?? attachment.mimeType ?? attachment.uti ?? ""),
+          // Only a sticker gets a preset description. Any description makes
+          // the message pipeline skip image description for the attachment.
+          ...(attachment.isSticker ? { description: "sticker" } : {}),
           text: "",
         });
       } catch (error) {
