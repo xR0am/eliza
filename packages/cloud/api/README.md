@@ -188,3 +188,34 @@ characters and records to 2,048; exceeding a limit fails rather than truncates.
 Cancellation aborts the provider transport. Provider errors after response headers
 error the stream without a completion record; existing synthesis billing semantics
 remain unchanged. This endpoint alone does not provide client streaming playback.
+
+## Maps
+
+`/api/v1/maps/*` is the shared Maps data service for agents. `GET capabilities`
+returns the provider, dataset revision, regions, travel modes and attribution.
+`POST geocode`, `reverse`, `places/search`, `places/details` and `routes` take
+the query or coordinates in the JSON body, so location data is not in URLs or
+logs. Each route needs an API key or session, an active or trialing plan
+(`403 subscription_required`) and the per-credential rate limit. The
+`admit` hook in `src/lib/maps-route.ts` is where organization quotas plug in.
+Success bodies name the provider and carry its attribution. Failures are typed:
+`422 unsupported_region | unsupported_mode | no_route`, `503 maps_not_configured
+| provider_unavailable` (with `Retry-After`), `502 provider_invalid_response`.
+Cloud never returns guessed places or routes. Navigation and GPS stay on the device.
+
+The provider is OpenStreetMap data on a self-hosted Nominatim (search, geocode,
+reverse, details) and GraphHopper (routes, profiles `car`, `foot`, `bike`). Ops
+must provision, for each environment:
+
+- `ELIZA_MAPS_GEOCODER_URL`: HTTPS Nominatim 4.3 or later loaded with the region
+  extracts.
+- `ELIZA_MAPS_ROUTER_URL`: HTTPS GraphHopper with the same extracts and the
+  `car`, `foot` and `bike` profiles; optional `ELIZA_MAPS_ROUTER_API_KEY`.
+  Set `ELIZA_MAPS_ROUTE_ALTERNATIVES=false` if the deployment cannot compute
+  alternative routes.
+- `ELIZA_MAPS_COVERAGE_JSON`: the regions both services cover, as
+  `[{"id","name","bounds":[west,south,east,north]}]`.
+- `ELIZA_MAPS_DATASET_REVISION`: the extract date or version that is served.
+
+Ops also own the update schedule (dataset freshness), monitoring, capacity and
+ODbL obligations. Transit, traffic and map tiles are not served.
