@@ -786,6 +786,14 @@ ${tweet.text}`;
     uniqueTweetCandidates = uniqueTweetCandidates
       .sort((a, b) => a.id.localeCompare(b.id))
       .filter((tweet) => !profileId || tweet.userId !== profileId);
+    // Pagination keeps the whole page containing the watermark, so drop
+    // already-handled tweets before the per-run cap or they can fill every slot.
+    const watermark = this.client.getLatestCheckedTweetId(profileId);
+    if (watermark !== null) {
+      uniqueTweetCandidates = uniqueTweetCandidates.filter(
+        (tweet) => BigInt(tweet.id) > watermark,
+      );
+    }
     // Get TWITTER_TARGET_USERS configuration
     const targetUsersConfig =
       ((getSetting(this.runtime, "TWITTER_TARGET_USERS") ??
@@ -908,6 +916,9 @@ ${tweet.text}`;
           logger.log(
             `Already responded to tweet ${tweet.id} (found in conversation history), skipping`,
           );
+          // A durable reply can survive a crash before the cursor was saved.
+          this.assertCurrentSession(session);
+          this.client.recordLatestCheckedTweetId(profileId, BigInt(tweet.id));
           continue;
         }
         logger.log("New Tweet found", tweet.id);

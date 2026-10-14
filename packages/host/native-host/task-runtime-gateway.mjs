@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { NativeHostError } from "./errors.mjs";
+import { openTaskDatabase } from "./task-storage.mjs";
 
 /** The host owns identity and storage; shared code owns task transitions. */
 export async function createTaskGateway({
   bundlePath,
   databasePath,
+  databaseProvider,
+  requireEncryptedDatabase = false,
   credentialGate,
   actuator,
   actuatorFactory,
@@ -39,12 +41,11 @@ export async function createTaskGateway({
     InteractiveTaskChoices,
     SqliteTaskPresentation,
   } = await import(pathToFileURL(bundlePath).href);
-  await mkdir(dirname(databasePath), { recursive: true, mode: 0o700 });
-  const db = process.versions.bun
-    ? new (await import("bun:sqlite")).Database(databasePath, { create: true })
-    : new (await import("node:sqlite")).DatabaseSync(databasePath);
-  await chmod(databasePath, 0o600);
-  db.exec("PRAGMA synchronous = FULL");
+  const db = await openTaskDatabase({
+    databasePath,
+    databaseProvider,
+    requireEncryption: requireEncryptedDatabase,
+  });
   const store = new SqliteInteractiveTaskStore(db);
   const choiceStore = new SqliteMessageInteractionSessionStore(db);
   const extension = extensionFactory?.({

@@ -1,10 +1,10 @@
+import { buildPhoneAuthProvidersFromEnvironment } from "../../auth/phone-provider";
 import { fetchPinnedResponse } from "../../shared/pinned-response";
 import {
   assertAllowedOAuthRedirectUri,
   authAppClientSubjects,
   authTenantConfigSubject,
   bootstrapRows,
-  buildTwilioVerifyProviderFromEnvironment,
   claimSmsVerifyAttempt,
   clearSmsVerifyFailures,
   createSessionToken,
@@ -1943,8 +1943,7 @@ async function requireRecentFactorEnrollmentStepUp(
 export function validatePhoneAuthProviderEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (env.SMS_PROVIDER === "mock" && env.NODE_ENV !== "production") return;
-  buildTwilioVerifyProviderFromEnvironment(env);
+  buildPhoneAuthProvidersFromEnvironment(env);
 }
 
 function isWhatsAppOtpEnabled(): boolean {

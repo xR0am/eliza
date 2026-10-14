@@ -34,6 +34,7 @@ import {
 import { organizations } from "../schemas/organizations";
 import { subscriptionAllowancePeriods } from "../schemas/subscription-allowance-periods";
 import { subscriptionAllowanceTransactions } from "../schemas/subscription-allowance-transactions";
+import { subscriptionGrants } from "../schemas/subscription-grants";
 import { readPostLockDatabaseNow } from "./primary-database-clock";
 import {
   type BillingFundingScope,
@@ -50,7 +51,13 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const TERMINAL_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired"] as const;
 
 /** Why an open period stops accepting new allowance spending. */
-export type AllowancePeriodRetirementReason = "period_ended" | "subscription_terminal";
+export type AllowancePeriodRetirementReason =
+  | "period_ended"
+  | "subscription_terminal"
+  /** A subscription-grant bucket overlapped by a newly paid subscription period. */
+  | "superseded_by_paid"
+  /** A bucket of a subscription grant that support revoked. */
+  | "grant_revoked";
 
 export interface AllowancePeriodExpirySweepStats {
   scanned: number;
@@ -122,18 +129,20 @@ async function lockPeriod(
       context: { organizationId, periodId },
     });
   }
-  await tx
-    .select({ id: billingSubscriptions.id })
-    .from(billingSubscriptions)
-    .where(
-      and(
-        eq(billingSubscriptions.organization_id, organizationId),
-        fundingScopePredicate(billingSubscriptions, billingScope),
-        eq(billingSubscriptions.id, hint.subscriptionId),
-      ),
-    )
-    .limit(1)
-    .for("update");
+  // A subscription-grant bucket has no subscription source to lock.
+  if (hint.subscriptionId !== null)
+    await tx
+      .select({ id: billingSubscriptions.id })
+      .from(billingSubscriptions)
+      .where(
+        and(
+          eq(billingSubscriptions.organization_id, organizationId),
+          fundingScopePredicate(billingSubscriptions, billingScope),
+          eq(billingSubscriptions.id, hint.subscriptionId),
+        ),
+      )
+      .limit(1)
+      .for("update");
   const [period] = await tx
     .select()
     .from(subscriptionAllowancePeriods)
@@ -287,6 +296,10 @@ export class SubscriptionAllowanceRepository {
       conflict("Renewal invoice and period identities disagree", { subscriptionId: source.id });
     const existing = matches[0];
     if (existing) {
+      if (existing.subscription_revision === null)
+        conflict("Renewal period identity is a subscription-grant bucket", {
+          subscriptionId: source.id,
+        });
       const [revision] = await tx
         .select()
         .from(billingSubscriptionRevisions)
@@ -395,6 +408,7 @@ export class SubscriptionAllowanceRepository {
           id: subscriptionAllowancePeriods.id,
           billingScopeId: subscriptionAllowancePeriods.billing_scope_id,
           subscriptionId: subscriptionAllowancePeriods.subscription_id,
+          grantSource: subscriptionAllowancePeriods.grant_source,
         })
         .from(subscriptionAllowancePeriods)
         .where(
@@ -412,6 +426,17 @@ export class SubscriptionAllowanceRepository {
     // resubscription in the same period is granted instead of conflicting.
     for (const candidate of await overlapping()) {
       if (candidate.billingScopeId !== null || candidate.subscriptionId === source.id) continue;
+      // A paid period takes precedence over an overlapping subscription-grant
+      // bucket. Later grant buckets stay open for after the paid subscription ends.
+      if (candidate.grantSource === "promo_grant") {
+        await this.retirePeriodInTransaction(tx, {
+          organizationId: source.organization_id,
+          periodId: candidate.id,
+          reason: "superseded_by_paid",
+        });
+        continue;
+      }
+      if (candidate.subscriptionId === null) continue;
       const [predecessor] = await tx
         .select({ status: billingSubscriptions.status })
         .from(billingSubscriptions)
@@ -544,7 +569,26 @@ export class SubscriptionAllowanceRepository {
         conflict("Allowance period has not ended at post-lock database time", {
           periodId: period.id,
         });
+    } else if (input.reason === "superseded_by_paid") {
+      if (period.grant_source !== "promo_grant" || billingScope)
+        conflict("Only a subscription-grant bucket can be superseded", { periodId: period.id });
+    } else if (input.reason === "grant_revoked") {
+      if (period.grant_source !== "promo_grant" || billingScope || period.promo_grant_id === null)
+        conflict("Only a subscription-grant bucket can be revoked", { periodId: period.id });
+      const [grant] = await tx
+        .select({ revoked_at: subscriptionGrants.revoked_at })
+        .from(subscriptionGrants)
+        .where(
+          and(
+            eq(subscriptionGrants.id, period.promo_grant_id),
+            eq(subscriptionGrants.organization_id, input.organizationId),
+          ),
+        );
+      if (!grant || grant.revoked_at === null)
+        conflict("Allowance source grant is not revoked", { periodId: period.id });
     } else {
+      if (period.subscription_id === null)
+        conflict("Allowance source subscription is not terminal", { periodId: period.id });
       if (billingScope)
         conflict("App-scoped allowance retirement belongs to its app lifecycle owner", {
           periodId: period.id,

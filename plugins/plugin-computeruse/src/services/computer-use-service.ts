@@ -11,7 +11,7 @@
  */
 import os from "node:os";
 import path from "node:path";
-import { type IAgentRuntime, logger, Service } from "@elizaos/core";
+import { ElizaError, type IAgentRuntime, logger, Service } from "@elizaos/core";
 import { AppControlCoordinator } from "../app-control/coordinator.js";
 import {
   guardedPhysicalPointer,
@@ -342,6 +342,23 @@ export function parseComputerUseActionTimeoutMs(
     return undefined;
   }
   return parsed;
+}
+
+/** Parse an explicit sandbox TCP port; only an unset value uses the default. */
+export function parseSandboxRpcPort(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new ElizaError(
+      "Sandbox RPC port must be an integer from 1 to 65535",
+      {
+        code: "INVALID_SANDBOX_RPC_PORT",
+      },
+    );
+  }
+  return port;
 }
 
 export class ComputerUseService extends Service {
@@ -3004,14 +3021,13 @@ export class ComputerUseService extends Service {
       const rpcPortRaw =
         getSetting("COMPUTERUSE_SANDBOX_RPC_PORT") ??
         getSetting("COMPUTER_USE_SANDBOX_RPC_PORT");
-      const rpcPort = rpcPortRaw ? Number(rpcPortRaw) : undefined;
+      // Reject invalid explicit settings before selecting a sandbox endpoint.
+      const rpcPort = parseSandboxRpcPort(rpcPortRaw);
       const options =
-        rpcUrl || (rpcPort !== undefined && Number.isFinite(rpcPort))
+        rpcUrl || rpcPort !== undefined
           ? {
               ...(rpcUrl ? { rpcUrl } : {}),
-              ...(rpcPort !== undefined && Number.isFinite(rpcPort)
-                ? { rpcPort }
-                : {}),
+              ...(rpcPort !== undefined ? { rpcPort } : {}),
             }
           : undefined;
       // docker + qemu require an image; wsb (Windows Sandbox) is imageless.

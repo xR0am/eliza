@@ -1,6 +1,6 @@
 /** Reads the canonical eligibility for new allowance spending in the caller's transaction and database clock; historical reservations never pass through this gate. */
 import { ElizaError } from "@elizaos/core";
-import { and, desc, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, ne, sql } from "drizzle-orm";
 import {
   type OrganizationQuotaPolicy,
   readOrganizationQuotaPolicyInTransaction,
@@ -21,7 +21,16 @@ async function findCurrentAllowance(
   organizationId: string,
   now: Date,
   lock: boolean,
+  policy: OrganizationQuotaPolicy,
 ): Promise<typeof subscriptionAllowancePeriods.$inferSelect | undefined> {
+  // A grant's buckets fund only the grant policy; while a paid subscription is
+  // effective, only its own (non-grant) buckets are spendable.
+  const sourcePredicate =
+    policy.authority.source === "promo_grant"
+      ? policy.authority.sourceGrantId
+        ? eq(subscriptionAllowancePeriods.promo_grant_id, policy.authority.sourceGrantId)
+        : sql`false`
+      : ne(subscriptionAllowancePeriods.grant_source, "promo_grant");
   const query = tx
     .select()
     .from(subscriptionAllowancePeriods)
@@ -32,6 +41,7 @@ async function findCurrentAllowance(
         eq(subscriptionAllowancePeriods.state, "open"),
         lte(subscriptionAllowancePeriods.period_start, now),
         gt(subscriptionAllowancePeriods.expires_at, now),
+        sourcePredicate,
       ),
     )
     .orderBy(desc(subscriptionAllowancePeriods.expires_at))
@@ -82,14 +92,35 @@ export async function readEligibleSubscriptionAllowance(
   // allowance-eligible work is funded entirely from purchased credits, and any
   // bucket its terminal source left open is never spendable.
   if (!policy.subscriptionFunded) return undefined;
-  const period = await findCurrentAllowance(tx, organizationId, now, lock);
+  const period = await findCurrentAllowance(tx, organizationId, now, lock, policy);
+  if (period && policy.authority.source === "promo_grant") {
+    if (
+      period.grant_source !== "promo_grant" ||
+      period.promo_grant_id === null ||
+      period.promo_grant_id !== policy.authority.sourceGrantId
+    )
+      fundingError(
+        "SUBSCRIPTION_FUNDING_AUTHORITY_UNAVAILABLE",
+        "Allowance is not owned by the current subscription grant",
+        { organizationId: organizationId },
+      );
+    return period;
+  }
   if (period) {
+    if (period.subscription_id === null || period.subscription_revision === null)
+      fundingError(
+        "SUBSCRIPTION_FUNDING_AUTHORITY_UNAVAILABLE",
+        "Allowance is not owned by current eligible subscription period",
+        { organizationId: organizationId },
+      );
+    const subscriptionId = period.subscription_id;
+    const subscriptionRevision = period.subscription_revision;
     const [source] = await tx
       .select()
       .from(billingSubscriptions)
       .where(
         and(
-          eq(billingSubscriptions.id, period.subscription_id),
+          eq(billingSubscriptions.id, subscriptionId),
           eq(billingSubscriptions.organization_id, organizationId),
         ),
       );
@@ -98,9 +129,9 @@ export async function readEligibleSubscriptionAllowance(
       .from(billingSubscriptionRevisions)
       .where(
         and(
-          eq(billingSubscriptionRevisions.subscription_id, period.subscription_id),
+          eq(billingSubscriptionRevisions.subscription_id, subscriptionId),
           eq(billingSubscriptionRevisions.organization_id, organizationId),
-          eq(billingSubscriptionRevisions.revision, period.subscription_revision),
+          eq(billingSubscriptionRevisions.revision, subscriptionRevision),
         ),
       );
     if (

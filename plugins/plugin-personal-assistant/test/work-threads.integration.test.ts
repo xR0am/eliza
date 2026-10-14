@@ -23,9 +23,14 @@ import {
 } from "@elizaos/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { workThreadAction } from "../src/actions/work-thread.ts";
+import { LifeOpsRepository } from "../src/lifeops/repository.ts";
 import { registerLifeOpsScheduledTaskRunnerDeps } from "../src/lifeops/scheduled-task/runtime-wiring.js";
 import { processDueScheduledTasks } from "../src/lifeops/scheduled-task/scheduler.ts";
-import { ScheduledTaskRunnerService } from "../src/lifeops/scheduled-task/service.js";
+import {
+  getScheduledTaskRunner,
+  ScheduledTaskRunnerService,
+} from "../src/lifeops/scheduled-task/service.js";
+import { executeRawSql, sqlQuote } from "../src/lifeops/sql.js";
 import {
   type ThreadOp,
   threadOpsFieldEvaluator,
@@ -203,6 +208,386 @@ async function applyThreadOpsField(
 }
 
 describe("LifeOps work threads", () => {
+  it.each([false, true, "remove fails", "remove unavailable"])(
+    "links one follow-up or removes it after exhausted owner conflicts (%s)",
+    async (exhaust) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("followup-conflict-room");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Original summary",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const original = LifeOpsRepository.prototype.upsertWorkThread;
+      let conflicts = 0;
+      vi.spyOn(
+        LifeOpsRepository.prototype,
+        "upsertWorkThread",
+      ).mockImplementation(async function (
+        this: LifeOpsRepository,
+        agentId,
+        next,
+        options,
+      ) {
+        if (
+          next.id === thread.id &&
+          next.currentScheduledTaskId &&
+          (exhaust || conflicts === 0)
+        ) {
+          conflicts++;
+          const current = await store.get(thread.id);
+          if (!current) throw new Error("Fixture thread disappeared");
+          await original.call(
+            this,
+            agentId,
+            {
+              ...current,
+              summary: `Owner edit ${conflicts}`,
+              version: current.version + 1,
+            },
+            { expectedVersion: current.version },
+          );
+        }
+        return original.call(this, agentId, next, options);
+      });
+      const runner = getScheduledTaskRunner(runtime, {
+        agentId: runtime.agentId,
+      });
+      if (exhaust === "remove fails")
+        vi.spyOn(runner, "remove").mockResolvedValue(false);
+      if (exhaust === "remove unavailable")
+        Object.defineProperty(runner, "remove", {
+          value: undefined,
+          configurable: true,
+        });
+      const action = runThreadAction(
+        runtime,
+        message(runtime, roomId, "Follow up on the report"),
+        [
+          {
+            type: "schedule_followup",
+            workThreadId: thread.id,
+            instruction: "Check the report",
+            trigger: { kind: "manual" },
+          },
+        ],
+      );
+      if (typeof exhaust === "string")
+        await expect(action).rejects.toMatchObject({
+          code: "WORK_THREAD_FOLLOWUP_RECONCILIATION_REQUIRED",
+          context: { workThreadId: thread.id },
+          cause: expect.objectContaining({
+            errors: expect.arrayContaining([
+              expect.objectContaining({
+                code: "WORK_THREAD_FOLLOWUP_REMOVE_UNCONFIRMED",
+              }),
+            ]),
+          }),
+        });
+      else if (exhaust) await expect(action).rejects.toThrow();
+      else expect((await action).success).toBe(true);
+      const tasks = await getScheduledTaskRunner(runtime, {
+        agentId: runtime.agentId,
+      }).list({ kind: "followup" });
+      const final = await store.get(thread.id);
+      expect(final?.summary).toBe(`Owner edit ${conflicts}`);
+      if (exhaust) {
+        expect(tasks).toHaveLength(typeof exhaust === "string" ? 1 : 0);
+        expect(final?.currentScheduledTaskId ?? null).toBeNull();
+        expect(conflicts).toBe(3);
+      } else {
+        expect(tasks).toHaveLength(1);
+        expect(final?.currentScheduledTaskId).toBe(tasks[0].taskId);
+        expect(conflicts).toBe(1);
+      }
+    },
+  );
+
+  it.each(["mark_waiting", "mark_completed"] as const)(
+    "does not overwrite an owner stop with a stale %s request",
+    async (type) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("status-owner-stop-race");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Report",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const originalGet = LifeOpsRepository.prototype.getWorkThread;
+      let changed = false;
+      vi.spyOn(LifeOpsRepository.prototype, "getWorkThread").mockImplementation(
+        async function (this: LifeOpsRepository, agentId, id) {
+          const snapshot = await originalGet.call(this, agentId, id);
+          if (id === thread.id && snapshot && !changed) {
+            changed = true;
+            await this.upsertWorkThread(
+              agentId,
+              {
+                ...snapshot,
+                status: "stopped",
+                version: snapshot.version + 1,
+              },
+              { expectedVersion: snapshot.version },
+            );
+          }
+          return snapshot;
+        },
+      );
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "Update thread"), [
+          { type, workThreadId: thread.id },
+        ]),
+      ).rejects.toMatchObject({ code: "WORK_THREAD_NOT_ACTIVE" });
+      expect(await store.get(thread.id)).toMatchObject({
+        status: "stopped",
+        version: thread.version + 1,
+      });
+    },
+  );
+
+  it("keeps an already linked follow-up when its event write fails", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const roomId = stringToUuid("followup-event-failure");
+    const thread = await store.create({
+      title: "Check report",
+      summary: "Report",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const original = LifeOpsRepository.prototype.appendWorkThreadEvent;
+    vi.spyOn(
+      LifeOpsRepository.prototype,
+      "appendWorkThreadEvent",
+    ).mockImplementation(async function (this: LifeOpsRepository, event) {
+      if (
+        event.workThreadId === thread.id &&
+        event.type === "followup_scheduled"
+      )
+        throw new Error("event write failed");
+      return original.call(this, event);
+    });
+    await expect(
+      runThreadAction(runtime, message(runtime, roomId, "Follow up"), [
+        {
+          type: "schedule_followup",
+          workThreadId: thread.id,
+          instruction: "Check report",
+          trigger: { kind: "manual" },
+        },
+      ]),
+    ).rejects.toThrow("event write failed");
+    const tasks = await getScheduledTaskRunner(runtime, {
+      agentId: runtime.agentId,
+    }).list({ kind: "followup" });
+    expect(tasks).toHaveLength(1);
+    expect((await store.get(thread.id))?.currentScheduledTaskId).toBe(
+      tasks[0].taskId,
+    );
+  });
+
+  it.each(["stopped", "deleted"])(
+    "does not link a follow-up after the owner %s the thread",
+    async (change) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("followup-owner-terminal");
+      const thread = await store.create({
+        title: "Check report",
+        summary: "Report",
+        primarySourceRef: { connector: "test", roomId, canMutate: true },
+      });
+      const original = LifeOpsRepository.prototype.upsertWorkThread;
+      let changed = false;
+      vi.spyOn(
+        LifeOpsRepository.prototype,
+        "upsertWorkThread",
+      ).mockImplementation(async function (
+        this: LifeOpsRepository,
+        agentId,
+        next,
+        options,
+      ) {
+        if (next.id === thread.id && next.currentScheduledTaskId && !changed) {
+          changed = true;
+          if (change === "deleted")
+            await executeRawSql(
+              runtime,
+              `DELETE FROM app_lifeops.life_work_threads WHERE id = ${sqlQuote(thread.id)} AND agent_id = ${sqlQuote(runtime.agentId)}`,
+            );
+          else
+            await original.call(
+              this,
+              agentId,
+              { ...thread, status: "stopped", version: thread.version + 1 },
+              { expectedVersion: thread.version },
+            );
+        }
+        return original.call(this, agentId, next, options);
+      });
+      await expect(
+        runThreadAction(runtime, message(runtime, roomId, "Follow up"), [
+          {
+            type: "schedule_followup",
+            workThreadId: thread.id,
+            instruction: "Check report",
+            trigger: { kind: "manual" },
+          },
+        ]),
+      ).rejects.toMatchObject({
+        code:
+          change === "deleted"
+            ? "WORK_THREAD_NOT_FOUND"
+            : "WORK_THREAD_NOT_ACTIVE",
+      });
+      expect(
+        await getScheduledTaskRunner(runtime, {
+          agentId: runtime.agentId,
+        }).list({ kind: "followup" }),
+      ).toHaveLength(0);
+      if (change === "deleted") expect(await store.get(thread.id)).toBeNull();
+      else
+        expect(await store.get(thread.id)).toMatchObject({
+          status: "stopped",
+          currentScheduledTaskId: null,
+        });
+    },
+  );
+
+  it("preserves an owner summary when a steer retries its version conflict", async () => {
+    const runtime = await createRuntime();
+    const store = createWorkThreadStore(runtime);
+    const roomId = stringToUuid("steer-conflict-room");
+    const thread = await store.create({
+      title: "Check report",
+      summary: "Original summary",
+      primarySourceRef: { connector: "test", roomId, canMutate: true },
+    });
+    const original = LifeOpsRepository.prototype.upsertWorkThread;
+    let conflicts = 0;
+    vi.spyOn(
+      LifeOpsRepository.prototype,
+      "upsertWorkThread",
+    ).mockImplementation(async function (
+      this: LifeOpsRepository,
+      agentId,
+      next,
+      options,
+    ) {
+      if (next.id === thread.id && conflicts === 0) {
+        conflicts++;
+        const current = await store.get(thread.id);
+        if (!current) throw new Error("Fixture thread disappeared");
+        await original.call(
+          this,
+          agentId,
+          {
+            ...current,
+            summary: "Owner revised summary",
+            version: current.version + 1,
+          },
+          { expectedVersion: current.version },
+        );
+      }
+      return original.call(this, agentId, next, options);
+    });
+    const result = await runThreadAction(
+      runtime,
+      message(runtime, roomId, "Update the plan"),
+      [
+        {
+          type: "steer",
+          workThreadId: thread.id,
+          instruction: "Use the revised plan",
+        },
+      ],
+    );
+    expect(result.success).toBe(true);
+    expect(await store.get(thread.id)).toMatchObject({
+      summary: "Owner revised summary",
+      currentPlanSummary: "Use the revised plan",
+      version: 3,
+    });
+  });
+
+  it.each([undefined, "Explicit merged summary"])(
+    "retries a merge after an owner edit with summary %s",
+    async (summary) => {
+      const runtime = await createRuntime();
+      const store = createWorkThreadStore(runtime);
+      const roomId = stringToUuid("merge-retry-room");
+      const ref = { connector: "test", roomId, canMutate: true };
+      const target = await store.create({
+        title: "Prepare report",
+        summary: "Original target",
+        currentPlanSummary: "Original plan",
+        primarySourceRef: ref,
+      });
+      const source = await store.create({
+        title: "Collect notes",
+        summary: "Source notes",
+        primarySourceRef: ref,
+      });
+      const originalMerge = LifeOpsRepository.prototype.mergeWorkThreadsAtomic;
+      const versions: number[] = [];
+      vi.spyOn(
+        LifeOpsRepository.prototype,
+        "mergeWorkThreadsAtomic",
+      ).mockImplementation(async function (this: LifeOpsRepository, input) {
+        versions.push(input.target.version);
+        if (versions.length === 1) {
+          // Represent a writer outside the action's process-local lock.
+          // The original SQL transaction still produces the real conflict.
+          await store.update(target.id, {
+            summary: "Owner edited summary",
+            currentPlanSummary: "Owner edited plan",
+            eventType: "steered",
+          });
+        }
+        return originalMerge.call(this, input);
+      });
+      const result = await runThreadAction(
+        runtime,
+        message(runtime, roomId, "Merge the notes into the report"),
+        [
+          {
+            type: "merge",
+            workThreadId: target.id,
+            sourceWorkThreadIds: [source.id],
+            ...(summary === undefined ? {} : { summary }),
+          },
+        ],
+      );
+      expect(result.success).toBe(true);
+      expect(versions).toEqual([1, 2]);
+      expect(await store.get(target.id)).toMatchObject({
+        summary: summary ?? "Owner edited summary",
+        currentPlanSummary: "Owner edited plan",
+        version: 3,
+        metadata: { mergedFromWorkThreadIds: [source.id] },
+      });
+      expect(await store.get(source.id)).toMatchObject({
+        status: "stopped",
+        version: 2,
+        metadata: { mergedIntoWorkThreadId: target.id },
+      });
+      const repo = new LifeOpsRepository(runtime);
+      const targetEvents = await repo.listWorkThreadEvents({
+        agentId: runtime.agentId,
+        workThreadId: target.id,
+      });
+      const sourceEvents = await repo.listWorkThreadEvents({
+        agentId: runtime.agentId,
+        workThreadId: source.id,
+      });
+      expect(targetEvents.filter((e) => e.type === "steered")).toHaveLength(1);
+      expect(targetEvents.filter((e) => e.type === "merged")).toHaveLength(1);
+      expect(sourceEvents.filter((e) => e.type === "merged_into")).toHaveLength(
+        1,
+      );
+    },
+  );
   it("defers only the owning message's reply while retaining complete durable results", async () => {
     const runtime = await createRuntime();
     for (const owner of ["direct", "planner", "other-message"] as const) {

@@ -118,6 +118,11 @@ export interface ManagedGoogleGmailReadResult {
 export interface ManagedGoogleGmailSearchResult {
   nextPageToken?: string | null;
   messages: ManagedGoogleGmailMessage[];
+  /**
+   * Gmail mailbox historyId read before a search page. When two pages of one
+   * search report different values, the mailbox changed between them.
+   */
+  mailboxHistoryId?: string;
   syncedAt: string;
 }
 
