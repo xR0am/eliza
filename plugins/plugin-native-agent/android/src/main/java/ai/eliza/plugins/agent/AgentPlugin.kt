@@ -322,23 +322,35 @@ class AgentPlugin : Plugin() {
 
     @PluginMethod
     fun unsubscribeEvents(call: PluginCall) {
-        val handle = call.getString("subscriptionId")?.let { eventSubscriptions.remove(it) }
-        handle?.let { cancelHandle(it) }
+        val subscriptionId = call.getString("subscriptionId")
+        val handle = subscriptionId?.let { eventSubscriptions[it] }
+        try {
+            handle?.let { cancelHandle(it) }
+        } catch (_: Exception) {
+            // Retain ownership so a later cleanup attempt can cancel this feed.
+            call.reject("Native event subscription cleanup is unconfirmed")
+            return
+        }
+        if (subscriptionId != null && handle != null) {
+            eventSubscriptions.remove(subscriptionId, handle)
+        }
         call.resolve(JSObject().apply { put("ok", handle != null) })
     }
 
     override fun handleOnDestroy() {
-        for (handle in eventSubscriptions.values) cancelHandle(handle)
-        eventSubscriptions.clear()
+        for ((id, handle) in eventSubscriptions.entries) {
+            try {
+                cancelHandle(handle)
+                eventSubscriptions.remove(id, handle)
+            } catch (_: Exception) {
+                android.util.Log.e("ElizaAgentPlugin", "Native event subscription cleanup is unconfirmed")
+            }
+        }
         super.handleOnDestroy()
     }
 
     private fun cancelHandle(handle: Any) {
-        try {
-            handle.javaClass.getMethod("cancel").invoke(handle)
-        } catch (_: Exception) {
-            // Best effort: the feed also ends when the agent socket closes.
-        }
+        handle.javaClass.getMethod("cancel").invoke(handle)
     }
 
     private fun invokeAgentServiceRequest(requestJson: String): String {
