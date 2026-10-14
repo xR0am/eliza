@@ -322,10 +322,80 @@ export async function disableInferenceBudgetAdmission(organizationId: string): P
       if (open) throw new InferencePolicyDrainPendingError(organizationId);
     },
   );
+  await confirmInferencePolicyAuthCacheWithdrawal(organizationId);
+}
+
+async function confirmInferencePolicyAuthCacheWithdrawal(organizationId: string): Promise<void> {
   const keys = await sqlRows<{ key_hash: string }>(
     dbWrite,
     sql`SELECT key_hash FROM api_keys WHERE organization_id = ${organizationId}::uuid`,
   );
   const { invalidateInferenceAuthContextsByKeyHashes } = await import("./inference-auth-cache");
   await invalidateInferenceAuthContextsByKeyHashes(keys.map((key) => key.key_hash));
+}
+
+/** Drain and withdraw delegated authority before irreversible account resource cleanup. */
+export async function prepareInferencePolicyForAccountDeletion(
+  organizationId: string,
+): Promise<void> {
+  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true") return;
+  const [authority] = await sqlRows<{ enabled: boolean }>(
+    dbWrite,
+    sql`SELECT enabled FROM inference_policy_authorities WHERE organization_id = ${organizationId}::uuid`,
+  );
+  if (!authority) return;
+  if (!authority.enabled) {
+    // Rollback commits before cache withdrawal; a retry must confirm that remaining effect.
+    await confirmInferencePolicyAuthCacheWithdrawal(organizationId);
+    return;
+  }
+  const { inferenceBudgetGateRequest } = await import("./inference-funded-budget-admission");
+  const result = await inferenceBudgetGateRequest<unknown>(organizationId, "/budget/reclaim", {
+    organizationId,
+  });
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    !("released" in result) ||
+    result.released !== true ||
+    !("pending" in result) ||
+    typeof result.pending !== "boolean"
+  )
+    throw new InferencePolicyFenceError("Inference escrow reclaim was not acknowledged");
+  if (result.pending) throw new InferencePolicyDrainPendingError(organizationId);
+  await disableInferenceBudgetAdmission(organizationId);
+}
+
+/** Remove nonfinancial policy receipts only after their ordinary rollback is acknowledged. */
+export async function clearDisabledInferencePolicyForAccountDeletion(
+  tx: DbTransaction,
+  organizationId: string,
+): Promise<void> {
+  if (getCloudAwareEnv().INFERENCE_FUNDED_BUDGET_ADMISSION !== "true") return;
+  const [authority] = await sqlRows<{ enabled: boolean }>(
+    tx,
+    sql`SELECT enabled FROM inference_policy_authorities WHERE organization_id = ${organizationId}::uuid FOR UPDATE`,
+  );
+  if (authority?.enabled) throw new InferencePolicyDrainPendingError(organizationId);
+  const [pending] = await sqlRows<{ mutation_id: string }>(
+    tx,
+    sql`SELECT mutation_id FROM inference_policy_mutations WHERE organization_id = ${organizationId}::uuid AND phase <> 'complete' LIMIT 1`,
+  );
+  if (pending) throw new InferencePolicyDrainPendingError(organizationId);
+  const [history] = await sqlRows<{ retained: boolean }>(
+    tx,
+    sql`SELECT EXISTS (SELECT 1 FROM inference_funding_budget_grants WHERE organization_id = ${organizationId}::uuid) OR EXISTS (SELECT 1 FROM inference_funding_budget_receipts WHERE organization_id = ${organizationId}::uuid) AS retained`,
+  );
+  if (history?.retained !== false)
+    throw new ElizaError("Inference escrow history requires its retained-audit erasure owner", {
+      code: "INFERENCE_BUDGET_HISTORY_RETENTION_REQUIRED",
+      context: { organizationId },
+      severity: "ephemeral",
+    });
+  await tx.execute(
+    sql`DELETE FROM inference_policy_mutations WHERE organization_id = ${organizationId}::uuid`,
+  );
+  await tx.execute(
+    sql`DELETE FROM inference_policy_authorities WHERE organization_id = ${organizationId}::uuid AND NOT enabled`,
+  );
 }

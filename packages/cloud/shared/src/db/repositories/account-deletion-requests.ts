@@ -1,4 +1,7 @@
-import { withInferenceUserPolicyMutation } from "../../lib/services/inference-policy-fence";
+import {
+  clearDisabledInferencePolicyForAccountDeletion,
+  withInferenceUserPolicyMutation,
+} from "../../lib/services/inference-policy-fence";
 /** Persists durable deletion receipts and generation-fenced worker state transitions. */
 
 import { createHash } from "node:crypto";
@@ -1336,6 +1339,7 @@ export class AccountDeletionRequestsRepository {
         sql`SELECT set_config('eliza.billing_cancel_account_deletion_authority', '', true)`,
       );
 
+      await clearDisabledInferencePolicyForAccountDeletion(tx, organization.id);
       const deleted = await tx
         .delete(organizations)
         .where(eq(organizations.id, organization.id))
