@@ -96,11 +96,7 @@ function degradePseudoLinks(text: string): string {
 	let cursor = 0;
 	// Call-local: no scan offset can survive this function, whichever path exits.
 	const markerRe = /\[LINK:/gi;
-	for (
-		let match = markerRe.exec(text);
-		match;
-		match = markerRe.exec(text)
-	) {
+	for (let match = markerRe.exec(text); match; match = markerRe.exec(text)) {
 		const markerStart = match.index;
 		const urlStart = markerStart + match[0].length;
 		const urlEnd = text.indexOf("]", urlStart);
