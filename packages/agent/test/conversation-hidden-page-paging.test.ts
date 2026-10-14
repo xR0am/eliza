@@ -166,12 +166,12 @@ it("reaches older turns below a page of hidden scheduler prompts", async () => {
 }, 60_000);
 
 it("opens a chat whose newest window is all scheduler prompts", async () => {
-  // Oldest first: 2 chat turns, then 210 scheduler prompts with no reply, more
-  // than the 200-row recent window.
+  // Oldest first: 2 chat turns, then 450 scheduler prompts with no reply, more
+  // than two 200-row windows, so the read continues past several hidden pages.
   const specs = [
     { source: MESSAGE_SOURCE_CLIENT_CHAT, text: "Watch BTC every 5 minutes" },
     { source: MESSAGE_SOURCE_CLIENT_CHAT, text: "Only tell me under 50k" },
-    ...Array.from({ length: 210 }, (_, i) => ({
+    ...Array.from({ length: 450 }, (_, i) => ({
       source: MESSAGE_SOURCE_TRIGGER_PROMPT,
       text: `Scheduled check ${i}`,
     })),

@@ -3589,9 +3589,9 @@ async function listConversationMessages(
     // owner tokens match no resolver, so the local dashboard resolves no
     // context and serves the full DTO unchanged.
     const viewerAccessContext = resolveHttpAccessContext(req);
+    // Rows arrive sorted oldest first (see the reads below).
     const projectMessages = (rows: Memory[]) =>
       rows
-        .sort(compareMemoriesByCreatedAt)
         // Scheduler instructions are model input, not a user-authored chat turn.
         // Project them out only here; stored history and assistant replies stay intact.
         .filter(
@@ -3827,12 +3827,14 @@ async function listConversationMessages(
             // on reload and invite regeneration.
             m.interrupted === true,
         );
+    memories.sort(compareMemoriesByCreatedAt);
     let messages = projectMessages(memories);
     // The projection hides scheduler prompts and textless action logs after the
     // read, so a window of only those rows came back empty and the client took
     // it as the start of history. Keep reading older rows until a visible turn
     // or the start of history. The around window is a fixed read (hasMore stays false).
     while (messages.length === 0 && hasMore) {
+      // memories is sorted oldest first, so the next page starts below [0].
       const oldestRead = memories[0];
       if (!oldestRead?.id || typeof oldestRead.createdAt !== "number") break;
       const page = await loadConversationMessagesBefore(
@@ -3842,7 +3844,7 @@ async function listConversationMessages(
         pageLimit,
         oldestRead.id,
       );
-      memories = page.memories;
+      memories = page.memories.sort(compareMemoriesByCreatedAt);
       hasMore = page.hasMore;
       messages = projectMessages(memories);
     }
