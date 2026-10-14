@@ -150,8 +150,19 @@ test("an owner with more than a thousand journaled tasks is still captured", asy
             hasMore: false,
           },
   };
+  // Real SQLite statements behind the encrypted driver's surface: only `get`
+  // and `run`, so every page is one json_group_array row.
+  const encryptedDriver = {
+    prepare: (query) => {
+      const statement = db.prepare(query);
+      return {
+        get: (...args) => statement.get(...args),
+        run: (...args) => statement.run(...args),
+      };
+    },
+  };
   const capture = createPilotTaskCapture({
-    db,
+    db: encryptedDriver,
     tasks,
     owner,
     queue,
