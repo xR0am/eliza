@@ -10,7 +10,6 @@ import {
   type Content,
   ContentType,
   createUniqueUuid,
-  EventType,
   type Media,
   Memory,
   MemoryType,
@@ -557,48 +556,52 @@ async function sendToRuntime(
     });
   }
   let responseText: string | undefined;
-  // Emit message event and capture response
-  await runtime.emitEvent(EventType.MESSAGE_RECEIVED, {
-    runtime,
-    message: userMessage,
-    callback: async (content: Content) => {
-      // Discord embeds an HTTPS link to an image or file, so attachments the
-      // agent produced travel as links after the text.
-      const reply = [content.text?.trim(), ...httpsAttachmentLinks(content)]
-        .filter(Boolean)
-        .join("\n");
-      if (reply) {
-        responseText = reply;
-        // Create response memory
-        const responseMemory: Memory = {
-          id: createUniqueUuid(runtime, userMessage.id as UUID),
-          entityId: runtime.agentId,
-          agentId: runtime.agentId,
-          roomId: roomUuid,
-          createdAt: Date.now(),
-          content: {
-            ...content,
-            source: "agent",
-            inReplyTo: userMessage.id,
-          },
-          metadata: {
-            type: MemoryType.MESSAGE,
-            role: "agent",
-            dialogueType: "message",
-            visibility: "visible",
-          },
-        };
-        try {
-          await runtime.createMemory(responseMemory, "messages");
-        } catch (error) {
-          logger.error("[DiscordRouter] Failed to save response memory", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+  // Run the agent's message pipeline, as the cloud chat handler does. No cloud
+  // runtime plugin turns MESSAGE_RECEIVED into a pipeline run, so emitting it
+  // produced no reply. A runtime without a message service is a broken
+  // runtime, not an empty reply.
+  const messageService = runtime.messageService;
+  if (!messageService) {
+    throw new Error("Discord router runtime has no message service");
+  }
+  const callback = async (content: Content): Promise<Memory[]> => {
+    // Discord embeds an HTTPS link to an image or file, so attachments the
+    // agent produced travel as links after the text.
+    const reply = [content.text?.trim(), ...httpsAttachmentLinks(content)]
+      .filter(Boolean)
+      .join("\n");
+    if (reply) {
+      responseText = reply;
+      // Create response memory
+      const responseMemory: Memory = {
+        id: createUniqueUuid(runtime, userMessage.id as UUID),
+        entityId: runtime.agentId,
+        agentId: runtime.agentId,
+        roomId: roomUuid,
+        createdAt: Date.now(),
+        content: {
+          ...content,
+          source: "agent",
+          inReplyTo: userMessage.id,
+        },
+        metadata: {
+          type: MemoryType.MESSAGE,
+          role: "agent",
+          dialogueType: "message",
+          visibility: "visible",
+        },
+      };
+      try {
+        await runtime.createMemory(responseMemory, "messages");
+      } catch (error) {
+        logger.error("[DiscordRouter] Failed to save response memory", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-      return [];
-    },
-  });
+    }
+    return [];
+  };
+  await messageService.handleMessage(runtime, userMessage, callback);
   return responseText;
 }
 function httpsAttachmentLinks(content: Content): string[] {
