@@ -218,6 +218,14 @@ function readProviderEnvValue(
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+/**
+ * Provider keys this config sync has written into process.env. Membership
+ * proves ownership: only the sync may clear a key it wrote. A delete in the
+ * config never wipes an operator-set variable (docker env, shell export)
+ * that happens to hold the same value.
+ */
+const configSyncedProviderKeys = new Set<string>();
+
 interface ReloadDiff {
   applied: string[];
   requiresRestart: string[];
@@ -295,11 +303,17 @@ async function applyReloadedConfig(params: {
     const value = readProviderEnvValue(nextRecord, key);
     if (value !== undefined) {
       process.env[key] = value;
+      configSyncedProviderKeys.add(key);
       continue;
     }
     const previousValue = readProviderEnvValue(asConfigRecord(previous), key);
-    if (previousValue !== undefined && process.env[key] === previousValue) {
+    if (
+      previousValue !== undefined &&
+      configSyncedProviderKeys.has(key) &&
+      process.env[key] === previousValue
+    ) {
       delete process.env[key];
+      configSyncedProviderKeys.delete(key);
     }
   }
 
