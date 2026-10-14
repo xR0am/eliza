@@ -162,7 +162,9 @@ export function validateSmsResult(
       counts.some((count) => !count)) ||
     (["sent", "delivered"].includes(v.status as string) &&
       parts.some((p) => p.sent !== "success")) ||
-    (v.status === "delivered" && parts.some((p) => p.delivery !== "success"))
+    (v.status === "delivered" && parts.some((p) => p.delivery !== "success")) ||
+    (v.status === "submitted" &&
+      parts.some((p) => p.sent === "failed" || p.delivery === "failed"))
   )
     throw Error("SMS status is not supported by part evidence");
   return {
