@@ -3445,12 +3445,23 @@ export class TelegramService extends Service {
       );
       // Return the stored message with the new text, so the caller updates the
       // agent's memory of it like the Slack and Discord edits do.
-      const stored = await runtime.getMemoryById(
-        messageManager.messageMemoryId(chatId, params.messageId),
-      );
-      return stored
-        ? { ...stored, content: { ...stored.content, text } }
-        : undefined;
+      const storedId = messageManager.messageMemoryId(chatId, params.messageId);
+      const stored = await runtime.getMemoryById(storedId);
+      if (!stored) {
+        // A message sent before this agent stored it (or by another client)
+        // has no stored copy to update; the platform edit still happened.
+        logger.debug(
+          {
+            src: "plugin:telegram",
+            chatId,
+            messageId: params.messageId,
+            storedId,
+          },
+          "Edited Telegram message has no stored copy to update",
+        );
+        return undefined;
+      }
+      return { ...stored, content: { ...stored.content, text } };
     });
   }
 
