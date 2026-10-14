@@ -17,6 +17,7 @@ import {
   type LifeOpsEntityState as EntityState,
   type LifeOpsEntityVisibility as EntityVisibility,
   normalizeEntityConnectorAccountId,
+  normalizeEntityIdentityHandle,
   SELF_ENTITY_ID,
 } from "@elizaos/contracts";
 import type { IAgentRuntime } from "@elizaos/core";
@@ -597,7 +598,10 @@ export class EntityStore {
     let entities = await this.listOperation(filters);
     if (query.identity) {
       const platformKey = query.identity.platform.toLowerCase();
-      const handleKey = query.identity.handle.toLowerCase();
+      const handleKey = normalizeEntityIdentityHandle(
+        query.identity.platform,
+        query.identity.handle,
+      );
       const accountKey = normalizeEntityConnectorAccountId(
         query.identity.connectorAccountId,
       );
@@ -607,7 +611,10 @@ export class EntityStore {
             identity.platform.toLowerCase() === platformKey &&
             normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
               accountKey &&
-            identity.handle.toLowerCase() === handleKey,
+            normalizeEntityIdentityHandle(
+              identity.platform,
+              identity.handle,
+            ) === handleKey,
         ),
       );
     }
@@ -617,16 +624,24 @@ export class EntityStore {
         let confidence = 0;
         let safeToSend = false;
         if (query.identity) {
+          const queryIdentity = query.identity;
+          const platformKey = queryIdentity.platform.trim().toLowerCase();
+          const handleKey = normalizeEntityIdentityHandle(
+            queryIdentity.platform,
+            queryIdentity.handle,
+          );
+          const accountKey = normalizeEntityConnectorAccountId(
+            queryIdentity.connectorAccountId,
+          );
           const match = entity.identities.find(
             (identity) =>
-              identity.platform.toLowerCase() ===
-                query.identity?.platform.toLowerCase() &&
+              identity.platform.trim().toLowerCase() === platformKey &&
               normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
-                normalizeEntityConnectorAccountId(
-                  query.identity.connectorAccountId,
-                ) &&
-              identity.handle.toLowerCase() ===
-                query.identity.handle.toLowerCase(),
+                accountKey &&
+              normalizeEntityIdentityHandle(
+                identity.platform,
+                identity.handle,
+              ) === handleKey,
           );
           if (match) {
             confidence = match.confidence;

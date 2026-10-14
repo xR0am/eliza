@@ -39,6 +39,7 @@ import { jobs } from "../../../db/schemas/jobs";
 import { orgRateLimitOverrides } from "../../../db/schemas/org-rate-limit-overrides";
 import { orgStorageQuota } from "../../../db/schemas/org-storage-quota";
 import { organizationConfig } from "../../../db/schemas/organization-config";
+import { organizationEntitlements } from "../../../db/schemas/organization-entitlements";
 import { organizations } from "../../../db/schemas/organizations";
 import { usageRecords } from "../../../db/schemas/usage-records";
 import { userCharacters } from "../../../db/schemas/user-characters";
@@ -98,6 +99,7 @@ beforeAll(async () => {
     // Read-only joins of the organization billing snapshot.
     ["billing_subscriptions", billingSubscriptions],
     ["organization_subscription_authorities", organizationSubscriptionAuthorities],
+    ["organization_entitlements", organizationEntitlements],
     ["credit_transactions", creditTransactions],
     ["org_rate_limit_overrides", orgRateLimitOverrides],
     ["organization_config", organizationConfig],

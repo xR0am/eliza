@@ -15,6 +15,7 @@ import {
   type KnowledgeGraphEntity as Entity,
   type EntityIdentity,
   normalizeEntityConnectorAccountId,
+  normalizeEntityIdentityHandle,
 } from "@elizaos/contracts";
 
 /**
@@ -49,7 +50,7 @@ export function findIdentityMatches(
   match: IdentityMatchInput,
 ): Entity[] {
   const platformKey = match.platform.toLowerCase();
-  const handleKey = match.handle.toLowerCase();
+  const handleKey = normalizeEntityIdentityHandle(match.platform, match.handle);
   const accountKey = normalizeEntityConnectorAccountId(
     match.connectorAccountId,
   );
@@ -59,7 +60,8 @@ export function findIdentityMatches(
         identity.platform.toLowerCase() === platformKey &&
         normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
           accountKey &&
-        identity.handle.toLowerCase() === handleKey,
+        normalizeEntityIdentityHandle(identity.platform, identity.handle) ===
+          handleKey,
     ),
   );
 }
@@ -118,14 +120,15 @@ export function foldIdentity(
   next: EntityIdentity,
 ): EntityIdentity[] {
   const platformKey = next.platform.toLowerCase();
-  const handleKey = next.handle.toLowerCase();
+  const handleKey = normalizeEntityIdentityHandle(next.platform, next.handle);
   const accountKey = normalizeEntityConnectorAccountId(next.connectorAccountId);
   const matchIndex = existing.findIndex(
     (identity) =>
       identity.platform.toLowerCase() === platformKey &&
       normalizeEntityConnectorAccountId(identity.connectorAccountId) ===
         accountKey &&
-      identity.handle.toLowerCase() === handleKey,
+      normalizeEntityIdentityHandle(identity.platform, identity.handle) ===
+        handleKey,
   );
 
   if (matchIndex < 0) {

@@ -5,9 +5,6 @@
 
 import JSON5 from "json5";
 
-// Try `json5` before `json`, and stop when the next character would continue
-// the label (`json50`, `jsonc`). A prefix match kept the extra "5" in the body
-// (`5\n{...}`), so JSON5.parse rejected a valid json5 fence.
 const jsonBlockPattern =
 	/```(?:(?:json5|json)(?![A-Za-z0-9_-]))?\s*\r?\n?([\s\S]*?)\r?\n?```/i;
 
@@ -26,13 +23,16 @@ export function extractAndParseJSONObjectFromText(
 		throw new Error("Invalid input: text must be a non-empty string");
 	}
 
-	// First try to extract JSON from code blocks if present
-	const match = text.match(jsonBlockPattern);
-	const textToParse = match ? match[1].trim() : text.trim();
-
-	// Use JSON5.parse directly - it already handles unquoted keys, single quotes, trailing commas
+	// Parse complete JSON first: code fences can be part of a string value.
 	try {
-		const parsed = JSON5.parse(textToParse);
+		let parsed: unknown;
+		try {
+			parsed = JSON5.parse(text.trim());
+		} catch (error) {
+			const match = text.match(jsonBlockPattern);
+			if (!match) throw error;
+			parsed = JSON5.parse(match[1].trim());
+		}
 		if (parsed === null || typeof parsed !== "object") {
 			throw new Error("Parsed JSON must be an object or array");
 		}
