@@ -1872,23 +1872,32 @@ class AdvertisingService {
     const credentials = await this.getCredentials(account);
     const provider = this.getProvider(account.platform);
 
+    // Without a caller window this is the campaign's lifetime: the window the
+    // spend accounting (credits_spent, delete refund) relies on. Adapters fall
+    // back to a recent window when they get none, so the lifetime is explicit:
+    // from the campaign's creation until now. Not the scheduled start: a user
+    // can move that later, and spend from before it must still count.
+    const lifetime = dateRange === undefined;
     const result = await provider.getCampaignMetrics(
       credentials,
       campaign.external_campaign_id,
-      dateRange,
+      dateRange ?? { start: campaign.created_at, end: new Date() },
     );
 
     if (!result.success || !result.metrics) {
       throw new Error(result.error || "Failed to get metrics");
     }
 
-    // Update stored metrics
-    await adCampaignsRepository.updateMetrics(campaignId, {
-      totalSpend: String(result.metrics.spend),
-      totalImpressions: result.metrics.impressions,
-      totalClicks: result.metrics.clicks,
-      totalConversions: result.metrics.conversions,
-    });
+    // The stored totals are lifetime figures; a windowed read must not
+    // overwrite them with one window's numbers.
+    if (lifetime) {
+      await adCampaignsRepository.updateMetrics(campaignId, {
+        totalSpend: String(result.metrics.spend),
+        totalImpressions: result.metrics.impressions,
+        totalClicks: result.metrics.clicks,
+        totalConversions: result.metrics.conversions,
+      });
+    }
 
     const firstParty = await adConversionsRepository.getCampaignRollup(campaignId, dateRange);
 
