@@ -86,4 +86,16 @@ export async function applyAppBillingTestMigrations(
             .replace(/ADD COLUMN(?! IF NOT EXISTS)/, "ADD COLUMN IF NOT EXISTS"),
         );
   }
+  // 0543 guards app_pilot_activations with a BEFORE UPDATE OR DELETE OR
+  // TRUNCATE statement trigger. In a real database the TRUNCATE arm is part
+  // of the append-only contract and stays. These fixture databases are
+  // reset between tests with TRUNCATE ... organizations CASCADE, which
+  // reaches app_pilot_activations through apps -> app_pilot_campaigns ->
+  // app_pilot_redemptions and aborts every reset with 23514. Recreate the
+  // trigger in this fixture without the TRUNCATE arm only: UPDATE and
+  // DELETE stay append-only, and test resets can empty the table.
+  await execute(`DROP TRIGGER app_pilot_activations_immutable ON app_pilot_activations`);
+  await execute(
+    `CREATE TRIGGER app_pilot_activations_immutable BEFORE UPDATE OR DELETE ON app_pilot_activations FOR EACH STATEMENT EXECUTE FUNCTION reject_subscription_append_only_mutation()`,
+  );
 }
