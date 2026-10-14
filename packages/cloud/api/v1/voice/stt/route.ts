@@ -1316,14 +1316,18 @@ async function __hono_POST(c: AppContext) {
     await markProviderDispatched?.();
     providerWorkMayHaveStarted = true;
     settlementProvider = "elevenlabs";
-    const { transcript, audioDurationSeconds } = await elevenlabs.speechToText({
-      audioFile: validatedFile,
-      languageCode,
-    });
+    const { transcript, audioDurationSeconds, minAudioDurationSeconds } =
+      await elevenlabs.speechToText({
+        audioFile: validatedFile,
+        languageCode,
+      });
     const duration = Date.now() - startTime;
     // Bill the audio ElevenLabs transcribed; the container header estimate
-    // only sized the reservation.
-    const billedDurationSeconds = audioDurationSeconds ?? durationSeconds;
+    // only sized the reservation. Without a reported total, the last word end
+    // can only raise the header estimate: audio after the last word is billed.
+    const billedDurationSeconds =
+      audioDurationSeconds ??
+      Math.max(durationSeconds, minAudioDurationSeconds ?? 0);
 
     const billingReservation = reservation;
     reservation = undefined;
@@ -1331,6 +1335,7 @@ async function __hono_POST(c: AppContext) {
     logger.info("[Voice STT API] Completed", {
       durationMs: duration,
       transcriptionDurationSeconds: audioDurationSeconds,
+      minTranscriptionDurationSeconds: minAudioDurationSeconds,
       transcriptLength: transcript.length,
     });
 

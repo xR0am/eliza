@@ -115,11 +115,14 @@ export interface STTOptions {
 
 /**
  * Speech-to-text result. `audioDurationSeconds` is the audio the provider
- * transcribed, when the response reports it.
+ * transcribed, when the response reports it. Without it, `minAudioDurationSeconds`
+ * is the last word end: the audio was at least that long, and trailing audio
+ * after the last word is not counted in it.
  */
 export interface STTResult {
   transcript: string;
   audioDurationSeconds?: number;
+  minAudioDurationSeconds?: number;
 }
 
 /**
@@ -243,21 +246,21 @@ export class ElevenLabsService {
     // Without `useMultiChannel` or `webhook` the SDK returns one chunk.
     const transcript = result.text || "";
     // Responses without audio_duration_secs still time each word; the last
-    // word end is the shortest span of audio that was transcribed.
+    // word end is a lower bound on the audio length, not the length itself.
     const lastWordEnd = (result.words ?? []).reduce(
       (last, word) => Math.max(last, word.end ?? 0),
       0,
     );
-    const audioDurationSeconds =
+    if (
       typeof result.audioDurationSecs === "number" &&
       Number.isFinite(result.audioDurationSecs) &&
       result.audioDurationSecs > 0
-        ? result.audioDurationSecs
-        : Number.isFinite(lastWordEnd) && lastWordEnd > 0
-          ? lastWordEnd
-          : undefined;
-
-    return { transcript, ...(audioDurationSeconds !== undefined ? { audioDurationSeconds } : {}) };
+    ) {
+      return { transcript, audioDurationSeconds: result.audioDurationSecs };
+    }
+    return Number.isFinite(lastWordEnd) && lastWordEnd > 0
+      ? { transcript, minAudioDurationSeconds: lastWordEnd }
+      : { transcript };
   }
 
   /**

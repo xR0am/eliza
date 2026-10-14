@@ -194,6 +194,24 @@ test("ElevenLabs lane falls back to the last word end", async () => {
   expect(reconciled).toEqual([PROVIDER_SECONDS]);
 });
 
+test("ElevenLabs lane never bills less than the file for a word end inside it", async () => {
+  // A word end is where speech stops, not where the audio ends: trailing
+  // silence after it was still sent and is billed by ElevenLabs.
+  stubProvider("api.elevenlabs.io", {
+    language_code: "eng",
+    language_probability: 1,
+    text: "hello",
+    words: [{ text: "hello", start: 0, end: 0.4, type: "word", logprob: 0 }],
+  });
+
+  await transcribe({
+    VOICE_BATCH_STT_PROVIDER: "elevenlabs",
+    ELEVENLABS_API_KEY: "el-test",
+  });
+
+  expect(reconciled).toEqual([1]);
+});
+
 test("a response without a duration bills the header estimate", async () => {
   stubProvider("api.deepgram.com", {
     results: {
