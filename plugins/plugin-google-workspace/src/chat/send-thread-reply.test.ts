@@ -33,8 +33,24 @@ describe("Google Chat send", () => {
     expect(sent).toHaveLength(1);
     const url = new URL(sent[0]?.url ?? "");
     expect(url.pathname).toBe("/v1/spaces/AAA/messages");
-    expect(url.searchParams.get("messageReplyOption")).toBe("REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD");
+    expect(url.searchParams.get("messageReplyOption")).toBe("REPLY_MESSAGE_OR_FAIL");
     expect(sent[0]?.body.thread).toEqual({ name: "spaces/AAA/threads/T1" });
+  });
+
+  it("reports a missing thread without retrying in a new thread", async () => {
+    const { service } = serviceWithRecordedSends();
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ error: { message: "Thread not found" } }, { status: 404 })
+    );
+    service.fetchImpl = fetchImpl as typeof fetch;
+    await expect(
+      service.sendMessage({
+        space: "spaces/AAA",
+        text: "on it",
+        thread: "spaces/AAA/threads/missing",
+      })
+    ).rejects.toThrow("Thread not found");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("starts a new message without a thread as before", async () => {
