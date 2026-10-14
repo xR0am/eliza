@@ -50,6 +50,27 @@ export function normalizeEntityConnectorAccountId(
   return normalized ? normalized : DEFAULT_CONNECTOR_ACCOUNT_ID;
 }
 /**
+ * The key an identity handle is matched on: trimmed, lowercased, and without
+ * a leading "@" on platforms where the "@" is only a mention prefix. A contact
+ * saved as "@priya" and a message from username "priya" are one identity.
+ * Addresses that carry their own syntax (email, phone, website) keep it.
+ */
+export function normalizeEntityIdentityHandle(
+  platform: string,
+  handle: string,
+): string {
+  const key = handle.trim().toLowerCase();
+  const platformKey = platform.trim().toLowerCase();
+  if (
+    platformKey === "email" ||
+    platformKey === "phone" ||
+    platformKey === "website"
+  ) {
+    return key;
+  }
+  return key.replace(/^@+/, "");
+}
+/**
  * Per-connector identity claim. An Entity carries N of these — one per
  * account-bound platform handle the runtime has observed or imported. Identity
  * merge collapses two entities only when (platform, connector account, handle)
