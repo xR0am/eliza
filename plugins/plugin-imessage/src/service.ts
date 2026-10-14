@@ -470,7 +470,11 @@ function publicIMessageToMemory(
   const channelType = isGroupIMessage(message) ? ChannelType.GROUP : ChannelType.DM;
 
   return {
-    id: createUniqueUuid(runtime, `imessage-public:${message.id}`) as UUID,
+    // Same message and reply keys as the live inbound path (chat.db guid).
+    id: createUniqueUuid(
+      runtime,
+      message.guid ? `imessage-guid-${message.guid}` : `imessage-public:${message.id}`
+    ) as UUID,
     entityId,
     agentId: runtime.agentId,
     roomId,
@@ -479,6 +483,11 @@ function publicIMessageToMemory(
       text: message.text,
       source: "imessage",
       channelType,
+      ...(message.replyToGuid
+        ? {
+            inReplyTo: createUniqueUuid(runtime, `imessage-guid-${message.replyToGuid}`) as UUID,
+          }
+        : {}),
       ...(message.attachmentPaths?.length
         ? {
             attachments: message.attachmentPaths.map((path) => ({
@@ -968,7 +977,7 @@ export class IMessageService extends Service implements IIMessageService {
         if (platformMessages.length > 0) {
           const roomId =
             target?.roomId ??
-            (createUniqueUuid(context.runtime, `imessage-read:${chatId ?? "recent"}`) as UUID);
+            (createUniqueUuid(context.runtime, chatId ?? "imessage-read:recent") as UUID);
           return platformMessages
             .map((message) => publicIMessageToMemory(context.runtime, message, roomId, accountId))
             .sort(compareNewestFirst);
@@ -999,7 +1008,7 @@ export class IMessageService extends Service implements IIMessageService {
           .catch(() => []);
         const roomId =
           target?.roomId ??
-          (createUniqueUuid(context.runtime, `imessage-read:${chatId ?? "recent"}`) as UUID);
+          (createUniqueUuid(context.runtime, chatId ?? "imessage-read:recent") as UUID);
         // chat.db reads come back oldest-first; sort newest-first so `limit`
         // keeps the most recent matches, like fetchMessages and the
         // stored-memory fallback below.
@@ -3028,6 +3037,8 @@ export function chatDbMessageToPublicShape(row: ChatDbMessage): IMessageMessage 
     timestamp: row.timestamp,
     isFromMe: row.isFromMe,
     chatType: row.chatType,
+    ...(row.guid ? { guid: row.guid } : {}),
+    ...(row.replyToGuid ? { replyToGuid: row.replyToGuid } : {}),
     hasAttachments: row.attachments.length > 0,
     ...(row.attachments.length > 0
       ? {

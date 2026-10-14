@@ -110,6 +110,10 @@ export interface IMessageMessage {
   attachmentPaths?: string[];
   /** Chat kind from chat.db (`chat_style`); AppleScript rows do not carry it. */
   chatType?: IMessageChatType;
+  /** chat.db message guid; the live path keys stored messages on it. */
+  guid?: string;
+  /** chat.db guid of the message this one replies to. */
+  replyToGuid?: string;
 }
 
 export interface IMessageListMessagesOptions {
