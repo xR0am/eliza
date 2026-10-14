@@ -3607,8 +3607,9 @@ async function authorizeStoredMessage(
   runtime: IAgentRuntime,
   message: Memory,
   memoryRef: UUID,
+  candidate?: Memory,
 ): Promise<{ stored: Memory } | { code: string; text: string }> {
-  const stored = await runtime.getMemoryById(memoryRef);
+  const stored = candidate ?? (await runtime.getMemoryById(memoryRef));
   if (!stored || stored.agentId !== runtime.agentId) {
     return {
       code: "MESSAGE_MEMORY_NOT_FOUND",
@@ -5212,13 +5213,18 @@ async function handleMessageMutation(
       `MESSAGE op=${op} requires messageId.`,
     );
   }
-  // The parameter accepts a stored memory id (send results and read_channel
-  // return them). Connectors need the platform id the message was stored with.
-  if (isUuidLike(messageId)) {
+  // Native provider ids may also be UUIDs. Translate only ids that actually
+  // identify a stored memory, and retain that memory's destination binding.
+  let storedTarget: TargetInfo | undefined;
+  const candidate = isUuidLike(messageId)
+    ? await runtime.getMemoryById(messageId)
+    : null;
+  if (candidate && isUuidLike(messageId)) {
     const authorized = await authorizeStoredMessage(
       runtime,
       message,
       messageId,
+      candidate,
     );
     if ("code" in authorized) {
       return opFailure(op, authorized.code, authorized.text);
@@ -5239,6 +5245,23 @@ async function handleMessageMutation(
         "The stored message has no platform message id.",
       );
     }
+    const room = await runtime.getRoom(authorized.stored.roomId);
+    const source = trustedConnectorSource(authorized.stored) ?? room?.source;
+    if (!room || !source) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_ROUTING_UNAVAILABLE",
+        "The stored message's connector destination is unavailable.",
+      );
+    }
+    storedTarget = {
+      source,
+      roomId: authorized.stored.roomId,
+      channelId: room.channelId,
+      accountId:
+        trustedConnectorAccountId(authorized.stored) ??
+        textParam(room.metadata?.accountId),
+    };
     messageId = platformId;
   }
   const hookName = (
@@ -5252,13 +5275,37 @@ async function handleMessageMutation(
   const connectors = connectorsWithHook(runtime, hookName);
   const selection = selectConnectorForOp(
     connectors,
-    sourceFromParams(params, message),
+    storedTarget?.source ?? sourceFromParams(params, message),
     trustedConnectorSource(message),
     op,
-    accountIdFromParams(params, message),
+    storedTarget
+      ? storedTarget.accountId
+      : accountIdFromParams(params, message),
   );
   if ("error" in selection) return selection.error;
   const connector = selection.connector;
+  if (storedTarget) {
+    const requestedSource = sourceFromParams(params, message);
+    const requestedAccount =
+      textParam(params.accountId) ?? textParam(params.connectorAccountId);
+    if (
+      (requestedSource &&
+        !connectorAliases(connector).some(
+          (alias) =>
+            normalizeComparable(alias) === normalizeComparable(requestedSource),
+        )) ||
+      (requestedAccount && requestedAccount !== storedTarget.accountId) ||
+      (storedTarget.accountId &&
+        connector.accountId &&
+        connector.accountId !== storedTarget.accountId)
+    ) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_TARGET_MISMATCH",
+        "A stored message must be changed through its original connector and account.",
+      );
+    }
+  }
   const resolved = await resolveOptionalTarget(
     connector,
     runtime,
@@ -5283,11 +5330,31 @@ async function handleMessageMutation(
       trustedAccountId === undefined ||
       normalizeComparable(routedAccountId) ===
         normalizeComparable(trustedAccountId));
-  const target = resolved.target ?? {
-    source: connector.source,
-    accountId: routedAccountId,
-    ...(inCurrentRoom ? { roomId: message.roomId } : {}),
-  };
+  if (storedTarget && resolved.target) {
+    const explicit = resolved.target;
+    if (
+      (explicit.roomId && explicit.roomId !== storedTarget.roomId) ||
+      (explicit.channelId && explicit.channelId !== storedTarget.channelId) ||
+      explicit.entityId ||
+      explicit.threadId ||
+      explicit.serverId ||
+      (explicit.accountId &&
+        storedTarget.accountId &&
+        explicit.accountId !== storedTarget.accountId)
+    ) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_TARGET_MISMATCH",
+        "A stored message must be changed in its original room. Omit target parameters to use that room.",
+      );
+    }
+  }
+  const target = storedTarget ??
+    resolved.target ?? {
+      source: connector.source,
+      accountId: routedAccountId,
+      ...(inCurrentRoom ? { roomId: message.roomId } : {}),
+    };
 
   try {
     if (op === "react") {
