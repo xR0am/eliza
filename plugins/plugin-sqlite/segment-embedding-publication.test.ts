@@ -1,4 +1,8 @@
-import { buildMessageContentProjection, type UUID } from "@elizaos/core";
+import {
+  buildMessageContentProjection,
+  type Memory,
+  type UUID,
+} from "@elizaos/core";
 import { expect, test } from "vitest";
 import { SQLiteDatabaseAdapter } from "./adapter";
 
@@ -7,7 +11,7 @@ const roomId = "71000000-0000-4000-8000-000000000002" as UUID;
 const entityId = "71000000-0000-4000-8000-000000000003" as UUID;
 const id = "71000000-0000-4000-8000-000000000004" as UUID;
 function publication(dimension: number) {
-  const parent = {
+  const parent: Memory & { id: UUID } = {
     id,
     agentId,
     roomId,
@@ -22,7 +26,10 @@ function publication(dimension: number) {
   return {
     mode: "create" as const,
     parent: { ...parent, content: projection.content },
-    segments: projection.segments.map((segment) => ({ ...segment, embedding })),
+    segments: projection.segments.map((segment) => {
+      if (!segment.id) throw new Error("Expected projected segment ID");
+      return { ...segment, id: segment.id, embedding };
+    }),
   };
 }
 test("published segment embeddings are searchable immediately", async () => {
