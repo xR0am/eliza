@@ -3,10 +3,13 @@
 import {
   clearStoredStewardToken,
   replaceStoredStewardTokenIfCurrent,
+  STEWARD_TOKEN_KEY,
   writeStoredStewardToken,
 } from "@elizaos/plugin-elizacloud/steward-session-client";
 import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DesktopSecureStoreKind } from "../../bridge/electrobun-rpc";
+import { initializeStorageBridge } from "../../bridge/storage-bridge";
 import { resolveCloudApiBase } from "../../platform/ios-runtime";
 import {
   hasSameOriginStewardLogin,
@@ -174,18 +177,69 @@ it.each([
 it.each(["native", "electrobun"])(
   "preserves the installed managed runtime credential on %s",
   async (platform) => {
-    const windowId = Object.getOwnPropertyDescriptor(
-      window,
-      "__electrobunWindowId",
-    );
-    if (platform === "native")
-      vi.stubGlobal("Capacitor", { isNativePlatform: () => true });
-    else
-      Object.defineProperty(window, "__electrobunWindowId", {
+    const desktop =
+      platform === "electrobun"
+        ? new JSDOM("", {
+            url: "https://staging.eliza-app.pages.dev/chat",
+          })
+        : null;
+    const protectedValues = new Map<DesktopSecureStoreKind, string>();
+    let rawGetItem: Storage["getItem"] | undefined;
+    if (desktop) {
+      vi.stubGlobal("window", desktop.window);
+      vi.stubGlobal("localStorage", desktop.window.localStorage);
+      vi.stubGlobal("CustomEvent", desktop.window.CustomEvent);
+      rawGetItem = desktop.window.localStorage.getItem.bind(
+        desktop.window.localStorage,
+      );
+      Object.defineProperty(desktop.window, "__electrobunWindowId", {
         configurable: true,
         value: 1,
       });
+    } else vi.stubGlobal("Capacitor", { isNativePlatform: () => true });
     try {
+      if (desktop) {
+        await expect(writeStoredStewardToken("old-account")).rejects.toThrow(
+          "Protected storage rejected write",
+        );
+        expect(rawGetItem?.(STEWARD_TOKEN_KEY)).toBeNull();
+        Object.defineProperty(desktop.window, "__ELIZA_ELECTROBUN_RPC__", {
+          configurable: true,
+          value: {
+            request: {
+              secureStoreGet: async ({
+                kind,
+              }: {
+                kind: DesktopSecureStoreKind;
+              }) =>
+                protectedValues.has(kind)
+                  ? { ok: true, value: protectedValues.get(kind) }
+                  : { ok: false, reason: "not_found" },
+              secureStoreSet: async ({
+                kind,
+                value,
+              }: {
+                kind: DesktopSecureStoreKind;
+                value: string;
+              }) => {
+                protectedValues.set(kind, value);
+                return { ok: true };
+              },
+              secureStoreDelete: async ({
+                kind,
+              }: {
+                kind: DesktopSecureStoreKind;
+              }) => {
+                protectedValues.delete(kind);
+                return { ok: true, deleted: true };
+              },
+            },
+            onMessage: vi.fn(),
+            offMessage: vi.fn(),
+          },
+        });
+        await initializeStorageBridge();
+      }
       await writeStoredStewardToken("old-account");
       const client = new ElizaClient(
         "https://api-staging.eliza.app/api/v1/eliza/agents/personal%3A00000001-1111-5111-8111-111111111111",
@@ -195,14 +249,19 @@ it.each(["native", "electrobun"])(
         await replaceStoredStewardTokenIfCurrent("old-account", "new-account"),
       ).toBe(true);
       expect(client.getRestAuthToken()).toBe("eliza_owner-key");
+      if (desktop) {
+        expect(protectedValues.get("session.steward_token")).toBe(
+          "new-account",
+        );
+        expect(rawGetItem?.(STEWARD_TOKEN_KEY)).toBeNull();
+      }
       await clearStoredStewardToken();
       expect(client.getRestAuthToken()).toBe("eliza_owner-key");
+      if (desktop)
+        expect(protectedValues.has("session.steward_token")).toBe(false);
     } finally {
-      if (platform === "electrobun") {
-        if (windowId)
-          Object.defineProperty(window, "__electrobunWindowId", windowId);
-        else Reflect.deleteProperty(window, "__electrobunWindowId");
-      }
+      vi.unstubAllGlobals();
+      desktop?.window.close();
     }
   },
 );
