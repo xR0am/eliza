@@ -1837,11 +1837,19 @@ async function clawbackForReversal(params: {
   paymentIntentId: string | undefined;
   usdReversed: number;
   idempotencyKey: string;
+  /** Prefix shared by the idempotency keys whose amounts `usdReversed` accumulates. */
+  reversalSeries: string;
   source: string;
   reference: string;
 }): Promise<void> {
-  const { paymentIntentId, usdReversed, idempotencyKey, source, reference } =
-    params;
+  const {
+    paymentIntentId,
+    usdReversed,
+    idempotencyKey,
+    reversalSeries,
+    source,
+    reference,
+  } = params;
   if (!paymentIntentId || usdReversed <= 0) return;
 
   // Only top-ups that actually granted org credits are clawable.
@@ -1899,6 +1907,7 @@ async function clawbackForReversal(params: {
     organizationId: grant.organization_id,
     amount: cappedUsdReversed,
     cumulativeTargetAmount: cappedUsdReversed,
+    reversalSeries,
     originalPaymentIntentId: paymentIntentId,
     description: `Stripe ${source} clawback — ${reference}`,
     stripePaymentIntentId: idempotencyKey,
@@ -1949,6 +1958,9 @@ async function handleChargeRefunded(event: Stripe.Event): Promise<void> {
     // Key on the cumulative amount so each new partial-refund total is a distinct
     // idempotent clawback, while a re-delivery of the same state is a no-op.
     idempotencyKey: `stripe:refund:${charge.id}:${charge.amount_refunded}`,
+    // `amount_refunded` accumulates refunds only; a dispute on the same charge
+    // states its own amount.
+    reversalSeries: `stripe:refund:${charge.id}:`,
     source: "charge.refunded",
     reference: `charge ${charge.id}`,
   });
@@ -1970,6 +1982,7 @@ async function handleChargeDisputeFundsWithdrawn(
     paymentIntentId,
     usdReversed: (dispute.amount ?? 0) / 100,
     idempotencyKey: `stripe:dispute:${dispute.id}`,
+    reversalSeries: `stripe:dispute:${dispute.id}`,
     source: "charge.dispute.funds_withdrawn",
     reference: `dispute ${dispute.id}${chargeId ? ` (charge ${chargeId})` : ""}`,
   });

@@ -1308,6 +1308,13 @@ export class CreditsService {
     amount: number;
     /** Cumulative authoritative reversal target; delta is derived under the org lock. */
     cumulativeTargetAmount?: number;
+    /**
+     * Prefix of the idempotency keys the cumulative target counts: a charge's
+     * refunds, or one dispute. Stripe states a refund total and a dispute amount
+     * independently, so the delta is taken against the same series only, while
+     * the grant minus every reversal of the payment intent caps it.
+     */
+    reversalSeries?: string;
     /** Original grant PI whose reversal ledger is serialized. */
     originalPaymentIntentId?: string;
     description: string;
@@ -1334,6 +1341,7 @@ export class CreditsService {
     const cumulativeTarget =
       params.cumulativeTargetAmount === undefined ? null : String(params.cumulativeTargetAmount);
     const originalPaymentIntentId = params.originalPaymentIntentId ?? null;
+    const reversalSeries = params.reversalSeries ?? null;
     const rows = await writeTransaction(async (tx) => {
       const lockRows = await sqlRows<{ id: string }>(
         tx,
@@ -1370,20 +1378,36 @@ export class CreditsService {
           LIMIT 1
         ),
         grant_lock AS (
-          SELECT id
+          SELECT id, amount::numeric AS amount
           FROM credit_transactions
           WHERE stripe_payment_intent_id = ${originalPaymentIntentId}
           FOR UPDATE
         ),
+        -- A clawback's obligation is what it removed plus what it could not
+        -- recover (held as a shortfall). A reinstated dispute returns the
+        -- removed credits and releases its hold, so it no longer counts.
         prior_reversal AS (
-          SELECT COALESCE(SUM(-ct.amount), 0)::numeric AS total
+          SELECT
+            COALESCE(SUM(obligation.amount), 0)::numeric AS total,
+            COALESCE(
+              SUM(obligation.amount) FILTER (
+                WHERE ${reversalSeries}::text IS NULL
+                  OR ct.stripe_payment_intent_id LIKE ${reversalSeries} || '%'
+              ),
+              0
+            )::numeric AS series_total
           FROM org
           LEFT JOIN credit_transactions AS ct
             ON ct.metadata->>'payment_intent_id' = ${originalPaymentIntentId}
-            AND (
-              ct.type = 'clawback'
-              OR (ct.type = 'refund' AND ct.metadata->>'source' = 'charge.dispute.funds_reinstated')
+            AND ct.type = 'clawback'
+            AND NOT EXISTS (
+              SELECT 1 FROM credit_transactions AS reinstated
+              WHERE reinstated.stripe_payment_intent_id = ct.stripe_payment_intent_id || ':reinstated'
             )
+          LEFT JOIN LATERAL (
+            SELECT -ct.amount
+              + COALESCE(NULLIF(ct.metadata->>'unrecovered_clawback_usd', '')::numeric, 0) AS amount
+          ) AS obligation ON true
         ),
         candidate AS (
           SELECT
@@ -1398,7 +1422,15 @@ export class CreditsService {
           CROSS JOIN LATERAL (
             SELECT CASE
               WHEN ${cumulativeTarget}::numeric IS NULL THEN ${String(params.amount)}::numeric
-              ELSE GREATEST(${cumulativeTarget}::numeric - prior_reversal.total, 0)
+              -- The series delta, capped by what the grant still has to return.
+              ELSE LEAST(
+                GREATEST(${cumulativeTarget}::numeric - prior_reversal.series_total, 0),
+                GREATEST(
+                  COALESCE((SELECT SUM(amount) FROM grant_lock), ${cumulativeTarget}::numeric)
+                    - prior_reversal.total,
+                  0
+                )
+              )
             END AS requested_amount
           ) AS target
           WHERE NOT EXISTS (SELECT 1 FROM existing)
