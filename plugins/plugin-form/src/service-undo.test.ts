@@ -3,8 +3,9 @@
  * Undo puts the previous answer back as it was: an answer that failed
  * validation stays invalid and an unconfirmed answer stays uncertain, so the
  * agent asks again or confirms it instead of submitting it. A ready form that
- * undo leaves incomplete goes back to active. No live model is used; the
- * evaluator processors receive the parsed model output directly.
+ * undo leaves incomplete goes back to active, and an active form that undo
+ * completes is ready again. No live model is used; the evaluator processors
+ * receive the parsed model output directly.
  */
 import assert from "node:assert/strict";
 import {
@@ -20,7 +21,7 @@ import { formEvaluator } from "./evaluators/extractor";
 import formPlugin from "./index";
 import { formContextProvider } from "./providers/context";
 import { FormService } from "./service";
-import type { ExtractionResult, FormIntent } from "./types";
+import type { ExtractionResult, FormIntent, FormSession } from "./types";
 
 function requireDefined<T>(value: T | undefined, what: string): T {
   if (value === undefined) {
@@ -45,6 +46,8 @@ describe("form undo through the evaluator", () => {
   let harness: Awaited<ReturnType<typeof createTestRuntime>>;
   let service: FormService;
   let entityId: UUID;
+  /** Session ids the contact form's onReady hook ran for, in order. */
+  const readySessions: string[] = [];
 
   beforeAll(async () => {
     harness = await createTestRuntime({
@@ -64,6 +67,13 @@ describe("form undo through the evaluator", () => {
       name: "Form undo",
       agentId: runtime.agentId,
     });
+    runtime.registerTaskWorker({
+      name: "contact_ready",
+      execute: async (_runtime, options) => {
+        readySessions.push((options.session as FormSession).id);
+        return undefined;
+      },
+    });
     service.registerForm({
       id: "contact",
       name: "Contact",
@@ -71,6 +81,7 @@ describe("form undo through the evaluator", () => {
         { key: "name", label: "Name", type: "text", required: true },
         { key: "email", label: "Email", type: "email", required: true },
       ],
+      hooks: { onReady: "contact_ready" },
     });
   }, 180_000);
 
@@ -78,7 +89,7 @@ describe("form undo through the evaluator", () => {
     await harness?.cleanup();
   }, 60_000);
 
-  async function openForm(name: string): Promise<UUID> {
+  async function openForm(name: string, formId = "contact"): Promise<UUID> {
     const roomId = stringToUuid(`form-undo-room-${name}`);
     await harness.runtime.ensureRoomExists({
       id: roomId,
@@ -87,7 +98,7 @@ describe("form undo through the evaluator", () => {
       source: "test",
       type: ChannelType.DM,
     });
-    await service.startSession("contact", entityId, roomId);
+    await service.startSession(formId, entityId, roomId);
     return roomId;
   }
 
@@ -261,5 +272,87 @@ describe("form undo through the evaluator", () => {
     expect(context.required_missing.map((f: { key: string }) => f.key)).toEqual(
       ["email"],
     );
+  }, 60_000);
+
+  it("makes the form ready again when a later undo restores a complete answer", async () => {
+    const roomId = await openForm("ready-again");
+    await turn(roomId, "Bob, bob@example.com", "fill_form", [
+      { field: "name", value: "Bob", confidence: 0.95 },
+      { field: "email", value: "bob@example.com", confidence: 0.95 },
+    ]);
+    await turn(roomId, "Rob, I think", "fill_form", [
+      { field: "name", value: "Rob", confidence: 0.5, isCorrection: true },
+    ]);
+    await turn(roomId, "Robert", "fill_form", [
+      { field: "name", value: "Robert", confidence: 0.95, isCorrection: true },
+    ]);
+    await turn(roomId, "Undo", "undo");
+    expect((await service.getActiveSession(entityId, roomId))?.status).toBe(
+      "active",
+    );
+
+    await turn(roomId, "Undo that too", "undo");
+
+    const session = await service.getActiveSession(entityId, roomId);
+    assert(session);
+    expect(session.fields.name).toMatchObject({
+      status: "filled",
+      value: "Bob",
+      confidence: 0.95,
+    });
+    expect(session.status).toBe("ready");
+    const context = await modelContext(roomId);
+    expect(context.status).toBe("ready");
+    expect(context.instruction).toBe(
+      "All required fields collected. Nudge user to submit.",
+    );
+    // Ready once after the first answers, and again after the second undo.
+    expect(readySessions.filter((id) => id === session.id)).toHaveLength(2);
+    await turn(roomId, "Submit", "submit");
+    const submissions = await service.getSubmissions(entityId, "contact");
+    expect(
+      submissions
+        .filter((s) => s.sessionId === session.id)
+        .map((s) => s.values),
+    ).toEqual([{ name: "Bob", email: "bob@example.com" }]);
+  }, 60_000);
+
+  it("keeps a rejected answer invalid when its control has left the form", async () => {
+    const name = { key: "name", label: "Name", type: "text", required: true };
+    const email = { key: "email", label: "Email", type: "email" };
+    service.registerForm({
+      id: "newsletter",
+      name: "Newsletter",
+      controls: [name, email],
+    });
+    const roomId = await openForm("control-removed", "newsletter");
+    await turn(roomId, "Ann, ann@example", "fill_form", [
+      { field: "name", value: "Ann", confidence: 0.95 },
+      { field: "email", value: "ann@example", confidence: 0.95 },
+    ]);
+    await turn(roomId, "Sorry, ann@example.com", "fill_form", [
+      {
+        field: "email",
+        value: "ann@example.com",
+        confidence: 0.95,
+        isCorrection: true,
+      },
+    ]);
+    // A new version of the form no longer asks for the email.
+    service.registerForm({
+      id: "newsletter",
+      name: "Newsletter",
+      version: 2,
+      controls: [name],
+    });
+
+    await turn(roomId, "Undo", "undo");
+
+    const session = await service.getActiveSession(entityId, roomId);
+    assert(session);
+    expect(session.fields.email).toMatchObject({
+      status: "invalid",
+      value: "ann@example",
+    });
   }, 60_000);
 });

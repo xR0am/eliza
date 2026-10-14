@@ -641,7 +641,8 @@ export interface FieldHistoryEntry {
   oldValue?: JsonValue;
   /**
    * Status of the previous answer, so undo restores an answer that still
-   * awaited confirmation as uncertain. Absent in entries recorded before it.
+   * awaited confirmation as uncertain, and a rejected answer whose control
+   * has left the form as invalid. Absent in entries recorded before it.
    */
   oldStatus?: FieldState["status"];
   /** Confidence of the previous answer, restored with it. */

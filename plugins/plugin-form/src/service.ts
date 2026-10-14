@@ -717,8 +717,13 @@ export class FormService extends Service {
             this.getControlType(control.type),
           )
         : undefined;
+      // Without its control (the form definition changed since the answer)
+      // the value cannot be revalidated, so its recorded status stands.
+      const invalid = validation
+        ? !validation.valid
+        : lastChange.oldStatus === "invalid";
       let status: FieldState["status"] = "filled";
-      if (validation && !validation.valid) {
+      if (invalid) {
         status = "invalid";
       } else if (lastChange.oldStatus === "uncertain") {
         status = "uncertain";
@@ -738,12 +743,17 @@ export class FormService extends Service {
     }
 
     // 'ready' means every required field is filled. When undo leaves a
-    // required field invalid, uncertain or empty, the form is open again.
-    if (
-      session.status === "ready" &&
-      !this.checkAllRequiredFilled(session, form)
-    ) {
+    // required field invalid, uncertain or empty, the form is open again;
+    // when it puts back the answer that completes the form, the form is
+    // ready again, as when updateField completes it.
+    const allRequiredFilled = this.checkAllRequiredFilled(session, form);
+    if (session.status === "ready" && !allRequiredFilled) {
       session.status = "active";
+    } else if (session.status === "active" && allRequiredFilled) {
+      session.status = "ready";
+      if (form.hooks?.onReady) {
+        await this.executeHook(session, "onReady");
+      }
     }
 
     session.updatedAt = Date.now();
