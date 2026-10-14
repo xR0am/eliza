@@ -317,7 +317,11 @@ export function authorizeSetState(
     from = parsed > now.getTime() ? new Date(parsed).toISOString() : null;
   }
   // Dates stated in the member's own words win over the model's: resolved deterministically.
-  const stated = resolveWindow(ownWords(memberText), now);
+  const stated = resolveWindow(
+    ownWords(memberText),
+    now,
+    from ? new Date(from) : undefined,
+  );
   if (stated.until) until = stated.until;
   if (stated.from)
     from = Date.parse(stated.from) > now.getTime() ? stated.from : null;
