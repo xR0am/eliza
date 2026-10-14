@@ -3,7 +3,8 @@
  * Cross-builds the fused inference library for Android arm64-v8a and x86_64
  * with NDK 28.2 and stages it into the app's jniLibs (or --out). Speech is
  * Paradee-8M TTS with native misaki G2P (eSpeak NG 1.52.0 as the
- * out-of-lexicon fallback), ASR and VAD; no Kokoro voice ships. The
+ * out-of-lexicon fallback), Parakeet-TDT ASR (Phonon-2, batch and streaming)
+ * with Qwen3-ASR as the selectable alternative, and VAD; no Kokoro voice ships. The
  * CPU variant statically links ggml/llama/mtmd; the Vulkan variant stages
  * their shared backends and requires host shader tooling supplied by the
  * documented ELIZA_* overrides. Every library is 16 KiB page aligned.
@@ -172,9 +173,23 @@ function sha256File(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
+/**
+ * Size of libespeak-ng's data-path buffer (`path_home`, N_PATH_HOME). The
+ * upstream POSIX default is 160 bytes, which limits the eSpeak NG data
+ * directory to about 135 bytes once libespeak-ng appends `/espeak-ng-data`;
+ * on-device bundle paths can be longer. Every eSpeak buffer that holds a data
+ * path is sized from it, so raising it is safe. The fused library rejects a
+ * path that does not fit instead of truncating it (elizaOS/llama.cpp
+ * tools/espeak-shared).
+ */
+const ESPEAK_PATH_HOME = 1024;
+
 function espeakCmakeFlags() {
   // Only the phonemizer is used: no audio output, sonic, MBROLA or synthesizers.
   return [
+    // -DCMAKE_C_FLAGS keeps the NDK toolchain's own flags; a CFLAGS
+    // environment variable is ignored under the NDK toolchain.
+    `-DCMAKE_C_FLAGS=-DN_PATH_HOME=${ESPEAK_PATH_HOME}`,
     "-G",
     "Ninja",
     "-DCMAKE_BUILD_TYPE=Release",
@@ -208,7 +223,10 @@ async function ensureEspeakNg({ dir, abi, ndk, forkSrc }) {
     die("fork tools/misaki-g2p/pins.json has no espeak_ng pin");
   }
   const stamp = path.join(dir, abi, "pin.sha256");
-  if (existsSync(stamp) && readFileSync(stamp, "utf8").trim() === pin.sha256) {
+  // The stamp names the build options too, so an older build (160-byte
+  // N_PATH_HOME) is rebuilt.
+  const stampValue = `${pin.sha256} N_PATH_HOME=${ESPEAK_PATH_HOME}`;
+  if (existsSync(stamp) && readFileSync(stamp, "utf8").trim() === stampValue) {
     log(`eSpeak NG ${pin.version} for ${abi}: reusing ${path.join(dir, abi)}`);
     return path.join(dir, abi);
   }
@@ -300,7 +318,19 @@ async function ensureEspeakNg({ dir, abi, ndk, forkSrc }) {
   ]);
   run(ar, ["qL", archiveOut, path.join(build, "src/ucd-tools/libucd.a")]);
   run(ar, ["s", archiveOut]);
-  writeFileSync(stamp, `${pin.sha256}\n`);
+  // path_home is a BSS array of N_PATH_HOME bytes: check the define reached
+  // the library build.
+  const pathHome = /^[0-9a-f]+ ([0-9a-f]+) [BbCc] path_home$/m.exec(
+    execFileSync(ndkTool(ndk, "llvm-nm"), ["--print-size", archiveOut], {
+      encoding: "utf8",
+    }),
+  );
+  if (!pathHome || Number.parseInt(pathHome[1], 16) !== ESPEAK_PATH_HOME) {
+    die(
+      `${archiveOut}: libespeak-ng path_home is ${pathHome ? Number.parseInt(pathHome[1], 16) : "missing"} bytes; expected N_PATH_HOME=${ESPEAK_PATH_HOME}`,
+    );
+  }
+  writeFileSync(stamp, `${stampValue}\n`);
   return prefix;
 }
 
@@ -366,6 +396,16 @@ if (arm64SimdFlags.length > 0) {
 // confines find_library to the sysroot. assertAndroidVoiceLibrary below reads
 // paradee_supported() and asr_supported() from the built code and requires
 // both to return 1.
+//
+// ASR: LLAMA_BUILD_PARAKEET=ON adds parakeet_lib, which omnivoice folds into
+// elizainference (ELIZA_ENABLE_PARAKEET). mmap_acquire("asr") then serves the
+// eliza_inference_asr_* surface, including asr_stream_*, from a parakeet-tdt
+// GGUF under <bundle>/asr/ (Phonon-2, the default mobile ASR), and keeps the
+// Qwen3-ASR mtmd path for a bundle that carries that pair instead
+// (ELIZA_ASR_BACKEND=qwen3|parakeet overrides, ELIZA_ASR_THREADS sets threads).
+// The parakeet kernels pick dotprod/i8mm (arm64) or AVX2 (x86_64) at runtime
+// and compile those files with their own target flags, so the SIMD floor
+// above is unchanged.
 const espeakPrefix = await ensureEspeakNg({
   dir:
     espeakArg ||
@@ -397,6 +437,7 @@ const baseConfigure = [
   "-DKOKORO_ENABLE_ESPEAK=OFF",
   "-DLLAMA_BUILD_PARADEE=ON",
   "-DLLAMA_BUILD_MISAKI_G2P=ON",
+  "-DLLAMA_BUILD_PARAKEET=ON",
   "-DMISAKI_G2P_ESPEAK=ON",
   `-DMISAKI_ESPEAK_INCLUDE_DIR=${path.join(espeakPrefix, "include")}`,
   `-DMISAKI_ESPEAK_LIBRARY=${path.join(espeakPrefix, "lib", "libespeak-ng.a")}`,
@@ -405,6 +446,9 @@ const baseConfigure = [
   "-DLLAMA_BUILD_TESTS=OFF",
   "-DLLAMA_BUILD_SERVER=OFF",
   "-DLLAMA_CURL=OFF",
+  // Video shells out to FFmpeg through posix_spawn (Android API 28+).
+  // This mobile library supports older APIs and only embeds audio/image mtmd.
+  "-DMTMD_VIDEO=OFF",
 ];
 
 if (variant === "cpu") {
@@ -475,6 +519,15 @@ if (!/\bespeak_TextToPhonemes\b/.test(builtSymbols)) {
   die(
     `${builtSo} does not link eSpeak NG; misaki would spell out words outside its lexicon`,
   );
+}
+// parakeet_lib is static and hidden too; without it asr_stream_supported()
+// stays 0 and the bundle's Phonon-2 GGUF would fall through to Qwen3-ASR.
+for (const symbol of ["pk_model_load", "pk_stream_open"]) {
+  if (!new RegExp(`\\b${symbol}\\b`).test(builtSymbols)) {
+    die(
+      `${builtSo} does not link parakeet_lib (${symbol}); configure with -DLLAMA_BUILD_PARAKEET=ON`,
+    );
+  }
 }
 log(
   `voice ABI ${voiceReport.abiVersion}: ${Object.entries(voiceReport.probes)

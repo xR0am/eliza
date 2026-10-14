@@ -477,10 +477,13 @@ const WEEKDAY_NAME_PATTERN = new RegExp(
   "iu",
 );
 // Korean and Chinese put the week qualifier before the weekday name
-// ("다음 주 금요일", "下周五", "下周星期五", "下周的星期五"). Past and
-// every-week forms name no single upcoming date, so they are left unresolved.
+// ("다음 주 금요일", "下周五", "下周星期五", "下周的星期五"; week after next:
+// "다다음 주 금요일", "下下周五"). Past and every-week forms name no single
+// upcoming date, so they are left unresolved.
 const CJK_NEXT_WEEK_QUALIFIER =
-  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)(?:\s*의)?|下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
+  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)(?:\s*의)?|(?<!下)下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
+const CJK_WEEK_AFTER_NEXT_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:다다음\s*주|다담주)(?:\s*의)?|(?<!下)下下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
 const CJK_UNRESOLVED_WEEK_QUALIFIER =
   /(?:(?<![\p{L}\p{N}])(?:지난\s*주|지난|저번\s*주|저번|매주|매)(?:\s*의)?|(?:上个?|每个?)(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
 // Accepted alternate spellings for planner details live beside the
@@ -1797,9 +1800,15 @@ export function parseExplicitLocalDate(
     ? normalized.slice(0, weekdayMatch.index)
     : "";
   if (weekdayMatch && !CJK_UNRESOLVED_WEEK_QUALIFIER.test(beforeWeekday)) {
-    const qualifier = CJK_NEXT_WEEK_QUALIFIER.test(beforeWeekday)
-      ? "next"
-      : normalizeLookupKey(weekdayMatch[1] ?? "");
+    const cjkWeeksAhead = CJK_WEEK_AFTER_NEXT_QUALIFIER.test(beforeWeekday)
+      ? 2
+      : CJK_NEXT_WEEK_QUALIFIER.test(beforeWeekday)
+        ? 1
+        : 0;
+    const qualifier =
+      cjkWeeksAhead > 0
+        ? "cjk-week"
+        : normalizeLookupKey(weekdayMatch[1] ?? "");
     const weekdayKey = normalizeLookupKey(weekdayMatch[2] ?? "");
     const targetWeekday = WEEKDAY_MAP[weekdayKey];
     if (targetWeekday !== undefined) {
@@ -1814,6 +1823,15 @@ export function parseExplicitLocalDate(
       let delta = (targetWeekday - currentWeekday + 7) % 7;
       if (qualifier === "next") {
         delta = delta === 0 ? 7 : delta + 7;
+      } else if (qualifier === "cjk-week") {
+        // 下周 / 다음 주 (下下周 / 다다음 주) name the weekday inside the
+        // Monday-start week one (two) weeks ahead, so count to that Monday,
+        // then into the week.
+        const mondayIndex = (weekday: number) => (weekday + 6) % 7;
+        delta =
+          7 * cjkWeeksAhead -
+          mondayIndex(currentWeekday) +
+          mondayIndex(targetWeekday);
       }
       return addDaysToLocalDate(
         {

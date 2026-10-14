@@ -44,6 +44,20 @@ final class VoiceNative {
 
     static native int nativeAsrCancel(long ctx);
 
+    static native int nativeAsrStreamSupported();
+
+    static native long nativeAsrStreamOpen(long ctx, int sampleRate);
+
+    static native int nativeAsrStreamFeed(long stream, float[] pcm);
+
+    static native String nativeAsrStreamPartial(long stream);
+
+    static native String nativeAsrStreamFinish(long stream);
+
+    static native int nativeAsrStreamCancel(long stream);
+
+    static native void nativeAsrStreamClose(long stream);
+
     static native int nativeMmapAcquire(long ctx, String region);
 
     static native int nativeMmapEvict(long ctx, String region);

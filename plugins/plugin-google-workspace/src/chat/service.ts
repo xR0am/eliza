@@ -718,7 +718,11 @@ export class GoogleChatService extends Service implements IGoogleChatService {
       }));
     }
 
-    const url = `${CHAT_API_BASE}/${options.space}/messages`;
+    // Without messageReplyOption, Chat ignores thread.name and starts a new
+    // thread (MESSAGE_REPLY_OPTION_UNSPECIFIED).
+    const url = options.thread
+      ? `${CHAT_API_BASE}/${options.space}/messages?messageReplyOption=REPLY_MESSAGE_OR_FAIL`
+      : `${CHAT_API_BASE}/${options.space}/messages`;
 
     const result = await this.fetchApi<{ name?: string }>(
       url,

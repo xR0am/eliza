@@ -73,6 +73,7 @@ export {
   dispatchRoute,
 } from "./api/dispatch-route.ts";
 export * from "./api/early-logs.ts";
+export { EPHEMERAL_AGENT_EVENT_STREAMS } from "./api/event-hub.ts";
 export {
   CLOUD_INFERENCE_NO_API_KEY_ERROR,
   hasCloudApiKeyForInference,

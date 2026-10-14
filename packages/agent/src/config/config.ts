@@ -43,7 +43,11 @@ import {
   isDevCloudInternalEnvKey,
   resolveDevCloudEnvAuthority,
 } from "./dev-cloud-env-authority.ts";
-import { collectConfigEnvVars, collectConnectorEnvVars } from "./env-vars.ts";
+import {
+  collectConfigEnvVars,
+  collectConnectorEnvVars,
+  writeConfigEnvValue,
+} from "./env-vars.ts";
 import { resolveConfigIncludes } from "./includes.ts";
 import { normalizeModelMetadataInConfig } from "./model-metadata.ts";
 import { resolveConfigPath } from "./paths.ts";
@@ -139,7 +143,7 @@ function applyConfigEnvToProcessEnv(entries: Record<string, string>): void {
     // every such call, and downstream `runtime.getSetting()` would hand the
     // sentinel to consumers like plugin-elizacloud, producing 401s.
     if (isVaultRef(value)) continue;
-    process.env[key] = value;
+    writeConfigEnvValue(key, value);
   }
 }
 

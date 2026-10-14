@@ -80,8 +80,9 @@ export function readMonoPcm16Wav(bytes: Buffer): {
 }
 
 /**
- * Speech recognition through `host-asr-worker`: Qwen3-ASR-0.6B on
- * libelizainference, with no text model loaded.
+ * Speech recognition through `host-asr-worker` on libelizainference, with no
+ * text model loaded: Phonon-2 (Parakeet-TDT) when ELIZA_ASR_MODEL_DIR has
+ * `asr/phonon-2-fv5.gguf`, otherwise the Qwen3-ASR-0.6B pair.
  */
 export class StandaloneAsrService extends StandaloneSpeechService<string> {
   protected readonly environment = [

@@ -13,8 +13,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #
 #   ELIZA_VOICE_JNI_CLASS    JNI class name that declares the natives.
 #   ELIZA_VOICE_JNI_SUBSET   full  = every native (the ai.elizaos.app host).
-#                            voice = context, Paradee TTS, ASR, cancel and
-#                                    memory regions (paradee-voice library).
+#                            voice = context, Paradee TTS, ASR (batch and
+#                                    streaming), cancel and memory regions
+#                                    (paradee-voice library).
 #   ELIZA_VOICE_JNI_LIBRARY  Output library name (System.loadLibrary name).
 #   ELIZAVOICE_FFI_INCLUDE_DIR      Fork tools/omnivoice/include.
 #   ELIZAVOICE_INFERENCE_LIB_DIR    Directory with <abi>/libelizainference.so,

@@ -18,6 +18,90 @@ import type {
 import type { ChatEvent } from "./adapters/types";
 import type { NetworkConsentLedger } from "./network-compliance";
 
+/** Canonical Shared admission policy parsing and scope matching, preserved from its EA owner. */
+export interface NetworkIngressScope {
+  project: string;
+  platform: "blooio" | "twilio";
+  connectorAccountId: string;
+  phoneNumber: string;
+  messageId: string;
+  message: string;
+}
+export interface NetworkAdmissionPolicy {
+  phoneNumber: string;
+  project: "eliza-app";
+  platform: "blooio" | "twilio";
+  connectorAccountId: string;
+  messageIdPrefix: string;
+  userId: string;
+  organizationId: string;
+}
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
+export function parseNetworkAdmissionPolicy(
+  raw: string | undefined,
+): NetworkAdmissionPolicy | undefined {
+  if (!raw || raw.length > 2048) return undefined;
+  try {
+    const p = JSON.parse(raw) as NetworkAdmissionPolicy;
+    if (
+      !p ||
+      typeof p !== "object" ||
+      Array.isArray(p) ||
+      Object.keys(p).sort().join() !==
+        [
+          "phoneNumber",
+          "project",
+          "platform",
+          "connectorAccountId",
+          "messageIdPrefix",
+          "userId",
+          "organizationId",
+        ]
+          .sort()
+          .join() ||
+      p.project !== "eliza-app" ||
+      typeof p.phoneNumber !== "string" ||
+      !/^\+[1-9]\d{6,14}$/u.test(p.phoneNumber) ||
+      p.messageIdPrefix !== `${p.platform}:${p.project}:` ||
+      !["blooio", "twilio"].includes(p.platform) ||
+      typeof p.connectorAccountId !== "string" ||
+      !p.connectorAccountId.trim() ||
+      p.connectorAccountId.length > 160 ||
+      typeof p.messageIdPrefix !== "string" ||
+      !p.messageIdPrefix ||
+      p.messageIdPrefix.length > 80 ||
+      typeof p.userId !== "string" ||
+      typeof p.organizationId !== "string" ||
+      !UUID.test(p.userId) ||
+      !UUID.test(p.organizationId)
+    )
+      return undefined;
+    return p;
+  } catch {
+    // error-policy:J3 Malformed untrusted policy is invalid; no authority is fabricated.
+    return undefined;
+  }
+}
+/** Invoked before any account resolution; a signature is still required separately. */
+export function networkIngressMatchesPolicy(
+  ingress: NetworkIngressScope,
+  policy: NetworkAdmissionPolicy | undefined,
+  enabled: string | undefined,
+): boolean {
+  return (
+    enabled === "true" &&
+    !!policy &&
+    ingress.project === policy.project &&
+    ingress.platform === policy.platform &&
+    ingress.connectorAccountId === policy.connectorAccountId &&
+    ingress.phoneNumber === policy.phoneNumber &&
+    ingress.messageId.startsWith(policy.messageIdPrefix) &&
+    ingress.messageId.length > policy.messageIdPrefix.length &&
+    /^\+[1-9]\d{6,14}$/u.test(ingress.phoneNumber) &&
+    !!ingress.message.trim()
+  );
+}
+
 export interface NetworkOpenTurn {
   channel: TurnRequest["channel"];
   app: NetworkAppId;

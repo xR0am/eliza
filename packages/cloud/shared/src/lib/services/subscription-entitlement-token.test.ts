@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   __resetEntitlementSigningCacheForTests,
   ENTITLEMENT_AUDIENCE,
+  ENTITLEMENT_FORMAT_VERSION,
   ENTITLEMENT_TYPE,
   EntitlementSigningUnavailableError,
   entitlementStatusForSubscription,
@@ -101,6 +102,7 @@ describe("subscription entitlement JWS", () => {
     expect(header.crit).toBeUndefined();
     const iat = now / 1000;
     expect(claims).toEqual({
+      ver: 2,
       iss: ISSUER,
       aud: ENTITLEMENT_AUDIENCE,
       sub: USER,
@@ -130,6 +132,44 @@ describe("subscription entitlement JWS", () => {
     expect((claims.exp as number) - iat).toBeLessThanOrEqual(3600);
     expect(claims.rfa as number).toBeGreaterThan(iat);
     expect(claims.rfa as number).toBeLessThan(claims.exp as number);
+  });
+
+  test("v2 carries the allowance period in micro-dollars and expires when it resets", async () => {
+    expect(ENTITLEMENT_FORMAT_VERSION).toBe(2);
+    const now = Date.parse("2026-10-31T23:50:00Z");
+    const token = await signSubscriptionEntitlement(
+      {
+        userId: USER,
+        organizationId: ORG,
+        now,
+        summary: {
+          ...activeGrant,
+          allowance: {
+            unit: "usd_micros",
+            granted: 25_000_000,
+            remaining: 12_345_678,
+            periodStart: new Date("2026-10-01T00:00:00Z"),
+            resetsAt: new Date("2026-11-01T00:00:00Z"),
+          },
+        },
+      },
+      env(),
+    );
+    const { claims } = await clientVerify(
+      token,
+      (await publishedEntitlementKeys(env())).keys as JsonWebKey[],
+    );
+    expect(claims.ver).toBe(2);
+    expect(claims.plan_allowance).toEqual({
+      unit: "usd_micros",
+      granted: 25_000_000,
+      remaining: 12_345_678,
+      periodStart: Date.parse("2026-10-01T00:00:00Z") / 1000,
+      resetsAt: Date.parse("2026-11-01T00:00:00Z") / 1000,
+    });
+    // v1 clients reject an `allowance` claim in an unknown unit; v2 never sends one.
+    expect(claims.allowance).toBeUndefined();
+    expect(claims.exp).toBe(Date.parse("2026-11-01T00:00:00Z") / 1000);
   });
 
   test("an organization-less user omits org", async () => {

@@ -11,6 +11,7 @@ import { ElizaError } from "@elizaos/core";
 import { and, desc, eq, gt, isNull, lte } from "drizzle-orm";
 import { isProductionDeployment } from "../../lib/config/deployment-environment";
 import { getCloudAwareEnv } from "../../lib/runtime/cloud-bindings";
+import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 import { resolveSubscriptionPlanDefinition } from "../../lib/services/subscription-catalog";
 import type { DbTransaction } from "../client";
 import { writeTransaction } from "../helpers";
@@ -195,6 +196,8 @@ export class SubscriptionGrantsRepository {
     tx: DbTransaction,
     input: RedeemSubscriptionGrantInput,
   ): Promise<RedeemSubscriptionGrantResult> {
+    await ensureInferencePolicyMutation(tx, input.organizationId);
+
     // Billing lock order: organization first, then the shared code row.
     const [organization] = await tx
       .select({
@@ -470,6 +473,8 @@ export class SubscriptionGrantsRepository {
         grantId: input.grantId,
       });
     const organizationId = target.organization_id;
+    await ensureInferencePolicyMutation(tx, organizationId);
+
     // Billing lock order: organization first, then its grant rows.
     await tx
       .select({ id: organizations.id })

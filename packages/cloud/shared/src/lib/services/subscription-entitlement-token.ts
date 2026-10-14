@@ -17,22 +17,41 @@
  * key-set cache (ENTITLEMENT_KEYS_MAX_AGE_SECONDS); (2) make it the signing key
  * and move the old public key to PREVIOUS, clearing NEXT; (3) clear PREVIOUS
  * after the old tokens expire (ENTITLEMENT_LIFETIME_SECONDS).
+ *
+ * Format versions (`ver` claim; the `typ` header stays the same, so changes
+ * are additive and a client ignores claims it does not know):
+ *   v1 (no `ver`)  plan, services
+ *   v2             adds `plan_allowance` when the plan has a current
+ *                  allowance period. Cloud keeps allowance in US dollars, so
+ *                  the claim states its unit (`usd_micros`, integer millionths
+ *                  of a dollar). It is a new claim name because v1 clients
+ *                  reject an `allowance` claim whose unit is not requests or
+ *                  tokens.
+ * A breaking change needs a new `typ`, which old clients refuse explicitly.
  */
+
 import { eq } from "drizzle-orm";
 import { exportJWK, importPKCS8, importSPKI, type JWK, SignJWT } from "jose";
 import { dbWrite } from "../../db/client";
-import { readEligibleSubscriptionAllowance } from "../../db/repositories/subscription-allowance-eligibility";
+import {
+  observeSubscriptionAllowanceEligibility,
+  readEligibleSubscriptionAllowance,
+} from "../../db/repositories/subscription-allowance-eligibility";
+import { moneyToMicros } from "../../db/repositories/subscription-funding-reservations";
 import {
   type BillingSubscriptionStatus,
   billingSubscriptions,
 } from "../../db/schemas/billing-subscriptions";
 import { subscriptionGrants } from "../../db/schemas/subscription-grants";
 import { getCloudAwareEnv } from "../runtime/cloud-bindings";
+import { logger } from "../utils/logger";
 import { readOrganizationQuotaPolicyInTransaction } from "./organization-quota-policy";
 import { resolveSubscriptionPlanDefinition } from "./subscription-catalog";
 
 export const ENTITLEMENT_TYPE = "eliza-entitlement+jwt";
 export const ENTITLEMENT_AUDIENCE = "eliza-alpha-phone";
+/** Current claim-set version (see the format note above). */
+export const ENTITLEMENT_FORMAT_VERSION = 2;
 /** Client ceiling is 60 minutes; Cloud issues well inside it. */
 export const ENTITLEMENT_LIFETIME_SECONDS = 30 * 60;
 /** Cache lifetime of the published key set (GET /entitlement-keys). */
@@ -47,6 +66,25 @@ export interface EntitlementPlanSummary {
   source: "subscription" | "grant" | "none";
   /** End of the current effective window, when one is known. */
   effectiveUntil: Date | null;
+  /** Current allowance period; null or absent when there is none or it was not read. */
+  allowance?: EntitlementPlanAllowance | null;
+  /** Rate tier of the policy that admits inference; keys the plan request buckets. */
+  rateTier?: string | null;
+}
+
+/**
+ * The current allowance period in Cloud's own unit. Amounts are integer
+ * millionths of a US dollar (the allowance columns are numeric(16,6) USD).
+ */
+export interface EntitlementPlanAllowance {
+  unit: "usd_micros";
+  /** Granted for the period, adjustments included. */
+  granted: number;
+  /** Not yet spent or reserved: amounts Cloud holds for requests in flight are excluded. */
+  remaining: number;
+  periodStart: Date;
+  /** Period end. Unused allowance does not roll over. */
+  resetsAt: Date;
 }
 
 export class EntitlementSigningUnavailableError extends Error {
@@ -203,9 +241,13 @@ export function entitlementStatusForSubscription(
   }
 }
 
-/** Reads the organization's current plan state from the same policy that admits inference. */
+/**
+ * Reads the organization's current plan state from the same policy that admits
+ * inference. With `allowance`, it also reads the current allowance period.
+ */
 export async function readOrganizationEntitlementSummary(
   organizationId: string,
+  options: { allowance?: boolean } = {},
 ): Promise<EntitlementPlanSummary> {
   return dbWrite.transaction(
     async (tx) => {
@@ -213,6 +255,8 @@ export async function readOrganizationEntitlementSummary(
       const until = policy.authority.effectiveUntil
         ? new Date(policy.authority.effectiveUntil)
         : null;
+      const rateTier = policy.tier.status === "available" ? policy.tier.value.tierName : null;
+      let summary: EntitlementPlanSummary | null = null;
       if (policy.authority.source === "promo_grant" && policy.authority.sourceGrantId) {
         const [grant] = await tx
           .select({
@@ -222,7 +266,7 @@ export async function readOrganizationEntitlementSummary(
           .from(subscriptionGrants)
           .where(eq(subscriptionGrants.id, policy.authority.sourceGrantId));
         if (grant)
-          return {
+          summary = {
             plan: {
               id: grant.plan_key,
               name: planName(grant.plan_key, grant.catalog_version),
@@ -232,7 +276,11 @@ export async function readOrganizationEntitlementSummary(
             effectiveUntil: until,
           };
       }
-      if (policy.authority.source === "subscription" && policy.authority.sourceSubscriptionId) {
+      if (
+        !summary &&
+        policy.authority.source === "subscription" &&
+        policy.authority.sourceSubscriptionId
+      ) {
         const [subscription] = await tx
           .select({
             status: billingSubscriptions.status,
@@ -242,7 +290,7 @@ export async function readOrganizationEntitlementSummary(
           .from(billingSubscriptions)
           .where(eq(billingSubscriptions.id, policy.authority.sourceSubscriptionId));
         if (subscription)
-          return {
+          summary = {
             plan: {
               id: subscription.plan_key,
               name: planName(subscription.plan_key, subscription.catalog_version),
@@ -255,14 +303,56 @@ export async function readOrganizationEntitlementSummary(
             effectiveUntil: until,
           };
       }
-      return {
-        plan: { id: "free", name: planName("free", null), status: "none" },
-        source: "none",
-        effectiveUntil: null,
-      };
+      if (!summary)
+        return {
+          plan: { id: "free", name: planName("free", null), status: "none" },
+          source: "none",
+          effectiveUntil: null,
+          rateTier,
+        };
+      if (!options.allowance || !policy.subscriptionFunded) return { ...summary, rateTier };
+      const eligibility = await observeSubscriptionAllowanceEligibility(
+        tx,
+        organizationId,
+        new Date(policy.observedAt),
+        policy,
+      );
+      if (eligibility.status === "unavailable") {
+        // An allowance that needs reconciliation is not shown; the plan state
+        // is still reported and Cloud still decides each request.
+        logger.warn("[SubscriptionEntitlement] Allowance not reported", {
+          organizationId,
+          code: eligibility.code,
+        });
+        return { ...summary, rateTier, allowance: null };
+      }
+      const period = eligibility.period;
+      return { ...summary, rateTier, allowance: period ? allowanceFromPeriod(period) : null };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );
+}
+
+function allowanceFromPeriod(period: {
+  granted_amount: string;
+  adjustment_amount: string;
+  available_amount: string;
+  period_start: Date;
+  expires_at: Date;
+}): EntitlementPlanAllowance | null {
+  const granted =
+    moneyToMicros(period.granted_amount, "granted_amount") +
+    moneyToMicros(period.adjustment_amount, "adjustment_amount");
+  const remaining = moneyToMicros(period.available_amount, "available_amount");
+  // numeric(16,6) can exceed a JSON-safe integer; such an allowance is not reported.
+  if (granted > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return {
+    unit: "usd_micros",
+    granted: Number(granted),
+    remaining: Number(remaining),
+    periodStart: period.period_start,
+    resetsAt: period.expires_at,
+  };
 }
 
 /**
@@ -313,17 +403,28 @@ export async function signSubscriptionEntitlement(
   // Expire with the plan window so a client sees a plan change promptly. The
   // token never outlives the window it reports (one second is the floor, so
   // exp stays after iat).
-  const until = input.summary.effectiveUntil
-    ? Math.floor(input.summary.effectiveUntil.getTime() / 1000)
-    : null;
-  if (until !== null && until < exp) exp = Math.max(until, iat + 1);
+  // The same holds for the allowance period, whose figures are void after it resets.
+  const allowance = input.summary.allowance ?? null;
+  for (const end of [input.summary.effectiveUntil, allowance?.resetsAt]) {
+    const until = end ? Math.floor(end.getTime() / 1000) : null;
+    if (until !== null && until < exp) exp = Math.max(until, iat + 1);
+  }
   const rfa = iat + Math.floor((exp - iat) / 2);
   const claims: Record<string, unknown> = {
+    ver: ENTITLEMENT_FORMAT_VERSION,
     org: input.organizationId ?? undefined,
     rfa,
     plan: input.summary.plan,
     services: ["inference"],
   };
+  if (allowance)
+    claims.plan_allowance = {
+      unit: allowance.unit,
+      granted: allowance.granted,
+      remaining: allowance.remaining,
+      periodStart: Math.floor(allowance.periodStart.getTime() / 1000),
+      resetsAt: Math.floor(allowance.resetsAt.getTime() / 1000),
+    };
   if (input.organizationId === null) delete claims.org;
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "ES256", typ: ENTITLEMENT_TYPE, kid: config.kid })

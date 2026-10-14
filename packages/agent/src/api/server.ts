@@ -178,9 +178,11 @@ import {
 } from "./device-action-routes.ts";
 import { flushEarlyLogs, listenForUiLogs } from "./early-logs.ts";
 import {
+  buildEphemeralAgentEventEnvelope,
   createApiEventHub,
   createEventSocketBackpressureGuard,
   createEventSocketLivenessSweep,
+  EPHEMERAL_AGENT_EVENT_STREAMS,
 } from "./event-hub.ts";
 import {
   type ApiStatusComposer,
@@ -1024,6 +1026,23 @@ function getOrCreateRuntimeOperationManager(
   return cachedRuntimeOperationManager;
 }
 
+/** API requests only the owner may make; reads of settings stay open. */
+function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
+  const write = method !== "GET" && method !== "HEAD";
+  const under = (base: string) =>
+    pathname === base || pathname.startsWith(`${base}/`);
+  return (
+    under("/api/memory") ||
+    under("/api/memories") ||
+    // Served by the memory handler from the same stored notes.
+    under("/api/context/quick") ||
+    (write &&
+      (pathname.startsWith("/api/wallet/") ||
+        under("/api/config") ||
+        under("/api/character")))
+  );
+}
+
 // One process-wide governance gate shared across runtime (re)registrations, so a
 // restart doesn't reset the proactive-comment cooldowns/caps (#8792).
 const proactiveInteractionGate = new ProactiveInteractionGate();
@@ -1531,6 +1550,29 @@ async function handleRequestForViewClient(
     method !== "OPTIONS" &&
     (pathname === "/api/trajectories" ||
       pathname.startsWith("/api/trajectories/")) &&
+    !isTrajectoryOwnerRequest(
+      req,
+      method,
+      pathname,
+      await resolveHostSessionAuthorization(),
+    )
+  ) {
+    json(res, { error: "Owner role required" }, 403);
+    return;
+  }
+  // A paired USER session passes the shared gate above. Wallet writes sign,
+  // broadcast or replace the owner's keys; config and character writes change
+  // what the agent runs and who it sends model traffic to; memories are the
+  // owner's private store. Require the owner before any of them dispatch.
+  // Once setup is persisted, onboarding rewrites the same owner config,
+  // credentials and character, so it is owner-only too. Before setup it stays
+  // open, like GET /api/wallet/keys.
+  if (
+    method !== "OPTIONS" &&
+    (isOwnerOnlyApiRequest(method, pathname) ||
+      (method === "POST" &&
+        pathname === "/api/first-run" &&
+        hasPersistedFirstRunState(state.config))) &&
     !isTrajectoryOwnerRequest(
       req,
       method,
@@ -3929,6 +3971,24 @@ export async function startApiServer(opts?: {
       return;
     }
     const unsubAgentEvents = svc.subscribe((event) => {
+      if (EPHEMERAL_AGENT_EVENT_STREAMS.has(event.stream)) {
+        // Live-only (e.g. interim voice transcripts): no replay buffer, no
+        // conversation routing.
+        broadcastWs(
+          buildEphemeralAgentEventEnvelope({
+            type: "agent_event",
+            ts: event.ts,
+            runId: event.runId,
+            seq: event.seq,
+            stream: event.stream,
+            sessionKey: event.sessionKey,
+            agentId: event.agentId,
+            roomId: event.roomId,
+            payload: event.data,
+          }),
+        );
+        return;
+      }
       pushEvent({
         type: "agent_event",
         ts: event.ts,
