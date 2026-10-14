@@ -37,7 +37,7 @@ test("immutable plan pins the proven Bookworm Vulkan portable build", () => {
   const plan = buildPlan({ jobs: 7, out: "/tmp/fused" });
   assert.equal(plan.mmdebstrap.mode, "unshare");
   assert.equal(plan.mmdebstrap.snapshot, "20250101T000000Z");
-  assert.equal(plan.fork.commit, "6543d9078051a9bb194c2ef5c2995f003c5158de");
+  assert.equal(plan.fork.commit, "e09522dbb4f0cd6c8ac62da2733630e4a47012fa");
   assert.equal(
     plan.vulkanHeaders.commit,
     "e3b1eec08173d6b825cd3ac88c885a63b621504a",
