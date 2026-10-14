@@ -79,7 +79,8 @@ export class McpService extends Service {
     await this.initPromise;
   }
   async stop(): Promise<void> {
-    for (const name of this.connections.keys()) {
+    // Failed transport creation can leave retry state without a live connection.
+    for (const name of new Set([...this.connections.keys(), ...this.connectionStates.keys()])) {
       await this.disconnect(name);
     }
   }
