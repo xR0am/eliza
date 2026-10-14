@@ -372,7 +372,9 @@ export class ContextualPermissionSystem {
       }
       if (
         elevation.entityId === request.entityId &&
-        elevation.requestedPermission.action === request.action
+        elevation.requestedPermission.action === request.action &&
+        (elevation.requestedPermission.resource === "*" ||
+          elevation.requestedPermission.resource === request.resource)
       ) {
         return {
           allowed: true,
