@@ -1036,10 +1036,39 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     under("/api/memories") ||
     // Served by the memory handler from the same stored notes.
     under("/api/context/quick") ||
+    // Whole-agent data: export/snapshot carry the memories and secrets,
+    // restore/import/reset replace or wipe them.
+    under("/api/snapshot") ||
+    pathname === "/api/restore" ||
+    under("/api/backups") ||
+    under("/api/agent/export") ||
+    (write &&
+      [
+        "import",
+        "reset",
+        "start",
+        "stop",
+        "restart",
+        "pause",
+        "resume",
+        "autonomy",
+      ].some((op) => under(`/api/agent/${op}`))) ||
+    // Legacy restart endpoint: exits and restarts the whole agent process.
+    (write && pathname === "/api/restart") ||
     (write &&
       (pathname.startsWith("/api/wallet/") ||
         under("/api/config") ||
-        under("/api/character")))
+        under("/api/character") ||
+        // Deleting a stored file removes the owner's attachments for good.
+        under("/api/files") ||
+        // Shell, trading, automation and computer-use permissions.
+        under("/api/permissions") ||
+        // Bot tokens and allowlists of the owner's connectors. The provider's
+        // OAuth callback is authenticated by its state/code, not the owner.
+        (under("/api/connectors") &&
+          !/^\/api\/connectors\/[^/]+\/oauth\/callback\/?$/.test(pathname)) ||
+        // Who receives the model traffic, and with which key.
+        pathname === "/api/provider/switch"))
   );
 }
 
@@ -4475,14 +4504,24 @@ export async function startApiServer(opts?: {
       void sendInitialStatus();
       // Replay stays synchronous so newer live events cannot overtake history
       // while the optional model-readiness probe reads the local registry.
+      // Pagination stays synchronous for the same reason: every page must
+      // drain before the live subscription attaches, or a live event could
+      // be delivered ahead of the history it belongs to.
       try {
-        const replay = selectReplayEvents(
-          state.eventBuffer,
-          replayCursor,
-          DEFAULT_REPLAY_LIMIT,
-        );
-        for (const event of replay) {
-          sendWebSocket(ws, JSON.stringify(event));
+        let cursor = replayCursor;
+        const maxPages =
+          Math.ceil(state.eventBuffer.length / DEFAULT_REPLAY_LIMIT) + 1;
+        for (let page = 0; page < maxPages; page++) {
+          const result = selectReplayEvents(
+            state.eventBuffer,
+            cursor,
+            DEFAULT_REPLAY_LIMIT,
+          );
+          for (const event of result.events) {
+            sendWebSocket(ws, JSON.stringify(event));
+          }
+          if (!result.hasMore || result.nextCursor === null) break;
+          cursor = result.nextCursor;
         }
       } catch (err) {
         logger.error(

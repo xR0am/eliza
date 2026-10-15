@@ -12,8 +12,37 @@ const fail = () =>
   );
 const record = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
-const scoped = (v: unknown) =>
+const scoped = (v: unknown): v is string =>
   typeof v === "string" && /^alpha-google:[a-f0-9]{64}$/.test(v);
+
+const MANAGED_CALENDAR_BROKER_GRANT_ID = "alpha-google:broker";
+
+export function managedCalendarPlaceholder(
+  grantId?: string,
+): LifeOpsCalendarSummary {
+  const resolvedGrantId = scoped(grantId)
+    ? grantId
+    : MANAGED_CALENDAR_BROKER_GRANT_ID;
+  return {
+    provider: "google",
+    side: "owner",
+    grantId: resolvedGrantId,
+    connectorAccountId: resolvedGrantId,
+    accountEmail: null,
+    calendarId: "all",
+    summary: "Managed Google Calendar",
+    description: null,
+    primary: false,
+    accessRole: "reader",
+    backgroundColor: null,
+    foregroundColor: null,
+    timeZone: null,
+    selected: true,
+    includeInFeed: true,
+    selectionVersion: 0,
+  };
+}
+
 export function createManagedCalendarRead(
   env: NodeJS.ProcessEnv,
   request: typeof fetch,
@@ -69,6 +98,7 @@ export function createManagedCalendarRead(
     return value;
   }
   return {
+    acceptsGrantId: (grantId?: string) => !grantId || scoped(grantId),
     owns: (calendar: LifeOpsCalendarSummary) => scoped(calendar.grantId),
     async sources(): Promise<LifeOpsCalendarSummary[]> {
       const { calendars } = await call({ operation: "sources" });

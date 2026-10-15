@@ -75,9 +75,11 @@ export async function installSubscriptionGrantTestSchema(
 ): Promise<void> {
   const migration = (
     await Promise.all(
-      ["0542_subscription_grant_codes.sql", "0546_lifetime_subscription_grants.sql"].map((name) =>
-        readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8"),
-      ),
+      [
+        "0542_subscription_grant_codes.sql",
+        "0546_lifetime_subscription_grants.sql",
+        "0547_subscription_grant_calendar_terms.sql",
+      ].map((name) => readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8")),
     )
   ).join("\n--> statement-breakpoint\n");
   const statements = migration

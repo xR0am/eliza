@@ -19,7 +19,12 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const LINKEDIN_API_BASE = "https://api.linkedin.com/v2";
 
@@ -96,7 +101,7 @@ async function linkedinApiRequest<T>(
       }
       const json = (await response.json()) as T & { message?: string; status?: number };
       if (json.message && json.status !== undefined && json.status >= 400)
-        throw new Error(json.message);
+        throw new SocialApiRejectionError(json.message);
       return json;
     },
     { platform: "linkedin", maxRetries: 3, ...retry },
@@ -302,11 +307,7 @@ export const linkedinProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 outbound LinkedIn publish boundary — the failure surfaces as a typed `success: false` PostResult the caller must check, never a fabricated success.
       logger.error("[LinkedIn] Post failed", { error });
-      return {
-        platform: "linkedin",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("linkedin", error);
     }
   },
 
@@ -485,11 +486,7 @@ export const linkedinProvider: SocialMediaProvider = {
       };
     } catch (error) {
       // error-policy:J1 outbound LinkedIn comment boundary — failure surfaces as a typed `success: false` PostResult the caller must check.
-      return {
-        platform: "linkedin",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("linkedin", error);
     }
   },
 
