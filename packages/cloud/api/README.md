@@ -384,3 +384,30 @@ must provision, for each environment:
 
 Ops also own the update schedule (dataset freshness), monitoring, capacity and
 ODbL obligations. Transit, traffic and map tiles are not served.
+
+Maps uses a separate organization request allowance (Alpha P-56, issue #410).
+It never reserves or debits inference funds. Operators must set
+`ELIZA_CLOUD_MAPS_REQUEST_ALLOWANCES` to a selected JSON policy with
+`{selected:true,plans:{<planKey>:{requests:<integer>,windowSeconds:<integer>}}}`.
+No numeric defaults are provided. Zero requests is a valid closed allowance.
+Windows start at UTC epoch multiples of the selected duration. Policy changes
+retain use in the current window; a changed duration refuses until that window
+ends. Existing selected plan burst and sustained limits are both enforced in
+shared durable storage and carry across allowance window resets.
+
+POST Maps requests require `Idempotency-Key`. Admission consumes one request;
+repeating the same credential/request ID never grants another provider call.
+Cancellation before admission consumes nothing. Accepted requests, lost
+acknowledgements, and cancellation after admission stay consumed. Outcome
+updates are idempotent and do not refund or charge. Provider timeouts and lost
+outcome updates remain unknown. Durable replay records retain only credential
+identity, operation, admission time/window and outcome, with no query,
+coordinates, payload hash or provider response. These records are not expired
+because expiry would permit replay; account-erasure policy must cover them.
+
+Strong credential revocation and the organization DO binding are required.
+The route holds the primary policy read lock through admission. Identity cache
+reuse does not establish cache-only entitlement admission: ordinary policy
+writers do not synchronously fence every cached generation. Shared allowance
+correctness is implemented; deployed latency/audio and numeric policy selection
+remain separate acceptance work. Coverage metadata does not consume allowance.
