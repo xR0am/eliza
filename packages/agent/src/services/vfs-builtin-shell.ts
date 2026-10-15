@@ -457,9 +457,11 @@ async function searchTargets(
   targets: SearchTarget[],
 ): Promise<VfsBuiltinCommandResult> {
   const linesByTarget = targets.map((target) =>
-    target.contents.endsWith("\n")
-      ? target.contents.slice(0, -1).split(/\r?\n/)
-      : target.contents.split(/\r?\n/),
+    target.contents.length === 0
+      ? []
+      : target.contents.endsWith("\n")
+        ? target.contents.slice(0, -1).split(/\r?\n/)
+        : target.contents.split(/\r?\n/),
   );
   const search = await runVfsSearchPattern({
     pattern,
