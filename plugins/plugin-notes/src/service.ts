@@ -49,7 +49,7 @@ function notFound(id: string): ElizaError {
 
 type NoteLookupSelector = "title" | "query";
 
-function normalizedLookup(value: string): string {
+export function normalizedLookup(value: string): string {
   return value
     .normalize("NFC")
     .trim()
