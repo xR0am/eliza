@@ -1326,30 +1326,36 @@ export function createRateLimiter(
     if (!rateLimitEnabled) return;
 
     const admission = admissionQueue.then(async () => {
-      const now = Date.now();
+      while (true) {
+        const now = Date.now();
 
-      while (requestTimes.length > 0 && now - requestTimes[0] > intervalMs) {
-        requestTimes.shift();
-      }
-      while (
-        tokenUsage.length > 0 &&
-        now - tokenUsage[0].timestamp > intervalMs
-      ) {
-        tokenUsage.shift();
-      }
+        while (requestTimes.length > 0 && now - requestTimes[0] >= intervalMs) {
+          requestTimes.shift();
+        }
+        while (
+          tokenUsage.length > 0 &&
+          now - tokenUsage[0].timestamp >= intervalMs
+        ) {
+          tokenUsage.shift();
+        }
 
-      const currentTokens = tokenUsage.reduce(
-        (sum, usage) => sum + usage.tokens,
-        0,
-      );
-      const requestLimitExceeded = requestTimes.length >= requestsPerMinute;
-      const tokenLimitExceeded =
-        tokensPerMinute && currentTokens + estimatedTokens > tokensPerMinute;
+        const currentTokens = tokenUsage.reduce(
+          (sum, usage) => sum + usage.tokens,
+          0,
+        );
+        const requestLimitExceeded =
+          requestsPerMinute > 0 && requestTimes.length >= requestsPerMinute;
+        const tokenLimitExceeded =
+          tokensPerMinute && currentTokens + estimatedTokens > tokensPerMinute;
 
-      if (requestLimitExceeded || tokenLimitExceeded) {
+        if (!requestLimitExceeded && !tokenLimitExceeded) break;
+
         let timeToWait = 0;
-        if (requestLimitExceeded) {
-          timeToWait = Math.max(timeToWait, requestTimes[0] + intervalMs - now);
+        if (requestLimitExceeded && requestTimes.length > 0) {
+          timeToWait = Math.max(
+            timeToWait,
+            requestTimes[0] + intervalMs - now,
+          );
         }
         if (tokenLimitExceeded && tokenUsage.length > 0) {
           timeToWait = Math.max(
@@ -1357,9 +1363,7 @@ export function createRateLimiter(
             tokenUsage[0].timestamp + intervalMs - now,
           );
         }
-        if (timeToWait > 0) {
-          await new Promise((resolve) => setTimeout(resolve, timeToWait));
-        }
+        await new Promise((resolve) => setTimeout(resolve, timeToWait));
       }
 
       // Timestamp the call at its actual send time, not at the moment it
