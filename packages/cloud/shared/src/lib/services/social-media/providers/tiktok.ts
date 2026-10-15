@@ -23,7 +23,7 @@ import {
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
 import { assertSocialMediaBytesWithinBudget, decodeSocialMediaBase64 } from "../media-download";
-import { withRetry } from "../rate-limit";
+import { type RetryOptions, withRetry } from "../rate-limit";
 
 const TIKTOK_API_BASE = "https://open.tiktokapis.com/v2";
 
@@ -334,6 +334,7 @@ async function tiktokApiRequest<T>(
   endpoint: string,
   accessToken: string,
   options: RequestInit = {},
+  retry: Pick<RetryOptions, "replayUnknownOutcome"> = {},
 ): Promise<T> {
   const url = endpoint.startsWith("http") ? endpoint : `${TIKTOK_API_BASE}${endpoint}`;
 
@@ -360,7 +361,7 @@ async function tiktokApiRequest<T>(
       }
       return json;
     },
-    { platform: "tiktok", maxRetries: 3 },
+    { platform: "tiktok", maxRetries: 3, ...retry },
   );
 
   return data.data;
@@ -510,6 +511,8 @@ export const tiktokProvider: SocialMediaProvider = {
               },
             }),
           },
+          // A pulled video is published by the init call itself.
+          { replayUnknownOutcome: false },
         );
 
         // Wait for publish to complete

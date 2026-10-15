@@ -1,7 +1,12 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { blueskyProvider } from "./bluesky";
+import { discordProvider } from "./discord";
 import { linkedinProvider } from "./linkedin";
+import { metaProvider } from "./meta";
 import { redditProvider } from "./reddit";
+import { slackProvider } from "./slack";
+import { telegramProvider } from "./telegram";
+import { tiktokProvider } from "./tiktok";
 import { twitterProvider } from "./twitter";
 
 /**
@@ -103,6 +108,99 @@ test("twitter sends /tweets once and reports the unknown outcome", async () => {
   });
 
   const result = await twitterProvider.createPost({ accessToken: "token" }, { text: "Launch day" });
+
+  expect(seen.creates).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("telegram sends sendMessage once and reports the unknown outcome", async () => {
+  const seen = stubPlatform("/sendMessage", {
+    create: () => json({ ok: true, result: { message_id: 7, chat: { id: -100, type: "group" } } }),
+  });
+
+  const result = await telegramProvider.createPost(
+    { botToken: "123:abc" },
+    { text: "Launch day" },
+    { telegram: { chatId: "-100" } },
+  );
+
+  expect(seen.creates).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("discord sends a channel message once and reports the unknown outcome", async () => {
+  const seen = stubPlatform("/channels/42/messages", {
+    create: () => json({ id: "9", channel_id: "42", content: "Launch day" }),
+  });
+
+  const result = await discordProvider.createPost(
+    { botToken: "bot-token" },
+    { text: "Launch day" },
+    { discord: { channelId: "42" } },
+  );
+
+  expect(seen.creates).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("discord executes a webhook once and reports the unknown outcome", async () => {
+  const seen = stubPlatform("/api/webhooks/1/token", {
+    create: () => json({ id: "9", channel_id: "42", content: "Launch day" }),
+  });
+
+  const result = await discordProvider.createPost(
+    { webhookUrl: "https://discord.com/api/webhooks/1/token" },
+    { text: "Launch day" },
+  );
+
+  expect(seen.creates).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("slack sends chat.postMessage once and reports the unknown outcome", async () => {
+  const seen = stubPlatform("/chat.postMessage", {
+    create: () => json({ ok: true, ts: "1.2", channel: "C1", message: { ts: "1.2" } }),
+  });
+
+  const result = await slackProvider.createPost(
+    { botToken: "xoxb-token" },
+    { text: "Launch day" },
+    { slack: { channelId: "C1" } },
+  );
+
+  expect(seen.creates).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("facebook sends a page feed post once and reports the unknown outcome", async () => {
+  const seen = stubPlatform("/page-1/feed", {
+    create: () => json({ id: "page-1_1" }),
+  });
+
+  const result = await metaProvider.createPost(
+    { accessToken: "token" },
+    { text: "Launch day" },
+    { facebook: { pageId: "page-1" } },
+  );
+
+  expect(seen.creates).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("tiktok sends a pulled video init once and reports the unknown outcome", async () => {
+  const seen = stubPlatform("/post/publish/video/init/", {
+    create: () => json({ data: { publish_id: "p1" }, error: { code: "ok", message: "" } }),
+    "/post/publish/status/fetch/": () =>
+      json({
+        data: { status: "PUBLISH_COMPLETE", publicaly_available_post_id: ["v1"] },
+        error: { code: "ok", message: "" },
+      }),
+  });
+
+  const result = await tiktokProvider.createPost(
+    { accessToken: "token" },
+    { text: "Launch day", media: [{ type: "video", url: "https://cdn.example.com/v.mp4" }] },
+  );
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
