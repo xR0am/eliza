@@ -273,17 +273,16 @@ async function handleSetup(
     return true;
   }
 
-  let identityId: string;
-  let now: number;
-  const release = await acquireSetupMutex();
-  try {
-    if (await store.hasOwnerIdentity()) {
-      sendJsonResponse(res, 409, {
-        error: "already_initialized",
-        reason: "already_initialized",
-      });
-      return true;
-    }
+  // Fast path: answer 409 at once when an owner already exists. This check
+  // runs before the request body is read so a slow or stalled body cannot
+  // hold up other setup callers.
+  if (await store.hasOwnerIdentity()) {
+    sendJsonResponse(res, 409, {
+      error: "already_initialized",
+      reason: "already_initialized",
+    });
+    return true;
+  }
 
   const body = await readCompatJsonBody(req, res);
   if (body == null) return true;
@@ -308,8 +307,23 @@ async function handleSetup(
   }
 
   const passwordHash = await hashPassword(password);
-  identityId = crypto.randomUUID();
-  now = Date.now();
+  const identityId = crypto.randomUUID();
+  const now = Date.now();
+
+  // Take the lock only around the final check-and-create. Body reads and
+  // password hashing happen outside the lock: a stalled request body must
+  // not hold the process-global setup lock. The in-lock re-check keeps the
+  // original race fix — two requests that both passed the fast-path check
+  // still cannot both create an owner identity.
+  const release = await acquireSetupMutex();
+  try {
+    if (await store.hasOwnerIdentity()) {
+      sendJsonResponse(res, 409, {
+        error: "already_initialized",
+        reason: "already_initialized",
+      });
+      return true;
+    }
     await store.createIdentity({
       id: identityId,
       kind: "owner",
