@@ -61,6 +61,12 @@
 			"import": "./dist/protocol.js",
 			"default": "./dist/protocol.js"
 		},
+		"./security/redact": {
+			"eliza-source": "./src/security/redact.ts",
+			"types": "./dist/security/redact.d.ts",
+			"import": "./dist/security/redact.js",
+			"default": "./dist/security/redact.js"
+		},
 		"./speech": {
 			"eliza-source": "./src/speech.ts",
 			"types": "./dist/speech.d.ts",
