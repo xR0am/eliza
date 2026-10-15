@@ -172,12 +172,13 @@ async function runScriptSegment(
   const redirect = parseOutputRedirect(segment);
   if (redirect) {
     const { before, op, target } = redirect;
-    const result = await runCommandLine(vfs, cwd, before.trim());
-    if (result.exitCode !== 0) return result;
     const targetPath = resolveVirtualPath(cwd, stripQuotes(target));
     const existing = op === ">>" ? await readAppendBase(vfs, targetPath) : "";
+    // Open/truncate the target before execution, including a failing command.
+    await vfs.writeFile(targetPath, existing);
+    const result = await runCommandLine(vfs, cwd, before.trim());
     await vfs.writeFile(targetPath, existing + result.stdout);
-    return { exitCode: 0, stdout: "", stderr: result.stderr };
+    return { ...result, stdout: "" };
   }
   return runCommandLine(vfs, cwd, segment);
 }
