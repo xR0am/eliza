@@ -62,6 +62,10 @@ jobs:
           no-vision-deps: "true"
       - name: Build core contract
         run: bun run build:core
+      - name: Verify Network Personal room routes
+        run: bun run --cwd packages/cloud/api test network-personal-room-routes
+      - name: Verify Shared signed delivery and history
+        run: bun run --cwd packages/cloud/api test shared-runtime-cutover-reminder.miniflare
       - name: Repository verification
         env:
           # Root verification gives each Node task an 8 GB heap on a 16 GB runner.
