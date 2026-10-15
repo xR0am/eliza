@@ -17,6 +17,7 @@ import {
   type ReadMessageResult,
   type SearchMessagesFilters,
 } from "@elizaos/plugin-assistant";
+import { readGmailTextRange } from "@elizaos/plugin-google-workspace/gmail-text-range";
 import {
   managedGmailMessageReader,
   managedGmailReadFetcher,
@@ -120,10 +121,18 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
       request.requesterRoomId !== caller.roomId
     )
       throw unavailable("Gmail read requester changed.");
-    if ((request.unit ?? "byte") !== "byte" || (request.offset ?? 0) !== 0)
+    if (
+      (request.reference || (request.offset ?? 0) > 0) &&
+      !request.expectedRevision
+    )
       throw unavailable(
-        "This host supports complete byte reads. Read the exact message from offset zero.",
+        "Gmail continuation requires the recorded source revision.",
       );
+    if (
+      request.limit !== undefined &&
+      (!Number.isSafeInteger(request.limit) || request.limit < 1)
+    )
+      throw unavailable("Choose a positive Gmail read limit.");
     const id = request.messageId ?? request.reference;
     if (!id)
       throw unavailable("Select a Gmail message from the current inbox.");
@@ -131,17 +140,7 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
     const result = await this.reader(id);
     await owner(runtime, request.requester);
     const text = result.bodyText,
-      bytes = Buffer.byteLength(text),
       revision = createHash("sha256").update(text).digest("hex");
-    if (
-      request.limit !== undefined &&
-      (!Number.isSafeInteger(request.limit) ||
-        request.limit < 1 ||
-        bytes > request.limit)
-    )
-      throw unavailable(
-        `This message needs a complete read budget of ${bytes} bytes. No partial text was returned.`,
-      );
     if (
       request.expectedRevision !== undefined &&
       request.expectedRevision !== revision
@@ -149,8 +148,32 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
       throw unavailable(
         "Gmail message text changed. Read it again before continuing.",
       );
-    return {
+    const page = readGmailTextRange(
       text,
+      request.unit ?? "byte",
+      request.offset ?? 0,
+      request.limit,
+    );
+    if (request.limit !== undefined && Buffer.byteLength(page.text) > 65536)
+      throw unavailable(
+        "This Gmail unit page exceeds 64 KiB. Retry with byte units.",
+      );
+    const more = page.end < page.total;
+    return {
+      text: page.text,
+      ...(more && request.limit !== undefined
+        ? {
+            control: {
+              action: "read_message" as const,
+              source: "gmail" as const,
+              reference: id,
+              offset: page.end,
+              limit: request.limit,
+              unit: page.unit,
+              expectedRevision: revision,
+            },
+          }
+        : {}),
       readView: buildReadView({
         reference: buildContentReference({
           kind: "email",
@@ -159,10 +182,15 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
           resumability: "restart-safe",
         }),
         slice: buildReadSlice({
-          range: { unit: "byte", start: 0, end: bytes, total: bytes },
-          completeness: "complete",
+          range: {
+            unit: page.unit,
+            start: page.start,
+            end: page.end,
+            total: page.total,
+          },
+          completeness: more ? "partial-recoverable" : "complete",
           revision,
-          sliceSha256: revision,
+          sliceSha256: createHash("sha256").update(page.text).digest("hex"),
           sourceSha256: revision,
         }),
       }),
