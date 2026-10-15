@@ -44,6 +44,7 @@ import {
   isTweetProcessed,
 } from "./utils/memory";
 import { extractXWriteReceiptId } from "./utils/provider-receipt";
+import { normalizePositiveInteger } from "./interactions";
 import { getSetting } from "./utils/settings";
 import { getEpochMs } from "./utils/time";
 
@@ -305,10 +306,9 @@ export class TwitterTimelineClient {
     const tweets = await this.getTimelineForProfile(20, profile);
     logger.info(`Fetched ${tweets.length} tweets from timeline`);
     // Use max engagements per run from environment
-    const maxActionsPerCycle = parseInt(
+    const maxActionsPerCycle = normalizePositiveInteger(
       (getSetting(this.runtime, "TWITTER_MAX_ENGAGEMENTS_PER_RUN") as string) ||
-        process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN ||
-        "10",
+        process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
       10,
     );
     const tweetDecisions: TweetDecision[] = [];

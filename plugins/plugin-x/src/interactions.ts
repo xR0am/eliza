@@ -113,7 +113,7 @@ export function normalizeTweet(tweet: ClientTweet): ProcessableTweet | null {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-function normalizePositiveInteger(value: unknown, fallback: number): number {
+export function normalizePositiveInteger(value: unknown, fallback: number): number {
   const parsed =
     typeof value === "number"
       ? value
