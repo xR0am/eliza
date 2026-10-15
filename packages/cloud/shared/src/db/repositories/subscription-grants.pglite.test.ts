@@ -291,6 +291,72 @@ describe("subscription grant redemption", () => {
     expect(lapsed.authority).toMatchObject({ source: "promo_grant", sourceGrantId: grant.id });
     expect(lapsed.subscriptionFunded).toBe(true);
     expect((await allowanceAt(PAID_ORG, now))?.promo_grant_id).toBe(grant.id);
+
+    const { readPrimaryOrganizationSubscription } = await import(
+      "./account-billing-snapshot-subscription"
+    );
+    const { buildSubscriptionGrantSnapshot } = await import(
+      "../../lib/services/account-subscription-snapshot"
+    );
+    const primary = await database.dbWrite.transaction((tx) =>
+      readPrimaryOrganizationSubscription(tx, PAID_ORG),
+    );
+    if (primary.state !== "current") throw new Error("Expected paid fixture source");
+    const observation = await database.dbWrite.transaction((tx) =>
+      grants.readSubscriptionGrantObservation(tx, PAID_ORG, now),
+    );
+    // Move the observed subscription boundary relative to the grant's real
+    // observation clock; each projection retains the full database-read source.
+    const end = new Date(now.getTime() - 86_400_000);
+    const active = {
+      ...primary,
+      subscription: { ...primary.subscription, current_period_end: end },
+      entitlement: { ...primary.entitlement, effective_until: end },
+    };
+    expect(buildSubscriptionGrantSnapshot(observation, active, now.toISOString())).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: true },
+    });
+    expect(
+      buildSubscriptionGrantSnapshot(
+        observation,
+        active,
+        new Date(end.getTime() + 3 * 86_400_000).toISOString(),
+      ),
+    ).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: false },
+    });
+    const graceEnd = new Date(now.getTime() + 86_400_000);
+    const grace = {
+      ...active,
+      subscription: {
+        ...active.subscription,
+        status: "grace" as const,
+        grace_expires_at: graceEnd,
+      },
+      entitlement: { ...active.entitlement, state: "grace" as const, effective_until: graceEnd },
+    };
+    expect(buildSubscriptionGrantSnapshot(observation, grace, now.toISOString())).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: true },
+    });
+    expect(
+      buildSubscriptionGrantSnapshot(observation, grace, graceEnd.toISOString()),
+    ).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: false },
+    });
+    expect(
+      buildSubscriptionGrantSnapshot(
+        observation,
+        { state: "unavailable", code: "subscription_authority_unavailable" },
+        now.toISOString(),
+      ),
+    ).toMatchObject({
+      status: "unavailable",
+      error: { code: "subscription_authority_unavailable" },
+    });
   });
 
   test("an exclusive code is refused while the organization has an open paid subscription", async () => {

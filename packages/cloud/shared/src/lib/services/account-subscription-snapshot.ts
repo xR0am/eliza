@@ -1,5 +1,6 @@
 import { assertOrganizationSubscription } from "./organization-subscription-source";
 import { SUBSCRIPTION_FUNDING_CLASS_BY_OPERATION } from "./subscription-funding-policy";
+import { withSubscriptionPaymentGrace } from "./subscription-payment-grace";
 
 /** Projects a coherent organization-only subscription read without provider identifiers, guessed charges or app-subscriber policy. */
 
@@ -173,10 +174,31 @@ export function buildSubscriptionGrantSnapshot(
   if (!observation)
     return { ...provenance, status: "not_applicable", reason: "no_active_subscription_grant" };
   const { grant, period } = observation;
-  const paidPlanTakesPrecedence =
-    primary.state === "current" &&
-    (primary.subscription.status === "active" || primary.subscription.status === "grace") &&
-    primary.subscription.current_period_end.getTime() > Date.parse(observedAt);
+  if (primary.state === "unavailable")
+    return {
+      ...provenance,
+      status: "unavailable",
+      error: { code: primary.code, retryable: true },
+    };
+  const entitlement = primary.state === "current" ? primary.entitlement : null;
+  const now = Date.parse(observedAt);
+  if (entitlement && now < entitlement.effective_from.getTime())
+    return {
+      ...provenance,
+      status: "unavailable",
+      error: { code: "entitlement_not_effective", retryable: true },
+    };
+  // Match the serving policy: active renewals retain payment grace, while
+  // dunning grace uses the published entitlement's own lifecycle deadline.
+  const paidUntil =
+    entitlement?.effective_until && entitlement.state === "active"
+      ? withSubscriptionPaymentGrace(entitlement.effective_until)
+      : entitlement?.effective_until;
+  const paidPlanTakesPrecedence = Boolean(
+    entitlement?.entitlement_effective &&
+      entitlement.plan_key !== "free" &&
+      (paidUntil == null || now < paidUntil.getTime()),
+  );
   return {
     ...provenance,
     status: "available",
