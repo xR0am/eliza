@@ -178,3 +178,38 @@ describe("runVfsBuiltinShell separators", () => {
     expect(await vfs().readFile("log.txt")).toBe("keep me\n");
   });
 });
+
+describe("runVfsBuiltinShell quoted redirect targets", () => {
+  it("writes to a single-quoted target containing a space", async () => {
+    const result = await sh(
+      "echo hello > 'two words.txt' && cat 'two words.txt'",
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "hello\n",
+      stderr: "",
+    });
+    expect(await vfs().readFile("two words.txt")).toBe("hello\n");
+  });
+
+  it("overwrites and appends to a double-quoted target containing a space", async () => {
+    const result = await sh(
+      'echo a > "x y.txt" && echo b >> "x y.txt" && cat "x y.txt"',
+    );
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: "a\nb\n", stderr: "" });
+    expect(await vfs().readFile("x y.txt")).toBe("a\nb\n");
+  });
+
+  it("still treats a fully quoted argument as literal output", async () => {
+    const result = await sh("echo 'a > b'");
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "a > b\n",
+      stderr: "",
+    });
+    expect(await vfs().list("/")).toEqual([]);
+  });
+});

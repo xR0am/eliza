@@ -198,6 +198,9 @@ async function runScriptSegment(
   return runCommandLine(vfs, cwd, segment);
 }
 
+/** `>`/`>>` followed by one quoted or unquoted target and nothing else. */
+const OUTPUT_REDIRECT_PATTERN = /^(>>|>)\s*("[^"]*"|'[^']*'|[^\s]+)\s*$/;
+
 function parseOutputRedirect(
   segment: string,
 ): { before: string; op: string; target: string } | null {
@@ -220,7 +223,7 @@ function parseOutputRedirect(
     }
     if (quote !== null || character !== ">") continue;
 
-    const redirect = segment.slice(index).match(/^(>>|>)\s*([^\s]+)\s*$/);
+    const redirect = segment.slice(index).match(OUTPUT_REDIRECT_PATTERN);
     if (!redirect) continue;
     return {
       before: segment.slice(0, index),
