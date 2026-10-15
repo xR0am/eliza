@@ -14,7 +14,7 @@ permissions:
 jobs:
   contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -70,3 +70,34 @@ jobs:
                 packages/app/platforms/android/app/src/main/elizavoice-jni/elizavoice-jni.cpp
             done
           done
+
+      - name: Install native build tools
+        if: steps.changes.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build
+      - name: Build ABI 19 engines and link both JNI surfaces
+        if: steps.changes.outputs.run == 'true'
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: '2'
+        run: |
+          set -euo pipefail
+          output="$(node --input-type=module -e 'import { testOutputPath } from "./packages/scripts/lib/test-output.ts"; console.log(testOutputPath("native-stream-contract"));')"
+          compiler="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for abi in arm64-v8a x86_64; do
+            node packages/app/scripts/stage-elizavoice-lib.ts --abi "$abi" --out "$output/$abi" --espeak-dir "$RUNNER_TEMP/paradee-espeak"
+            target=aarch64
+            if [ "$abi" = x86_64 ]; then target=x86_64; fi
+            for full in 0 1; do
+              "$compiler/$target-linux-android23-clang++" -shared -fPIC -std=c++17 -DELIZA_VOICE_JNI_FULL=$full \
+                -Iplugins/plugin-local-inference/native/llama.cpp/tools/omnivoice/include \
+                packages/app/platforms/android/app/src/main/elizavoice-jni/elizavoice-jni.cpp \
+                -L"$output/$abi" -lelizainference -llog -Wl,--no-undefined,-z,max-page-size=16384 \
+                -o "$output/$abi/libelizavoicejni-contract-$full.so"
+            done
+          done
+      - name: Retain native build and link evidence
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-stream-contract-${{ inputs.head_sha || github.sha }}
+          path: test-results/native-stream-contract/
+          if-no-files-found: error
