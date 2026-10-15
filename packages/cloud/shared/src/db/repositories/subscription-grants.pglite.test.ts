@@ -48,13 +48,18 @@ async function newCode(
     expiresAt?: string;
     disabled?: boolean;
     days?: number | null;
+    /** Calendar-month term; the code then has no day term. */
+    months?: number;
+    exclusive?: boolean;
   } = {},
 ): Promise<void> {
   const normalized = grants.normalizeSubscriptionGrantCode(code);
   if (!normalized) throw new Error(`bad test code ${code}`);
   const hash = await grants.hashSubscriptionGrantCode(normalized, PEPPER);
-  await exec(`INSERT INTO subscription_grant_codes(code_hash, family, max_redemptions, duration_days, expires_at, disabled_at)
-    VALUES ('${hash}', '${options.family ?? "alpha_phone"}', ${options.max ?? 1}, ${options.days === null ? "NULL" : (options.days ?? 183)},
+  const days =
+    options.months !== undefined || options.days === null ? "NULL" : (options.days ?? 183);
+  await exec(`INSERT INTO subscription_grant_codes(code_hash, family, max_redemptions, duration_days, duration_months, requires_no_paid_plan, expires_at, disabled_at)
+    VALUES ('${hash}', '${options.family ?? "alpha_phone"}', ${options.max ?? 1}, ${days}, ${options.months ?? "NULL"}, ${options.exclusive === true},
       ${options.expiresAt ? `'${options.expiresAt}'` : "NULL"}, ${options.disabled ? "now()" : "NULL"})`);
 }
 
@@ -286,6 +291,89 @@ describe("subscription grant redemption", () => {
     expect(lapsed.authority).toMatchObject({ source: "promo_grant", sourceGrantId: grant.id });
     expect(lapsed.subscriptionFunded).toBe(true);
     expect((await allowanceAt(PAID_ORG, now))?.promo_grant_id).toBe(grant.id);
+
+    const { readPrimaryOrganizationSubscription } = await import(
+      "./account-billing-snapshot-subscription"
+    );
+    const { buildSubscriptionGrantSnapshot } = await import(
+      "../../lib/services/account-subscription-snapshot"
+    );
+    const primary = await database.dbWrite.transaction((tx) =>
+      readPrimaryOrganizationSubscription(tx, PAID_ORG),
+    );
+    if (primary.state !== "current") throw new Error("Expected paid fixture source");
+    const observation = await database.dbWrite.transaction((tx) =>
+      grants.readSubscriptionGrantObservation(tx, PAID_ORG, now),
+    );
+    // Move the observed subscription boundary relative to the grant's real
+    // observation clock; each projection retains the full database-read source.
+    const end = new Date(now.getTime() - 86_400_000);
+    const active = {
+      ...primary,
+      subscription: { ...primary.subscription, current_period_end: end },
+      entitlement: { ...primary.entitlement, effective_until: end },
+    };
+    expect(buildSubscriptionGrantSnapshot(observation, active, now.toISOString())).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: true },
+    });
+    expect(
+      buildSubscriptionGrantSnapshot(
+        observation,
+        active,
+        new Date(end.getTime() + 3 * 86_400_000).toISOString(),
+      ),
+    ).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: false },
+    });
+    const graceEnd = new Date(now.getTime() + 86_400_000);
+    const grace = {
+      ...active,
+      subscription: {
+        ...active.subscription,
+        status: "grace" as const,
+        grace_expires_at: graceEnd,
+      },
+      entitlement: { ...active.entitlement, state: "grace" as const, effective_until: graceEnd },
+    };
+    expect(buildSubscriptionGrantSnapshot(observation, grace, now.toISOString())).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: true },
+    });
+    expect(
+      buildSubscriptionGrantSnapshot(observation, grace, graceEnd.toISOString()),
+    ).toMatchObject({
+      status: "available",
+      value: { paidPlanTakesPrecedence: false },
+    });
+    expect(
+      buildSubscriptionGrantSnapshot(
+        observation,
+        { state: "unavailable", code: "subscription_authority_unavailable" },
+        now.toISOString(),
+      ),
+    ).toMatchObject({
+      status: "unavailable",
+      error: { code: "subscription_authority_unavailable" },
+    });
+  });
+
+  test("an exclusive code is refused while the organization has an open paid subscription", async () => {
+    // PAID_ORG's organization subscription is still `active` here (the next
+    // tests move it to terminal states).
+    await newCode("PILT-AAAA-BBBB-0001", { family: "grace_pilot", months: 6, exclusive: true });
+    await expect(redeem(PAID_ORG, "PILT-AAAA-BBBB-0001")).rejects.toMatchObject({
+      code: grants.SUBSCRIPTION_GRANT_PAID_PLAN_ACTIVE,
+    });
+    const [held] = await rows<{ count: number }>(
+      `SELECT count(*)::int AS count FROM subscription_grants WHERE organization_id = '${PAID_ORG}' AND family = 'grace_pilot'`,
+    );
+    expect(held!.count).toBe(0);
+    const [code] = await rows<{ redeemed_count: number }>(
+      `SELECT c.redeemed_count FROM subscription_grant_codes c WHERE c.family = 'grace_pilot' AND c.duration_months = 6 AND c.max_redemptions = 1 ORDER BY c.created_at DESC LIMIT 1`,
+    );
+    expect(code!.redeemed_count).toBe(0);
   });
 
   for (const [revision, status] of [
@@ -536,4 +624,135 @@ test("lifetime replenishment skips missed months and replays without double cred
     (SELECT count(*)::integer FROM subscription_allowance_transactions WHERE metadata->>'promoGrantId' = '${grant!.id}') ledger
     FROM subscription_allowance_periods WHERE promo_grant_id = '${grant!.id}'`);
   expect(buckets[0]).toEqual({ count: 3, current: 1, ledger: 3 });
+});
+
+describe("calendar-month pilot terms", () => {
+  test("UTC calendar months clamp month ends, including leap years", () => {
+    const at = (iso: string) => grants.addUtcMonths(new Date(iso), 6).toISOString();
+    expect(at("2026-01-31T10:15:00.000Z")).toBe("2026-07-31T10:15:00.000Z");
+    expect(at("2026-08-31T23:59:59.999Z")).toBe("2027-02-28T23:59:59.999Z");
+    expect(at("2027-08-31T00:00:00.000Z")).toBe("2028-02-29T00:00:00.000Z");
+    expect(at("2027-08-29T12:00:00.000Z")).toBe("2028-02-29T12:00:00.000Z");
+    expect(at("2026-12-31T00:00:00.000Z")).toBe("2027-06-30T00:00:00.000Z");
+    expect(at("2026-10-15T00:00:00.000Z")).toBe("2027-04-15T00:00:00.000Z");
+    expect(
+      grants
+        .grantEndsAt({ duration_days: null, duration_months: 6 }, new Date("2028-02-29T00:00:00Z"))
+        ?.toISOString(),
+    ).toBe("2028-08-29T00:00:00.000Z");
+    expect(
+      grants.grantEndsAt({ duration_days: 183, duration_months: null }, new Date(0))?.getTime(),
+    ).toBe(183 * 86_400_000);
+    expect(grants.grantEndsAt({ duration_days: null, duration_months: null }, new Date(0))).toBe(
+      null,
+    );
+  });
+
+  test("a six-month code grants six full allowance months ending on the calendar date", async () => {
+    const org = await newOrg();
+    await newCode("PILT-AAAA-BBBB-0002", { family: "grace_pilot", months: 6, exclusive: true });
+    const { grant, replayed } = await redeem(org, "PILT-AAAA-BBBB-0002", "tablet-attempt-1");
+    expect(replayed).toBe(false);
+    expect(grant.ends_at!.toISOString()).toBe(
+      grants.addUtcMonths(grant.starts_at, 6).toISOString(),
+    );
+    const buckets = await rows<{ granted_amount: string; period_end: Date }>(
+      `SELECT granted_amount, period_end FROM subscription_allowance_periods WHERE promo_grant_id = '${grant.id}' ORDER BY period_start`,
+    );
+    expect(buckets.map((bucket) => bucket.granted_amount)).toEqual(Array(6).fill("25.000000"));
+    expect(new Date(buckets[5]!.period_end).getTime()).toBe(grant.ends_at!.getTime());
+
+    // A retry from another device replays the same dates; the code cannot be
+    // stacked or used to reset the expiry.
+    const replay = await redeem(org, "PILT-AAAA-BBBB-0002", "tablet-attempt-2");
+    expect(replay.replayed).toBe(true);
+    expect(replay.grant.id).toBe(grant.id);
+    expect(replay.grant.ends_at!.getTime()).toBe(grant.ends_at!.getTime());
+    await newCode("PILT-AAAA-BBBB-0003", { family: "grace_pilot", months: 6, exclusive: true });
+    await expect(redeem(org, "PILT-AAAA-BBBB-0003")).rejects.toMatchObject({
+      code: grants.SUBSCRIPTION_GRANT_ALREADY_GRANTED,
+    });
+  });
+
+  test("an unknown subscription authority refuses an exclusive code", async () => {
+    const org = await newOrg();
+    await exec(
+      `UPDATE organization_subscription_authorities SET state = 'unavailable' WHERE organization_id = '${org}'`,
+    );
+    await newCode("PILT-AAAA-BBBB-0004", { family: "grace_pilot", months: 6, exclusive: true });
+    await expect(redeem(org, "PILT-AAAA-BBBB-0004")).rejects.toMatchObject({
+      code: grants.SUBSCRIPTION_GRANT_PAID_PLAN_ACTIVE,
+    });
+  });
+
+  test("a code cannot carry both a day and a month term", async () => {
+    await expect(
+      exec(`INSERT INTO subscription_grant_codes(code_hash, family, max_redemptions, duration_days, duration_months)
+        VALUES ('${"e".repeat(64)}', 'grace_pilot', 1, 183, 6)`),
+    ).rejects.toThrow(/single_term/);
+    await expect(
+      exec(`INSERT INTO subscription_grant_codes(code_hash, family, max_redemptions, duration_days, duration_months)
+        VALUES ('${"f".repeat(64)}', 'grace_pilot', 1, NULL, 0)`),
+    ).rejects.toThrow();
+  });
+});
+
+describe("subscription grant readback", () => {
+  test("the account snapshot reports the grant's free-through date and current allowance", async () => {
+    const snapshotModule = await import("../../lib/services/account-subscription-snapshot");
+    const org = await newOrg();
+    await newCode("PILT-AAAA-BBBB-0005", { family: "grace_pilot", months: 6, exclusive: true });
+    const { grant } = await redeem(org, "PILT-AAAA-BBBB-0005");
+    const at = new Date(grant.starts_at.getTime() + 45 * 86_400_000);
+    const observation = await database.dbWrite.transaction((tx) =>
+      grants.readSubscriptionGrantObservation(tx, org, at),
+    );
+    expect(observation?.grant.id).toBe(grant.id);
+    const projected = snapshotModule.buildSubscriptionGrantSnapshot(
+      observation,
+      { state: "none" } as never,
+      at.toISOString(),
+    );
+    expect(projected).toMatchObject({
+      status: "available",
+      value: {
+        grantId: grant.id,
+        planKey: "plus_monthly",
+        startsAt: grant.starts_at.toISOString(),
+        endsAt: grant.ends_at!.toISOString(),
+        paidPlanTakesPrecedence: false,
+        allowance: {
+          status: "available",
+          value: {
+            periodStart: grants.addUtcMonths(grant.starts_at, 1).toISOString(),
+            periodEnd: grants.addUtcMonths(grant.starts_at, 2).toISOString(),
+            state: "open",
+            granted: "25.000000",
+            unreserved: "25.000000",
+            currency: "USD",
+          },
+        },
+      },
+    });
+
+    // After the window, and after revocation, nothing is reported as active.
+    const after = new Date(grant.ends_at!.getTime() + 1);
+    expect(
+      await database.dbWrite.transaction((tx) =>
+        grants.readSubscriptionGrantObservation(tx, org, after),
+      ),
+    ).toBeNull();
+    await grants.subscriptionGrantsRepository.revoke({ grantId: grant.id, reason: "pilot ended" });
+    const revoked = await database.dbWrite.transaction((tx) =>
+      grants.readSubscriptionGrantObservation(tx, org, at),
+    );
+    expect(revoked).toBeNull();
+    expect(
+      snapshotModule.buildSubscriptionGrantSnapshot(
+        revoked,
+        { state: "none" } as never,
+        at.toISOString(),
+      ),
+    ).toMatchObject({ status: "not_applicable", reason: "no_active_subscription_grant" });
+  });
 });
