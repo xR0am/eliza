@@ -718,6 +718,8 @@ test(
     // marker: eager tier, pending, no provision job, no marker.
     const legacy = await seedAgent();
     const running = await seedAgent();
+    // Pending with a live provision job: not deferred, so not marked.
+    const queued = await seedAgent();
     const old = new Date(Date.now() - 60 * 60 * 1000);
     await dbWrite
       .update(agentSandboxes)
@@ -727,6 +729,14 @@ test(
       .update(agentSandboxes)
       .set({ status: "running", created_at: old })
       .where(eq(agentSandboxes.id, running.agentId));
+
+    const { provisioningJobService } = await import("../provisioning-job-queue");
+    await provisioningJobService.enqueueAgentProvisionOnce({
+      agentId: queued.agentId,
+      organizationId: queued.orgId,
+      userId: queued.userId,
+      agentName: "queued",
+    });
 
     const migration = await readFile(
       join(import.meta.dir, "../../../db/migrations/0548_agent_provisioning_deferred_backfill.sql"),
@@ -745,6 +755,27 @@ test(
     expect((await readAgent(running.agentId)).agent_config).not.toHaveProperty(
       "__agentProvisioningDeferred",
     );
+
+    expect((await readAgent(queued.agentId)).agent_config).not.toHaveProperty(
+      "__agentProvisioningDeferred",
+    );
+
+    // The backfill cannot tell this row from a real orphan whose enqueue was
+    // lost. Either way it stays recoverable: the dashboard shows a pending
+    // agent with Start, which calls `/provision` and enqueues the job.
+    const recovered = await provisioningJobService.enqueueAgentProvisionOnce({
+      agentId: legacy.agentId,
+      organizationId: legacy.orgId,
+      userId: legacy.userId,
+      agentName: "legacy",
+      expectedLifecycleRevision: after.lifecycle_revision,
+    });
+    expect(recovered.created).toBe(true);
+    const [job] = await dbWrite
+      .select({ type: jobs.type, status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, recovered.job.id));
+    expect(job).toEqual({ type: "agent_provision", status: "pending" });
   },
   TEST_TIMEOUT,
 );
