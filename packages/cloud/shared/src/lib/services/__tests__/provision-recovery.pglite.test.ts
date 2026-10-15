@@ -41,6 +41,7 @@ import { orgStorageQuota } from "../../../db/schemas/org-storage-quota";
 import { organizationConfig } from "../../../db/schemas/organization-config";
 import { organizationEntitlements } from "../../../db/schemas/organization-entitlements";
 import { organizations } from "../../../db/schemas/organizations";
+import { personalDedicatedUpgradeAuthorities } from "../../../db/schemas/personal-dedicated-upgrade-authorities";
 import { usageRecords } from "../../../db/schemas/usage-records";
 import { userCharacters } from "../../../db/schemas/user-characters";
 import { users } from "../../../db/schemas/users";
@@ -88,6 +89,7 @@ beforeAll(async () => {
     usageRecords,
     jobs,
     jobExecutionLeases,
+    personalDedicatedUpgradeAuthorities,
   };
   const { apply } = await pushSchema(schema as never, dbWrite as never);
   await apply();
@@ -577,6 +579,37 @@ test(
       push.mockRestore();
       ensure.mockRestore();
     }
+  },
+  TEST_TIMEOUT,
+);
+
+test(
+  "a disconnected Dedicated upgrade target still owns the upgrade",
+  async () => {
+    const { findLiveTierUpgradeTarget } = await import("../agent-tier-upgrade-target");
+    const source = await seedAgent();
+    const [target] = await dbWrite
+      .insert(agentSandboxes)
+      .values({
+        organization_id: source.orgId,
+        user_id: source.userId,
+        agent_name: unique("dedicated"),
+        status: "disconnected",
+        execution_tier: "dedicated-always",
+        database_status: "ready",
+      })
+      .returning();
+    await dbWrite.insert(personalDedicatedUpgradeAuthorities).values({
+      organization_id: source.orgId,
+      user_id: source.userId,
+      source_agent_id: source.agentId,
+      dedicated_agent_id: target.id,
+    });
+
+    // Heartbeat loss before cutover keeps the container and node slot; the
+    // upgrade must reattach to it, not report "available" and mint again.
+    const live = await findLiveTierUpgradeTarget(source.orgId, source.agentId);
+    expect(live?.id).toBe(target.id);
   },
   TEST_TIMEOUT,
 );

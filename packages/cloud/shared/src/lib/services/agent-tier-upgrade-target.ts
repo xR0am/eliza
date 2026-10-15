@@ -94,6 +94,8 @@ const LIVE_TARGET_STATUSES: AgentSandboxStatus[] = [
   "pending",
   "provisioning",
   "running",
+  // Keeps its container and node slot while recovery reconnects it.
+  "disconnected",
   "stopped",
   "sleeping",
   "error",
@@ -102,6 +104,7 @@ const LIVE_TARGET_STATUSES: AgentSandboxStatus[] = [
 /** Existing owner rows that can be deliberately bound without minting capacity. */
 const ADOPTABLE_UNMARKED_TARGET_STATUSES: AgentSandboxStatus[] = [
   "running",
+  "disconnected",
   "stopped",
   "sleeping",
   "error",
