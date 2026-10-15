@@ -202,7 +202,7 @@ function toCoordinationResponse(
   };
   if (parsed.action === "respond") {
     if (
-      parsed.useKeys &&
+      parsed.useKeys === true &&
       Array.isArray(parsed.keys) &&
       parsed.keys.length > 0
     ) {
