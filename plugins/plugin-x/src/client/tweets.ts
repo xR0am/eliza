@@ -548,23 +548,23 @@ export function parseTweetV2ToV1(
     includes.media
       .filter((media: MediaObjectV2) => mediaKeys.has(media.media_key))
       .forEach((media: MediaObjectV2) => {
-      if (media.type === "photo") {
-        parsedTweet.photos.push({
-          id: media.media_key,
-          url: media.url ?? "",
-          alt_text: media.alt_text ?? "",
-        });
-      } else if (media.type === "video" || media.type === "animated_gif") {
-        parsedTweet.videos.push({
-          id: media.media_key,
-          preview: media.preview_image_url ?? "",
-          url:
-            media.variants?.find(
-              (variant) => variant.content_type === "video/mp4",
-            )?.url ?? "",
-        });
-      }
-    });
+        if (media.type === "photo") {
+          parsedTweet.photos.push({
+            id: media.media_key,
+            url: media.url ?? "",
+            alt_text: media.alt_text ?? "",
+          });
+        } else if (media.type === "video" || media.type === "animated_gif") {
+          parsedTweet.videos.push({
+            id: media.media_key,
+            preview: media.preview_image_url ?? "",
+            url:
+              media.variants?.find(
+                (variant) => variant.content_type === "video/mp4",
+              )?.url ?? "",
+          });
+        }
+      });
   }
 
   // Process User (for author info)
