@@ -251,6 +251,17 @@ export async function handleAuthSessionRoutes(
 
 // ── /api/auth/setup ─────────────────────────────────────────────────────────
 
+// Serializes concurrent setup POSTs so two requests can't both pass the
+// hasOwnerIdentity check and create duplicate owner identities.
+let setupMutex: Promise<void> = Promise.resolve();
+
+function acquireSetupMutex(): Promise<() => void> {
+  let release!: () => void;
+  const next = setupMutex.then(() => new Promise<void>((r) => { release = r; }));
+  setupMutex = next.catch(() => {});
+  return next.then(() => release);
+}
+
 async function handleSetup(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -262,13 +273,15 @@ async function handleSetup(
     return true;
   }
 
-  if (await store.hasOwnerIdentity()) {
-    sendJsonResponse(res, 409, {
-      error: "already_initialized",
-      reason: "already_initialized",
-    });
-    return true;
-  }
+  const release = await acquireSetupMutex();
+  try {
+    if (await store.hasOwnerIdentity()) {
+      sendJsonResponse(res, 409, {
+        error: "already_initialized",
+        reason: "already_initialized",
+      });
+      return true;
+    }
 
   const body = await readCompatJsonBody(req, res);
   if (body == null) return true;
@@ -295,14 +308,17 @@ async function handleSetup(
   const passwordHash = await hashPassword(password);
   const identityId = crypto.randomUUID();
   const now = Date.now();
-  await store.createIdentity({
-    id: identityId,
-    kind: "owner",
-    displayName: displayNameRaw,
-    createdAt: now,
-    passwordHash,
-    cloudUserId: null,
-  });
+    await store.createIdentity({
+      id: identityId,
+      kind: "owner",
+      displayName: displayNameRaw,
+      createdAt: now,
+      passwordHash,
+      cloudUserId: null,
+    });
+  } finally {
+    release();
+  }
 
   const { session, csrfToken } = await createBrowserSession(store, {
     identityId,
