@@ -1,4 +1,9 @@
-import type { IAgentRuntime, ReadRangeUnit, ReadView } from "@elizaos/core";
+import type {
+  IAgentRuntime,
+  Memory,
+  ReadRangeUnit,
+  ReadView,
+} from "@elizaos/core";
 /**
  * Cross-platform message triage — shared type contract.
  *
@@ -118,6 +123,8 @@ export interface DraftRecord {
 }
 
 export interface ListOptions {
+  /** Verified caller injected by the tool boundary; never read from model parameters. */
+  requester?: Memory;
   sinceMs?: number;
   limit?: number;
   /**
@@ -147,6 +154,8 @@ export interface MessageAdapterCapabilities {
 }
 
 export interface SearchMessagesFilters {
+  /** Verified caller injected by the tool boundary; never read from model parameters. */
+  requester?: Memory;
   sources?: MessageSource[];
   worldIds?: string[];
   channelIds?: string[];
@@ -162,6 +171,8 @@ export interface SearchMessagesFilters {
 
 /** Provider-native request for one exact, bounded page of a message body. */
 export interface ReadMessageRequest {
+  /** Verified caller injected by the tool boundary; never read from model parameters. */
+  requester?: Memory;
   messageId?: string;
   reference?: string;
   worldId?: string;

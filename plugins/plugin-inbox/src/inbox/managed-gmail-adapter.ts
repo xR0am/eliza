@@ -5,10 +5,9 @@ import {
   buildReadSlice,
   buildReadView,
   ElizaError,
-  getActionRoutingContext,
   hasRoleAccess,
   type IAgentRuntime,
-  type UUID,
+  type Memory,
 } from "@elizaos/core";
 import {
   BaseMessageAdapter,
@@ -25,17 +24,15 @@ import {
 
 const unavailable = (message: string) =>
   new ElizaError(message, { code: "MANAGED_GMAIL_READ_UNAVAILABLE" });
-async function owner(runtime: IAgentRuntime) {
-  const id = getActionRoutingContext()?.messageId;
-  if (!id) throw unavailable("Gmail reads require a current owner request.");
-  const message = await runtime.getMemoryById(id as UUID);
+async function owner(runtime: IAgentRuntime, requester?: Memory) {
+  if (!requester)
+    throw unavailable("Gmail reads require a current owner request.");
   if (
-    !message ||
-    message.agentId !== runtime.agentId ||
-    !(await hasRoleAccess(runtime, message, "OWNER"))
+    (requester.agentId && requester.agentId !== runtime.agentId) ||
+    !(await hasRoleAccess(runtime, requester, "OWNER"))
   )
     throw unavailable("Gmail is restricted to its owner.");
-  return message;
+  return requester;
 }
 export class ManagedGmailReadAdapter extends BaseMessageAdapter {
   readonly source = "gmail" as const;
@@ -60,7 +57,7 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
     opts: ListOptions,
     query?: string,
   ) {
-    await owner(runtime);
+    await owner(runtime, opts.requester);
     if (!this.fetcher)
       throw unavailable("The owner Gmail host is unavailable.");
     if (
@@ -78,11 +75,12 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
       runtime,
       limit: opts.limit,
       query: parts.join(" "),
+      requester: opts.requester,
       ...(opts.sinceMs === undefined
         ? {}
         : { since: new Date(opts.sinceMs).toISOString() }),
     });
-    await owner(runtime);
+    await owner(runtime, opts.requester);
     return rows.map(
       (row): MessageRef => ({
         id: row.id,
@@ -112,34 +110,11 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
       );
     return this.messages(runtime, filters, filters.content);
   }
-  protected async getMessageImpl(
-    runtime: IAgentRuntime,
-    id: string,
-  ): Promise<MessageRef> {
-    await owner(runtime);
-    if (!this.reader) throw unavailable("The owner Gmail host is unavailable.");
-    const result = await this.reader(id);
-    await owner(runtime);
-    return {
-      id,
-      source: "gmail",
-      externalId: id,
-      from: { identifier: result.from },
-      to: [],
-      subject: result.subject,
-      snippet: "",
-      body: result.bodyText,
-      receivedAtMs: Date.parse(result.receivedAt),
-      hasAttachments: result.hasAttachments,
-      isRead: !result.unread,
-      worldId: "default",
-    };
-  }
   protected async readMessageImpl(
     runtime: IAgentRuntime,
     request: ReadMessageRequest,
   ): Promise<ReadMessageResult> {
-    const caller = await owner(runtime);
+    const caller = await owner(runtime, request.requester);
     if (
       request.requesterEntityId !== caller.entityId ||
       request.requesterRoomId !== caller.roomId
@@ -152,8 +127,10 @@ export class ManagedGmailReadAdapter extends BaseMessageAdapter {
     const id = request.messageId ?? request.reference;
     if (!id)
       throw unavailable("Select a Gmail message from the current inbox.");
-    const result = await this.getMessageImpl(runtime, id),
-      text = result.body ?? "",
+    if (!this.reader) throw unavailable("The owner Gmail host is unavailable.");
+    const result = await this.reader(id);
+    await owner(runtime, request.requester);
+    const text = result.bodyText,
       bytes = Buffer.byteLength(text),
       revision = createHash("sha256").update(text).digest("hex");
     if (

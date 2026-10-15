@@ -5758,6 +5758,7 @@ async function handleReadMessage(
         messageId,
         reference,
         worldId: textParam(params.accountId),
+        requester: message,
         requesterEntityId: message.entityId,
         requesterRoomId: message.roomId,
         offset: numberParam(params.offset),

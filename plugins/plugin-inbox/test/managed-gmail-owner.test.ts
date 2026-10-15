@@ -1,5 +1,4 @@
-import type { IAgentRuntime, UUID } from "@elizaos/core";
-import { runWithActionRoutingContext } from "@elizaos/core";
+import type { IAgentRuntime, Memory } from "@elizaos/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagedGmailReadAdapter } from "../src/inbox/managed-gmail-adapter.ts";
 
@@ -26,19 +25,11 @@ describe("managed Gmail owner boundary", () => {
   it("refuses a message from another agent before any provider read", async () => {
     const network = vi.spyOn(globalThis, "fetch");
     const adapter = new ManagedGmailReadAdapter();
-    const runtime = {
-      agentId: "owned-agent",
-      getMemoryById: vi.fn(async () => ({ agentId: "another-agent" })),
-    } as unknown as IAgentRuntime;
+    const runtime = { agentId: "owned-agent" } as IAgentRuntime;
     await expect(
-      runWithActionRoutingContext(
-        {
-          actionName: "MESSAGE",
-          modelClass: undefined,
-          messageId: "11111111-1111-4111-8111-111111111111" as UUID,
-        },
-        () => adapter.listMessages(runtime, {}),
-      ),
+      adapter.listMessages(runtime, {
+        requester: { agentId: "another-agent" } as Memory,
+      }),
     ).rejects.toThrow("restricted to its owner");
     expect(network).not.toHaveBeenCalled();
   });

@@ -87,7 +87,7 @@ export const listInboxAction: Action = {
 
   handler: async (
     runtime: IAgentRuntime,
-    _message: Memory,
+    message: Memory,
     _state?: State,
     options?: HandlerOptions,
     _callback?: HandlerCallback,
@@ -155,6 +155,7 @@ export const listInboxAction: Action = {
       // before it can establish that no unread messages match the request.
       if (unread.length === 0) {
         messages = await service.triage(runtime, {
+          requester: message,
           sources: params.sources,
           worldIds: params.worldIds,
           channelIds: params.channelIds,

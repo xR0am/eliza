@@ -10,7 +10,7 @@
  *   await getDefaultTriageService().triage(runtime, { sources: ["my-source"] });
  */
 
-import type { IAgentRuntime } from "@elizaos/core";
+import type { IAgentRuntime, Memory } from "@elizaos/core";
 import { ElizaError, logger } from "@elizaos/core";
 import { searchByListing } from "./adapters/base.ts";
 import { getDeferredMessageScheduler } from "./deferred-send-scheduler.ts";
@@ -38,6 +38,7 @@ import type {
 } from "./types.ts";
 
 export interface TriageOptions {
+  requester?: Memory;
   sources?: MessageSource[];
   worldIds?: string[];
   channelIds?: string[];
@@ -222,6 +223,7 @@ export class TriageService {
       let batch: MessageRef[];
       try {
         batch = await adapter.listMessages(runtime, {
+          requester: opts.requester,
           sinceMs: opts.sinceMs,
           limit: opts.limit,
           unreadOnly: opts.unreadOnly,
