@@ -21,6 +21,7 @@ import { checkAgentCreditGate } from "@elizaos/cloud-shared/lib/services/agent-b
 import { insufficientCredits402 } from "@elizaos/cloud-shared/lib/services/agent-billing-gate-402";
 import { requireDedicatedComputePriceAcceptance } from "@elizaos/cloud-shared/lib/services/dedicated-compute-price-acceptance";
 import {
+  AGENT_PROVISIONING_DEFERRED_KEY,
   stripReservedElizaConfigKeys,
   withReusedElizaCharacterOwnership,
 } from "@elizaos/cloud-shared/lib/services/eliza-agent-config";
@@ -447,9 +448,16 @@ app.post("/", async (c) => {
       agentName: parsed.data.agentName,
       characterId: parsed.data.characterId,
       dockerImage: parsed.data.dockerImage,
-      agentConfig: parsed.data.characterId
-        ? withReusedElizaCharacterOwnership(sanitizedConfig)
-        : sanitizedConfig,
+      agentConfig: {
+        ...(parsed.data.characterId
+          ? withReusedElizaCharacterOwnership(sanitizedConfig)
+          : sanitizedConfig),
+        // An eager tier created without provisioning waits for the caller's
+        // explicit provision; the orphaned-pending sweep must leave it alone.
+        ...(!autoProvision && tierProvisionsEagerly(executionTier)
+          ? { [AGENT_PROVISIONING_DEFERRED_KEY]: true }
+          : {}),
+      },
       environmentVars: parsed.data.environmentVars,
       executionTier,
       // Default reuses the org's existing non-terminal agent (idempotent create);

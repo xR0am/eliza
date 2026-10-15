@@ -674,11 +674,14 @@ test(
 );
 
 test(
-  "the orphaned-pending sweep leaves a dedicated-lazy agent waiting for first use",
+  "the orphaned-pending sweep leaves lazy and deferred agents waiting to be provisioned",
   async () => {
     const { agentSandboxesRepository } = await import("../../../db/repositories/agent-sandboxes");
     const lazy = await seedAgent();
     const eager = await seedAgent();
+    // `alwaysOn: true, autoProvision: false`: an eager tier waiting for the
+    // caller's explicit provision call.
+    const deferred = await seedAgent();
     const old = new Date(Date.now() - 60 * 60 * 1000);
     await dbWrite
       .update(agentSandboxes)
@@ -688,6 +691,10 @@ test(
       .update(agentSandboxes)
       .set({ created_at: old })
       .where(eq(agentSandboxes.id, eager.agentId));
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ created_at: old, agent_config: { __agentProvisioningDeferred: true } })
+      .where(eq(agentSandboxes.id, deferred.agentId));
 
     const result = await agentSandboxesRepository.markOrphanedPendingWithoutJobAsError(
       new Date(Date.now() - 10 * 60 * 1000),
@@ -698,6 +705,7 @@ test(
     expect((await readAgent(eager.agentId)).status).toBe("error");
     // A lazy agent is pending without a job by design until its first message.
     expect((await readAgent(lazy.agentId)).status).toBe("pending");
+    expect((await readAgent(deferred.agentId)).status).toBe("pending");
   },
   TEST_TIMEOUT,
 );
