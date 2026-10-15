@@ -17,10 +17,12 @@ import {
   type EventPayload,
   type IAgentRuntime,
   logger,
+  MediaFetchError,
   type Memory,
   type MessageConnectorChatContext,
   type MessageConnectorTarget,
   type MessageConnectorUserContext,
+  readResponseWithLimit,
   Service,
   type TargetInfo,
   toWellFormedUnicode,
@@ -970,8 +972,21 @@ export class GoogleChatService extends Service implements IGoogleChatService {
       }
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    let buffer: Buffer;
+    if (maxBytes) {
+      // Content-Length can be absent (chunked) or wrong, so the body read
+      // itself must stop at the cap instead of buffering the payload first.
+      try {
+        buffer = await readResponseWithLimit(response, maxBytes);
+      } catch (error) {
+        if (error instanceof MediaFetchError && error.code === "max_bytes") {
+          throw new GoogleChatApiError(`Media exceeds max bytes (${maxBytes})`, 413, error);
+        }
+        throw error;
+      }
+    } else {
+      buffer = Buffer.from(await response.arrayBuffer());
+    }
     const contentType = response.headers.get("content-type") || undefined;
 
     return { buffer, contentType };
