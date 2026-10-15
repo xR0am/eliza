@@ -79,7 +79,7 @@ test("listed addresses inside a keyless answer are warned", async () => {
 
 test("listed URLs in answers are rendered as non-links", async () => {
   const answer =
-    "Try [account recovery](https://paypa1-login.example/verify) or https://evil-shop.example/checkout."
+    "Try [account recovery](https://paypa1-login.example/verify) or https://evil-shop.example/checkout.";
   const annotated = await annotateSearchReputation(search({ answer, results: [] }), {
     check: async (addresses) =>
       addresses.map((address) =>
@@ -87,13 +87,13 @@ test("listed URLs in answers are rendered as non-links", async () => {
           ? listed("paypa1-login.example")
           : listed("evil-shop.example"),
       ),
-  })
-  const text = formatWebSearchText(annotated)
-  expect(text).toContain("account recovery (blocked paypa1-login.example)")
-  expect(text).toContain("[blocked evil-shop.example]")
-  expect(text).not.toContain("https://paypa1-login.example/verify")
-  expect(text).not.toContain("https://evil-shop.example/checkout")
-})
+  });
+  const text = formatWebSearchText(annotated);
+  expect(text).toContain("account recovery (blocked paypa1-login.example)");
+  expect(text).toContain("[blocked evil-shop.example]");
+  expect(text).not.toContain("https://paypa1-login.example/verify");
+  expect(text).not.toContain("https://evil-shop.example/checkout");
+});
 test("a slow or failing check leaves results unchecked and adds no text", async () => {
   const slow = await annotateSearchReputation(search(), {
     timeoutMs: 20,
