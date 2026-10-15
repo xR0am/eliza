@@ -10,18 +10,27 @@ export interface CalendarSyncOwner {
   organizationId: string;
   userId: string;
   grantId: string;
+  /** Expected Google identity for event requests; discovered from capabilities. */
+  accountId?: string;
   signal?: AbortSignal;
 }
 export interface CalendarSyncGrant {
   connectionId: string;
+  accountId: string;
   token: string;
   capabilities: readonly string[];
 }
 export interface CalendarSyncDependencies {
-  grant(owner: CalendarSyncOwner): Promise<CalendarSyncGrant>;
+  grant(owner: CalendarSyncOwner, write: boolean): Promise<CalendarSyncGrant>;
+  current(owner: CalendarSyncOwner): Promise<Omit<CalendarSyncGrant, "token">>;
   request?: typeof fetch;
 }
+type Session = { owner: CalendarSyncOwner; grant: CalendarSyncGrant; identity: string };
 export type CalendarSyncEvent = LinkedCalendarSemanticEvent;
+export interface CalendarSyncSnapshot extends LinkedCalendarProviderSnapshot {
+  visibility: "private" | "public" | "default";
+  remindersDisabled: boolean;
+}
 type Json = Record<string, unknown>;
 const record = (value: unknown): value is Json =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -127,7 +136,7 @@ function googleBody(event: CalendarSyncEvent) {
     recurrence: event.recurrence ? [...event.recurrence] : [],
   };
 }
-function snapshot(raw: Json): LinkedCalendarProviderSnapshot & { event: CalendarSyncEvent } {
+function snapshot(raw: Json): CalendarSyncSnapshot {
   if (!atom(raw.id) || !atom(raw.etag) || !record(raw.start) || !record(raw.end))
     throw new CalendarSyncError(
       502,
@@ -172,7 +181,17 @@ function snapshot(raw: Json): LinkedCalendarProviderSnapshot & { event: Calendar
       );
     throw error;
   }
-  return { eventId: raw.id, etag: raw.etag, event };
+  return {
+    eventId: raw.id,
+    etag: raw.etag,
+    event,
+    visibility:
+      raw.visibility === "private" ? "private" : raw.visibility === "public" ? "public" : "default",
+    remindersDisabled:
+      record(raw.reminders) &&
+      raw.reminders.useDefault === false &&
+      (!Array.isArray(raw.reminders.overrides) || raw.reminders.overrides.length === 0),
+  };
 }
 function etag(value: string) {
   if (!atom(value, 1024) || value === "*")
@@ -194,13 +213,21 @@ function providerFailure(status: number) {
 
 export class ManagedCalendarSyncProvider {
   constructor(private readonly dependencies: CalendarSyncDependencies) {}
-  private async grant(owner: CalendarSyncOwner, write: boolean) {
-    const grant = await this.dependencies.grant(owner);
+  private async session(
+    owner: CalendarSyncOwner,
+    mode: "discover" | "read" | "write",
+  ): Promise<Session> {
+    owner = { ...owner };
+    if (mode !== "discover" && !atom(owner.accountId))
+      throw reject("An exact Google account precondition is required.");
+    const grant = await this.dependencies.grant(owner, mode === "write");
     if (
       grant.connectionId !== owner.grantId ||
       !grant.token ||
+      !atom(grant.accountId) ||
       !grant.capabilities.includes("google.calendar.read") ||
-      (write && !grant.capabilities.includes("google.calendar.write"))
+      (mode === "write" && !grant.capabilities.includes("google.calendar.write")) ||
+      (mode !== "discover" && owner.accountId !== grant.accountId)
     )
       throw new CalendarSyncError(
         403,
@@ -208,24 +235,51 @@ export class ManagedCalendarSyncProvider {
         "not_accepted",
         "The selected Calendar permission is unavailable.",
       );
-    return grant;
+    const captured = { ...grant, capabilities: [...grant.capabilities] };
+    return {
+      owner,
+      grant: captured,
+      identity: JSON.stringify([
+        captured.connectionId,
+        captured.accountId,
+        [...captured.capabilities].sort(),
+      ]),
+    };
+  }
+  private async current(scope: Session) {
+    scope.owner.signal?.throwIfAborted();
+    const latest = await this.dependencies.current(scope.owner);
+    if (
+      JSON.stringify([latest.connectionId, latest.accountId, [...latest.capabilities].sort()]) !==
+      scope.identity
+    )
+      throw new CalendarSyncError(
+        409,
+        "CALENDAR_SYNC_GRANT_CHANGED",
+        "unknown",
+        "The selected Google account or permissions changed. Check its event before retrying.",
+      );
+    scope.owner.signal?.throwIfAborted();
   }
   private calendar(id: string) {
     if (!atom(id, 1024)) throw reject("Select an exact Calendar.");
     return `${endpoint}/calendars/${encodeURIComponent(id)}/events`;
   }
   private async call(
-    owner: CalendarSyncOwner,
+    scope: Session,
     url: string,
     method = "GET",
     body?: object,
     expectedEtag?: string,
   ): Promise<{ status: number; data: Json | null }> {
-    owner.signal?.throwIfAborted();
-    const write = method !== "GET",
-      before = await this.grant(owner, write),
-      identity = JSON.stringify([before.connectionId, [...before.capabilities].sort()]);
-    owner.signal?.throwIfAborted();
+    await this.current(scope);
+    if (method !== "GET" && !scope.grant.capabilities.includes("google.calendar.write"))
+      throw new CalendarSyncError(
+        403,
+        "CALENDAR_SYNC_PERMISSION",
+        "not_accepted",
+        "Calendar write permission is unavailable.",
+      );
     let status: number,
       data: Json | null = null;
     try {
@@ -234,9 +288,9 @@ export class ManagedCalendarSyncProvider {
         {
           method,
           redirect: "error",
-          signal: owner.signal,
+          signal: scope.owner.signal,
           headers: {
-            Authorization: `Bearer ${before.token}`,
+            Authorization: `Bearer ${scope.grant.token}`,
             ...(body ? { "Content-Type": "application/json" } : {}),
             ...(expectedEtag ? { "If-Match": etag(expectedEtag) } : {}),
           },
@@ -264,9 +318,7 @@ export class ManagedCalendarSyncProvider {
       );
     }
     try {
-      const after = await this.grant(owner, write);
-      if (JSON.stringify([after.connectionId, [...after.capabilities].sort()]) !== identity)
-        throw Error("Changed grant");
+      await this.current(scope);
     } catch {
       throw new CalendarSyncError(
         409,
@@ -277,10 +329,10 @@ export class ManagedCalendarSyncProvider {
     }
     return { status, data };
   }
-  private async access(owner: CalendarSyncOwner, calendarId: string, write = false) {
+  private async access(scope: Session, calendarId: string, write = false) {
     this.calendar(calendarId);
     const result = await this.call(
-      owner,
+      scope,
       `${endpoint}/users/me/calendarList/${encodeURIComponent(calendarId)}`,
     );
     if (
@@ -300,11 +352,14 @@ export class ManagedCalendarSyncProvider {
     return result.data;
   }
   async capabilities(owner: CalendarSyncOwner, calendarId: string) {
-    const grant = await this.grant(owner, false),
-      calendar = await this.access(owner, calendarId);
+    this.calendar(calendarId);
+    const scope = await this.session(owner, "discover"),
+      calendar = await this.access(scope, calendarId),
+      grant = scope.grant;
     return {
       version: 1,
       calendarId,
+      accountId: grant.accountId,
       read: true,
       write:
         grant.capabilities.includes("google.calendar.write") &&
@@ -319,15 +374,11 @@ export class ManagedCalendarSyncProvider {
     const hash = await digest(key);
     return { hash, id: "e1" + hash };
   }
-  private async raw(
-    owner: CalendarSyncOwner,
-    calendarId: string,
-    id: string,
-  ): Promise<Json | null> {
+  private async raw(scope: Session, calendarId: string, id: string): Promise<Json | null> {
     if (!atom(id, 1024)) throw reject("Select an exact event.");
-    const result = await this.call(owner, `${this.calendar(calendarId)}/${encodeURIComponent(id)}`);
+    const result = await this.call(scope, `${this.calendar(calendarId)}/${encodeURIComponent(id)}`);
     if (result.status === 404 || result.status === 410) {
-      await this.access(owner, calendarId);
+      await this.access(scope, calendarId);
       return null;
     }
     if (result.status !== 200 || !result.data) throw providerFailure(result.status);
@@ -348,8 +399,11 @@ export class ManagedCalendarSyncProvider {
   ) {
     if (!!reference.eventId === !!reference.idempotencyKey)
       throw reject("Select one exact event or operation key.");
+    this.calendar(calendarId);
+    if (reference.eventId && !atom(reference.eventId, 1024)) throw reject("Select an exact event.");
     const key = reference.idempotencyKey ? await this.identity(reference.idempotencyKey) : null,
-      raw = await this.raw(owner, calendarId, key?.id ?? reference.eventId!);
+      scope = await this.session(owner, "read"),
+      raw = await this.raw(scope, calendarId, key?.id ?? reference.eventId!);
     if (!raw) return null;
     if (
       key &&
@@ -375,7 +429,8 @@ export class ManagedCalendarSyncProvider {
       key = await this.identity(idempotencyKey),
       body = googleBody(event),
       fingerprint = await digest(JSON.stringify(body));
-    await this.grant(owner, true);
+    this.calendar(calendarId);
+    const scope = await this.session(owner, "write");
     const verify = async (raw: Json) => {
       const properties =
         record(raw.extendedProperties) && record(raw.extendedProperties.private)
@@ -393,6 +448,13 @@ export class ManagedCalendarSyncProvider {
           "This operation key is already bound to different event content.",
         );
       const saved = snapshot(raw);
+      if (saved.visibility !== "private" || !saved.remindersDisabled)
+        throw new CalendarSyncError(
+          409,
+          "CALENDAR_SYNC_CREATE_CHANGED",
+          "precondition_failed",
+          "The event privacy or reminders changed after its private create. Review its current settings.",
+        );
       if ((await digest(JSON.stringify(googleBody(saved.event)))) !== fingerprint)
         throw new CalendarSyncError(
           409,
@@ -402,9 +464,9 @@ export class ManagedCalendarSyncProvider {
         );
       return saved;
     };
-    const prior = await this.raw(owner, calendarId, key.id);
+    const prior = await this.raw(scope, calendarId, key.id);
     if (prior) return verify(prior);
-    const result = await this.call(owner, this.calendar(calendarId) + "?sendUpdates=none", "POST", {
+    const result = await this.call(scope, this.calendar(calendarId) + "?sendUpdates=none", "POST", {
       id: key.id,
       ...body,
       visibility: "private",
@@ -412,7 +474,7 @@ export class ManagedCalendarSyncProvider {
       extendedProperties: { private: { alphaSyncKey: key.hash, alphaSyncContent: fingerprint } },
     });
     if (result.status === 409) {
-      const existing = await this.raw(owner, calendarId, key.id);
+      const existing = await this.raw(scope, calendarId, key.id);
       if (existing) return verify(existing);
       throw new CalendarSyncError(
         502,
@@ -434,8 +496,10 @@ export class ManagedCalendarSyncProvider {
     const event = eventInput(value);
     etag(expectedEtag);
     if (!atom(eventId, 1024)) throw reject("Select an exact event.");
+    this.calendar(calendarId);
+    const scope = await this.session(owner, "write");
     const result = await this.call(
-      owner,
+      scope,
       `${this.calendar(calendarId)}/${encodeURIComponent(eventId)}?sendUpdates=none`,
       "PATCH",
       googleBody(event),
@@ -460,15 +524,17 @@ export class ManagedCalendarSyncProvider {
   ) {
     etag(expectedEtag);
     if (!atom(eventId, 1024)) throw reject("Select an exact event.");
+    this.calendar(calendarId);
+    const scope = await this.session(owner, "write");
     const result = await this.call(
-      owner,
+      scope,
       `${this.calendar(calendarId)}/${encodeURIComponent(eventId)}?sendUpdates=none`,
       "DELETE",
       undefined,
       expectedEtag,
     );
     if ([404, 410].includes(result.status)) {
-      await this.access(owner, calendarId, true);
+      await this.access(scope, calendarId, true);
       return { deleted: true as const };
     }
     if (result.status !== 204) throw providerFailure(result.status);
