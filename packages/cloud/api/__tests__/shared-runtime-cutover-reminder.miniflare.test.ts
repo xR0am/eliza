@@ -1665,9 +1665,17 @@ describe("Personal Shared cutover reminder containment in Workerd", () => {
       { ...payload, agentId: oldId, roomId: oldId },
       { ...payload, delivery: { ...delivery, userId: "foreign-user" } },
       { ...payload, delivery: { ...delivery, organizationId: "foreign-org" } },
-      { ...payload, delivery: { ...delivery, project: "eliza-app" } },
     ])
       expect((await post(name, "/network-delivery", forged)).status).toBe(400);
+    // A valid room with a forged canonical project reaches the signed verifier.
+    expect(
+      (
+        await post(name, "/network-delivery", {
+          ...payload,
+          delivery: { ...delivery, project: "eliza-app" },
+        })
+      ).status,
+    ).toBe(403);
     expect(gatewayRequests).toHaveLength(1);
     expect(
       (await post(name, "/disabled/network-delivery", payload)).status,
