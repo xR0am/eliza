@@ -11,6 +11,7 @@ import {
   captureDevCloudEnvAuthoritySnapshot,
   resetDevCloudEnvAuthorityForTests,
 } from "../src/cloud-config/dev-cloud-env-authority";
+import { registerTextInferenceModels } from "../src/index";
 import {
   getActionPlannerModel,
   getImageDescriptionModel,
@@ -31,6 +32,7 @@ const keys = [
   "ELIZA_DEV_SOURCE",
   "ELIZA_DEV_CLOUD_ENV_AUTHORITY",
   "ELIZAOS_CLOUD_APPLICATION_SLOT",
+  "ELIZAOS_CLOUD_USE_INFERENCE",
   "ELIZAOS_CLOUD_SMALL_MODEL",
   "ELIZAOS_CLOUD_NANO_MODEL",
   "ELIZAOS_CLOUD_MEDIUM_MODEL",
@@ -136,7 +138,11 @@ describe("native application slot launcher authority", () => {
           })
         ).toThrow("Select a configured application product");
       }
-      expect(getSetting(runtime, "ELIZAOS_CLOUD_APPLICATION_SLOT")).toBeUndefined();
+      // The sealed overlay's "" sentinel reads as absent; slot selection itself
+      // never trusts a runtime value over the frozen launcher tuple.
+      if (runtimeValue === "") {
+        expect(getSetting(runtime, "ELIZAOS_CLOUD_APPLICATION_SLOT")).toBeUndefined();
+      }
       expect(getNativeApplicationSlot(runtime)).toBeUndefined();
       for (const path of ["/chat/completions", "/embeddings"]) {
         expect(inferenceHeaders(runtime, path).has("X-Eliza-Application-Slot")).toBe(false);
@@ -324,6 +330,28 @@ describe("Cloud role models under the sealed launcher overlay", () => {
     expect(inferenceHeaders(runtime, "/chat/completions").has("X-Eliza-Application-Slot")).toBe(
       false
     );
+  });
+
+  it("keeps the overlay's derived inference opt-out so a direct text route owns the brain", () => {
+    process.env.ELIZA_DEV_SOURCE = "1";
+    process.env.ELIZA_DEV_CLOUD_ENV_AUTHORITY = "staging-explicit";
+    const snapshot = captureDevCloudEnvAuthoritySnapshot(process.env);
+    if (!snapshot) throw new Error("Expected launcher authority");
+    expect(snapshot.values.ELIZAOS_CLOUD_USE_INFERENCE).toBeUndefined();
+    const registerModel = vi.fn();
+    const runtime = {
+      // The agent overlay sets this for a direct llmText route; the launcher never did.
+      getSetting: (key: string) =>
+        key === "ELIZAOS_CLOUD_USE_INFERENCE"
+          ? "false"
+          : key.startsWith("ELIZAOS_CLOUD_")
+            ? (snapshot.values[key] ?? "")
+            : undefined,
+      registerModel,
+    } as unknown as IAgentRuntime;
+    expect(getSetting(runtime, "ELIZAOS_CLOUD_USE_INFERENCE")).toBe("false");
+    registerTextInferenceModels(runtime);
+    expect(registerModel).not.toHaveBeenCalled();
   });
 
   it("retains ordinary runtime precedence without a launcher authority", () => {
