@@ -1,0 +1,211 @@
+import { describe, test, expect } from "bun:test";
+import {
+  ManagedCalendarSyncProvider,
+  CalendarSyncError,
+  type CalendarSyncOwner,
+} from "./calendar-sync-provider";
+const owner: CalendarSyncOwner = {
+  organizationId: "org",
+  userId: "owner",
+  grantId: "google-grant",
+};
+const event = {
+  title: "Private QA",
+  description: "Details",
+  location: "",
+  startAt: "2026-10-16T18:00:00Z",
+  endAt: "2026-10-16T19:00:00Z",
+  timeZone: "UTC",
+  isAllDay: false,
+  attendees: [],
+};
+function fixture() {
+  const events = new Map<string, Record<string, any>>(),
+    calls: Array<{ method: string; url: string; headers: Headers }> = [];
+  let writes = 0,
+    patches = 0,
+    loss = false,
+    readOnly = false,
+    inaccessible = false,
+    revokeAfterWrite = false;
+  const provider = new ManagedCalendarSyncProvider({
+    async grant() {
+      return {
+        connectionId: owner.grantId,
+        token: "synthetic-token",
+        capabilities: ["google.calendar.read", ...(readOnly ? [] : ["google.calendar.write"])],
+      };
+    },
+    request: async (input, init = {}) => {
+      const url = new URL(String(input)),
+        method = init.method || "GET",
+        headers = new Headers(init.headers);
+      calls.push({ method, url: String(url), headers });
+      expect(url.origin).toBe("https://www.googleapis.com");
+      expect(headers.get("authorization")).toBe("Bearer synthetic-token");
+      expect(init.redirect).toBe("error");
+      if (url.pathname.includes("/calendarList/"))
+        return inaccessible
+          ? Response.json({}, { status: 404 })
+          : Response.json({ id: "primary", primary: true, accessRole: "owner" });
+      const id = decodeURIComponent(url.pathname.split("/").at(-1)!),
+        stored = events.get(id);
+      if (method === "GET")
+        return inaccessible || !stored ? Response.json({}, { status: 404 }) : Response.json(stored);
+      if (method === "POST") {
+        const body = JSON.parse(String(init.body));
+        expect(url.searchParams.get("sendUpdates")).toBe("none");
+        expect(body.visibility).toBe("private");
+        expect(body.reminders).toEqual({ useDefault: false });
+        if (events.has(body.id)) return Response.json({}, { status: 409 });
+        writes++;
+        events.set(body.id, { ...body, etag: '"1"' });
+        if (revokeAfterWrite) readOnly = true;
+        if (loss) throw Error("Response lost after create");
+        return Response.json(events.get(body.id), { status: 201 });
+      }
+      if (!stored) return Response.json({}, { status: 404 });
+      if (headers.get("if-match") !== stored.etag) return Response.json({}, { status: 412 });
+      if (method === "PATCH") {
+        patches++;
+        const next = { ...stored, ...JSON.parse(String(init.body)), etag: '"2"' };
+        events.set(id, next);
+        return Response.json(next);
+      }
+      if (method === "DELETE") {
+        events.delete(id);
+        return new Response(null, { status: 204 });
+      }
+      throw Error("Unexpected method");
+    },
+  });
+  return {
+    provider,
+    events,
+    calls,
+    writes: () => writes,
+    patches: () => patches,
+    lose: () => {
+      loss = true;
+    },
+    revoke: () => {
+      readOnly = true;
+    },
+    revokeAfter: () => {
+      revokeAfterWrite = true;
+    },
+    hideCalendar: () => {
+      inaccessible = true;
+    },
+  };
+}
+describe("managed Calendar conditional provider", () => {
+  test("stable create IDs recover an accepted lost response without a duplicate insert", async () => {
+    const f = fixture();
+    f.lose();
+    await expect(f.provider.create(owner, "primary", "operation-1", event)).rejects.toMatchObject({
+      outcome: "unknown",
+    });
+    const recovered = await f.provider.get(owner, "primary", { idempotencyKey: "operation-1" });
+    expect(recovered?.event.title).toBe(event.title);
+    expect((await f.provider.create(owner, "primary", "operation-1", event)).eventId).toBe(
+      recovered!.eventId,
+    );
+    expect(f.writes()).toBe(1);
+  });
+  test("a changed event is never silently reused as the successful create of old content", async () => {
+    const f = fixture(),
+      first = await f.provider.create(owner, "primary", "operation-1", event);
+    f.events.get(first.eventId)!.summary = "Newer Google edit";
+    f.events.get(first.eventId)!.etag = '"2"';
+    await expect(f.provider.create(owner, "primary", "operation-1", event)).rejects.toMatchObject({
+      outcome: "precondition_failed",
+    });
+    expect(f.writes()).toBe(1);
+  });
+  test("updates and deletes require the exact current provider revision", async () => {
+    const f = fixture(),
+      first = await f.provider.create(owner, "primary", "operation-1", event);
+    f.events.get(first.eventId)!.etag = '"newer"';
+    await expect(
+      f.provider.update(owner, "primary", first.eventId, first.etag!, { ...event, title: "Stale" }),
+    ).rejects.toMatchObject({ outcome: "precondition_failed" });
+    expect(f.patches()).toBe(0);
+    await expect(
+      f.provider.delete(owner, "primary", first.eventId, first.etag!),
+    ).rejects.toMatchObject({ outcome: "precondition_failed" });
+    expect(f.events.size).toBe(1);
+    const updated = await f.provider.update(owner, "primary", first.eventId, '"newer"', {
+      ...event,
+      title: "Reviewed edit",
+    });
+    expect(updated.event.title).toBe("Reviewed edit");
+    await f.provider.delete(owner, "primary", first.eventId, updated.etag!);
+    expect(f.events.size).toBe(0);
+  });
+  test("loss of Calendar access is not interpreted as an event deletion", async () => {
+    const f = fixture();
+    f.hideCalendar();
+    await expect(f.provider.get(owner, "primary", { eventId: "missing" })).rejects.toMatchObject({
+      code: "CALENDAR_SYNC_CALENDAR_UNAVAILABLE",
+    });
+  });
+  test("a revoked write grant refuses before provider access and a mid-write revocation stays uncertain", async () => {
+    const f = fixture();
+    f.revoke();
+    await expect(f.provider.create(owner, "primary", "key", event)).rejects.toBeInstanceOf(
+      CalendarSyncError,
+    );
+    expect(f.calls).toHaveLength(0);
+    const second = fixture();
+    second.revokeAfter();
+    await expect(second.provider.create(owner, "primary", "key", event)).rejects.toMatchObject({
+      code: "CALENDAR_SYNC_GRANT_CHANGED",
+      outcome: "unknown",
+    });
+    expect(second.writes()).toBe(1);
+  });
+  test("wildcard preconditions, malformed dates, and conflicting references make no request", async () => {
+    const f = fixture();
+    await expect(f.provider.update(owner, "primary", "id", "*", event)).rejects.toMatchObject({
+      outcome: "not_accepted",
+    });
+    await expect(
+      f.provider.create(owner, "primary", "key", { ...event, endAt: event.startAt }),
+    ).rejects.toMatchObject({ outcome: "not_accepted" });
+    await expect(
+      f.provider.create(owner, "primary", "key", {
+        ...event,
+        startAt: "2026-10-16T18:00:00",
+        endAt: "2026-10-16T19:00:00",
+      }),
+    ).rejects.toMatchObject({ outcome: "not_accepted" });
+    await expect(
+      f.provider.create(owner, "primary", "key", {
+        ...event,
+        isAllDay: true,
+        timeZone: null,
+        startAt: "2026-02-30",
+        endAt: "2026-03-04",
+      }),
+    ).rejects.toMatchObject({ outcome: "not_accepted" });
+    await expect(
+      f.provider.get(owner, "primary", { eventId: "id", idempotencyKey: "key" }),
+    ).rejects.toMatchObject({ outcome: "not_accepted" });
+    expect(f.calls).toHaveLength(0);
+  });
+  test("all-day dates and recurrence survive the provider contract", async () => {
+    const f = fixture(),
+      saved = await f.provider.create(owner, "primary", "all-day", {
+        ...event,
+        isAllDay: true,
+        timeZone: null,
+        startAt: "2026-10-16",
+        endAt: "2026-10-17",
+        recurrence: ["RRULE:FREQ=DAILY"],
+      });
+    expect(saved.event.isAllDay).toBe(true);
+    expect(saved.event.startAt).toBe("2026-10-16");
+    expect(saved.event.recurrence).toEqual(["RRULE:FREQ=DAILY"]);
+  });
+});
