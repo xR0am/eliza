@@ -655,6 +655,28 @@ describe("createRateLimiter", () => {
     expect(sentAt).toEqual([0, 60_000, 120_000]);
   });
 
+  it("admits one oversized request and lets a later call wait for it", async () => {
+    const limiter = createRateLimiter(Number.MAX_SAFE_INTEGER, 1000);
+    const sentAt: number[] = [];
+
+    vi.setSystemTime(0);
+    await limiter(1001).then(() => sentAt.push(Date.now()));
+
+    vi.setSystemTime(1);
+    let laterSettled = false;
+    const later = limiter(100).then(() => {
+      laterSettled = true;
+      sentAt.push(Date.now());
+    });
+
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(laterSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await later;
+
+    expect(sentAt).toEqual([0, 60_000]);
+  });
+
   it("serializes concurrent calls waiting for the same window", async () => {
     const limiter = createRateLimiter(1);
     const sentAt: number[] = [];

@@ -1363,7 +1363,12 @@ export function createRateLimiter(
             tokenUsage[0].timestamp + intervalMs - now,
           );
         }
-        if (timeToWait <= 0) break;
+        if (timeToWait <= 0) {
+          // A single request may exceed the configured token window. Preserve
+          // the existing fail-open behavior for that request. Its timestamp
+          // is recorded below, so later calls wait for it to expire normally.
+          break;
+        }
         await new Promise((resolve) => setTimeout(resolve, timeToWait));
       }
 
