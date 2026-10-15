@@ -162,7 +162,12 @@ afterAll(async () => {
 });
 
 test("restore drops a linked character the user may not link and never lists it", async () => {
-  expect(await charactersService.getByIdForUser(CHAR, USER_B)).toBeNull();
+  expect(
+    await charactersService.getByIdForUser(CHAR, {
+      id: USER_B,
+      organization_id: ORG_B,
+    }),
+  ).toBeNull();
 
   const restore = await app.request(
     "/api/v1/apps/backup/restore",

@@ -199,6 +199,12 @@ async function lockUsernameClaimAuthority(tx: DbTransaction): Promise<void> {
 /**
  * Service for character CRUD operations.
  */
+/** The authenticated caller a user-owned character lookup is scoped to. */
+export interface CharacterOwner {
+  id: string;
+  organization_id?: string | null;
+}
+
 export class CharactersService {
   /**
    * Get character by ID with caching.
@@ -328,10 +334,20 @@ export class CharactersService {
     );
   }
 
-  async getByIdForUser(characterId: string, userId: string): Promise<UserCharacter | null> {
+  /**
+   * The caller's own character in the caller's current organization. A member
+   * removed from an organization keeps their user id, so the creator match
+   * alone would still hand them the old organization's characters.
+   */
+  async getByIdForUser(characterId: string, owner: CharacterOwner): Promise<UserCharacter | null> {
     const character = await userCharactersRepository.findById(characterId);
 
-    if (!character || character.user_id !== userId) {
+    if (
+      !character ||
+      character.user_id !== owner.id ||
+      !owner.organization_id ||
+      character.organization_id !== owner.organization_id
+    ) {
       return null;
     }
 
@@ -679,11 +695,11 @@ export class CharactersService {
 
   async updateForUser(
     characterId: string,
-    userId: string,
+    owner: CharacterOwner,
     updates: Partial<NewUserCharacter>,
   ): Promise<UserCharacter | null> {
     // Verify ownership
-    const character = await this.getByIdForUser(characterId, userId);
+    const character = await this.getByIdForUser(characterId, owner);
     if (!character) {
       return null;
     }
@@ -741,9 +757,9 @@ export class CharactersService {
     }
   }
 
-  async deleteForUser(characterId: string, userId: string): Promise<boolean> {
+  async deleteForUser(characterId: string, owner: CharacterOwner): Promise<boolean> {
     // Verify ownership
-    const character = await this.getByIdForUser(characterId, userId);
+    const character = await this.getByIdForUser(characterId, owner);
     if (!character) {
       return false;
     }
