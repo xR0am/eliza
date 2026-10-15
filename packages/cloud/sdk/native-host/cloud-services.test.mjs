@@ -847,11 +847,77 @@ test("Gmail status names its connection and whether message bodies can be read",
   assert.deepEqual(metadata.grantedCapabilities, ["google.gmail.triage"]);
   assert.deepEqual(metadata.grantedScopes, [METADATA_SCOPE]);
   assert.equal(metadata.canReadMessages, false);
+  // Only an exactly read-only grant reads messages. A wider grant is reported
+  // with its scopes, and cannot read.
+  for (const wider of [
+    [READ_SCOPE, "https://www.googleapis.com/auth/gmail.modify"],
+    [READ_SCOPE, "https://www.googleapis.com/auth/gmail.send"],
+    [READ_SCOPE, "https://mail.google.com/"],
+    ["https://www.googleapis.com/auth/gmail.modify"],
+    [READ_SCOPE, "https://www.googleapis.com/auth/cloud-platform"],
+  ]) {
+    google.scopes = wider;
+    const status = await (await get("/gmail/status")).json();
+    assert.equal(status.canReadMessages, false, wider.join(" "));
+    // A scope the host cannot name is left out of the report, yet still makes the grant wider.
+    assert.deepEqual(
+      status.grantedScopes,
+      wider.filter((scope) => !scope.includes("cloud-platform")),
+    );
+  }
+  google.scopes = [
+    READ_SCOPE,
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+  ];
+  assert.equal(
+    (await (await get("/gmail/status")).json()).canReadMessages,
+    true,
+  );
+  google.scopes = undefined;
   google.connectionId = null;
   const disconnected = await (await get("/gmail/status")).json();
   assert.equal(disconnected.connectionId, null);
   assert.equal(disconnected.canReadMessages, false);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 9);
+});
+
+test("a Gmail grant wider than read-only is never read, by task reads or by list and read", async (t) => {
+  const google = {
+    connectionId: GRANT_A,
+    scopes: [READ_SCOPE, "https://www.googleapis.com/auth/gmail.modify"],
+  };
+  const { routes, calls, post } = googleHost(t, google);
+  const port = routes.googleForAccount({ actorId: "owner", retryDelaysMs: [] });
+  await assert.rejects(port.searchGmailMessagesPage(search(GRANT_A)), {
+    code: "insufficient_scope",
+    status: 403,
+  });
+  await assert.rejects(port.currentAccount(), { code: "insufficient_scope" });
+  assert.equal(
+    (await post("/gmail/list", { query: "bill", grantId: GRANT_A })).status,
+    403,
+  );
+  assert.equal(
+    (await post("/gmail/read", { messageId: "m1", grantId: GRANT_A })).status,
+    403,
+  );
+  assert.equal(
+    calls.filter((c) => /\/gmail\/(search|read)/.test(new URL(c.url).pathname))
+      .length,
+    0,
+    "No message was searched or read",
+  );
+  // The same connection, once it is exactly read-only, is read as before.
+  google.scopes = [READ_SCOPE, "openid"];
+  await port.searchGmailMessagesPage(search(GRANT_A));
+  assert.equal(
+    (await post("/gmail/list", { query: "bill", grantId: GRANT_A })).status,
+    200,
+  );
 });
 
 test("Gmail list and read name the shown connection; a bad grant is refused", async (t) => {
