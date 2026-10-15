@@ -8,20 +8,26 @@
  * subscription keeps precedence while it is effective.
  */
 import { ElizaError } from "@elizaos/core";
-import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { isProductionDeployment } from "../../lib/config/deployment-environment";
 import { getCloudAwareEnv } from "../../lib/runtime/cloud-bindings";
 import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 import { resolveSubscriptionPlanDefinition } from "../../lib/services/subscription-catalog";
 import type { DbTransaction } from "../client";
 import { dbWrite, writeTransaction } from "../helpers";
-import { organizationSubscriptionAuthorities } from "../schemas/billing-subscriptions";
+import {
+  billingSubscriptions,
+  organizationSubscriptionAuthorities,
+} from "../schemas/billing-subscriptions";
 import {
   type OrganizationEntitlement,
   organizationEntitlements,
 } from "../schemas/organization-entitlements";
 import { organizations } from "../schemas/organizations";
-import { subscriptionAllowancePeriods } from "../schemas/subscription-allowance-periods";
+import {
+  type SubscriptionAllowancePeriod,
+  subscriptionAllowancePeriods,
+} from "../schemas/subscription-allowance-periods";
 import { subscriptionAllowanceTransactions } from "../schemas/subscription-allowance-transactions";
 import {
   type SubscriptionGrant,
@@ -40,6 +46,8 @@ export const SUBSCRIPTION_GRANT_CODE_INVALID = "SUBSCRIPTION_GRANT_CODE_INVALID"
 export const SUBSCRIPTION_GRANT_ALREADY_GRANTED = "SUBSCRIPTION_GRANT_ALREADY_GRANTED";
 /** The idempotency key already recorded a different redemption for this organization. */
 export const SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT = "SUBSCRIPTION_GRANT_IDEMPOTENCY_CONFLICT";
+/** An exclusive code was offered to an organization with an open (or unknown) paid subscription. */
+export const SUBSCRIPTION_GRANT_PAID_PLAN_ACTIVE = "SUBSCRIPTION_GRANT_PAID_PLAN_ACTIVE";
 /** No grant has the requested id. */
 export const SUBSCRIPTION_GRANT_NOT_FOUND = "SUBSCRIPTION_GRANT_NOT_FOUND";
 /** Minted codes are 16 Crockford base32 characters (80 bits); shorter text is never a code. */
@@ -102,7 +110,8 @@ export async function hashSubscriptionGrantCode(
   return Array.from(new Uint8Array(mac), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function addUtcMonths(start: Date, months: number): Date {
+/** UTC calendar-month addition; a day past the target month's end clamps to its last day. */
+export function addUtcMonths(start: Date, months: number): Date {
   const year = start.getUTCFullYear();
   const month = start.getUTCMonth() + months;
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
@@ -182,6 +191,54 @@ export function grantEntitlementPlanValues(
   };
 }
 
+/** Subscription states that still bill (or may bill) the organization; mirrors the open-subscription index. */
+const OPEN_PAID_SUBSCRIPTION_STATES = [
+  "pending",
+  "incomplete",
+  "active",
+  "grace",
+  "past_due",
+  "unpaid",
+] as const;
+
+/**
+ * True when the organization has an open organization subscription or its
+ * subscription authority is unknown. Locks the authority row in the billing
+ * order the projection write uses later in the same transaction.
+ */
+async function organizationHasPaidPlanObligation(
+  tx: DbTransaction,
+  organizationId: string,
+): Promise<boolean> {
+  const [association] = await tx
+    .select({ state: organizationSubscriptionAuthorities.state })
+    .from(organizationSubscriptionAuthorities)
+    .where(eq(organizationSubscriptionAuthorities.organization_id, organizationId))
+    .for("update");
+  if (association?.state === "unavailable") return true;
+  const [open] = await tx
+    .select({ id: billingSubscriptions.id })
+    .from(billingSubscriptions)
+    .where(
+      and(
+        eq(billingSubscriptions.organization_id, organizationId),
+        isNull(billingSubscriptions.billing_scope_id),
+        inArray(billingSubscriptions.status, [...OPEN_PAID_SUBSCRIPTION_STATES]),
+      ),
+    )
+    .limit(1);
+  return open !== undefined;
+}
+
+/** The end of a grant redeemed at `now` under the code's single term; null is lifetime. */
+export function grantEndsAt(
+  code: { duration_days: number | null; duration_months: number | null },
+  now: Date,
+): Date | null {
+  if (code.duration_months !== null) return addUtcMonths(now, code.duration_months);
+  return code.duration_days === null ? null : new Date(now.getTime() + code.duration_days * DAY_MS);
+}
+
 /** The organization's unrevoked grant whose window contains `now`, latest end first. */
 export async function readActiveSubscriptionGrant(
   tx: DbTransaction,
@@ -202,6 +259,39 @@ export async function readActiveSubscriptionGrant(
     .orderBy(desc(subscriptionGrants.ends_at))
     .limit(1);
   return grant;
+}
+
+export interface SubscriptionGrantObservation {
+  grant: SubscriptionGrant;
+  /** The grant's allowance bucket whose window contains the read time, if any. */
+  period: SubscriptionAllowancePeriod | undefined;
+}
+
+/**
+ * Read-only: the active grant at `at` and its current allowance bucket, for
+ * account readback (cross-device free-through date and declared allowance).
+ * Serving decisions stay with the organization policy reader.
+ */
+export async function readSubscriptionGrantObservation(
+  tx: DbTransaction,
+  organizationId: string,
+  at: Date,
+): Promise<SubscriptionGrantObservation | null> {
+  const grant = await readActiveSubscriptionGrant(tx, organizationId, at);
+  if (!grant) return null;
+  const [period] = await tx
+    .select()
+    .from(subscriptionAllowancePeriods)
+    .where(
+      and(
+        eq(subscriptionAllowancePeriods.organization_id, organizationId),
+        eq(subscriptionAllowancePeriods.promo_grant_id, grant.id),
+        lte(subscriptionAllowancePeriods.period_start, at),
+        gt(subscriptionAllowancePeriods.period_end, at),
+      ),
+    )
+    .limit(1);
+  return { grant, period };
 }
 
 export class SubscriptionGrantsRepository {
@@ -274,11 +364,19 @@ export class SubscriptionGrantsRepository {
       grantError(SUBSCRIPTION_GRANT_ALREADY_GRANTED, "Organization already holds this grant", {
         organizationId: input.organizationId,
       });
+    if (
+      code.requires_no_paid_plan &&
+      (await organizationHasPaidPlanObligation(tx, input.organizationId))
+    )
+      grantError(
+        SUBSCRIPTION_GRANT_PAID_PLAN_ACTIVE,
+        "Organization has a paid subscription; this code cannot be added to it",
+        { organizationId: input.organizationId },
+      );
 
     const plan = resolveSubscriptionPlanDefinition(code.plan_key, code.catalog_version);
     const startsAt = now;
-    const endsAt =
-      code.duration_days === null ? null : new Date(now.getTime() + code.duration_days * DAY_MS);
+    const endsAt = grantEndsAt(code, now);
     const [grant] = await tx
       .insert(subscriptionGrants)
       .values({

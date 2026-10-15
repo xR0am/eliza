@@ -9,10 +9,12 @@ import type {
   SubscriptionCancellationBlockerCode,
   SubscriptionCancellationControlSnapshot,
   SubscriptionCancellationNoticeSnapshot,
+  SubscriptionGrantSnapshot,
 } from "@elizaos/cloud-sdk/account-billing-snapshot";
 import { ElizaError } from "@elizaos/core";
 import type { PrimaryOrganizationSubscription } from "../../db/repositories/account-billing-snapshot-subscription";
 import type { SubscriptionAllowanceEligibility } from "../../db/repositories/subscription-allowance-eligibility";
+import type { SubscriptionGrantObservation } from "../../db/repositories/subscription-grants";
 
 /** The reader's session authority; absent means the caller proved no interactive manager session. */
 export interface SubscriptionCancellationReaderAuthority {
@@ -158,6 +160,55 @@ export function buildOrganizationSubscriptionSnapshot(
     },
   };
 }
+/**
+ * Projects the active grant for account readback. It reports dates and the
+ * current month's allowance only; admission keeps using the policy reader.
+ */
+export function buildSubscriptionGrantSnapshot(
+  observation: SubscriptionGrantObservation | null,
+  primary: PrimaryOrganizationSubscription,
+  observedAt: string,
+): Observed<SubscriptionGrantSnapshot> {
+  const provenance = { source: "primary-subscription-grant", observedAt };
+  if (!observation)
+    return { ...provenance, status: "not_applicable", reason: "no_active_subscription_grant" };
+  const { grant, period } = observation;
+  const paidPlanTakesPrecedence =
+    primary.state === "current" &&
+    (primary.subscription.status === "active" || primary.subscription.status === "grace") &&
+    primary.subscription.current_period_end.getTime() > Date.parse(observedAt);
+  return {
+    ...provenance,
+    status: "available",
+    value: {
+      grantId: grant.id,
+      planKey: grant.plan_key,
+      catalogVersion: grant.catalog_version,
+      startsAt: grant.starts_at.toISOString(),
+      endsAt: grant.ends_at?.toISOString() ?? null,
+      paidPlanTakesPrecedence,
+      allowance: period
+        ? {
+            ...provenance,
+            status: "available",
+            value: {
+              periodStart: period.period_start.toISOString(),
+              periodEnd: period.period_end.toISOString(),
+              state: period.state,
+              granted: money(period.granted_amount),
+              unreserved: money(period.available_amount),
+              currency: "USD",
+            },
+          }
+        : {
+            ...provenance,
+            status: "unavailable",
+            error: { code: "subscription_grant_allowance_unavailable", retryable: true },
+          },
+    },
+  };
+}
+
 function money(value: string): string {
   if (!/^(?:0|[1-9][0-9]*)\.[0-9]{6}$/.test(value))
     throw new ElizaError("Subscription allowance amount is invalid", {
