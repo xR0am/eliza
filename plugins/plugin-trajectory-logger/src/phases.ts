@@ -79,8 +79,9 @@ export function extractShouldRespondDecision(
       /* fall through */
     }
   }
-  const word = text.match(/\b(RESPOND|REPLY|ANSWER|IGNORE|STOP|SKIP)\b/i);
-  return word ? { decision: word[0].toUpperCase() } : null;
+  const words = text.match(/\b(RESPOND|REPLY|ANSWER|IGNORE|STOP|SKIP)\b/gi);
+  const word = words?.[words.length - 1];
+  return word ? { decision: word.toUpperCase() } : null;
 }
 
 export function summarizePhases(
