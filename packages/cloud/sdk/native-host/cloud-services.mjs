@@ -1942,19 +1942,24 @@ export function createCloudRoutes({
       }
       // The renderer's list and read are held to the same read-only grant as
       // task reads. A connection that is not connected is left to Cloud's
-      // own answer, as before.
+      // own answer, as before. The grant checked is the grant Cloud is then
+      // asked to use: a named connection is checked by name, and must be the
+      // one Cloud reports.
       const requireReadOnlyGmail = async () => {
         const status = await parse(
-          await request("/api/v1/eliza/google/status?side=owner", {
+          await request(`/api/v1/eliza/google/status?side=owner${grantQuery}`, {
             key,
             signal,
             authorityGeneration: credentialEpoch,
           }),
         );
+        if (status?.connected !== true) return;
         if (
-          status?.connected === true &&
-          !gmailReadOnlyGrant(status.grantedScopes)
+          requestInput?.grantId &&
+          status.connectionId !== requestInput.grantId
         )
+          throw fail(message("invalidGoogleConnection"), 409);
+        if (!gmailReadOnlyGrant(status.grantedScopes))
           throw fail(message("gmailReadOnlyRequired"), 403);
       };
       if (method === "GET" && path === "/cloud/gmail/messages") {
