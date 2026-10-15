@@ -85,7 +85,7 @@ export function hostOf(url: string): string {
 
 function sanitizeListedAnswer(
   answer: string,
-  warnings: Array<{ url: string, host: string | null, warning: string }>,
+  warnings: Array<{ url: string; host: string | null; warning: string }>,
 ): string {
   let sanitized = answer
   for (const warning of warnings) {
