@@ -1,10 +1,11 @@
 /** Stateless owner Calendar sync: stable creates, conditional writes, bounded provider I/O. */
-import { z } from "zod";
-import { boundedProviderFetch } from "../../utils/bounded-provider-fetch";
+
 import type {
   LinkedCalendarProviderSnapshot,
   LinkedCalendarSemanticEvent,
 } from "@elizaos/contracts/calendar-linked-sync";
+import { z } from "zod";
+import { boundedProviderFetch } from "../../utils/bounded-provider-fetch";
 
 export interface CalendarSyncOwner {
   organizationId: string;

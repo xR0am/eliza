@@ -1,10 +1,11 @@
-import { Hono, type Context, type Env } from "hono";
+import { type Context, type Env, Hono } from "hono";
 import { z } from "zod";
 import {
   CalendarSyncError,
-  type ManagedCalendarSyncProvider,
   type CalendarSyncOwner,
+  type ManagedCalendarSyncProvider,
 } from "./calendar-sync-provider";
+
 const calendarSelection = { grantId: z.string().uuid(), calendarId: z.string().min(1).max(1024) };
 const selected = { ...calendarSelection, accountId: z.string().min(1).max(2048) };
 const querySchema = z

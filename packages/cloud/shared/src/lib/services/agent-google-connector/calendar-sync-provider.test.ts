@@ -1,9 +1,10 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
-  ManagedCalendarSyncProvider,
   CalendarSyncError,
   type CalendarSyncOwner,
+  ManagedCalendarSyncProvider,
 } from "./calendar-sync-provider";
+
 const owner: CalendarSyncOwner = {
   organizationId: "org",
   userId: "owner",

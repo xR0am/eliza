@@ -1,9 +1,10 @@
 import {
-  ManagedCalendarSyncProvider,
   CalendarSyncError,
   type CalendarSyncOwner,
+  ManagedCalendarSyncProvider,
 } from "./calendar-sync-provider";
 import { getGoogleAccessToken, getManagedGoogleConnectorStatus } from "./shared";
+
 async function current(owner: CalendarSyncOwner) {
   const status = await getManagedGoogleConnectorStatus({
     organizationId: owner.organizationId,
