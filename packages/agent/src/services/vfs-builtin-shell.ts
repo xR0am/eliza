@@ -374,7 +374,7 @@ async function grep(
     filesWithMatches: false,
     invertMatch: false,
   });
-  if (!parsed.pattern) {
+  if (parsed.pattern === null) {
     return { exitCode: 2, stdout: "", stderr: "grep: missing pattern\n" };
   }
   const targets = await collectSearchTargets(vfs, cwd, parsed.targets);
@@ -407,7 +407,7 @@ async function rg(
     filesWithMatches: false,
     invertMatch: false,
   });
-  if (!parsed.pattern) {
+  if (parsed.pattern === null) {
     return { exitCode: 2, stdout: "", stderr: "rg: missing pattern\n" };
   }
   const targets = await collectSearchTargets(vfs, cwd, parsed.targets);
