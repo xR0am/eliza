@@ -254,6 +254,61 @@ describe("InboxService + InboxRepository — real PGLite", () => {
     });
   });
 
+  it("keeps a failed HTTP unsubscribe failed when the sender is also blocked", async () => {
+    const createFilter = vi.fn(async () => ({ filterId: "filter-500" }));
+    const gmail = {
+      requireGmailGrant: async () =>
+        ({
+          id: "grant-1",
+          connectorAccountId: "account-1",
+          capabilities: ["google.gmail.triage", "google.gmail.manage"],
+        }) as Awaited<ReturnType<InboxGmailGateway["requireGmailGrant"]>>,
+      searchGmail: async () =>
+        ({
+          syncedAt: "2026-10-11T00:00:00.000Z",
+          messages: [
+            {
+              id: "unsubscribe-message-500",
+              threadId: "unsubscribe-thread-500",
+              from: "Promo <promo@example.com>",
+              fromEmail: "promo@example.com",
+              subject: "Sale",
+              receivedAt: "2026-10-10T00:00:00.000Z",
+              metadata: {
+                headers: {
+                  "List-Unsubscribe": "<https://unsubscribe.example.com/promo>",
+                },
+              },
+            },
+          ],
+        }) as Awaited<ReturnType<InboxGmailGateway["searchGmail"]>>,
+      sendMailtoUnsubscribeEmail: vi.fn(),
+      createGmailFilterForSender: createFilter,
+      trashGmailThread: vi.fn(),
+    } satisfies InboxGmailGateway;
+    const unsubscribe = new InboxUnsubscribeService(runtime, {
+      gmail,
+      httpTransport: {
+        lookupFn: async () => [{ address: "93.184.216.34", family: 4 }],
+        pinnedFetchImpl: async () => new Response(null, { status: 500 }),
+      },
+    });
+
+    const result = await unsubscribe.unsubscribeEmailSender({
+      senderEmail: "promo@example.com",
+      userAuthorization: true,
+      blockAfter: true,
+    });
+
+    // The filter hides the mail, but the sender was never unsubscribed.
+    expect(createFilter).toHaveBeenCalledTimes(1);
+    expect(result.record).toMatchObject({
+      status: "failed",
+      filterCreated: true,
+      errorMessage: "HTTP unsubscribe returned 500.",
+    });
+  });
+
   it("sends the mailto unsubscribe fields as RFC 6068 defines them", async () => {
     const send = vi.fn(async () => undefined);
     const gmail = {
