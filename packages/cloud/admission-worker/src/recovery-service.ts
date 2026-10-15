@@ -1,10 +1,10 @@
 /** Worker-only alias: preserve awaited accounting callbacks through private RPC. */
-import { getCloudBinding } from "@elizaos/cloud-shared/lib/runtime/cloud-bindings";
-import type { InferenceBalanceFence } from "@elizaos/cloud-shared/lib/services/credits";
+import { getCloudBinding } from "../../shared/src/lib/runtime/cloud-bindings";
+import type { InferenceBalanceFence } from "../../shared/src/lib/services/credits";
 import type {
   InferenceAdmissionRecoveryContext,
   InferenceAdmissionRecoveryResult,
-} from "@elizaos/cloud-shared/lib/services/inference-admission-recovery";
+} from "../../shared/src/lib/services/inference-admission-recovery";
 
 interface RecoveryCapability {
   recover(
