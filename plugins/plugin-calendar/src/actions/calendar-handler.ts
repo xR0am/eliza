@@ -245,6 +245,7 @@ function connectorGrantIdDetail(
   return isAppleCalendarGrant(value) ||
     isMicrosoftCalendarGrantId(value) ||
     value === ELIZA_CALENDAR_GRANT_ID ||
+    /^alpha-google:[a-f0-9]{64}$/.test(value) ||
     value.startsWith(GOOGLE_CONNECTOR_ACCOUNT_GRANT_PREFIX)
     ? value
     : undefined;
