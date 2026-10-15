@@ -1786,7 +1786,10 @@ export const calendarAction: Action & {
 /** Updates and deletions share one explicit event selector; legacy umbrella
  * parameters remain available for compatible domain callers. */
 const calendarMutationTargetParameters: NonNullable<Action["parameters"]> = [
-  ...(calendarAction.parameters ?? []),
+  ...(calendarAction.parameters ?? []).filter(
+    (parameter) =>
+      parameter.name !== "targetKind" && parameter.name !== "target",
+  ),
   {
     name: "targetKind",
     required: true,

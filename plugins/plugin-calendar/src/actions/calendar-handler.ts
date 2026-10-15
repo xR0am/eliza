@@ -5256,7 +5256,7 @@ const calendarAction: CalendarHandlerAction = {
     "DO NOT use this action to propose or suggest candidate meeting times to send to someone — use PROPOSE_MEETING_TIMES for requests like 'propose three times for a 30 min sync with X', 'suggest meeting slots', or 'find times that work next week'. The create_event subaction is only for booking a single known time on your own calendar. " +
     "This action returns authoritative outcome receipts and complete internal evidence for the evaluator's final grounded reply; do not pair it with a speculative REPLY action.",
   descriptionCompressed:
-    "Calendar view/search/create; approvals use CALENDAR_REVIEW, not create_event",
+    "Calendar read/create/update/delete. Updates/deletes require targetKind+target or query/details.eventId; approvals use CALENDAR_REVIEW",
   contexts: ["calendar", "contacts", "tasks"],
   roleGate: { minRole: "OWNER" },
   suppressPostActionContinuation: true,
@@ -7374,9 +7374,23 @@ const calendarAction: CalendarHandlerAction = {
       schema: { type: "string" as const },
     },
     {
+      name: "targetKind",
+      description:
+        "For update_event/delete_event, identify the existing event using query or eventId. Pair with target; omit for other operations.",
+      required: false,
+      schema: { type: "string" as const, enum: ["query", "eventId"] },
+    },
+    {
+      name: "target",
+      description:
+        "For update_event/delete_event, the existing event title (targetKind=query) or exact provider event ID (targetKind=eventId). Required for these operations unless query or details.eventId already identifies the target. Never leave the target only in intent.",
+      required: false,
+      schema: { type: "string" as const, minLength: 1 },
+    },
+    {
       name: "query",
       description:
-        "Event-content filter explicitly requested by the user, such as flight, dentist, Denver, or return flight. For trip_window, the trip or stay location (required). Never put dates, agenda, events, or schedule here just to express a time range. For an unfiltered day agenda use feed with details.timeMin/timeMax and omit query/queries.",
+        "For update_event/delete_event, the existing event title to locate; required unless target or details.eventId identifies it. For reads: event-content filter explicitly requested by the user, such as flight, dentist, Denver, or return flight. For trip_window, the trip or stay location (required). Never put dates, agenda, events, or schedule here just to express a time range. For an unfiltered day agenda use feed with details.timeMin/timeMax and omit query/queries.",
       required: false,
       schema: { type: "string" as const },
     },
