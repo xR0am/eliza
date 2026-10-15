@@ -313,6 +313,10 @@ final class ElizaVoiceNative {
     /** English UTF-8 text to misaki phonemes. */
     static native String nativeParadeePhonemize(long ctxHandle, byte[] utf8Text);
 
+    static native int nativeParadeeStreamSupported();
+
+    static native void nativeParadeeSynthesizeStream(long ctx, byte[] utf8Text, float speed, Object sink);
+
     /** English UTF-8 text to 24 kHz mono fp32 PCM. Throws CancellationException on {@link #nativeCancelTts}. */
     static native float[] nativeParadeeSynthesize(long ctxHandle, byte[] utf8Text, float speed);
 

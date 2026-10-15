@@ -3,7 +3,7 @@
 # statically validates the selected workspace closure. A narrow, mock-backed
 # billing replay E2E, path-scoped real PostgreSQL subscription-authority proof,
 # and the bounded synthetic-world transaction suite are the affected-path test
-# exceptions. Provider, device, deployment, and destructive-effect lanes remain
+# exceptions, alongside a path-scoped native speech compile/contract check. Provider, device, deployment, and destructive-effect lanes remain
 # excluded.
 name: PR Validation
 
@@ -31,6 +31,11 @@ env:
 jobs:
   secret-scan:
     uses: ./.github/workflows/gitleaks.yml
+    with:
+      base_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      head_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+  paradee-stream-contract:
+    uses: ./.github/workflows/paradee-stream-contract.yml
     with:
       base_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       head_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
@@ -731,6 +736,7 @@ jobs:
       - source-checks
       - billing-payment-replay-e2e
       - subscription-authority-postgres
+      - paradee-stream-contract
     runs-on: ubuntu-24.04
     steps:
       - name: Require every admission lane
@@ -740,6 +746,7 @@ jobs:
             source-checks=${{ needs.source-checks.result }}
             billing-payment-replay-e2e=${{ needs.billing-payment-replay-e2e.result }}
             subscription-authority-postgres=${{ needs.subscription-authority-postgres.result }}
+            paradee-stream-contract=${{ needs.paradee-stream-contract.result }}
         run: |
           set -euo pipefail
           for pair in $RESULTS; do

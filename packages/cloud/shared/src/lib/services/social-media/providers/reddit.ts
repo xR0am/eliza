@@ -13,7 +13,7 @@ import type {
 } from "../../../types/social-media";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const REDDIT_API_BASE = "https://oauth.reddit.com";
 const REDDIT_AUTH_BASE = "https://www.reddit.com/api/v1";
@@ -310,11 +310,7 @@ export const redditProvider: SocialMediaProvider = {
       // error-policy:J1 Boundary translation: a failed Reddit submit call becomes a
       // structured PostResult failure surfaced to the caller.
       logger.error("[Reddit] Post failed", { error });
-      return {
-        platform: "reddit",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("reddit", error);
     }
   },
 
@@ -492,11 +488,7 @@ export const redditProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 Boundary translation: a failed Reddit comment call becomes a
       // structured PostResult failure surfaced to the caller.
-      return {
-        platform: "reddit",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("reddit", error);
     }
   },
 
