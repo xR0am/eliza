@@ -5,12 +5,18 @@
  * chunk reopens the mention. Real TwitterInteractionClient and thread sender;
  * the X client and the message service are stubbed.
  */
-import { type IAgentRuntime, logger, type UUID } from "@elizaos/core";
+import {
+  ElizaError,
+  type IAgentRuntime,
+  logger,
+  type UUID,
+} from "@elizaos/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientBase } from "./base";
 import type { Tweet } from "./client";
 import { TwitterInteractionClient } from "./interactions";
 import type { TwitterClientState } from "./types";
+import { sendTextAsTweetThread } from "./utils";
 
 const PROFILE_ID = "bot-user";
 
@@ -187,5 +193,31 @@ describe("mention reply is posted at most once", () => {
     await poll(interactions);
 
     expect(runtime.messageService!.handleMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("thread sender failure after a chunk was posted", () => {
+  const twoChunks = `${"a ".repeat(200)}${"b ".repeat(200)}`;
+  async function failSecondChunk(error: unknown) {
+    let calls = 0;
+    return sendTextAsTweetThread(twoChunks, async () => {
+      calls += 1;
+      if (calls === 1) return { id: "2000000000000000001" } as never;
+      throw error;
+    }).catch((thrown: unknown) => thrown as { code?: unknown });
+  }
+
+  it("keeps a credential rotation unchanged so callers still abort the cycle", async () => {
+    const rotated = new ElizaError("rotated", {
+      code: "X_AUTH_SESSION_ROTATED",
+    });
+    expect(await failSecondChunk(rotated)).toBe(rotated);
+  });
+
+  it("marks any other failure as a partly posted thread", async () => {
+    const thrown = await failSecondChunk(
+      Object.assign(new Error("Too Many Requests"), { code: 429 }),
+    );
+    expect(thrown.code).toBe("X_THREAD_PARTIALLY_POSTED");
   });
 });

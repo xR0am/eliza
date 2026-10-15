@@ -29,7 +29,6 @@ import {
 } from "./base";
 import { SearchMode } from "./client/index";
 import type { Tweet as ClientTweet } from "./client/tweets";
-import { isExplicitTwitterRejection } from "./direct-messages";
 import {
   getRandomInterval,
   getTargetUsers,
@@ -52,6 +51,7 @@ import {
   sendChunkedTweet,
   sendTextAsTweetThread,
 } from "./utils";
+import { isExplicitTwitterRejection } from "./utils/error-handler";
 import { describeTweetPhotos } from "./utils/image-descriptions";
 import {
   buildTwitterMessageMetadata,

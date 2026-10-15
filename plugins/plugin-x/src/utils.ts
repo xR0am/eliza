@@ -92,6 +92,15 @@ export function splitXDirectMessageContent(text: string): string[] {
 }
 
 /** Send complete text through a caller-owned first/reply transport. */
+/** Errors on which every thread caller aborts its cycle to refresh credentials. */
+function isXAuthAbortError(error: unknown): boolean {
+  return (
+    error instanceof ElizaError &&
+    (error.code === "X_AUTH_NOT_INITIALIZED" ||
+      error.code === "X_AUTH_SESSION_ROTATED")
+  );
+}
+
 export async function sendTextAsTweetThread(
   text: string,
   sendChunk: (
@@ -109,7 +118,8 @@ export async function sendTextAsTweetThread(
     } catch (error) {
       // error-policy:J2 once a chunk is public, a later failure must not look
       // like a plain refusal: the caller would send the whole thread again.
-      if (receipts.length === 0) throw error;
+      // Auth errors pass through unchanged: callers abort the cycle on them.
+      if (receipts.length === 0 || isXAuthAbortError(error)) throw error;
       throw new ElizaError("X thread was only partly posted", {
         code: "X_THREAD_PARTIALLY_POSTED",
         cause: error,
