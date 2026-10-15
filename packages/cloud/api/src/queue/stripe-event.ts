@@ -1910,6 +1910,17 @@ async function clawbackForReversal(params: {
         )
       : minBigInt(reversedMicros, grantAmountMicros);
   const cappedUsdReversed = Number(targetMicros) / 1_000_000;
+  if (autoTopUpCharge && chargeAmountCents && chargeAmountCents > 0n) {
+    // The charge also paid the affiliate fee as payable earnings; take back
+    // the same share of it, or a refunded or disputed charge still pays out.
+    await redeemableEarningsService.reverseAutoTopUpAffiliateFee({
+      paymentIntentId,
+      reversedCents,
+      chargeCents: chargeAmountCents,
+      reversalSeries,
+      idempotencyKey,
+    });
+  }
   const result = await creditsService.clawbackCredits({
     organizationId: grant.organization_id,
     amount: cappedUsdReversed,
@@ -2040,6 +2051,14 @@ async function handleChargeDisputeFundsReinstated(
     throw new Error(
       `Dispute clawback is not yet available for reinstatement ${reference}`,
     );
+  }
+
+  if (paymentIntentId) {
+    await redeemableEarningsService.reinstateAutoTopUpAffiliateFee({
+      paymentIntentId,
+      reversalSeries: clawbackKey,
+      reinstatementKey: `${clawbackKey}:reinstated`,
+    });
   }
 
   // Stripe returned the disputed funds, so the unrecovered shortfall is no

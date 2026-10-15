@@ -760,6 +760,131 @@ class RedeemableEarningsService {
       ledgerEntryId: result.ledgerEntryId,
     };
   }
+
+  /**
+   * Take back the share of an auto top-up affiliate fee that a refund or a
+   * dispute reversed. The fee was credited as payable affiliate earnings when
+   * the charge succeeded; without this a refunded or disputed charge still
+   * paid the affiliate. `reversedCents` is cumulative for `reversalSeries`
+   * (the same series the credit clawback uses), so only the part not taken
+   * back yet is debited. An already paid-out fee leaves a negative ledger sum
+   * that later affiliate earnings net against.
+   */
+  async reverseAutoTopUpAffiliateFee(params: {
+    paymentIntentId: string;
+    reversedCents: bigint;
+    chargeCents: bigint;
+    reversalSeries: string;
+    idempotencyKey: string;
+  }): Promise<number> {
+    const { paymentIntentId, reversedCents, chargeCents, reversalSeries, idempotencyKey } = params;
+    if (reversedCents <= 0n || chargeCents <= 0n) return 0;
+    const earning = await this.findAutoTopUpAffiliateEarning(paymentIntentId);
+    if (!earning) return 0;
+
+    const fee = new Decimal(earning.amount);
+    const reversed = reversedCents < chargeCents ? reversedCents : chargeCents;
+    const target = fee
+      .mul(reversed.toString())
+      .div(chargeCents.toString())
+      .toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+
+    return await dbWrite.transaction(async (tx) => {
+      // Same lock reduceEarnings takes, so two events of one series cannot
+      // both read the old total and debit the same share twice.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`redeemable_earnings:${earning.userId}`}))`,
+      );
+      const taken = await this.sumAffiliateFeeReversal(tx, earning.userId, reversalSeries);
+      const delta = target.minus(taken);
+      if (delta.lte(0)) return 0;
+      const result = await this.reduceEarnings({
+        userId: earning.userId,
+        amount: delta.toNumber(),
+        source: "affiliate",
+        sourceId: `affiliate_reversal:${idempotencyKey}`,
+        dedupeBySourceId: true,
+        description: `Auto top-up affiliate fee reversed — ${idempotencyKey}`,
+        metadata: {
+          payment_intent_id: paymentIntentId,
+          affiliate_reversal_series: reversalSeries,
+        },
+        transaction: tx,
+      });
+      if (!result.success) {
+        throw new Error(`Failed to reverse affiliate fee for ${paymentIntentId}: ${result.error}`);
+      }
+      return result.deduplicated ? 0 : delta.toNumber();
+    });
+  }
+
+  /** A won dispute returns the affiliate fee share its funds-withdrawn event took back. */
+  async reinstateAutoTopUpAffiliateFee(params: {
+    paymentIntentId: string;
+    reversalSeries: string;
+    reinstatementKey: string;
+  }): Promise<number> {
+    const earning = await this.findAutoTopUpAffiliateEarning(params.paymentIntentId);
+    if (!earning) return 0;
+    const taken = await this.sumAffiliateFeeReversal(
+      dbWrite,
+      earning.userId,
+      params.reversalSeries,
+    );
+    if (taken.lte(0)) return 0;
+    const result = await this.addEarnings({
+      userId: earning.userId,
+      amount: taken.toNumber(),
+      source: "affiliate",
+      sourceId: `affiliate_reinstated:${params.reinstatementKey}`,
+      dedupeBySourceId: true,
+      description: `Auto top-up affiliate fee reinstated — ${params.reinstatementKey}`,
+      metadata: { payment_intent_id: params.paymentIntentId },
+    });
+    if (!result.success) {
+      throw new Error(
+        `Failed to reinstate affiliate fee for ${params.paymentIntentId}: ${result.error}`,
+      );
+    }
+    return taken.toNumber();
+  }
+
+  private async findAutoTopUpAffiliateEarning(
+    paymentIntentId: string,
+  ): Promise<{ userId: string; amount: string } | null> {
+    const [row] = await dbWrite
+      .select({ userId: redeemableEarningsLedger.user_id, amount: redeemableEarningsLedger.amount })
+      .from(redeemableEarningsLedger)
+      .where(
+        and(
+          eq(redeemableEarningsLedger.entry_type, "earning"),
+          eq(redeemableEarningsLedger.earnings_source, "affiliate"),
+          sql`${redeemableEarningsLedger.metadata}->>'payment_intent_id' = ${paymentIntentId}`,
+          sql`${redeemableEarningsLedger.metadata}->>'original_source_id' LIKE ${`affiliate_auto_topup:${paymentIntentId}:%`}`,
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  private async sumAffiliateFeeReversal(
+    db: DbTransaction | typeof dbWrite,
+    userId: string,
+    reversalSeries: string,
+  ): Promise<Decimal> {
+    const [row] = await db
+      .select({ total: sql<string>`COALESCE(SUM(-${redeemableEarningsLedger.amount}), 0)::text` })
+      .from(redeemableEarningsLedger)
+      .where(
+        and(
+          eq(redeemableEarningsLedger.user_id, userId),
+          eq(redeemableEarningsLedger.entry_type, "adjustment"),
+          eq(redeemableEarningsLedger.earnings_source, "affiliate"),
+          sql`${redeemableEarningsLedger.metadata}->>'affiliate_reversal_series' = ${reversalSeries}`,
+        ),
+      );
+    return new Decimal(row?.total ?? "0");
+  }
 }
 
 // Export singleton

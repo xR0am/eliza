@@ -34,6 +34,15 @@ const { stripeCheckoutOrders } = await import(
 const { organizationPaymentReversalHolds } = await import(
   "@elizaos/cloud-shared/db/schemas/organization-payment-reversal-holds"
 );
+const {
+  earningsSourceEnum,
+  ledgerEntryTypeEnum,
+  redeemableEarnings,
+  redeemableEarningsLedger,
+} = await import("@elizaos/cloud-shared/db/schemas/redeemable-earnings");
+const { redeemableEarningsService } = await import(
+  "@elizaos/cloud-shared/lib/services/redeemable-earnings"
+);
 const { billingHoldService, BillingHoldActiveError } = await import(
   "@elizaos/cloud-shared/lib/services/billing-hold"
 );
@@ -58,6 +67,10 @@ beforeAll(async () => {
         creditTransactions,
         stripeCheckoutOrders,
         organizationPaymentReversalHolds,
+        earningsSourceEnum,
+        ledgerEntryTypeEnum,
+        redeemableEarnings,
+        redeemableEarningsLedger,
       },
       empty.id,
     ),
@@ -461,6 +474,51 @@ test("cumulative partial refunds on a low balance book each unrecovered credit o
   expect(unrecovered).toBe(200);
 });
 
+/** A $15 auto top-up (10 credits) whose $3 affiliate fee was paid out as earnings. */
+async function affiliateTopUp(): Promise<Purchase & { affiliate: string }> {
+  const buyer = await purchase({
+    credits: "10",
+    cents: null,
+    balance: "10",
+    metadata: {
+      type: "auto_top_up",
+      auto_top_up_attempt_id: randomUUID(),
+      base_amount: "10.00",
+      total_charged: "15.00",
+      platform_fee_amount: "2.00",
+      affiliate_fee_amount: "3.00",
+      fees_included: "true",
+    },
+  });
+  const affiliate = randomUUID();
+  await pg().query(
+    "INSERT INTO users(id,organization_id,steward_user_id,role) VALUES ($1,$2,$3,'owner')",
+    [affiliate, buyer.org, `subject_${affiliate}`],
+  );
+  // The same credit the payment_intent.succeeded handler books.
+  const earned = await redeemableEarningsService.addEarnings({
+    userId: affiliate,
+    amount: 3,
+    source: "affiliate",
+    sourceId: `affiliate_auto_topup:${buyer.paymentIntentId}:${randomUUID()}`,
+    dedupeBySourceId: true,
+    description: "Auto top-up affiliate fee",
+    metadata: { payment_intent_id: buyer.paymentIntentId },
+  });
+  expect(earned.success).toBe(true);
+  return { ...buyer, affiliate };
+}
+
+/** What the affiliate payout sums: affiliate earning + adjustment ledger rows. */
+async function affiliatePayable(userId: string): Promise<number> {
+  const rows = await pg().query<{ total: string }>(
+    `SELECT COALESCE(SUM(amount),0)::text AS total FROM redeemable_earnings_ledger
+     WHERE user_id=$1 AND earnings_source='affiliate' AND entry_type IN ('earning','adjustment')`,
+    [userId],
+  );
+  return Number(rows.rows[0]?.total);
+}
+
 function refundEvent(
   chargeId: string,
   amountRefundedCents: number,
@@ -699,4 +757,39 @@ test("a won dispute clears its hold and returns any repayment toward it", async 
   expect(await billingHoldService.getState(buyer.org)).toEqual({
     status: "clear",
   });
+});
+
+test("refunds of an auto top-up take back the same share of its affiliate fee", async () => {
+  const buyer = await affiliateTopUp();
+  const charge = `ch_${randomUUID()}`;
+  for (let delivery = 0; delivery < 2; delivery++)
+    expect(
+      await processStripeEvent(refundEvent(charge, 750, buyer.paymentIntentId)),
+    ).toBe("ack");
+  expect(await affiliatePayable(buyer.affiliate)).toBe(1.5);
+
+  expect(
+    await processStripeEvent(refundEvent(charge, 1500, buyer.paymentIntentId)),
+  ).toBe("ack");
+  expect(await affiliatePayable(buyer.affiliate)).toBe(0);
+});
+
+test("a dispute takes back the affiliate fee and a won dispute returns it", async () => {
+  const buyer = await affiliateTopUp();
+  const disputeId = `dp_${randomUUID()}`;
+  await disputeRoundTrip(buyer, disputeId, 1500);
+  expect(await affiliatePayable(buyer.affiliate)).toBe(3);
+
+  const lost = await affiliateTopUp();
+  expect(
+    await processStripeEvent(
+      disputeEvent(
+        "charge.dispute.funds_withdrawn",
+        `dp_${randomUUID()}`,
+        1500,
+        lost.paymentIntentId,
+      ),
+    ),
+  ).toBe("ack");
+  expect(await affiliatePayable(lost.affiliate)).toBe(0);
 });
