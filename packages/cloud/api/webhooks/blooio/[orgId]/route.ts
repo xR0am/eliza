@@ -9,10 +9,7 @@ import {
   rateLimit,
 } from "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare";
 import { blooioAutomationService } from "@elizaos/cloud-shared/lib/services/blooio-automation";
-import {
-  PHONE_AGENT_BRIDGE_FAILED_CODE,
-  phoneErrorDiagnostic,
-} from "@elizaos/cloud-shared/lib/services/phone-error-diagnostics";
+import { phoneErrorDiagnostic } from "@elizaos/cloud-shared/lib/services/phone-error-diagnostics";
 import {
   type BlooioWebhookEvent,
   extractBlooioMediaUrls,
@@ -26,7 +23,6 @@ import type {
   AppContext,
   AppEnv,
 } from "@elizaos/cloud-shared/types/cloud-worker-env";
-import { ElizaError } from "@elizaos/core";
 import { Hono } from "hono";
 import { ZodError } from "zod";
 
@@ -303,12 +299,6 @@ async function handleIncomingMessage(
   });
 
   if (!routed.handled || !routed.userId) {
-    if (routed.reason === "bridge_failed") {
-      throw new ElizaError("Phone agent bridge is unavailable", {
-        code: PHONE_AGENT_BRIDGE_FAILED_CODE,
-        severity: "ephemeral",
-      });
-    }
     logger.info("[BlooioWebhook] Message did not resolve to an owned Agent", {
       orgId,
       reason: routed.reason,

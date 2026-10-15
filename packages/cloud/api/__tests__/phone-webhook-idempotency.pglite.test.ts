@@ -17,7 +17,6 @@ process.env.NODE_ENV = "test";
 
 let routed = 0;
 let failNext = false;
-let bridgeFailNext = false;
 mock.module(
   "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare",
   () => ({
@@ -43,10 +42,6 @@ mock.module("@elizaos/cloud-shared/lib/services/agent-gateway-router", () => ({
       if (failNext) {
         failNext = false;
         throw new Error("gateway unavailable");
-      }
-      if (bridgeFailNext) {
-        bridgeFailNext = false;
-        return { handled: false, reason: "bridge_failed" };
       }
       return { handled: false, reason: "test_router" };
     },
@@ -84,7 +79,6 @@ beforeAll(async () => {
 beforeEach(() => {
   routed = 0;
   failNext = false;
-  bridgeFailNext = false;
 });
 afterAll(async () => {
   await closeDatabaseConnectionsForTests();
@@ -149,14 +143,6 @@ test("a failed Twilio delivery releases its claim so the retry routes", async ()
   expect(routed).toBe(2);
 });
 
-test("a Twilio bridge failure releases its claim so the retry routes", async () => {
-  const sid = `SM${randomUUID().replaceAll("-", "")}`;
-  bridgeFailNext = true;
-  expect((await twilioDelivery(sid)).status).toBe(500);
-  expect((await twilioDelivery(sid)).status).toBe(200);
-  expect(routed).toBe(2);
-});
-
 test("overlapping Blooio redeliveries of one message route once", async () => {
   const id = `msg_${randomUUID()}`;
   const responses = await Promise.all([
@@ -171,14 +157,6 @@ test("overlapping Blooio redeliveries of one message route once", async () => {
 test("a failed Blooio delivery releases its claim so the retry routes", async () => {
   const id = `msg_${randomUUID()}`;
   failNext = true;
-  expect((await blooioDelivery(id)).status).toBe(500);
-  expect((await blooioDelivery(id)).status).toBe(200);
-  expect(routed).toBe(2);
-});
-
-test("a Blooio bridge failure releases its claim so the retry routes", async () => {
-  const id = `msg_${randomUUID()}`;
-  bridgeFailNext = true;
   expect((await blooioDelivery(id)).status).toBe(500);
   expect((await blooioDelivery(id)).status).toBe(200);
   expect(routed).toBe(2);
