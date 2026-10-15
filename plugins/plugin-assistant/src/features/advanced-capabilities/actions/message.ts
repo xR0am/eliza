@@ -4537,6 +4537,35 @@ async function handleSearch(
   // Channel-mode: when a connector source supports searchMessages and the user
   // asked for a connector-scoped search, passthrough.
   const connectors = connectorsWithHook(runtime, "searchMessages");
+  // A registered inbox adapter already owns provider-native search. Use it
+  // when there is no connector search hook, rather than requiring unrelated
+  // semantic-search routing for the same source.
+  const inboxAdapter = source
+    ? getDefaultTriageService().getAdapter(source as MessageSource)
+    : undefined;
+  if (
+    source &&
+    !entityId &&
+    inboxAdapter?.capabilities().search &&
+    !findConnectorBySource(connectors, source)
+  ) {
+    return delegateToTriage(
+      "search_inbox",
+      runtime,
+      message,
+      state,
+      {
+        parameters: {
+          ...params,
+          sources: [source],
+          content: query,
+          ...(limit === undefined ? {} : { limit }),
+        },
+      },
+      undefined,
+      undefined,
+    );
+  }
   if (source && connectors.length > 0) {
     const selection = selectConnectorForOp(
       connectors,
