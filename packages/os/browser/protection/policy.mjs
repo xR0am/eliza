@@ -113,8 +113,13 @@ export const REPUTATION_FEEDS = [
     threats: ["MALWARE_OR_SCAM"],
   },
 ];
-export const validFeedTime = (time, now = Date.now()) =>
-  Number.isFinite(time) && time <= now + 300000 && now - time < 48 * 3600000;
+/**
+ * A timestamp that is a number and not in the future (5 minutes of clock skew).
+ * Used only to schedule refreshes and reject tampered caches. Feed age never
+ * makes a feed unusable: a loaded list counts at any age.
+ */
+export const plausibleTime = (time, now = Date.now()) =>
+  Number.isFinite(time) && time <= now + 300000;
 export function parseThreatDomains(text, minimum = 1000) {
   const domains = new Set();
   let invalid = 0;
@@ -175,7 +180,7 @@ export async function downloadThreatFeed(
         ? body.match(/^# Last modified: (.+)$/m)?.[1]
         : response.headers.get("last-modified"),
     );
-    if (!validFeedTime(publishedAt, now())) throw Error("Expired feed");
+    // publishedAt is provenance only. It may be NaN when the source gives no date.
     parseThreatDomains(body, minEntries);
   } catch (error) {
     if (!feed.mirror) throw error;
@@ -197,8 +202,7 @@ export async function downloadThreatFeed(
     const commits = JSON.parse(await readFeedBody(response, 128 * 1024));
     const sha = commits?.[0]?.sha;
     publishedAt = Date.parse(commits?.[0]?.commit?.committer?.date);
-    if (!/^[a-f0-9]{40}$/.test(sha) || !validFeedTime(publishedAt, now()))
-      throw Error("Invalid feed provenance");
+    if (!/^[a-f0-9]{40}$/.test(sha)) throw Error("Invalid feed provenance");
     body = await readFeedBody(
       await fetchImpl(
         `https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/${sha}/phishing-domains-ACTIVE.txt`,
