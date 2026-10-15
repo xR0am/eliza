@@ -143,7 +143,10 @@ export async function admitMapsRequest(
         );
       }
       if (!response.ok) {
-        const result = (await response.json()) as {
+        // The allowance authority answers JSON, but a crashed gate surfaces a
+        // plain-text edge error page. A body parse failure must stay a
+        // MapsAdmissionError, never an untyped throw past the route handler.
+        const result = (await response.json().catch(() => ({}))) as {
           error?: { code?: string; retryAfterSeconds?: number };
           reason?: string;
         };
@@ -160,8 +163,10 @@ export async function admitMapsRequest(
           },
         );
       }
-      const accepted = (await response.json()) as { admitted?: boolean };
-      if (accepted.admitted !== true)
+      const accepted = (await response.json().catch(() => null)) as {
+        admitted?: boolean;
+      } | null;
+      if (accepted?.admitted !== true)
         throw new MapsAdmissionError(
           503,
           "maps_admission_unknown",
