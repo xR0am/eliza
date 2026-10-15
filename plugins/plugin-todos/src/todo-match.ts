@@ -31,6 +31,8 @@ export function normalizeTodoContent(content: string): string {
   return content
     .normalize("NFKC")
     .toLowerCase()
+    // A numeric minus is data, not ignorable punctuation.
+    .replace(/(?<![\p{L}\p{N}])[-\u2212](?=\d)/gu, "negative ")
     .replace(/[\p{P}\p{S}]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
