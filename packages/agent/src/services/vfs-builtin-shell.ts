@@ -204,7 +204,7 @@ function parseOutputRedirect(
     }
     if (quote !== null || character !== ">") continue;
 
-    const redirect = segment.slice(index).match(/^(>>|>)\\s*("[^"]*"|'[^']*'|[^\\s]+)\\s*$/);
+    const redirect = segment.slice(index).match(/^(>>|>)\s*("[^"]*"|'[^']*'|[^\s]+)\s*$/);
     if (!redirect) continue;
     return {
       before: segment.slice(0, index),
