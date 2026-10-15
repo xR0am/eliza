@@ -662,6 +662,11 @@ export class FormService extends Service {
 
     // Check if all required fields are filled
     const allRequiredFilled = this.checkAllRequiredFilled(session, form);
+    // A correction can invalidate a previously ready form — move it back to
+    // active so it is not treated as complete (mirrors undoLastChange()).
+    if (!allRequiredFilled && session.status === "ready") {
+      session.status = "active";
+    }
     if (allRequiredFilled && session.status === "active") {
       session.status = "ready";
       if (form.hooks?.onReady) {

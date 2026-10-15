@@ -163,6 +163,20 @@ test("unknown admission acknowledgement and duplicate ID refuse provider dispatc
   expect(admitted).toBe(2);
   expect(dispatched).toBe(0);
 });
+test("null non-OK allowance body stays a typed Maps error", async () => {
+  response = async () =>
+    new Response("null", {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    });
+  const result = await call();
+  expect(result.status).toBe(429);
+  expect(((await result.json()) as { code: string }).code).toBe(
+    "maps_access_denied",
+  );
+  expect(admitted).toBe(1);
+  expect(dispatched).toBe(0);
+});
 test("cancellation after admission remains consumed and records cancellation", async () => {
   response = async () => {
     signal.abort();
