@@ -2570,9 +2570,27 @@ export class RemindersDomain {
     timezone?: string | null;
     now?: Date;
   }): Promise<LifeOpsScheduleMergedStateRecord | null> {
-    const timezone =
-      normalizeOptionalString(args?.timezone) ?? resolveDefaultTimeZone();
     const now = args?.now ?? new Date();
+    const preferred = await this.readStoredEffectiveScheduleState({
+      timezone: args?.timezone,
+      now,
+    });
+    return preferred ? refreshLifeOpsRelativeTime(preferred, now) : null;
+  }
+
+  /**
+   * The preferred merged state as persisted, keeping the relative time it was
+   * computed with. The circadian tick diffs the refreshed state against this:
+   * re-projecting the previous state onto `now` would give it the current
+   * `minutesUntilBedtimeTarget`, so `bedtime.imminent` could never see the
+   * crossing into its window.
+   */
+  private async readStoredEffectiveScheduleState(args: {
+    timezone?: string | null;
+    now: Date;
+  }): Promise<LifeOpsScheduleMergedStateRecord | null> {
+    const timezone =
+      normalizeOptionalString(args.timezone) ?? resolveDefaultTimeZone();
     const local = await this.ctx.repository.getScheduleMergedState(
       this.ctx.agentId(),
       "local",
@@ -2583,12 +2601,11 @@ export class RemindersDomain {
       "cloud",
       timezone,
     );
-    const preferred = preferEffectiveMergedState({
-      now,
+    return preferEffectiveMergedState({
+      now: args.now,
       local,
       cloud,
     });
-    return preferred ? refreshLifeOpsRelativeTime(preferred, now) : null;
   }
 
   public async refreshEffectiveScheduleState(args?: {
@@ -6445,7 +6462,7 @@ export class RemindersDomain {
         // Same owner-zone anchor as the reminder pass (#13509): the sleep
         // cycle check-ins read `currentSchedule.timezone`.
         const timezone = await resolveOwnerTimeZone(this.ctx.runtime, now);
-        const previousSchedule = await this.readEffectiveScheduleState({
+        const previousSchedule = await this.readStoredEffectiveScheduleState({
           timezone,
           now,
         });

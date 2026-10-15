@@ -237,9 +237,9 @@ const MAX_LEASE_AGE_MS = 20 * 60_000;
 const RECOVERY_RETRY_MS = 60_000;
 const MAX_ACTIVE_LEASES = 2_048;
 const MAX_SETTLED_REQUEST_IDS = 2_048;
-const RATE_LIMIT_OPERATION_VALIDITY_MS = 3_000;
-// Both internal attempts finish within three seconds. Retaining every receipt
-// for ten seconds covers all retryable in-flight operations without imposing a
+const RATE_LIMIT_OPERATION_VALIDITY_MS = 5_000;
+// Rate operations expire within five seconds. Retaining every receipt
+// for ten seconds covers repeated in-flight operations without imposing a
 // concurrency-sensitive FIFO cap; the next request prunes expired receipts.
 const RATE_LIMIT_RECEIPT_TTL_MS = 10_000;
 const MAX_ALARM_LEASE_MUTATIONS = 32;

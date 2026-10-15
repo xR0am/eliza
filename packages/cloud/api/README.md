@@ -23,6 +23,27 @@ balance. Other operations retain primary admission and can reclaim idle funds.
 Funds backing active requests remain reserved. Drain and reconcile all grants,
 then use `disableInferenceBudgetAdmission` before turning off the mode.
 
+Account deletion must also withdraw delegated policy before resource cleanup.
+If an organization still has enabled authority after the global mode is turned
+off, restore the mode and complete the ordinary reclaim/rollback first; deletion
+fails closed until that acknowledgement succeeds. Already disabled authority
+still requires confirmed API-key cache withdrawal. Completed nonfinancial policy
+rows can then be removed with the mode on or off. Pending policy mutations and
+any retained funding grants or receipts block final erasure. Financial-history
+erasure requires its retained-audit owner and is not implemented by this cleanup.
+
+The native metadata regression is opt-in. CI does not currently provision its
+`INFERENCE_POLICY_TEST_POSTGRES_URL`; a green general pipeline is not proof that
+it ran. Use an isolated loopback PostgreSQL QA role whose name starts with `qa_`,
+set that variable, and run from the root:
+
+```bash
+bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/services/inference-policy-account-deletion.postgres.integration.test.ts
+```
+
+The suite creates and removes a unique schema and loads migrations 0544–0545.
+It must not point to a production database.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
@@ -158,6 +179,11 @@ a grant redeemed during a paid plan runs at the same time and serves only after
 the paid plan stops serving (lapse, cancellation or expiry) inside the grant
 window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
 
+An administrator can mint a lifetime code with `--lifetime`. Its grant has
+`endsAt: null` and remains active until revoked. The plan's monthly allowance
+still resets each month without rollover. The billing reconciliation cron keeps
+the current and next two monthly periods funded; missed months do not accumulate.
+
 - `POST /api/v1/subscription/redeem` with `{code, idempotencyKey}`, using an API
   key or a session. Replays return the original grant. Unknown, expired,
   disabled and used-up codes return one generic 400. Limited per credential
@@ -202,10 +228,11 @@ window. The redeem response says so with `grant.paidPlanTakesPrecedence`.
   `bun --conditions=eliza-source packages/cloud/scripts/plan-request-limit-latency.ts`.
 
 Scripts (same `DATABASE_URL` and pepper as the target environment; apply
-migration `0542_subscription_grant_codes` first):
+migrations through `0546_lifetime_subscription_grants` first):
 
 - Mint: `bun --conditions=eliza-source packages/cloud/scripts/admin/mint-subscription-grant-codes.ts --count N`.
   Codes print once; only HMACs are stored.
+  Add `--lifetime` for no expiry, or `--duration-days N` for a bounded grant.
 - Revoke: `bun --conditions=eliza-source packages/cloud/scripts/admin/revoke-subscription-grants.ts --reason "..." --code XXXX-XXXX-XXXX-XXXX`
   (or `--grant-id`). Service stops at once; `--code` also disables the code.
 - Staging: mint with the `Cloud staging mint grant codes` workflow, which seals

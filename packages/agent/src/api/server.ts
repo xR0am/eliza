@@ -3305,6 +3305,24 @@ function strictPortBindingEnabled(): boolean {
   const value = process.env.ELIZA_API_STRICT_PORT?.trim().toLowerCase();
   return value === "1" || value === "true" || value === "yes";
 }
+/**
+ * The Character view's FILL_BIO / ADD_STYLE_RULE / ADD_MESSAGE_EXAMPLE are
+ * registered per runtime. Deferred startup work only reaches the runtime that
+ * exists when the server binds, so a runtime attached later (bind-first hosts,
+ * restart, start after stop) needs its own registration.
+ */
+function registerBuiltinViewScopedActions(
+  runtime: AgentRuntime | null | undefined,
+  context: string,
+): void {
+  if (!runtime) return;
+  void registerBuiltinViews(runtime).catch((err) => {
+    logger.warn(
+      `[eliza-api] Built-in view registration failed ${context}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+}
+
 export async function startApiServer(opts?: {
   /** Compose product status fields before serialization; does not intercept transport. */
   composeStatus?: ApiStatusComposer;
@@ -3634,6 +3652,7 @@ export async function startApiServer(opts?: {
     onRuntimeActivated,
     onRuntimeSwapped: () => {
       bindInProcessApi();
+      registerBuiltinViewScopedActions(state.runtime, "after swap");
       if (state.runtime)
         state.connectorHealthMonitor?.setRuntime(state.runtime);
       bindRuntimeStreams(state.runtime);
@@ -5030,6 +5049,7 @@ export async function startApiServer(opts?: {
   /** Hot-swap the runtime reference (used after an in-process restart). */
   const updateRuntime = (rt: AgentRuntime): void => {
     registerRuntimeBuiltinViews(rt);
+    registerBuiltinViewScopedActions(rt, "after update");
     void assertX402RoutesValid(rt).catch((err) => {
       logger.error(
         `[x402] runtime route validation failed after update: ${err instanceof Error ? err.message : String(err)}`,
