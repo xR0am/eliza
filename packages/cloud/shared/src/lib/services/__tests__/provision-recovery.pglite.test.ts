@@ -804,3 +804,58 @@ test(
   },
   TEST_TIMEOUT,
 );
+
+test(
+  "an eager agent created through createAgent with provisioning deferred stays out of the sweep",
+  async () => {
+    const { agentSandboxesRepository } = await import("../../../db/repositories/agent-sandboxes");
+    const fixture = await seedAgent();
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ status: "running" })
+      .where(eq(agentSandboxes.id, fixture.agentId));
+    const service = new ElizaSandboxService(
+      dockerProvider(fixture, { creates: 0, exactStops: [], nameStops: [] }),
+    );
+    // `alwaysOn: true, autoProvision: false` through the create route.
+    const deferred = await service.createAgent({
+      organizationId: fixture.orgId,
+      userId: fixture.userId,
+      agentName: "deferred",
+      agentConfig: { theme: "dark" },
+      executionTier: "dedicated-always",
+      provisioningDeferred: true,
+    });
+    // A caller cannot set the marker through `agentConfig`.
+    const unmarked = await service.createAgent({
+      organizationId: fixture.orgId,
+      userId: fixture.userId,
+      agentName: "unmarked",
+      agentConfig: { __agentProvisioningDeferred: true },
+      executionTier: "dedicated-always",
+    });
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    for (const id of [deferred.agent.id, unmarked.agent.id]) {
+      await dbWrite
+        .update(agentSandboxes)
+        .set({ created_at: old })
+        .where(eq(agentSandboxes.id, id));
+    }
+
+    const result = await agentSandboxesRepository.markOrphanedPendingWithoutJobAsError(
+      new Date(Date.now() - 10 * 60 * 1000),
+    );
+
+    const swept = result.updated.map((row) => row.agentId);
+    expect(swept).toContain(unmarked.agent.id);
+    expect(swept).not.toContain(deferred.agent.id);
+    const stored = await readAgent(deferred.agent.id);
+    expect(stored.status).toBe("pending");
+    expect(stored.agent_config).toMatchObject({
+      theme: "dark",
+      __agentProvisioningDeferred: true,
+    });
+    expect((await readAgent(unmarked.agent.id)).status).toBe("error");
+  },
+  TEST_TIMEOUT,
+);
