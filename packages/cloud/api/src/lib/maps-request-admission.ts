@@ -146,18 +146,18 @@ export async function admitMapsRequest(
         // The allowance authority answers JSON, but a crashed gate surfaces a
         // plain-text edge error page. A body parse failure must stay a
         // MapsAdmissionError, never an untyped throw past the route handler.
-        const result = (await response.json().catch(() => ({}))) as {
+        const result = (await response.json().catch(() => null)) as {
           error?: { code?: string; retryAfterSeconds?: number };
           reason?: string;
-        };
+        } | null;
         throw new MapsAdmissionError(
           response.status as 400 | 403 | 409 | 429 | 503,
-          result.error?.code ?? "maps_access_denied",
-          result.error?.code === "maps_allowance_unconfigured"
+          result?.error?.code ?? "maps_access_denied",
+          result?.error?.code === "maps_allowance_unconfigured"
             ? "The operator must configure the Maps request allowance and authority."
             : "Maps request was not admitted.",
           {
-            ...(result.error?.retryAfterSeconds && {
+            ...(result?.error?.retryAfterSeconds && {
               retryAfterSeconds: result.error.retryAfterSeconds,
             }),
           },
