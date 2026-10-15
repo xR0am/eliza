@@ -173,21 +173,64 @@ describe("GitHub account resolution", () => {
     );
   });
 
-  it("uses the token saved from Settings (GITHUB_TOKEN) as the user account", () => {
+  it("uses the token saved from Settings (GITHUB_TOKEN) as the user account", async () => {
     expect(
-      readGitHubAccounts(runtime({ GITHUB_TOKEN: "settings-token" })),
+      await readGitHubAccountsWithConnectorCredentials(
+        runtime({ GITHUB_TOKEN: "settings-token" }),
+      ),
     ).toEqual([{ accountId: "user", role: "user", token: "settings-token" }]);
   });
 
-  it("keeps an explicit user PAT ahead of the Settings token", () => {
+  it("keeps an explicit user PAT ahead of the Settings token", async () => {
     expect(
-      readGitHubAccounts(
+      await readGitHubAccountsWithConnectorCredentials(
         runtime({
           GITHUB_USER_PAT: "user-token",
           GITHUB_TOKEN: "settings-token",
         }),
       ),
     ).toEqual([{ accountId: "user", role: "user", token: "user-token" }]);
+  });
+
+  it("keeps a connected connector user account ahead of the Settings token", async () => {
+    const vaultRef = "connector.agent-1.github.acc_123.oauth_tokens";
+    const runtime = runtimeWithConnectorStorage({
+      accounts: [
+        createConnectorAccount({
+          id: "acc_123",
+          role: "OWNER",
+          metadata: {
+            credentialRefs: [{ credentialType: "oauth.tokens", vaultRef }],
+          },
+        }),
+      ],
+      vaultValues: new Map([
+        [
+          vaultRef,
+          JSON.stringify({
+            access_token: "connector-owner-token",
+            token_type: "bearer",
+          }),
+        ],
+      ]),
+      settings: { GITHUB_TOKEN: "settings-token" },
+    });
+
+    const accounts = await readGitHubAccountsWithConnectorCredentials(runtime);
+
+    expect(accounts).toEqual([
+      expect.objectContaining({
+        accountId: "acc_123",
+        role: "user",
+        token: "connector-owner-token",
+      }),
+    ]);
+    expect(resolveGitHubAccount(accounts, { role: "user" })).toEqual(
+      expect.objectContaining({
+        accountId: "acc_123",
+        token: "connector-owner-token",
+      }),
+    );
   });
 
   it("applies a saved or cleared Settings token without a restart", async () => {
@@ -538,6 +581,7 @@ function createConnectorAccount(input: {
 function runtimeWithConnectorStorage(options: {
   accounts: ConnectorAccount[];
   vaultValues: Map<string, string>;
+  settings?: Record<string, string>;
 }): IAgentRuntime {
   const storage = {
     async listAccounts(provider?: string) {
@@ -575,7 +619,7 @@ function runtimeWithConnectorStorage(options: {
   return createTestRuntime({
     agentId: "agent-1",
     character: {},
-    getSetting: vi.fn(() => null),
+    getSetting: vi.fn((key: string) => options.settings?.[key] ?? null),
     getService: (serviceType: string) => {
       if (serviceType === "connector_account_storage") return storage;
       if (serviceType === "vault") {
