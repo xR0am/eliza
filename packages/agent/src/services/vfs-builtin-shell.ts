@@ -114,20 +114,32 @@ async function runScript(
   cwd: string,
   script: string,
 ): Promise<VfsBuiltinCommandResult> {
-  const segments = splitScriptSegments(script)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+  const segments = splitScriptSegments(script);
   let stdout = "";
   let stderr = "";
+  let exitCode = 0;
+  let separator = ";";
   for (const segment of segments) {
-    const result = await runScriptSegment(vfs, cwd, segment);
+    if (segment === ";" || segment === "&&") {
+      separator = segment;
+      continue;
+    }
+    if (!segment.trim() || (separator === "&&" && exitCode !== 0)) continue;
+    let result: VfsBuiltinCommandResult;
+    try {
+      result = await runScriptSegment(vfs, cwd, segment.trim());
+    } catch (error) {
+      result = {
+        exitCode: 1,
+        stdout: "",
+        stderr: error instanceof Error ? `${error.message}\n` : String(error),
+      };
+    }
     stdout += result.stdout;
     stderr += result.stderr;
-    if (result.exitCode !== 0) {
-      return { exitCode: result.exitCode, stdout, stderr };
-    }
+    exitCode = result.exitCode;
   }
-  return { exitCode: 0, stdout, stderr };
+  return { exitCode, stdout, stderr };
 }
 
 function splitScriptSegments(script: string): string[] {
@@ -155,7 +167,10 @@ function splitScriptSegments(script: string): string[] {
     const separatorLength =
       character === ";" ? 1 : script.startsWith("&&", index) ? 2 : 0;
     if (separatorLength === 0) continue;
-    segments.push(script.slice(start, index));
+    segments.push(
+      script.slice(start, index),
+      script.slice(index, index + separatorLength),
+    );
     index += separatorLength - 1;
     start = index + 1;
   }
@@ -172,7 +187,7 @@ async function runScriptSegment(
   const redirect = parseOutputRedirect(segment);
   if (redirect) {
     const { before, op, target } = redirect;
-    const targetPath = resolveVirtualPath(cwd, stripQuotes(target));
+    const targetPath = resolveVirtualPath(cwd, target);
     const existing = op === ">>" ? await readAppendBase(vfs, targetPath) : "";
     // Open/truncate the target before execution, including a failing command.
     await vfs.writeFile(targetPath, existing);
@@ -205,12 +220,17 @@ function parseOutputRedirect(
     }
     if (quote !== null || character !== ">") continue;
 
-    const redirect = segment.slice(index).match(/^(>>|>)\s*([^\s]+)\s*$/);
-    if (!redirect) continue;
+    const op = segment.startsWith(">>", index) ? ">>" : ">";
+    const targets = tokenize(segment.slice(index + op.length));
+    if (targets.length !== 1 || !targets[0]) {
+      throw new Error(
+        "[vfs-shell] output redirect requires one non-empty target",
+      );
+    }
     return {
       before: segment.slice(0, index),
-      op: redirect[1],
-      target: redirect[2],
+      op,
+      target: targets[0],
     };
   }
   return null;
@@ -553,7 +573,7 @@ function displayVirtualPath(virtualPath: string): string {
 }
 
 function resolveVirtualPath(cwd: string, input: string): string {
-  const cleanInput = stripQuotes(input);
+  const cleanInput = input;
   if (!cleanInput || cleanInput === ".") return cwd || "/";
   if (cleanInput.startsWith("/")) return cleanInput;
   return path.posix.normalize(path.posix.join(cwd || "/", cleanInput));
@@ -612,15 +632,4 @@ function tokenize(input: string): string[] {
   }
   if (started) tokens.push(token);
   return tokens;
-}
-
-function stripQuotes(input: string | undefined): string {
-  const value = input ?? "";
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
-  }
-  return value;
 }

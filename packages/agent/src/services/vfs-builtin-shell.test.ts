@@ -143,6 +143,95 @@ describe("runVfsBuiltinShell quoted redirection", () => {
   });
 });
 
+describe("runVfsBuiltinShell separators", () => {
+  it.each([
+    ["cat missing.txt; echo after", "after\n", 0],
+    ["cat missing.txt && echo skipped; echo after", "after\n", 0],
+    ["cat missing.txt && echo a && echo b", "", 1],
+    ["echo ok; cat missing.txt", "ok\n", 1],
+  ])("runs %s with POSIX separator semantics", async (script, stdout, exit) => {
+    const result = await sh(script);
+
+    expect(result.stdout).toBe(stdout);
+    expect(result.exitCode !== 0).toBe(exit !== 0);
+  });
+
+  it("reports a thrown segment error and continues after `;`", async () => {
+    await vfs().writeFile("log.txt", "keep me\n");
+    const readFile = VirtualFilesystemService.prototype.readFile;
+    vi.spyOn(VirtualFilesystemService.prototype, "readFile").mockImplementation(
+      async function (this: VirtualFilesystemService, virtualPath, encoding) {
+        if (virtualPath.endsWith("log.txt")) {
+          throw new VirtualFilesystemError(
+            "VFS storage operation failed",
+            "VFS_STORAGE_FAILED",
+          );
+        }
+        return readFile.call(this, virtualPath, encoding);
+      },
+    );
+
+    const result = await sh("echo lost >> log.txt; echo after");
+    expect(result).toMatchObject({ exitCode: 0, stdout: "after\n" });
+    expect(result.stderr).toContain("VFS storage operation failed");
+    vi.restoreAllMocks();
+    expect(await vfs().readFile("log.txt")).toBe("keep me\n");
+  });
+});
+
+describe("runVfsBuiltinShell quoted redirect targets", () => {
+  it.each([
+    ['report".txt"', "report.txt"],
+    ['"two "words.txt', "two words.txt"],
+    ["two\\ words.txt", "two words.txt"],
+    ["'\"quoted.txt\"'", '"quoted.txt"'],
+  ])(
+    "uses shell word parsing for redirect target %s",
+    async (target, filename) => {
+      const result = await sh(`echo hello > ${target} && cat ${target}`);
+      expect(await vfs().readFile(filename)).toBe("hello\n");
+      expect(result).toMatchObject({
+        exitCode: 0,
+        stdout: "hello\n",
+        stderr: "",
+      });
+    },
+  );
+
+  it("writes to a single-quoted target containing a space", async () => {
+    const result = await sh(
+      "echo hello > 'two words.txt' && cat 'two words.txt'",
+    );
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "hello\n",
+      stderr: "",
+    });
+    expect(await vfs().readFile("two words.txt")).toBe("hello\n");
+  });
+
+  it("overwrites and appends to a double-quoted target containing a space", async () => {
+    const result = await sh(
+      'echo a > "x y.txt" && echo b >> "x y.txt" && cat "x y.txt"',
+    );
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: "a\nb\n", stderr: "" });
+    expect(await vfs().readFile("x y.txt")).toBe("a\nb\n");
+  });
+
+  it("still treats a fully quoted argument as literal output", async () => {
+    const result = await sh("echo 'a > b'");
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "a > b\n",
+      stderr: "",
+    });
+    expect(await vfs().list("/")).toEqual([]);
+  });
+});
+
 describe("runVfsBuiltinShell word splitting", () => {
   it("joins adjacent quoted and unquoted fragments into one path", async () => {
     await vfs().writeFile("report.txt", "contents\n");
