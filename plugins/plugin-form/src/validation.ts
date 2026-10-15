@@ -182,7 +182,7 @@ export function validateField(
     }
     // A registered custom type owns its value grammar. Field-level text
     // constraints still apply, but a built-in switch must not override it.
-    if (controlType && !controlType.builtin)
+    if (handler !== controlType || (controlType && !controlType.builtin))
       return validateText(value, control);
   }
   // Type-specific validation
