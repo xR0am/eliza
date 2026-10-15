@@ -52,9 +52,7 @@ export interface AppBackup {
 export class AppBackupService {
   /** Build a secret-free config snapshot of an app. */
   async exportApp(app: App): Promise<AppBackup> {
-    const activeDeployment = await appFrontendDeploymentsRepository.getActive(
-      app.id,
-    );
+    const activeDeployment = await appFrontendDeploymentsRepository.getActive(app.id);
     const contentHash = activeDeployment?.content_hash ?? null;
 
     return {
@@ -141,12 +139,9 @@ export class AppBackupService {
     // trusted from the client-supplied blob.
     const linkedCharacterIds: string[] = [];
     for (const characterId of backup.app.linked_character_ids ?? []) {
-      const character =
-        await charactersService.getByIdForAccessCheck(characterId);
+      const character = await charactersService.getByIdForAccessCheck(characterId);
       if (!character) {
-        warnings.push(
-          `Linked character ${characterId} was not restored: it no longer exists.`,
-        );
+        warnings.push(`Linked character ${characterId} was not restored: it no longer exists.`);
       } else if (
         charactersService.isLinkedCharacterVisible(character, {
           userId,
