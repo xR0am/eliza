@@ -114,11 +114,16 @@ function mention(overrides: Partial<Tweet> = {}): Tweet {
   } as Tweet;
 }
 
+/** The stubbed message service's handleMessage (createRuntime always sets it). */
+function handleMessageOf(runtime: ReturnType<typeof createRuntime>) {
+  return runtime.messageService.handleMessage;
+}
+
 const LONG_REPLY = `${"part one ".repeat(40)}${"part two ".repeat(40)}`.trim();
 
 function replyingRuntime() {
   const runtime = createRuntime();
-  vi.mocked(runtime.messageService!.handleMessage).mockImplementation((async (
+  vi.mocked(handleMessageOf(runtime)).mockImplementation((async (
     _runtime: unknown,
     _message: unknown,
     callback: (c: { text: string }) => Promise<unknown>,
@@ -168,7 +173,7 @@ describe("mention reply is posted at most once", () => {
 
     // No second public reply: the model is not asked again and nothing is sent.
     expect(send).toHaveBeenCalledTimes(2);
-    expect(runtime.messageService!.handleMessage).toHaveBeenCalledTimes(1);
+    expect(handleMessageOf(runtime)).toHaveBeenCalledTimes(1);
   });
 
   it("retries a reply whose first chunk X explicitly refused", async () => {
@@ -192,7 +197,7 @@ describe("mention reply is posted at most once", () => {
     await poll(interactions);
     await poll(interactions);
 
-    expect(runtime.messageService!.handleMessage).toHaveBeenCalledTimes(2);
+    expect(handleMessageOf(runtime)).toHaveBeenCalledTimes(2);
   });
 });
 
