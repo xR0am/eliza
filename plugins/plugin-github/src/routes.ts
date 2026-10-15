@@ -12,6 +12,7 @@ import {
 import {
   buildCredentialsFromUserResponse,
   clearCredentials,
+  clearSavedTokenFromEnv,
   type GitHubCredentialMetadata,
   loadMetadata,
   saveCredentials,
@@ -259,6 +260,7 @@ export const githubRoutes: Route[] = [
   }),
   route("DELETE", "token", async (ctx) => {
     await clearCredentials();
+    clearSavedTokenFromEnv();
     ctx.runtime.setSetting("GITHUB_TOKEN", null, true);
     await reloadGitHubService(ctx);
     return {
