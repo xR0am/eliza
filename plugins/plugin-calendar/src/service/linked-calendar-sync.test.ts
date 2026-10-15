@@ -1094,3 +1094,26 @@ describe("GoogleLinkedCalendarProviderPort", () => {
     ).resolves.toBeNull();
   });
 });
+
+it("recurrence changes are part of linked event semantics without changing ordinary checkpoints", async () => {
+  expect(linkedCalendarSemanticHash({ ...baseEvent, recurrence: [] })).toBe(
+    linkedCalendarSemanticHash(baseEvent),
+  );
+  expect(
+    linkedCalendarSemanticHash({
+      ...baseEvent,
+      recurrence: ["RRULE:FREQ=DAILY"],
+    }),
+  ).not.toBe(linkedCalendarSemanticHash(baseEvent));
+  expect(
+    await linkedCalendarSemanticDigest({
+      ...baseEvent,
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    }),
+  ).toBe(
+    linkedCalendarSemanticHash({
+      ...baseEvent,
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    }),
+  );
+});
