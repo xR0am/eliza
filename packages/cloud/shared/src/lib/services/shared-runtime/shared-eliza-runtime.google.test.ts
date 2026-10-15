@@ -150,37 +150,31 @@ async function exercise(
         message.content.includes("Google connection and Gmail reads (owner permission required)"),
     );
     if (publicRead) expect(names).not.toContain("GOOGLE_CONTEXT");
-    if (names.includes("HANDLE_RESPONSE"))
-      {
-        const responseTool = body.tools?.find(
-          (tool) => tool.function?.name === "HANDLE_RESPONSE",
-        );
-        const replyText = kind === "weather-missing" || ordinary ? currentReply : "";
-        const nativeReplyParts =
-          responseTool?.function?.parameters?.properties?.replyText?.type ===
-          "array";
-        return model(null, {
-          name: "HANDLE_RESPONSE",
-          args: {
-            shouldRespond: "RESPOND",
-            thought: "Use the requested scoped read.",
-            contexts: [kind === "general" ? "web" : compoundMissing ? "todos" : "general"],
-            intents: [],
-            candidateActionNames:
-              kind === "weather-missing" || ordinary
-                ? []
-                : [compoundMissing ? "TODO" : publicRead ? "WEB_SEARCH" : "GOOGLE_CONTEXT"],
-            requiresTool: kind !== "weather-missing" && !ordinary,
-            replyText: nativeReplyParts
-              ? [{ kind: "text", value: replyText }]
-              : replyText,
-            replyEffectStatus: "none",
-            facts: [],
-            relationships: [],
-            addressedTo: [],
-          },
-        });
-      }
+    if (names.includes("HANDLE_RESPONSE")) {
+      const responseTool = body.tools?.find((tool) => tool.function?.name === "HANDLE_RESPONSE");
+      const replyText = kind === "weather-missing" || ordinary ? currentReply : "";
+      const nativeReplyParts =
+        responseTool?.function?.parameters?.properties?.replyText?.type === "array";
+      return model(null, {
+        name: "HANDLE_RESPONSE",
+        args: {
+          shouldRespond: "RESPOND",
+          thought: "Use the requested scoped read.",
+          contexts: [kind === "general" ? "web" : compoundMissing ? "todos" : "general"],
+          intents: [],
+          candidateActionNames:
+            kind === "weather-missing" || ordinary
+              ? []
+              : [compoundMissing ? "TODO" : publicRead ? "WEB_SEARCH" : "GOOGLE_CONTEXT"],
+          requiresTool: kind !== "weather-missing" && !ordinary,
+          replyText: nativeReplyParts ? [{ kind: "text", value: replyText }] : replyText,
+          replyEffectStatus: "none",
+          facts: [],
+          relationships: [],
+          addressedTo: [],
+        },
+      });
+    }
     if (names.includes("FACTS_AND_RELATIONSHIPS_VALIDATE"))
       return model(null, {
         name: "FACTS_AND_RELATIONSHIPS_VALIDATE",
