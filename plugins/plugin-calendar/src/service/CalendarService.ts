@@ -1411,6 +1411,9 @@ export class CalendarService extends Service {
           ? [{ email: attendee.email, optional: attendee.optional === true }]
           : [],
       ),
+      ...(event.recurrence?.length
+        ? { recurrence: [...event.recurrence] }
+        : {}),
     };
   }
 
@@ -1437,6 +1440,12 @@ export class CalendarService extends Service {
         };
       },
       applyProviderEvent: async (eventId, providerEvent, expectedRevision) => {
+        if (providerEvent.recurrence?.length)
+          throw new CalendarServiceError(
+            409,
+            "The built-in calendar cannot represent this recurring series. Review the linked event before syncing.",
+            "LINKED_CALENDAR_RECURRENCE_UNSUPPORTED",
+          );
         const existing = await this.resolveElizaCalendarEvent({ eventId });
         if (Number(existing.metadata.version) !== expectedRevision) {
           throw new CalendarServiceError(

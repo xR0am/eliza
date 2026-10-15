@@ -694,7 +694,9 @@
     "./lib/auth/private-owner-credential": "./src/lib/auth/private-owner-credential.ts",
     "./lib/network/member-store": "./src/lib/network/member-store.ts",
     "./lib/network/gateway-delivery-receipt": "./src/lib/network/gateway-delivery-receipt.ts",
-    "./db/repositories/app-pilot-redemptions": "./src/db/repositories/app-pilot-redemptions.ts"
+    "./db/repositories/app-pilot-redemptions": "./src/db/repositories/app-pilot-redemptions.ts",
+    "./lib/services/agent-google-connector/calendar-sync-managed": "./src/lib/services/agent-google-connector/calendar-sync-managed.ts",
+    "./lib/services/agent-google-connector/calendar-sync-routes": "./src/lib/services/agent-google-connector/calendar-sync-routes.ts"
   },
   "scripts": {
     "build:linked-workspaces": "bun run --cwd ../../.. build:core",
