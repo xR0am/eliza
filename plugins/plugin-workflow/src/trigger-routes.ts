@@ -406,7 +406,8 @@ export async function handleTriggerRoutes(ctx: TriggerRouteContext): Promise<boo
       return (
         existingTrigger?.enabled &&
         existingTrigger.dedupeKey &&
-        existingTrigger.dedupeKey === trigger.dedupeKey
+        existingTrigger.dedupeKey === trigger.dedupeKey &&
+        (trigger.triggerType !== 'cron' || existingTrigger.timezone === trigger.timezone)
       );
     });
     if (duplicate?.id) {
