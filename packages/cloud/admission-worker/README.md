@@ -65,6 +65,13 @@ unused deployment, test, and unsafe development settings. No secret values belon
 in this directory. Alarm tests must prove idempotent recovery using the actual
 same database, cache, authority and effective flags as the source.
 
+`DATABASE_URL` is required even with Hyperdrive. The database client resolves the
+primary URL before it selects the Hyperdrive transport. Project the existing
+staging secret through the normal operator path before transfer; do not use a
+placeholder URL. Retain the source email transport secrets for low-credit notices
+and its public app URL for billing links. The target secret projection is not yet
+qualified. Keep Stripe and the funded-budget seal absent, as they are in staging.
+
 ## Staging transfer and reversal
 
 The source already uses declarative `exports`; do not add legacy

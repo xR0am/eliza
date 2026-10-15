@@ -127,6 +127,12 @@ for (const [key, value] of Object.entries(target.vars ?? {})) {
     `Target variable differs from staging: ${key}`,
   );
 }
+for (const key of ["CACHE_BACKEND", "CACHE_ENABLED", "NEXT_PUBLIC_APP_URL"]) {
+  requireContract(
+    target.vars?.[key] !== undefined && target.vars[key] === stage.vars?.[key],
+    `Recovery configuration must retain staging variable: ${key}`,
+  );
+}
 requireContract(
   target.vars?.INFERENCE_FUNDED_BUDGET_ADMISSION ===
     stage.vars?.INFERENCE_FUNDED_BUDGET_ADMISSION,
