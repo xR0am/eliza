@@ -152,8 +152,20 @@ export async function handleAuthBootstrapRoutes(
         passwordHash: null,
         cloudUserId: claims.sub,
       });
-    } catch {
-      // Concurrent exchange already created it; fall through to session creation.
+    } catch (err) {
+      // error-policy:J2 conflict recovery: only a lost createIdentity race is
+      // recoverable here. Re-read and require the winner's row to be the
+      // owner identity for this Cloud user; any other failure (schema
+      // rejection, storage write failure, no-row driver error) is rethrown
+      // with its cause so the boundary reports the real error.
+      const winner = await store.findIdentity(identityId);
+      if (
+        !winner ||
+        winner.kind !== "owner" ||
+        winner.cloudUserId !== claims.sub
+      ) {
+        throw err;
+      }
     }
   }
 
