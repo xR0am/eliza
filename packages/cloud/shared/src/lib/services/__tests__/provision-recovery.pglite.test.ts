@@ -761,21 +761,42 @@ test(
     );
 
     // The backfill cannot tell this row from a real orphan whose enqueue was
-    // lost. Either way it stays recoverable: the dashboard shows a pending
-    // agent with Start, which calls `/provision` and enqueues the job.
-    const recovered = await provisioningJobService.enqueueAgentProvisionOnce({
-      agentId: legacy.agentId,
+    // lost. The normal create retry (default `autoProvision: true`) reuses the
+    // pending row through the real reuse guard and must leave it provisioning.
+    const retry = await new ElizaSandboxService(
+      dockerProvider(legacy, { creates: 0, exactStops: [], nameStops: [] }),
+    ).createAgent({
       organizationId: legacy.orgId,
       userId: legacy.userId,
       agentName: "legacy",
-      expectedLifecycleRevision: after.lifecycle_revision,
+      executionTier: "dedicated-always",
+      reuseExistingNonTerminal: true,
     });
-    expect(recovered.created).toBe(true);
+    expect({ id: retry.agent.id, idempotent: retry.idempotent }).toEqual({
+      id: legacy.agentId,
+      idempotent: true,
+    });
+    const recovered = await provisioningJobService.enqueueReusedPendingAgentProvision({
+      agent: retry.agent,
+      organizationId: legacy.orgId,
+      userId: legacy.userId,
+    });
+    expect(recovered?.created).toBe(true);
     const [job] = await dbWrite
       .select({ type: jobs.type, status: jobs.status })
       .from(jobs)
-      .where(eq(jobs.id, recovered.job.id));
+      .where(eq(jobs.id, recovered?.job.id ?? ""));
     expect(job).toEqual({ type: "agent_provision", status: "pending" });
+    // A second retry gets the same live job, not another one.
+    const again = await provisioningJobService.enqueueReusedPendingAgentProvision({
+      agent: retry.agent,
+      organizationId: legacy.orgId,
+      userId: legacy.userId,
+    });
+    expect({ created: again?.created, jobId: again?.job.id }).toEqual({
+      created: false,
+      jobId: recovered?.job.id,
+    });
   },
   TEST_TIMEOUT,
 );

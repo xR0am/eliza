@@ -522,6 +522,39 @@ app.post("/", async (c) => {
       orgId: user.organization_id,
       status: agent.status,
     });
+    // A request that asks for provisioning (credit gate already passed) must
+    // not leave a reused eager agent pending with no job: its earlier enqueue
+    // was lost, or it was created with `autoProvision: false`. The queue
+    // returns the live job when one exists.
+    if (
+      shouldProvisionEagerly &&
+      agent.status === "pending" &&
+      tierProvisionsEagerly(agent.execution_tier)
+    ) {
+      const workerHealth = await checkProvisioningWorkerHealth();
+      if (!workerHealth.ok) {
+        return c.json(
+          provisioningWorkerFailureBody(workerHealth),
+          workerHealth.status,
+        );
+      }
+      const repair =
+        await provisioningJobService.enqueueReusedPendingAgentProvision({
+          agent,
+          organizationId: user.organization_id,
+          userId: user.id,
+        });
+      if (repair?.created) {
+        void provisioningJobService.triggerImmediate(c.env).catch(() => {
+          // Logged inside the service.
+        });
+        logger.info("[agent-api] Provisioning job enqueued for reused agent", {
+          agentId: agent.id,
+          orgId: user.organization_id,
+          jobId: repair.job.id,
+        });
+      }
+    }
     return c.json(
       {
         success: true,
