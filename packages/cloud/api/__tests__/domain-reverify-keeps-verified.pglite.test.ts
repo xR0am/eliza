@@ -1,9 +1,9 @@
 /**
  * The Refresh button on a verified custom domain calls
- * POST /api/v1/apps/:id/domains/verify. Owners often remove the TXT record
- * after verification, and a DNS lookup can fail for a moment. Neither may
- * downgrade a verified domain: an unverified row stops resolving, and the
- * stale-unverified cron deletes it because its creation time is old.
+ * POST /api/v1/apps/:id/domains/verify. A DNS failure that says nothing about
+ * the TXT record (timeout, resolver error) must not downgrade a verified
+ * domain, because an unverified row stops resolving at once. A missing or
+ * wrong record proves control is lost and still unverifies it.
  * Real route, PGlite database, caller authenticated as the app's
  * organization; only the DNS lookup is stubbed.
  */
@@ -131,12 +131,14 @@ async function verify(domain: string) {
   return (await response.json()) as { verified?: boolean };
 }
 
+function dnsError(code: string) {
+  return () =>
+    Promise.reject(Object.assign(new Error(`queryTxt ${code}`), { code }));
+}
+
 test.each([
-  [
-    "the TXT record was removed after verification",
-    () => Promise.resolve([["other"]]),
-  ],
-  ["the TXT lookup fails", () => Promise.reject(new Error("ENOTFOUND"))],
+  ["the lookup times out", dnsError("ETIMEOUT")],
+  ["the resolver fails", dnsError("ESERVFAIL")],
 ])("Refresh keeps a verified domain when %s", async (_case, lookup) => {
   const domain = `shop-${Math.random().toString(36).slice(2, 8)}.example.com`;
   await verifiedDomain(domain);
@@ -148,14 +150,29 @@ test.each([
   } finally {
     resolveTxt.mockRestore();
   }
-
-  const row = await managedDomainsService.getDomainByName(domain);
-  expect(row?.verified).toBe(true);
-  // The stale-unverified cron must not release it.
-  await managedDomainsService.releaseStaleUnverifiedExternals(
-    48 * 60 * 60 * 1000,
-  );
-  expect((await managedDomainsService.getDomainByName(domain))?.appId).toBe(
-    APP,
+  expect((await managedDomainsService.getDomainByName(domain))?.verified).toBe(
+    true,
   );
 });
+
+test.each([
+  ["the TXT record is gone", dnsError("ENODATA")],
+  ["the hostname no longer exists", dnsError("ENOTFOUND")],
+  ["the TXT record holds another token", () => Promise.resolve([["other"]])],
+])(
+  "Refresh unverifies a domain whose control is lost: %s",
+  async (_case, lookup) => {
+    const domain = `lost-${Math.random().toString(36).slice(2, 8)}.example.com`;
+    await verifiedDomain(domain);
+    const resolveTxt = spyOn(dns, "resolveTxt").mockImplementation(
+      lookup as never,
+    );
+    try {
+      expect((await verify(domain)).verified).toBe(false);
+    } finally {
+      resolveTxt.mockRestore();
+    }
+    // It no longer resolves and no longer holds the hostname.
+    expect(await managedDomainsService.getDomainByName(domain)).toBeNull();
+  },
+);

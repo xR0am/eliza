@@ -12,7 +12,7 @@
  * work, not wrapping a one-line insert.
  */
 
-import { and, eq, isNotNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { dbRead, dbWrite } from "../../db/client";
 import {
   type DomainRegistrantInfo,
@@ -202,9 +202,12 @@ export async function getOwnDomainRow(
 }
 
 /**
- * Delete external rows that are still unverified after `olderThanMs` — the
+ * Delete external rows that were never verified after `olderThanMs` — the
  * reclaim path that stops an unproven attach from squatting a domain forever.
- * Returns the number of rows released. Intended for a periodic cron.
+ * A row that was verified and later lost its TXT record is not reclaimed: it
+ * no longer resolves and no longer holds the hostname, and its owner can
+ * restore the record and verify again. Returns the number of rows released.
+ * Intended for a periodic cron.
  */
 export async function releaseStaleUnverifiedExternals(olderThanMs: number): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMs);
@@ -213,6 +216,7 @@ export async function releaseStaleUnverifiedExternals(olderThanMs: number): Prom
     .where(
       and(
         eq(managedDomains.verified, false),
+        isNull(managedDomains.verifiedAt),
         eq(managedDomains.registrar, "external"),
         lte(managedDomains.createdAt, cutoff),
       ),

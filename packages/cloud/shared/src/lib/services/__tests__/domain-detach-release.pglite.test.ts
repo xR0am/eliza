@@ -3,7 +3,8 @@
  * (Refresh does not downgrade it). Detaching it must release it: the row is
  * deleted, so the hostname stops resolving and its exclusive slot is free for
  * whoever controls the domain now. A Cloudflare-registered domain keeps its
- * row on detach, because its registration stays active.
+ * row on detach, because its registration stays active. The stale cron
+ * reclaims only rows that were never verified.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { pushSchema } from "drizzle-kit/api";
@@ -119,4 +120,45 @@ test("detaching a Cloudflare-registered domain keeps its registration row", asyn
     verified: true,
   });
   expect((await managedDomainsService.getOwnDomainRow(ORG, "bought.example.com"))?.id).toBe(row.id);
+});
+
+test("the stale cron reclaims only external rows that were never verified", async () => {
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  const [neverVerified, lostControl] = await dbWrite
+    .insert(schemas.managedDomains)
+    .values([
+      {
+        organizationId: ORG,
+        domain: "squat.example.com",
+        registrar: "external",
+        nameserverMode: "external",
+        status: "pending",
+        verified: false,
+        verificationToken: "t1",
+        createdAt: threeDaysAgo,
+      },
+      {
+        // Verified once, then Refresh found its TXT record gone.
+        organizationId: ORG,
+        domain: "lapsed.example.com",
+        registrar: "external",
+        nameserverMode: "external",
+        status: "active",
+        verified: false,
+        verifiedAt: threeDaysAgo,
+        verificationToken: "t2",
+        appId: APP,
+        resourceType: "app",
+        createdAt: threeDaysAgo,
+      },
+    ] as never)
+    .returning();
+
+  await managedDomainsService.releaseStaleUnverifiedExternals(48 * 60 * 60 * 1000);
+
+  expect(await managedDomainsService.getDomainById(neverVerified.id)).toBeNull();
+  // Kept for its owner to restore the record, but it neither resolves nor
+  // holds the hostname, so the domain's new owner can attach it.
+  expect((await managedDomainsService.getDomainById(lostControl.id))?.appId).toBe(APP);
+  expect(await managedDomainsService.getDomainByName("lapsed.example.com")).toBeNull();
 });

@@ -20,6 +20,20 @@ import { Hono } from "hono";
 import { loadOwnedApp } from "../guards";
 import { domainBodySchema as VerifySchema } from "../schemas";
 
+/** Resolver errors that do not prove the TXT record is absent. */
+const TRANSIENT_DNS_ERROR_CODES = new Set([
+  "ETIMEOUT",
+  "ESERVFAIL",
+  "ECONNREFUSED",
+  "EREFUSED",
+  "ECANCELLED",
+]);
+
+function isTransientDnsError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && TRANSIENT_DNS_ERROR_CODES.has(code);
+}
+
 const app = new Hono<AppEnv>();
 
 app.post("/", async (c) => {
@@ -78,19 +92,6 @@ app.post("/", async (c) => {
       );
     }
 
-    // A verified domain stays verified: the TXT record proves ownership once,
-    // and owners often remove it afterwards. Downgrading it here would stop the
-    // domain resolving and let the stale-unverified cron delete its row.
-    if (md.verified) {
-      return c.json({
-        success: true,
-        domain: md.domain,
-        verified: true,
-        registrar: md.registrar,
-        verifiedAt: md.verifiedAt,
-      });
-    }
-
     const recordName = `_eliza-cloud-verify.${md.domain}`;
     let records: string[][];
     try {
@@ -101,6 +102,19 @@ app.post("/", async (c) => {
         recordName,
         error: extractErrorMessage(err),
       });
+      // A DNS failure that says nothing about the record (timeout, resolver
+      // error) must not unverify a verified domain: it would stop resolving at
+      // once. A missing or wrong record still unverifies it below.
+      if (md.verified && isTransientDnsError(err)) {
+        return c.json({
+          success: true,
+          domain: md.domain,
+          verified: true,
+          registrar: md.registrar,
+          verifiedAt: md.verifiedAt,
+          error: `TXT lookup at ${recordName} failed temporarily — retry later`,
+        });
+      }
       await managedDomainsService.syncStatus({
         domainId: md.id,
         verified: false,
