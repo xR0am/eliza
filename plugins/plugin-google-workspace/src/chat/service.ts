@@ -964,6 +964,9 @@ export class GoogleChatService extends Service implements IGoogleChatService {
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    if (maxBytes && buffer.length > maxBytes) {
+      throw new GoogleChatApiError(`Media exceeds max bytes (${maxBytes})`, 413);
+    }
     const contentType = response.headers.get("content-type") || undefined;
 
     return { buffer, contentType };
