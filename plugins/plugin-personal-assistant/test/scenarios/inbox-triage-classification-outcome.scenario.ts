@@ -134,7 +134,10 @@ async function assertPersistedClassifications(
     InboxRepository: new (
       rt: unknown,
     ) => {
-      getBySourceMessageId: (source: string, id: string) => Promise<{
+      getBySourceMessageId: (
+        source: string,
+        id: string,
+      ) => Promise<{
         classification: string;
         urgency: string;
         senderName: string | null;

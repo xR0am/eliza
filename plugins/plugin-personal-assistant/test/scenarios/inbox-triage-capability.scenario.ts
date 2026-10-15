@@ -157,7 +157,10 @@ async function assertOrganicTriagePersisted(
     InboxRepository: new (
       rt: unknown,
     ) => {
-      getBySourceMessageId: (source: string, id: string) => Promise<{
+      getBySourceMessageId: (
+        source: string,
+        id: string,
+      ) => Promise<{
         classification: string;
       } | null>;
     };
