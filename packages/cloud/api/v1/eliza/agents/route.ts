@@ -522,15 +522,33 @@ app.post("/", async (c) => {
       orgId: user.organization_id,
       status: agent.status,
     });
-    // A request that asks for provisioning (credit gate already passed) must
-    // not leave a reused eager agent pending with no job: its earlier enqueue
-    // was lost, or it was created with `autoProvision: false`. The queue
-    // returns the live job when one exists.
+    // A request that asks for provisioning must not leave a reused eager agent
+    // pending with no job: its earlier enqueue was lost, or it was created with
+    // `autoProvision: false`. The reused agent's tier decides, because the
+    // reuse guard returns the org's agent whatever tier this request names.
+    // The queue returns the live job when one exists.
     if (
-      shouldProvisionEagerly &&
+      autoProvision &&
       agent.status === "pending" &&
       tierProvisionsEagerly(agent.execution_tier)
     ) {
+      // A request for a non-eager tier skipped the dedicated price and credit
+      // gates above; provisioning this agent bills dedicated compute.
+      if (!shouldProvisionEagerly) {
+        const priceError = requireDedicatedComputePriceAcceptance(c.req.raw);
+        if (priceError) return priceError;
+        const creditCheck = await checkAgentCreditGate(user.organization_id);
+        if (!creditCheck.allowed) {
+          return c.json(
+            insufficientCredits402(
+              creditCheck,
+              "[agent-api] Agent provisioning blocked: insufficient credits",
+              { orgId: user.organization_id },
+            ),
+            402,
+          );
+        }
+      }
       const workerHealth = await checkProvisioningWorkerHealth();
       if (!workerHealth.ok) {
         return c.json(

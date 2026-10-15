@@ -769,13 +769,17 @@ test(
       organizationId: legacy.orgId,
       userId: legacy.userId,
       agentName: "legacy",
-      executionTier: "dedicated-always",
+      // A default retry without `alwaysOn` names the shared tier; the reuse
+      // guard still returns the org's pending dedicated agent, so the route
+      // decides repair from the reused agent's tier.
+      executionTier: "shared",
       reuseExistingNonTerminal: true,
     });
-    expect({ id: retry.agent.id, idempotent: retry.idempotent }).toEqual({
-      id: legacy.agentId,
-      idempotent: true,
-    });
+    expect({
+      id: retry.agent.id,
+      idempotent: retry.idempotent,
+      tier: retry.agent.execution_tier,
+    }).toEqual({ id: legacy.agentId, idempotent: true, tier: "dedicated-always" });
     const recovered = await provisioningJobService.enqueueReusedPendingAgentProvision({
       agent: retry.agent,
       organizationId: legacy.orgId,
