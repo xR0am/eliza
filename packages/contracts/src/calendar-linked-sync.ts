@@ -149,7 +149,9 @@ export function linkedCalendarSemanticText(
         email: attendee.email.trim().toLowerCase(),
         optional: attendee.optional === true,
       }))
-      .sort((left, right) => left.email.localeCompare(right.email)),
+      .sort((left, right) =>
+        left.email < right.email ? -1 : left.email > right.email ? 1 : 0,
+      ),
     deleted: event.deleted === true,
     ...(event.recurrence?.length
       ? { recurrence: [...event.recurrence].map((line) => line.trim()).sort() }

@@ -5,6 +5,7 @@
  */
 
 import { PGlite } from "@electric-sql/pglite";
+import { linkedCalendarSemanticDigest } from "@elizaos/contracts";
 import type { IAgentRuntime } from "@elizaos/core";
 import type { IGoogleWorkspaceService } from "@elizaos/plugin-google-workspace";
 import { drizzle } from "drizzle-orm/pglite";
@@ -13,8 +14,8 @@ import {
   GoogleLinkedCalendarProviderPort,
   type LinkedCalendarCheckpointStore,
   type LinkedCalendarEventRecord,
-  type LinkedCalendarLocalSnapshot,
   type LinkedCalendarLocalPort,
+  type LinkedCalendarLocalSnapshot,
   type LinkedCalendarProviderPort,
   type LinkedCalendarProviderSnapshot,
   LinkedCalendarReconciler,
@@ -22,7 +23,6 @@ import {
   type LinkedCalendarSemanticEvent,
   linkedCalendarSemanticHash,
 } from "./linked-calendar-sync.js";
-import { linkedCalendarSemanticDigest } from "@elizaos/contracts";
 import { ensureLinkedCalendarEventTable } from "./migration.js";
 
 const baseEvent: LinkedCalendarSemanticEvent = {
@@ -35,6 +35,44 @@ const baseEvent: LinkedCalendarSemanticEvent = {
   isAllDay: false,
   attendees: [],
 };
+
+it("keeps semantic text and digest identical across English and Swedish default collation", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const path = fileURLToPath(
+    new URL(
+      "../../../../packages/contracts/src/calendar-linked-sync.ts",
+      import.meta.url,
+    ),
+  );
+  const event = {
+    ...baseEvent,
+    attendees: [
+      "z@example.com",
+      "ä@example.com",
+      "a@example.com",
+      "å@example.com",
+      "ö@example.com",
+    ].map((email) => ({ email })),
+  };
+  const script = `import {readFileSync} from 'node:fs';import {stripTypeScriptTypes} from 'node:module';const source=stripTypeScriptTypes(readFileSync(${JSON.stringify(path)},'utf8'),{mode:'transform'});const {linkedCalendarSemanticText,linkedCalendarSemanticDigest}=await import('data:text/javascript,'+encodeURIComponent(source));const event=${JSON.stringify(event)};console.log(JSON.stringify({collation:event.attendees.map(a=>a.email).sort((a,b)=>a.localeCompare(b)),text:linkedCalendarSemanticText(event),digest:await linkedCalendarSemanticDigest(event)}));`;
+  const run = (locale: string) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        ["--no-warnings", "--input-type=module", "-e", script],
+        {
+          encoding: "utf8",
+          env: { ...process.env, LANG: locale, LC_ALL: locale },
+        },
+      ),
+    );
+  const english = run("en_US.UTF-8"),
+    swedish = run("sv_SE.UTF-8");
+  expect(english.collation).not.toEqual(swedish.collation);
+  expect(english.text).toBe(swedish.text);
+  expect(english.digest).toBe(swedish.digest);
+});
 
 it("the shared engine preserves opaque phone revisions through push and pull", async () => {
   let current: LinkedCalendarEventRecord<string> = {
@@ -98,8 +136,9 @@ it("the shared engine preserves opaque phone revisions through push and pull", a
   );
   expect(await sync.reconcile(current)).toBe("clean");
   expect(creates).toBe(1);
+  if (!remote) throw new Error("Provider create was not captured");
   remote = {
-    ...remote!,
+    ...remote,
     etag: '"v2"',
     event: { ...baseEvent, title: "Updated in Google" },
   };
