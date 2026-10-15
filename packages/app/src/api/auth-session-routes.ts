@@ -30,8 +30,10 @@ import {
 import { findActiveSession, readAllCookieValues } from "./auth/sessions";
 import {
   extractHeaderValue,
+  getCompatApiToken,
   getProvidedApiToken,
   roleForIdentityKind,
+  tokenMatches,
 } from "./auth.ts";
 import {
   type CompatRuntimeState,
@@ -259,6 +261,27 @@ async function handleSetup(
 ): Promise<boolean> {
   if (!consumeAuthBucket(meta.ip)) {
     sendJsonErrorResponse(res, 429, "Too many requests");
+    return true;
+  }
+
+  // Creating the first owner is the operator's step: from the host itself, or
+  // with the configured API token. Otherwise anyone who can reach a server
+  // that has no owner yet (a non-loopback bind, a tunnel, a cloud container
+  // before its owner's first visit) would claim the owner account.
+  const expectedToken = getCompatApiToken();
+  const providedToken = getProvidedApiToken(req);
+  const operator =
+    isTrustedLocalRequest(req) ||
+    Boolean(
+      expectedToken &&
+        providedToken &&
+        tokenMatches(expectedToken, providedToken),
+    );
+  if (!operator) {
+    sendJsonResponse(res, 403, {
+      error: "setup_requires_operator",
+      reason: "setup_requires_operator",
+    });
     return true;
   }
 
