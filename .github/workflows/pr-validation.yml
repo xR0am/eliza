@@ -286,6 +286,16 @@ jobs:
           TURBO_SCM_BASE: ${{ steps.affected.outputs.base }}
         run: node packages/scripts/run-turbo.ts run build --concurrency=4 --output-logs=errors-only
 
+      - name: Verify Network Personal room routes
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 3
+        run: bun run --cwd packages/cloud/api test network-personal-room-routes
+
+      - name: Verify Shared signed delivery and history
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 3
+        run: bun run --cwd packages/cloud/api test shared-runtime-cutover-reminder.miniflare
+
       - name: Verify personal Shared chat entry without paid activation
         if: steps.affected.outputs.app == 'true'
         timeout-minutes: 1
