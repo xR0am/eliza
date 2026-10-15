@@ -90,6 +90,16 @@ export interface DraftRequest {
   metadata?: Record<string, unknown>;
 }
 
+export interface MessageDraftContext {
+  /** Trusted executing caller; never parsed from model parameters or saved with a draft. */
+  requester?: Memory;
+}
+
+export interface MessageSendContext extends MessageDraftContext {
+  /** The exact canonical draft snapshot whose consent was verified by the service. */
+  snapshot: DraftRequest;
+}
+
 export interface DraftRecord {
   draftId: string;
   source: MessageSource;
@@ -277,10 +287,18 @@ export interface MessageAdapter {
   createDraft(
     runtime: IAgentRuntime,
     draft: DraftRequest,
+    context?: MessageDraftContext,
   ): Promise<{ draftId: string; preview: string; snapshot?: DraftRequest }>;
+  /** Run before cached send results or in-flight dispatches can be shared. */
+  authorizeSend?(
+    runtime: IAgentRuntime,
+    requester?: Memory,
+    draftId?: string,
+  ): Promise<void>;
   sendDraft(
     runtime: IAgentRuntime,
     draftId: string,
+    context?: MessageSendContext,
   ): Promise<{ externalId: string }>;
   scheduleSend?(
     runtime: IAgentRuntime,
