@@ -8,9 +8,9 @@ import java.nio.file.Files;
 /**
  * libelizainference reads {@code ELIZA_ASR_BACKEND} and {@code ELIZA_ASR_THREADS}
  * from the process environment when it loads the ASR region. Phonon-2 on the
- * Parakeet-TDT backend is the only ASR, so the backend is always
- * {@code parakeet}: the library never falls through to another backend, even
- * when a stale file sits under {@code asr/}. In the app process nothing sets
+ * Parakeet-TDT model is the only ASR. It uses the registered in-tree
+ * {@code ggml} backend; {@code parakeet} is not a backend registry name.
+ * The staged bundle verifies the Phonon-2 model. In the app process nothing sets
  * them, so {@link ElizaVoiceNative#ensureLoaded} calls {@link #apply} before
  * {@code System.loadLibrary}.
  *
@@ -28,8 +28,8 @@ final class ElizaAsrNativeEnv {
 
     private ElizaAsrNativeEnv() {}
 
-    /** The only ASR backend: Phonon-2 on Parakeet-TDT. */
-    static final String BACKEND = "parakeet";
+    /** Phonon-2 runs on the in-tree ggml backend. */
+    static final String BACKEND = "ggml";
 
     /** Positive thread count, or 0 when unset/invalid. */
     static int parseThreads(String value) {

@@ -72,7 +72,7 @@ android {
         versionName System.getenv("ELIZAOS_VERSION_NAME") ?: "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // libelizainference ASR decode threads; ElizaVoiceNative exports them
-        // (and ELIZA_ASR_BACKEND=parakeet, Phonon-2 being the only ASR) before
+        // (and ELIZA_ASR_BACKEND=ggml, Phonon-2 being the only ASR) before
         // loading the library. Empty means one per big core, measured on the device.
         def asrThreads = (System.getenv('ELIZA_ASR_THREADS') ?: '').trim()
         buildConfigField "String", "ELIZA_ASR_THREADS", "\"${asrThreads ==~ /[0-9]{1,2}/ ? asrThreads : ''}\""

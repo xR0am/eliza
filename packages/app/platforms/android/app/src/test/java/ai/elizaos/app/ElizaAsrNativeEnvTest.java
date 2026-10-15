@@ -37,11 +37,11 @@ public final class ElizaAsrNativeEnvTest {
         final Map<String, String> env = new HashMap<>();
         final String summary = ElizaAsrNativeEnv.apply("2", env::put);
         // Phonon-2 is the only ASR, whatever the process environment says.
-        assertEquals("parakeet", env.get("ELIZA_ASR_BACKEND"));
+        assertEquals("ggml", env.get("ELIZA_ASR_BACKEND"));
         if (System.getenv("ELIZA_ASR_THREADS") == null) {
             assertEquals("2", env.get("ELIZA_ASR_THREADS"));
         }
-        assertTrue(summary.startsWith("parakeet/"));
+        assertTrue(summary.startsWith("ggml/"));
     }
     @Test(expected = IllegalStateException.class)
     public void backendWriteFailurePreventsLoadingWithAStaleBackend() {
