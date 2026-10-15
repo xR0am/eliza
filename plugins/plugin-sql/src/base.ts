@@ -1689,14 +1689,20 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .from(participantTable)
         .leftJoin(
           entityTable,
-          and(eq(participantTable.entityId, entityTable.id), eq(entityTable.agentId, this.agentId))
+          and(
+            eq(participantTable.entityId, entityTable.id),
+            eq(participantTable.agentId, this.agentId),
+            eq(entityTable.agentId, this.agentId)
+          )
         );
 
       if (includeComponents) {
         query.leftJoin(componentTable, eq(componentTable.entityId, entityTable.id));
       }
 
-      const result = await query.where(eq(participantTable.roomId, roomId));
+      const result = await query.where(
+        and(eq(participantTable.roomId, roomId), eq(participantTable.agentId, this.agentId))
+      );
 
       // Group components by entity if includeComponents is true
       const entitiesByIdMap = new Map<UUID, Entity>();
@@ -2337,7 +2343,8 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .where(
           and(
             eq(participantTable.roomId, params.authorizedRoomId),
-            eq(participantTable.entityId, params.accessContext.requesterEntityId)
+            eq(participantTable.entityId, params.accessContext.requesterEntityId),
+            eq(participantTable.agentId, params.agentId)
           )
         )
         .limit(1);
@@ -5255,7 +5262,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async getRoomsByWorld(worldId: UUID): Promise<Room[]> {
     return this.withDatabase(async () => {
-      const result = await this.db.select().from(roomTable).where(eq(roomTable.worldId, worldId));
+      const result = await this.db
+        .select()
+        .from(roomTable)
+        .where(and(eq(roomTable.worldId, worldId), eq(roomTable.agentId, this.agentId)));
       const rooms = result.map(roomFromRow);
       return rooms;
     });
@@ -5272,7 +5282,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       await this.db
         .update(roomTable)
         .set({ ...room, agentId: this.agentId })
-        .where(eq(roomTable.id, room.id));
+        .where(and(eq(roomTable.id, room.id), eq(roomTable.agentId, this.agentId)));
     });
   }
 
@@ -5309,7 +5319,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
     if (!roomId) throw new Error("Room ID is required");
     return this.withDatabase(async () => {
       await this.db.transaction(async (tx) => {
-        await tx.delete(roomTable).where(eq(roomTable.id, roomId));
+        await tx
+          .delete(roomTable)
+          .where(and(eq(roomTable.id, roomId), eq(roomTable.agentId, this.agentId)));
       });
     });
   }
@@ -5325,7 +5337,13 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .select({ roomId: participantTable.roomId })
         .from(participantTable)
         .innerJoin(roomTable, eq(participantTable.roomId, roomTable.id))
-        .where(and(eq(participantTable.entityId, entityId), eq(roomTable.agentId, this.agentId)));
+        .where(
+          and(
+            eq(participantTable.entityId, entityId),
+            eq(participantTable.agentId, this.agentId),
+            eq(roomTable.agentId, this.agentId)
+          )
+        );
 
       return result.map((row) => row.roomId as UUID);
     });
@@ -5344,7 +5362,13 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           .selectDistinct({ roomId: participantTable.roomId })
           .from(participantTable)
           .innerJoin(roomTable, eq(participantTable.roomId, roomTable.id))
-          .where(and(eq(participantTable.entityId, entityId), eq(roomTable.agentId, this.agentId)))
+          .where(
+            and(
+              eq(participantTable.entityId, entityId),
+              eq(participantTable.agentId, this.agentId),
+              eq(roomTable.agentId, this.agentId)
+            )
+          )
       );
       for (const row of result) roomIds.add(row.roomId as UUID);
     }
@@ -5445,7 +5469,11 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           return await tx
             .delete(participantTable)
             .where(
-              and(eq(participantTable.entityId, entityId), eq(participantTable.roomId, roomId))
+              and(
+                eq(participantTable.entityId, entityId),
+                eq(participantTable.roomId, roomId),
+                eq(participantTable.agentId, this.agentId)
+              )
             )
             .returning();
         });
@@ -5478,7 +5506,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           roomId: participantTable.roomId,
         })
         .from(participantTable)
-        .where(eq(participantTable.entityId, entityId));
+        .where(
+          and(eq(participantTable.entityId, entityId), eq(participantTable.agentId, this.agentId))
+        );
 
       const entities = await this.getEntitiesByIds([entityId]);
 
@@ -5503,7 +5533,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       const result = await this.db
         .select({ entityId: participantTable.entityId })
         .from(participantTable)
-        .where(eq(participantTable.roomId, roomId));
+        .where(
+          and(eq(participantTable.roomId, roomId), eq(participantTable.agentId, this.agentId))
+        );
 
       return result.map((row) => row.entityId as UUID);
     });
@@ -5521,7 +5553,13 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       const result = await this.db
         .select()
         .from(participantTable)
-        .where(and(eq(participantTable.roomId, roomId), eq(participantTable.entityId, entityId)))
+        .where(
+          and(
+            eq(participantTable.roomId, roomId),
+            eq(participantTable.entityId, entityId),
+            eq(participantTable.agentId, this.agentId)
+          )
+        )
         .limit(1);
 
       return result.length > 0;
@@ -6157,7 +6195,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async removeWorld(id: UUID): Promise<void> {
     return this.withDatabase(async () => {
-      await this.db.delete(worldTable).where(eq(worldTable.id, id));
+      await this.db
+        .delete(worldTable)
+        .where(and(eq(worldTable.id, id), eq(worldTable.agentId, this.agentId)));
     });
   }
 
@@ -6188,7 +6228,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           entityId: task.entityId as UUID,
           tags: task.tags,
           metadata: metadata,
-          createdAt: now,
+          // Preserve a caller-supplied createdAt (agent import replays the
+          // original task row, and sqlite keeps it too). Stamp now only
+          // when the caller did not provide one.
+          createdAt: task.createdAt !== undefined ? new Date(Number(task.createdAt)) : now,
           updatedAt: now,
           agentId: this.agentId as UUID,
         };
@@ -7896,7 +7939,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           ...(includeComponents && { components: componentTable }),
         })
         .from(requested)
-        .innerJoin(participantTable, sql`${participantTable.roomId} = requested.room_id`)
+        .innerJoin(
+          participantTable,
+          sql`${participantTable.roomId} = requested.room_id AND ${participantTable.agentId} = ${this.agentId}`
+        )
         .leftJoin(
           entityTable,
           and(eq(participantTable.entityId, entityTable.id), eq(entityTable.agentId, this.agentId))
@@ -8329,7 +8375,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       const rows = await this.db
         .select({ roomId: participantTable.roomId, entityId: participantTable.entityId })
         .from(participantTable)
-        .where(inArray(participantTable.roomId, roomIds));
+        .where(
+          and(inArray(participantTable.roomId, roomIds), eq(participantTable.agentId, this.agentId))
+        );
       const byRoom = new Map<string, UUID[]>();
       for (const row of rows) {
         if (row.roomId === null) continue;
