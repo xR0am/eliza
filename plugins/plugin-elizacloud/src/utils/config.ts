@@ -16,10 +16,21 @@ export const DEFAULT_ELIZA_CLOUD_LARGE_MODEL = DEFAULT_ELIZA_CLOUD_LARGE_TEXT_MO
  * strings treated as unset).
  */
 export function getSetting(runtime: IAgentRuntime, key: string, defaultValue?: string): string | undefined {
-    // The sealed runtime uses "" for absent keys. Read the launch tuple itself
-    // so only truly absent settings fall back; explicit invalid values stay raw.
-    if (isCloudAuthorityKey(key) && captureDevCloudEnvAuthoritySnapshot(process.env)) {
-        return resolveDevCloudAuthorityEnvValue(key.toUpperCase(), process.env) ?? defaultValue;
+    const snapshot = isCloudAuthorityKey(key) ? captureDevCloudEnvAuthoritySnapshot(process.env) : null;
+    if (snapshot) {
+        // The sealed runtime overlay stays authoritative: it also carries values
+        // it derives itself (e.g. ELIZAOS_CLOUD_USE_INFERENCE=false for a direct
+        // text route). Its "" sentinel means absent only when the frozen launch
+        // tuple never set the key; an explicit "" from the launcher stays raw.
+        const canonicalKey = key.toUpperCase();
+        const runtimeValue = runtime.getSetting(canonicalKey);
+        if (runtimeValue === undefined || runtimeValue === null) {
+            return resolveDevCloudAuthorityEnvValue(canonicalKey, process.env) ?? defaultValue;
+        }
+        if (runtimeValue === "" && snapshot.values[canonicalKey] === undefined) {
+            return defaultValue;
+        }
+        return String(runtimeValue);
     }
     return defaultValue === undefined
         ? resolveSetting(runtime, key)

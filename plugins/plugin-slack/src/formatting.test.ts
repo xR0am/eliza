@@ -52,4 +52,16 @@ describe("markdown links in inline code", () => {
       ),
     ).toBe("`[one](https://one.test)` and `[two](https://two.test)`");
   });
+
+  it("keeps emphasis markers in a code link example literal", () => {
+    expect(markdownToSlackMrkdwn("`[a*b*c](https://example.com/x)`")).toBe(
+      "`[a*b*c](https://example.com/x)`",
+    );
+  });
+
+  it("still converts a link whose label is inline code", () => {
+    expect(markdownToSlackMrkdwn("[`y`](https://e.com)")).toBe(
+      "<https://e.com|`y`>",
+    );
+  });
 });
