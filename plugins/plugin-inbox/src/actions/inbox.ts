@@ -829,11 +829,22 @@ export async function executeInboxQueueOperation(args: {
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
       });
-      const alreadyTriaged = await repo.getBySourceMessageIds(
-        merged.map((item) => item.id),
+      const alreadyTriagedByPlatform = new Map<InboxPlatform, Set<string>>();
+      await Promise.all(
+        platforms.map(async (platform) => {
+          const ids = merged
+            .filter((item) => item.platform === platform)
+            .map((item) => item.id);
+          alreadyTriagedByPlatform.set(
+            platform,
+            await repo.getBySourceMessageIds(platform, ids),
+          );
+        }),
       );
       const freshMessages = merged
-        .filter((item) => !alreadyTriaged.has(item.id))
+        .filter(
+          (item) => !alreadyTriagedByPlatform.get(item.platform)?.has(item.id),
+        )
         .map((item) => toInboundMessage(item));
       if (freshMessages.length > 0) {
         const service = new InboxService(args.runtime);
