@@ -85,6 +85,7 @@ import { composeResponseState } from "./provider-state.js";
 import { restorePiiInUserReplyText } from "./reply-policy.ts";
 import {
   createSourceReplySnapshot,
+  isNativeReplyPartsCandidate,
   resolveLiteralSourceReply,
   SOURCE_REPLY_SCHEMA,
   type SourceReplyRendering,
@@ -317,6 +318,7 @@ export async function generateStage1Decision(
     const snapshot = sourceReplySnapshot;
     if (!snapshot) return bound;
     const resolveParts = (parsed: Record<string, unknown>) => {
+      if (!isNativeReplyPartsCandidate(parsed.replyText)) return parsed;
       const resolved = resolveLiteralSourceReply(
         discovery.context,
         snapshot,
@@ -338,7 +340,8 @@ export async function generateStage1Decision(
       bound.toolCalls.length === 0
     ) {
       const parsed = extractMessageHandlerRawParsed(bound);
-      if (!parsed) return bound;
+      if (!parsed || !isNativeReplyPartsCandidate(parsed.replyText))
+        return bound;
       const resolved = resolveParts(parsed);
       if (resolved === parsed) return bound;
       const text = JSON.stringify(resolved);
@@ -363,7 +366,8 @@ export async function generateStage1Decision(
       toolCalls: bound.toolCalls.map((entry) => {
         if (entry?.name !== HANDLE_RESPONSE_TOOL_NAME) return entry;
         const parsed = parseToolArguments(entry.arguments);
-        if (!parsed) return entry;
+        if (!parsed || !isNativeReplyPartsCandidate(parsed.replyText))
+          return entry;
         const resolved = resolveParts(parsed);
         if (resolved === parsed || typeof resolved.replyText !== "string")
           return entry;

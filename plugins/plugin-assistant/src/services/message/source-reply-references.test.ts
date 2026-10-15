@@ -174,6 +174,16 @@ describe("stored source-backed reply references", () => {
     ).toBe(captured);
     expect(resolveSourceReply(f.context, f.snapshot, raw)).toBe(raw);
   });
+  it("keeps omitted, empty, and ordinary string replyText on the existing path", () => {
+    const f = fixture();
+    for (const raw of [
+      { shouldRespond: "IGNORE" },
+      { shouldRespond: "STOP", replyText: "" },
+      { shouldRespond: "RESPOND", replyText: "Hey, I'm here." },
+      { shouldRespond: "RESPOND", replyText: "[draft] see the {notes}" },
+    ])
+      expect(resolveLiteralSourceReply(f.context, f.snapshot, raw)).toBe(raw);
+  });
   it("supplies a recent quote's deferred original before the first decision", () => {
     const f = fixture();
     f.reply.createdAt = 20;
