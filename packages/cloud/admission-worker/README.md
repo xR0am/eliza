@@ -28,7 +28,7 @@ bun run --cwd packages/cloud/api test inference-recovery-service
 bun run --cwd packages/cloud/api test inference-rate-deadline
 bun run --cwd packages/cloud/shared test inference-admission-recovery.pglite
 bun run --cwd packages/cloud/shared test sdk-provider-telemetry.integration
-bun x --no-install wrangler deploy --config packages/cloud/admission-worker/wrangler.toml --dry-run --outdir test-results/admission-worker-candidate
+bun packages/cloud/api/node_modules/wrangler/bin/wrangler.js deploy --config packages/cloud/admission-worker/wrangler.toml --dry-run --outdir test-results/admission-worker-candidate
 ```
 
 The source contract checks declarations, bindings, aliases and environment parity.
