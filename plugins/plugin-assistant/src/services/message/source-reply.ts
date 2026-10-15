@@ -414,7 +414,14 @@ export function resolveLiteralSourceReply(
   raw: Record<string, unknown>,
   onRendering?: (rendering: SourceReplyRendering) => void,
 ): Record<string, unknown> | undefined {
-  if (!Array.isArray(raw.replyText)) return raw;
+  if (!Array.isArray(raw.replyText))
+    throw new ElizaError(
+      "Native replyText must be an ordered reply-parts array; no response fields were processed",
+      {
+        code: "STAGE1_INVALID_SOURCE_REPLY",
+        severity: "ephemeral",
+      },
+    );
   const ids: string[] = [];
   const parts = raw.replyText.map((part) => {
     if (
