@@ -83,6 +83,18 @@ export function hostOf(url: string): string {
   }
 }
 
+function sanitizeListedAnswer(
+  answer: string,
+  warnings: Array<{ url: string, host: string | null, warning: string }>,
+): string {
+  let sanitized = answer
+  for (const warning of warnings) {
+    const host = warning.host || hostOf(warning.url)
+    sanitized = sanitized.split(`](${warning.url})`).join("]")
+    sanitized = sanitized.split(warning.url).join(`[blocked ${host}]`)
+  }
+  return sanitized
+}
 function formatResultLine(result: SearchResult, index: number): string {
   // A listed site is named without a link so the warning cannot be skipped by a click.
   if (result.reputation?.status === "listed") {
@@ -96,10 +108,14 @@ function formatResultLine(result: SearchResult, index: number): string {
  * for other sites, so the text never implies that a site is safe.
  */
 export function formatWebSearchText(searchResponse: SearchResponse): string {
-  const lines: string[] = [];
+  const lines: string[] = []
+  const answerWarnings = searchResponse.reputationWarnings ?? []
   if (searchResponse.answer) {
-    lines.push(searchResponse.answer);
-    if (searchResponse.results.length > 0) {
+    lines.push(
+      answerWarnings.length
+        ? sanitizeListedAnswer(searchResponse.answer, answerWarnings)
+        : searchResponse.answer,
+    )    if (searchResponse.results.length > 0) {
       lines.push(
         "",
         "For more details, you can check out these resources:",
@@ -108,7 +124,7 @@ export function formatWebSearchText(searchResponse: SearchResponse): string {
     }
   }
   const warnings = new Map<string, string>();
-  for (const warning of searchResponse.reputationWarnings ?? []) {
+  for (const warning of answerWarnings) {
     warnings.set(warning.host, warning.warning);
   }
   if (!searchResponse.answer) {
