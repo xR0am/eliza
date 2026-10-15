@@ -202,16 +202,38 @@ function dayOfWeekInTz(date: Date, timeZone: string): number {
   ).getUTCDay();
 }
 
+// All-day events are stored at UTC midnight of their civil dates (see the ICS
+// parser and Google Calendar mapping). They block the owner's local days.
+function localMidnightOfStoredDateMs(iso: string, timeZone: string): number {
+  const date = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!date) return Number.NaN;
+  return buildUtcDateFromLocalParts(timeZone, {
+    year: Number(date[1]),
+    month: Number(date[2]),
+    day: Number(date[3]),
+    hour: 0,
+    minute: 0,
+    second: 0,
+  }).getTime();
+}
+
 function buildBusyIntervals(
   events: readonly LifeOpsCalendarEvent[],
   travelBufferMinutes: number,
+  timeZone: string,
 ): Array<{ start: number; end: number }> {
   const bufferMs = travelBufferMinutes * MS_PER_MINUTE;
   const intervals = events
     .filter((e) => e.status !== "cancelled")
     .map((e) => ({
-      start: Date.parse(e.startAt) - bufferMs,
-      end: Date.parse(e.endAt) + bufferMs,
+      start:
+        (e.isAllDay
+          ? localMidnightOfStoredDateMs(e.startAt, timeZone)
+          : Date.parse(e.startAt)) - bufferMs,
+      end:
+        (e.isAllDay
+          ? localMidnightOfStoredDateMs(e.endAt, timeZone)
+          : Date.parse(e.endAt)) + bufferMs,
     }))
     .filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end))
     .sort((a, b) => a.start - b.start);
@@ -291,7 +313,7 @@ export function computeProposedSlots(args: {
     events,
   } = args;
   const tz = preferences.timeZone;
-  const busy = buildBusyIntervals(events, preferences.travelBufferMinutes);
+  const busy = buildBusyIntervals(events, preferences.travelBufferMinutes, tz);
 
   const preferredStart = parseTimeOfDayToMinutes(
     preferences.preferredStartLocal,

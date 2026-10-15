@@ -100,6 +100,56 @@ describe("life-ops scheduling-with-others (pure slot logic)", () => {
     ]);
   });
 
+  it("an all-day event blocks the owner's local day, not the UTC day", () => {
+    // Google stores an all-day event on Oct 15 at UTC midnight. In Sydney
+    // (UTC+11) that UTC day runs Oct 15 11:00 → Oct 16 11:00 local.
+    const slots = computeProposedSlots({
+      now: new Date("2026-10-14T00:00:00Z"),
+      windowStart: new Date("2026-10-14T13:00:00Z"), // Oct 15 00:00 AEDT
+      windowEnd: new Date("2026-10-16T13:00:00Z"), // Oct 17 00:00 AEDT
+      durationMinutes: 30,
+      slotCount: 1,
+      preferences: {
+        timeZone: "Australia/Sydney",
+        preferredStartLocal: "09:00",
+        preferredEndLocal: "17:00",
+        defaultDurationMinutes: 30,
+        travelBufferMinutes: 0,
+        blackoutWindows: [],
+        updatedAt: null,
+      },
+      events: [
+        {
+          id: "offsite",
+          externalId: "offsite",
+          agentId: AGENT_ID,
+          provider: "google",
+          side: "owner",
+          calendarId: "primary",
+          title: "Offsite",
+          description: "",
+          location: "",
+          status: "confirmed",
+          startAt: "2026-10-15T00:00:00.000Z",
+          endAt: "2026-10-16T00:00:00.000Z",
+          isAllDay: true,
+          timezone: "Australia/Sydney",
+          htmlLink: null,
+          conferenceLink: null,
+          organizer: null,
+          attendees: [],
+          metadata: {},
+          syncedAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+    });
+    // First free slot is Oct 16 09:00 AEDT, the first morning after the offsite.
+    expect(slots.map((slot) => slot.startAt)).toEqual([
+      "2026-10-15T22:00:00.000Z",
+    ]);
+  });
+
   it("computeProposedSlots returns 3 slots within preferred hours, avoiding busy intervals and blackouts", () => {
     const now = new Date();
     const windowStart = new Date(localIso(1, 0, 0));
