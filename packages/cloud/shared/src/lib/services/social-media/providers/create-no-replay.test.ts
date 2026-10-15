@@ -349,3 +349,65 @@ for (const outcome of ["unreadable", "failed", "complete"] as const) {
     }
   });
 }
+
+for (const platform of ["slack", "telegram"] as const) {
+  for (const payload of [{}, { ok: 0 }, { ok: "false" }, { ok: true }, { ok: true, result: {} }]) {
+    test(`${platform} keeps a malformed acknowledgement unknown: ${JSON.stringify(payload)}`, async () => {
+      let sends = 0;
+      spies.push(
+        spyOn(globalThis, "fetch").mockImplementation(async () => {
+          sends++;
+          return json(payload);
+        }),
+      );
+      const result =
+        platform === "slack"
+          ? await slackProvider.createPost(
+              { botToken: "fixture" },
+              { text: "Launch day" },
+              { slack: { channelId: "C1" } },
+            )
+          : await telegramProvider.createPost(
+              { botToken: "123:fixture" },
+              { text: "Launch day" },
+              { telegram: { chatId: "-100" } },
+            );
+      expect(sends).toBe(1);
+      expect(result.success).toBe(false);
+      expect(result.creditDisposition).toBe("hold");
+      expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
+    });
+  }
+}
+
+for (const platform of ["slack", "telegram"] as const) {
+  test(`${platform} retains a confirmed publication receipt`, async () => {
+    let sends = 0;
+    spies.push(
+      spyOn(globalThis, "fetch").mockImplementation(async () => {
+        sends++;
+        return json(
+          platform === "slack"
+            ? { ok: true, ts: "123.456", channel: "C1" }
+            : { ok: true, result: { message_id: 7, chat: { id: -100, type: "group" } } },
+        );
+      }),
+    );
+    const result =
+      platform === "slack"
+        ? await slackProvider.createPost(
+            { botToken: "fixture" },
+            { text: "Launch day" },
+            { slack: { channelId: "C1" } },
+          )
+        : await telegramProvider.createPost(
+            { botToken: "123:fixture" },
+            { text: "Launch day" },
+            { telegram: { chatId: "-100" } },
+          );
+    expect(sends).toBe(1);
+    expect(result.success).toBe(true);
+    expect(result.postId).toBe(platform === "slack" ? "123.456" : "7");
+    expect(result.creditDisposition).toBeUndefined();
+  });
+}

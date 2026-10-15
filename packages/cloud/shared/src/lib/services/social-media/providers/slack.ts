@@ -1,4 +1,5 @@
 /** Implements Slack publishing, file upload, and reactions for cloud social-media callers. */
+import { ElizaError } from "@elizaos/core";
 import type {
   MediaAttachment,
   PlatformPostOptions,
@@ -101,8 +102,29 @@ async function slackApiRequest<T>(
       }),
     async (response) => {
       const json = (await response.json()) as SlackResponse<T>;
-      if (!json.ok) {
+      if (json.ok === false) {
         throw new SocialApiRejectionError(json.error ?? "Slack API error");
+      }
+      if (json.ok !== true) {
+        throw new ElizaError("Slack response lacks a valid acknowledgement", {
+          code: "SOCIAL_API_INVALID_RESPONSE",
+          severity: "ephemeral",
+        });
+      }
+      if (method === "chat.postMessage") {
+        const receipt = json as SlackResponse & { message?: SlackMessage; channel?: unknown };
+        const ts = receipt.message?.ts ?? receipt.ts;
+        if (
+          typeof ts !== "string" ||
+          !ts ||
+          typeof receipt.channel !== "string" ||
+          !receipt.channel
+        ) {
+          throw new ElizaError("Slack response lacks a publication receipt", {
+            code: "SOCIAL_API_INVALID_RESPONSE",
+            severity: "ephemeral",
+          });
+        }
       }
       return json;
     },
