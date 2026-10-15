@@ -1442,68 +1442,6 @@ class ElizaAppUserService {
   async getByWhatsAppId(whatsappId: string): Promise<UserWithOrganization | undefined> {
     return usersRepository.findByWhatsAppIdWithOrganization(whatsappId);
   }
-
-  /**
-   * Link a WhatsApp account to an existing user.
-   * Used for session-based linking.
-   */
-  async linkWhatsAppToUser(
-    userId: string,
-    whatsappData: {
-      whatsappId: string;
-      name?: string;
-    },
-  ): Promise<{ success: boolean; error?: string }> {
-    const { whatsappId, name } = whatsappData;
-
-    // Check if this WhatsApp ID is already linked to a different user
-    const existingWhatsAppUser = await usersRepository.findByWhatsAppIdWithOrganization(whatsappId);
-
-    if (existingWhatsAppUser && existingWhatsAppUser.id !== userId) {
-      logger.warn("[ElizaAppUserService] WhatsApp already linked to another user", {
-        userId,
-        existingUserId: existingWhatsAppUser.id,
-        whatsappId,
-      });
-      return {
-        success: false,
-        error: "This WhatsApp account is already linked to another account",
-      };
-    }
-
-    // If already linked to the same user, treat as idempotent success
-    if (existingWhatsAppUser && existingWhatsAppUser.id === userId) {
-      return { success: true };
-    }
-
-    try {
-      await usersRepository.update(userId, {
-        whatsapp_id: whatsappId,
-        whatsapp_name: name,
-        updated_at: new Date(),
-      });
-    } catch (error) {
-      // Handle race condition: another request linked this WhatsApp account first
-      if (isUniqueConstraintError(error)) {
-        logger.warn("[ElizaAppUserService] WhatsApp linking race condition", {
-          userId,
-          whatsappId,
-        });
-        return {
-          success: false,
-          error: "This WhatsApp account is already linked to another account",
-        };
-      }
-      throw error;
-    }
-
-    logger.info("[ElizaAppUserService] Linked WhatsApp to user", {
-      userId,
-      whatsappId,
-    });
-
-    return { success: true };
-  }
 }
 
 export const elizaAppUserService = new ElizaAppUserService();
