@@ -14,7 +14,7 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const SLACK_API_BASE = "https://slack.com/api";
 
@@ -82,6 +82,7 @@ async function slackApiRequest<T>(
   method: string,
   botToken: string,
   body?: Record<string, unknown>,
+  retry: Pick<RetryOptions, "replayUnknownOutcome"> = {},
 ): Promise<T> {
   const { data } = await withRetry<SlackResponse<T>>(
     () =>
@@ -100,7 +101,7 @@ async function slackApiRequest<T>(
       }
       return json;
     },
-    { platform: "slack", maxRetries: 3 },
+    { platform: "slack", maxRetries: 3, ...retry },
   );
 
   return data as T;
@@ -260,7 +261,7 @@ export const slackProvider: SocialMediaProvider = {
 
       const response = await slackApiRequest<
         SlackResponse & { message: SlackMessage; channel: string }
-      >("chat.postMessage", credentials.botToken, payload);
+      >("chat.postMessage", credentials.botToken, payload, { replayUnknownOutcome: false });
 
       return {
         platform: "slack",
@@ -272,11 +273,7 @@ export const slackProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 outbound Slack post boundary — translate any send failure into a structured PostResult failure (success:false) the caller renders; the message is not fabricated as sent.
       logger.error("[Slack] Post failed", { error });
-      return {
-        platform: "slack",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("slack", error);
     }
   },
 
