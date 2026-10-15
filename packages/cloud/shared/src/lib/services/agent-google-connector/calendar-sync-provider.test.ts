@@ -36,6 +36,7 @@ function fixture() {
   const current = async () => ({
     connectionId: owner.grantId,
     accountId,
+    accountEmail: "owner@example.invalid",
     capabilities: ["google.calendar.read", ...(readOnly ? [] : ["google.calendar.write"])],
   });
   const provider = new ManagedCalendarSyncProvider({
@@ -58,7 +59,12 @@ function fixture() {
       if (url.pathname.includes("/calendarList/"))
         return inaccessible
           ? Response.json({}, { status: 404 })
-          : Response.json({ id: "primary", primary: true, accessRole: "owner" });
+          : Response.json({
+              id: "primary",
+              summary: "Personal",
+              primary: true,
+              accessRole: "owner",
+            });
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!),
         stored = events.get(id);
       if (method === "GET")
@@ -218,6 +224,9 @@ describe("managed Calendar conditional provider", () => {
     expect(f.calls).toHaveLength(0);
   });
   test("all-day dates and recurrence survive the provider contract", async () => {
+    const capabilities = await fixture().provider.capabilities(owner, "primary");
+    expect(capabilities.accountEmail).toBe("owner@example.invalid");
+    expect(capabilities.calendarLabel).toBe("Personal");
     const f = fixture(),
       saved = await f.provider.create(owner, "primary", "all-day", {
         ...event,
