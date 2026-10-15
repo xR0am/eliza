@@ -544,7 +544,10 @@ export function parseTweetV2ToV1(
 
   // Process Media (photos and videos)
   if (includes?.media?.length) {
-    includes.media.forEach((media: MediaObjectV2) => {
+    const mediaKeys = new Set(tweetV2.attachments?.media_keys ?? []);
+    includes.media
+      .filter((media: MediaObjectV2) => mediaKeys.has(media.media_key))
+      .forEach((media: MediaObjectV2) => {
       if (media.type === "photo") {
         parsedTweet.photos.push({
           id: media.media_key,
