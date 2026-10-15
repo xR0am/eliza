@@ -1,10 +1,11 @@
-import type {
-	Action,
-	ActionResult,
-	HandlerCallback,
-	HandlerOptions,
-	IAgentRuntime,
-	Memory,
+import {
+	type Action,
+	type ActionResult,
+	ElizaError,
+	type HandlerCallback,
+	type HandlerOptions,
+	type IAgentRuntime,
+	type Memory,
 } from "@elizaos/core";
 import type {
 	LocalInferenceManagementInput,
@@ -70,15 +71,26 @@ function quietHoursParam(
 	params: Record<string, unknown>,
 ): Array<{ start: string; end: string }> | undefined {
 	const value = params["quietHours"];
-	if (!Array.isArray(value)) return undefined;
-	const hours = value
-		.filter(isRecord)
-		.map((q) => ({
-			start: typeof q["start"] === "string" ? q["start"] : "",
-			end: typeof q["end"] === "string" ? q["end"] : "",
-		}))
-		.filter((q) => q.start.length > 0 && q.end.length > 0);
-	return hours;
+	if (value === undefined) return undefined;
+	const invalid = (): never => {
+		throw new ElizaError(
+			"quietHours must be an array of {start, end} ranges in HH:MM format. No preferences were changed.",
+			{ code: "LOCAL_INFERENCE_INVALID_QUIET_HOURS" },
+		);
+	};
+	if (!Array.isArray(value)) return invalid();
+	const time = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+	return Array.from(value, (entry) => {
+		if (
+			!isRecord(entry) ||
+			typeof entry.start !== "string" ||
+			typeof entry.end !== "string" ||
+			!time.test(entry.start) ||
+			!time.test(entry.end)
+		)
+			return invalid();
+		return { start: entry.start, end: entry.end };
+	});
 }
 
 function fail(
@@ -293,7 +305,7 @@ export const localInferenceManagementAction: Action = {
 		{
 			name: "quietHours",
 			description:
-				"Quiet hours for voice model auto-updates, as a list of {start, end} time ranges (for example [{start: \"22:00\", end: \"07:00\"}]).",
+				'Quiet hours for voice model auto-updates, as a list of {start, end} time ranges (for example [{start: "22:00", end: "07:00"}]).',
 			required: false,
 			schema: { type: "array" as const },
 		},
@@ -313,33 +325,33 @@ export const localInferenceManagementAction: Action = {
 		_options?: HandlerOptions,
 		callback?: HandlerCallback,
 	): Promise<ActionResult> => {
-		const input = parseLocalInferenceManagementInput(
-			paramsFromOptions(_options),
-		);
-		if (!input) {
-			const result = fail(
-				"LOCAL_INFERENCE_INVALID",
-				"LOCAL_INFERENCE requires a supported action.",
-			);
-			await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
-			return result;
-		}
-		// The route layer names this argument `id`; the planner only knows it as
-		// `voiceModelId`, so report the missing argument under the declared name.
-		// The route layer also reads `modelId` as the id, so that call still passes.
-		if (
-			(input.op === "trigger_voice_model_update" ||
-				input.op === "pin_voice_model") &&
-			!(input.voiceModelId ?? input.modelId)?.trim()
-		) {
-			const result = fail(
-				"LOCAL_INFERENCE_INVALID",
-				`${input.op} requires voiceModelId.`,
-			);
-			await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
-			return result;
-		}
 		try {
+			const input = parseLocalInferenceManagementInput(
+				paramsFromOptions(_options),
+			);
+			if (!input) {
+				const result = fail(
+					"LOCAL_INFERENCE_INVALID",
+					"LOCAL_INFERENCE requires a supported action.",
+				);
+				await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
+				return result;
+			}
+			// The route layer names this argument `id`; the planner only knows it as
+			// `voiceModelId`, so report the missing argument under the declared name.
+			// The route layer also reads `modelId` as the id, so that call still passes.
+			if (
+				(input.op === "trigger_voice_model_update" ||
+					input.op === "pin_voice_model") &&
+				!(input.voiceModelId ?? input.modelId)?.trim()
+			) {
+				const result = fail(
+					"LOCAL_INFERENCE_INVALID",
+					`${input.op} requires voiceModelId.`,
+				);
+				await callback?.({ text: result.text, actions: ["LOCAL_INFERENCE"] });
+				return result;
+			}
 			const { applyLocalInferenceManagementMutation } = await import(
 				"../local-inference-routes.js"
 			);
