@@ -105,6 +105,11 @@ test("Maps requests reach only their enrolled conversation, once, and require a 
         }),
       ).rejects.toThrow();
       for (const malformed of [
+        ...[{}, 1].flatMap((value) => [
+          { phase: value, status: { state: "stopped" } },
+          { phase: "result", status: { state: value } },
+          { phase: "result", status: { state: "stopped", travelMode: value } },
+        ]),
         { phase: ["result"], status: { state: "stopped" } },
         { phase: "result", status: { state: ["stopped"] } },
         {
