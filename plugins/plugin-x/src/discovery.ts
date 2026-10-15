@@ -17,8 +17,7 @@ import {
 import type { ClientBase, TwitterAccountSession } from "./base";
 import type { Client, Tweet } from "./client/index";
 import { SearchMode } from "./client/index";
-import { getRandomInterval } from "./environment";
-import { normalizePositiveInteger } from "./interactions";
+import { getRandomInterval, parseTwitterCount } from "./environment";
 import type { TwitterClientState } from "./types";
 import { sendTextAsTweetThread } from "./utils";
 import { createMemorySafe, ensureTwitterContext } from "./utils/memory";
@@ -223,21 +222,21 @@ export class TwitterDiscoveryClient {
 
     return {
       topics,
-      minFollowerCount: normalizePositiveInteger(
-        (getSetting(this.runtime, "TWITTER_MIN_FOLLOWER_COUNT") as string) ||
+      minFollowerCount: parseTwitterCount(
+        (getSetting(this.runtime, "TWITTER_MIN_FOLLOWER_COUNT") as string) ??
           process.env.TWITTER_MIN_FOLLOWER_COUNT,
         100,
       ),
-      maxFollowsPerCycle: normalizePositiveInteger(
-        (getSetting(this.runtime, "TWITTER_MAX_FOLLOWS_PER_CYCLE") as string) ||
+      maxFollowsPerCycle: parseTwitterCount(
+        (getSetting(this.runtime, "TWITTER_MAX_FOLLOWS_PER_CYCLE") as string) ??
           process.env.TWITTER_MAX_FOLLOWS_PER_CYCLE,
         5,
       ),
-      maxEngagementsPerCycle: normalizePositiveInteger(
+      maxEngagementsPerCycle: parseTwitterCount(
         (getSetting(
           this.runtime,
           "TWITTER_MAX_ENGAGEMENTS_PER_RUN",
-        ) as string) || process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
+        ) as string) ?? process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
         5, // Reduced from 10 to 5
       ),
       likeThreshold: 0.5, // Increased from 0.3 (be more selective)

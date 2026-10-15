@@ -32,6 +32,7 @@ import type { Tweet as ClientTweet } from "./client/tweets";
 import {
   getRandomInterval,
   getTargetUsers,
+  parseTwitterCount,
   shouldTargetUser,
 } from "./environment";
 import { quoteTweetTemplate, twitterActionTemplate } from "./templates";
@@ -113,18 +114,6 @@ export function normalizeTweet(tweet: ClientTweet): ProcessableTweet | null {
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-export function normalizePositiveInteger(
-  value: unknown,
-  fallback: number,
-): number {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string"
-        ? Number.parseInt(value, 10)
-        : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 /**
  * Template for generating dialog and actions for a Twitter message handler.
@@ -379,7 +368,7 @@ export class TwitterInteractionClient {
     username: string,
     session: TwitterAccountSession,
   ) {
-    const maxEngagementsPerRun = normalizePositiveInteger(
+    const maxEngagementsPerRun = parseTwitterCount(
       getSetting(this.runtime, "TWITTER_MAX_ENGAGEMENTS_PER_RUN") ??
         process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
       10,
@@ -882,7 +871,7 @@ ${tweet.text}`;
       });
     }
     // Get max interactions per run setting
-    const maxInteractionsPerRun = normalizePositiveInteger(
+    const maxInteractionsPerRun = parseTwitterCount(
       getSetting(this.runtime, "TWITTER_MAX_ENGAGEMENTS_PER_RUN") ??
         process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
       10,

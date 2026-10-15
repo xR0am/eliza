@@ -25,8 +25,7 @@ import {
   type TwitterProfile,
 } from "./base";
 import type { Client, Tweet } from "./client/index";
-import { parseTwitterInterval } from "./environment";
-import { normalizePositiveInteger } from "./interactions";
+import { parseTwitterCount, parseTwitterInterval } from "./environment";
 import {
   quoteTweetTemplate,
   replyTweetTemplate,
@@ -306,8 +305,8 @@ export class TwitterTimelineClient {
     const tweets = await this.getTimelineForProfile(20, profile);
     logger.info(`Fetched ${tweets.length} tweets from timeline`);
     // Use max engagements per run from environment
-    const maxActionsPerCycle = normalizePositiveInteger(
-      (getSetting(this.runtime, "TWITTER_MAX_ENGAGEMENTS_PER_RUN") as string) ||
+    const maxActionsPerCycle = parseTwitterCount(
+      (getSetting(this.runtime, "TWITTER_MAX_ENGAGEMENTS_PER_RUN") as string) ??
         process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
       10,
     );
