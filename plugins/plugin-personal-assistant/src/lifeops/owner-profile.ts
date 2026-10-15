@@ -634,6 +634,11 @@ export async function updateLifeOpsMeetingPreferences(
   runtime: IAgentRuntime,
   patch: LifeOpsMeetingPreferencesPatch | Record<string, unknown>,
 ): Promise<LifeOpsMeetingPreferencesUpdate | null> {
+  const preferredStartLocal = normalizeTimeOfDay(patch.preferredStartLocal);
+  const preferredEndLocal = normalizeTimeOfDay(patch.preferredEndLocal);
+  if (preferredStartLocal && preferredEndLocal) {
+    assertValidMeetingWindow({ preferredStartLocal, preferredEndLocal });
+  }
   const normalizedPatch = normalizeLifeOpsMeetingPreferencesPatch(patch);
   if (Object.keys(normalizedPatch).length === 0) return null;
 

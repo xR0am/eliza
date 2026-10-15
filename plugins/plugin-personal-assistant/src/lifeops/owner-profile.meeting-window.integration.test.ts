@@ -164,6 +164,22 @@ describe("preferred meeting window mutation — real PGlite", () => {
     },
   );
 
+  it("rejects an invalid pair together with other preference changes without partial writes", async () => {
+    const stored = await runtime.getTask(taskId);
+    const spies = spyOnSchedulerWrites(runtime);
+    await expect(
+      updateLifeOpsMeetingPreferences(runtime, {
+        preferredStartLocal: "22:00",
+        preferredEndLocal: "06:00",
+        defaultDurationMinutes: 60,
+      }),
+    ).rejects.toMatchObject({
+      code: "LIFEOPS_MEETING_PREFERENCES_INVALID_RANGE",
+    });
+    expectNoSchedulerWrites(spies);
+    expect(await runtime.getTask(taskId)).toEqual(stored);
+  });
+
   it("persists a valid one-field patch against the saved window", async () => {
     const update = await updateLifeOpsMeetingPreferences(runtime, {
       preferredStartLocal: "10:30",
