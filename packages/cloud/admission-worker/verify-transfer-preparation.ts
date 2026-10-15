@@ -19,6 +19,7 @@ interface WorkerConfig {
   alias?: Record<string, string>;
   hyperdrive?: { binding: string; id: string }[];
   kv_namespaces?: { binding: string; id: string }[];
+  services?: { binding: string; service: string; entrypoint?: string }[];
   env?: Record<string, WorkerConfig>;
 }
 
@@ -74,7 +75,16 @@ requireContract(
 );
 requireContract(
   JSON.stringify(
-    resolvedAliases(target.alias, new URL("./", import.meta.url)),
+    resolvedAliases(
+      Object.fromEntries(
+        Object.entries(target.alias ?? {}).filter(
+          ([name]) =>
+            name !==
+            "@elizaos/cloud-shared/lib/services/inference-admission-recovery",
+        ),
+      ),
+      new URL("./", import.meta.url),
+    ),
   ) ===
     JSON.stringify(
       resolvedAliases(
@@ -166,4 +176,26 @@ requireContract(
 );
 console.log(
   "Admission staging transfer source contract passed; live namespace and secret parity unverified.",
+);
+
+requireContract(
+  target.alias?.[
+    "@elizaos/cloud-shared/lib/services/inference-admission-recovery"
+  ] === "./src/recovery-service.ts",
+  "Recovery must use the private RPC adapter",
+);
+requireContract(
+  JSON.stringify(target.services) ===
+    JSON.stringify([
+      {
+        binding: "INFERENCE_RECOVERY_SERVICE",
+        service: stage.name,
+        entrypoint: "InferenceRecoveryService",
+      },
+    ]),
+  "Recovery must remain on the source API capability",
+);
+requireContract(
+  !target.hyperdrive?.length && !target.kv_namespaces?.length,
+  "Target must not own database or cache credentials",
 );

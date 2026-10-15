@@ -14,6 +14,7 @@ __dirname = "\"/\""
 __filename = "\"/worker.js\""
 
 [alias]
+"@elizaos/cloud-shared/lib/services/inference-admission-recovery" = "./src/recovery-service.ts"
 "@elizaos/plugin-elevenlabs" = "../api/src/stubs/elizaos-plugin-elevenlabs.ts"
 "@elizaos/cloud-sdk" = "../sdk/src/index.ts"
 "@elizaos/cloud-shared" = "../shared/src/index.ts"
@@ -58,10 +59,8 @@ INFERENCE_PASSTHROUGH_EMBEDDINGS = "true"
 # Source leaves funded admission unset; target preserves its disabled default.
 # Never enable it or invent a seal while preparing this split.
 
-[[hyperdrive]]
-binding = "HYPERDRIVE"
-id = "ef65eb94c74144a3a3848ad1945571fb"
-
-[[kv_namespaces]]
-binding = "CACHE_KV"
-id = "f7e24faaff734e7c8cd8e12b093c3571"
+# All accounting and its credential/configuration ownership remain on the API.
+[[services]]
+binding = "INFERENCE_RECOVERY_SERVICE"
+service = "eliza-cloud-api-staging"
+entrypoint = "InferenceRecoveryService"

@@ -50,6 +50,7 @@ export { AnonymousChatGate } from "./anonymous-chat-gate";
 export { isThinCliSessionPath } from "./cli-session-paths";
 export { DoorDashCheckoutGate } from "./doordash-checkout-gate";
 export { InferenceAdmissionGate } from "./inference-admission-gate";
+export { InferenceRecoveryService } from "./inference-recovery-service";
 export { InferenceRateLimitV2RollbackFloor } from "./inference-rate-limit-v2-rollback-floor";
 export { OnboardingSessionCoordinator } from "./onboarding-session-coordinator";
 export { PersonalDeliveryProjection } from "./personal-delivery-projection";

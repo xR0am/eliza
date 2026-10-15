@@ -108,3 +108,20 @@ https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/
 No live namespace, migration, transfer, credential, or deployment operation has
 been performed by preparing this candidate. Production requires its own reviewed
 resource inventory and separate acceptance.
+
+## Private accounting recovery service
+
+The admission isolate forwards only expired-lease accounting to the original
+API's named `InferenceRecoveryService` capability. It sends the canonical context,
+amount and two awaited fence callbacks; RPC callbacks preserve the actor-owned
+balance revision fence before the service returns. This endpoint has no public
+HTTP route and performs no arbitrary method dispatch. The API retains its own
+DB/cache/mail credentials and configuration; the target needs only the private
+service binding. The existing canonical recovery function and validator remain
+the owners. Missing service or callback failure rejects recovery and retains the
+lease for the existing retry path.
+
+New source requires normal API and thin build/type checks plus real cross-Worker
+RPC tests and canonical abandoned-lease accounting tests before transfer. The
+small RPC transport fixture is not a PostgreSQL financial-acceptance substitute.
+Do not copy the older direct-DB target secret requirements into this candidate.
