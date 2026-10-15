@@ -626,6 +626,23 @@ export async function updateLifeOpsMeetingPreferences(
     ...normalizedPatch,
     updatedAt: new Date().toISOString(),
   };
+  if (next.preferredStartLocal >= next.preferredEndLocal) {
+    // A one-field patch can still form an invalid window against the saved
+    // value (e.g. saved 09:00-17:00 plus { preferredStartLocal: "18:00" }).
+    // Reject before any task write: the read-back persistence proof below
+    // only fires after updateTask has already mutated the stored task.
+    throw new ElizaError(
+      "Meeting preferences update rejected: preferredStartLocal must be earlier than preferredEndLocal",
+      {
+        code: "LIFEOPS_MEETING_PREFERENCES_INVALID_RANGE",
+        context: {
+          preferredStartLocal: next.preferredStartLocal,
+          preferredEndLocal: next.preferredEndLocal,
+        },
+        severity: "ephemeral",
+      },
+    );
+  }
   await runtime.updateTask(taskId, {
     metadata: { ...metadata, meetingPreferences: next },
   });
