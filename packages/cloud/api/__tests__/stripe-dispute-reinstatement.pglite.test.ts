@@ -793,3 +793,63 @@ test("a dispute takes back the affiliate fee and a won dispute returns it", asyn
   ).toBe("ack");
   expect(await affiliatePayable(lost.affiliate)).toBe(0);
 });
+
+test("a full dispute and a full refund of one charge reverse the affiliate fee once, in either order", async () => {
+  const disputeFirst = await affiliateTopUp();
+  expect(
+    await processStripeEvent(
+      disputeEvent(
+        "charge.dispute.funds_withdrawn",
+        `dp_${randomUUID()}`,
+        1500,
+        disputeFirst.paymentIntentId,
+      ),
+    ),
+  ).toBe("ack");
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 1500, disputeFirst.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(await affiliatePayable(disputeFirst.affiliate)).toBe(0);
+
+  const refundFirst = await affiliateTopUp();
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 1500, refundFirst.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(
+    await processStripeEvent(
+      disputeEvent(
+        "charge.dispute.funds_withdrawn",
+        `dp_${randomUUID()}`,
+        1500,
+        refundFirst.paymentIntentId,
+      ),
+    ),
+  ).toBe("ack");
+  expect(await affiliatePayable(refundFirst.affiliate)).toBe(0);
+});
+
+test("a won dispute and a full refund of one charge leave the affiliate fee reversed once", async () => {
+  const wonThenRefunded = await affiliateTopUp();
+  await disputeRoundTrip(wonThenRefunded, `dp_${randomUUID()}`, 1500);
+  expect(await affiliatePayable(wonThenRefunded.affiliate)).toBe(3);
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 1500, wonThenRefunded.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(await affiliatePayable(wonThenRefunded.affiliate)).toBe(0);
+
+  // Half refunded, the other half disputed and won: only the refund stays reversed.
+  const refundedThenWon = await affiliateTopUp();
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${randomUUID()}`, 750, refundedThenWon.paymentIntentId),
+    ),
+  ).toBe("ack");
+  await disputeRoundTrip(refundedThenWon, `dp_${randomUUID()}`, 750);
+  expect(await affiliatePayable(refundedThenWon.affiliate)).toBe(1.5);
+});

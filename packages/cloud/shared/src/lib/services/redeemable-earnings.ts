@@ -766,9 +766,12 @@ class RedeemableEarningsService {
    * dispute reversed. The fee was credited as payable affiliate earnings when
    * the charge succeeded; without this a refunded or disputed charge still
    * paid the affiliate. `reversedCents` is cumulative for `reversalSeries`
-   * (the same series the credit clawback uses), so only the part not taken
-   * back yet is debited. An already paid-out fee leaves a negative ledger sum
-   * that later affiliate earnings net against.
+   * (the same series the credit clawback uses). Like the credit clawback, the
+   * debit is the series delta capped by what the fee still has to return
+   * across every series of the payment (a refund and a dispute of one charge
+   * reverse it once); a reinstated dispute no longer counts. An already
+   * paid-out fee leaves a negative ledger sum that later affiliate earnings
+   * net against.
    */
   async reverseAutoTopUpAffiliateFee(params: {
     paymentIntentId: string;
@@ -795,8 +798,13 @@ class RedeemableEarningsService {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${`redeemable_earnings:${earning.userId}`}))`,
       );
-      const taken = await this.sumAffiliateFeeReversal(tx, earning.userId, reversalSeries);
-      const delta = target.minus(taken);
+      const taken = await this.affiliateFeeReversalState(
+        tx,
+        earning.userId,
+        paymentIntentId,
+        reversalSeries,
+      );
+      const delta = Decimal.min(target.minus(taken.series), fee.minus(taken.total));
       if (delta.lte(0)) return 0;
       const result = await this.reduceEarnings({
         userId: earning.userId,
@@ -826,27 +834,37 @@ class RedeemableEarningsService {
   }): Promise<number> {
     const earning = await this.findAutoTopUpAffiliateEarning(params.paymentIntentId);
     if (!earning) return 0;
-    const taken = await this.sumAffiliateFeeReversal(
-      dbWrite,
-      earning.userId,
-      params.reversalSeries,
-    );
-    if (taken.lte(0)) return 0;
-    const result = await this.addEarnings({
-      userId: earning.userId,
-      amount: taken.toNumber(),
-      source: "affiliate",
-      sourceId: `affiliate_reinstated:${params.reinstatementKey}`,
-      dedupeBySourceId: true,
-      description: `Auto top-up affiliate fee reinstated — ${params.reinstatementKey}`,
-      metadata: { payment_intent_id: params.paymentIntentId },
-    });
-    if (!result.success) {
-      throw new Error(
-        `Failed to reinstate affiliate fee for ${params.paymentIntentId}: ${result.error}`,
+    return await dbWrite.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`redeemable_earnings:${earning.userId}`}))`,
       );
-    }
-    return taken.toNumber();
+      const taken = await this.affiliateFeeReversalState(
+        tx,
+        earning.userId,
+        params.paymentIntentId,
+        params.reversalSeries,
+      );
+      if (taken.series.lte(0)) return 0;
+      const result = await this.addEarnings({
+        userId: earning.userId,
+        amount: taken.series.toNumber(),
+        source: "affiliate",
+        sourceId: `affiliate_reinstated:${params.reinstatementKey}`,
+        dedupeBySourceId: true,
+        description: `Auto top-up affiliate fee reinstated — ${params.reinstatementKey}`,
+        metadata: {
+          payment_intent_id: params.paymentIntentId,
+          affiliate_reinstated_series: params.reversalSeries,
+        },
+        transaction: tx,
+      });
+      if (!result.success) {
+        throw new Error(
+          `Failed to reinstate affiliate fee for ${params.paymentIntentId}: ${result.error}`,
+        );
+      }
+      return result.deduplicated ? 0 : taken.series.toNumber();
+    });
   }
 
   private async findAutoTopUpAffiliateEarning(
@@ -867,23 +885,48 @@ class RedeemableEarningsService {
     return row ?? null;
   }
 
-  private async sumAffiliateFeeReversal(
-    db: DbTransaction | typeof dbWrite,
+  /**
+   * What reversals of one payment's affiliate fee have taken back: in
+   * `series`, and across every series. A reversal series that a won dispute
+   * reinstated counts in neither, as in the credit clawback.
+   */
+  private async affiliateFeeReversalState(
+    db: DbTransaction,
     userId: string,
+    paymentIntentId: string,
     reversalSeries: string,
-  ): Promise<Decimal> {
-    const [row] = await db
-      .select({ total: sql<string>`COALESCE(SUM(-${redeemableEarningsLedger.amount}), 0)::text` })
-      .from(redeemableEarningsLedger)
+  ): Promise<{ series: Decimal; total: Decimal }> {
+    const ledger = redeemableEarningsLedger;
+    const rows = await db
+      .select({
+        series: sql<string>`${ledger.metadata}->>'affiliate_reversal_series'`,
+        taken: sql<string>`SUM(-${ledger.amount})::text`,
+      })
+      .from(ledger)
       .where(
         and(
-          eq(redeemableEarningsLedger.user_id, userId),
-          eq(redeemableEarningsLedger.entry_type, "adjustment"),
-          eq(redeemableEarningsLedger.earnings_source, "affiliate"),
-          sql`${redeemableEarningsLedger.metadata}->>'affiliate_reversal_series' = ${reversalSeries}`,
+          eq(ledger.user_id, userId),
+          eq(ledger.entry_type, "adjustment"),
+          eq(ledger.earnings_source, "affiliate"),
+          sql`${ledger.metadata}->>'payment_intent_id' = ${paymentIntentId}`,
+          sql`${ledger.metadata}->>'affiliate_reversal_series' IS NOT NULL`,
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${ledger} AS reinstated
+            WHERE reinstated.user_id = ${userId}
+              AND reinstated.entry_type = 'earning'
+              AND reinstated.metadata->>'affiliate_reinstated_series' = ${ledger.metadata}->>'affiliate_reversal_series'
+          )`,
         ),
-      );
-    return new Decimal(row?.total ?? "0");
+      )
+      .groupBy(sql`${ledger.metadata}->>'affiliate_reversal_series'`);
+    let series = new Decimal(0);
+    let total = new Decimal(0);
+    for (const row of rows) {
+      const taken = new Decimal(row.taken ?? "0");
+      total = total.plus(taken);
+      if (row.series === reversalSeries) series = taken;
+    }
+    return { series, total };
   }
 }
 
