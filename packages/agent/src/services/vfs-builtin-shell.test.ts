@@ -110,3 +110,39 @@ describe("runVfsBuiltinShell quoted redirection", () => {
     expect(await vfs().readFile("log.txt")).toBe("alpha>beta\ngamma>>delta\n");
   });
 });
+
+describe("runVfsBuiltinShell separators", () => {
+  it.each([
+    ["cat missing.txt; echo after", "after\n", 0],
+    ["cat missing.txt && echo skipped; echo after", "after\n", 0],
+    ["cat missing.txt && echo a && echo b", "", 1],
+    ["echo ok; cat missing.txt", "ok\n", 1],
+  ])("runs %s with POSIX separator semantics", async (script, stdout, exit) => {
+    const result = await sh(script);
+
+    expect(result.stdout).toBe(stdout);
+    expect(result.exitCode !== 0).toBe(exit !== 0);
+  });
+
+  it("reports a thrown segment error and continues after `;`", async () => {
+    await vfs().writeFile("log.txt", "keep me\n");
+    const readFile = VirtualFilesystemService.prototype.readFile;
+    vi.spyOn(VirtualFilesystemService.prototype, "readFile").mockImplementation(
+      async function (this: VirtualFilesystemService, virtualPath, encoding) {
+        if (virtualPath.endsWith("log.txt")) {
+          throw new VirtualFilesystemError(
+            "VFS storage operation failed",
+            "VFS_STORAGE_FAILED",
+          );
+        }
+        return readFile.call(this, virtualPath, encoding);
+      },
+    );
+
+    const result = await sh("echo lost >> log.txt; echo after");
+    expect(result).toMatchObject({ exitCode: 0, stdout: "after\n" });
+    expect(result.stderr).toContain("VFS storage operation failed");
+    vi.restoreAllMocks();
+    expect(await vfs().readFile("log.txt")).toBe("keep me\n");
+  });
+});
