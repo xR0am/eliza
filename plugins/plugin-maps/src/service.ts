@@ -307,7 +307,7 @@ export class MapsService extends Service {
   ): Promise<MapsPlaceResult> {
     const registration = this.provider(provider, expectedGeneration);
     const { adapter } = registration;
-    if (!providerPlaceId || providerPlaceId.length > 512) {
+    if (!providerPlaceId.trim() || providerPlaceId.length > 512) {
       throw new MapsError("Place id is invalid.", {
         code: "MAPS_INVALID_INPUT",
       });
