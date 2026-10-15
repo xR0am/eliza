@@ -95,6 +95,7 @@
  */
 
 import {
+  ElizaError,
   type EventPayload,
   type IAgentRuntime,
   type JsonValue,
@@ -638,7 +639,8 @@ export class FormService extends Service {
     // Limit history size
     const maxUndo = form.ux?.maxUndoSteps ?? 5;
     if (session.history.length > maxUndo) {
-      session.history = session.history.slice(-maxUndo);
+      // slice(-0) is slice(0): a zero limit must clear, not keep everything.
+      session.history = maxUndo > 0 ? session.history.slice(-maxUndo) : [];
     }
 
     // Update field state
@@ -1293,6 +1295,13 @@ export class FormService extends Service {
 
     for (const control of form.controls) {
       const fieldState = session.fields[control.key];
+      if (fieldState?.status === "uncertain") {
+        throw new ElizaError(`Field ${control.key} requires confirmation`, {
+          code: "FORM_FIELD_CONFIRMATION_REQUIRED",
+          severity: "ephemeral",
+          context: { formId: form.id, field: control.key },
+        });
+      }
       if (fieldState?.value !== undefined) {
         const validation = validateField(
           fieldState.value,
@@ -1509,8 +1518,15 @@ export class FormService extends Service {
         continue;
       }
 
-      const value = autofill.values[control.key];
-      if (value !== undefined) {
+      const rawValue = autofill.values[control.key];
+      if (rawValue !== undefined) {
+        const value = this.normalizeBuiltinDateValue(rawValue, control);
+        const validation = validateField(
+          value,
+          control,
+          this.getControlType(control.type),
+        );
+        if (!validation.valid) continue;
         session.fields[control.key] = {
           status: "filled",
           value,

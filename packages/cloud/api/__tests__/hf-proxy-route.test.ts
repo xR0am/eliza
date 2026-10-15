@@ -9,8 +9,8 @@ import {
   createHfProxyEgressQuotaStore,
   resetHfProxyEgressQuotaForTests,
 } from "@elizaos/cloud-shared/lib/services/hf-proxy-egress-quota";
-import { ELIZA_1_HF_REPO } from "@elizaos/plugin-native-inference/model-catalog";
 import { Hono } from "hono";
+import { ELIZA_1_HF_REPO } from "../../../../plugins/plugin-native-inference/src/model-catalog/catalog";
 import * as generativeRouteAuth from "../src/lib/generative-route-auth";
 
 mock.module("@/api-app/lib/generative-route-auth", () => ({

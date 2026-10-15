@@ -27,7 +27,11 @@ import {
   type State,
   stringToUuid,
 } from "@elizaos/core";
-import { getNotesService, type NotesService } from "./service.js";
+import {
+  getNotesService,
+  type NotesService,
+  normalizedLookup,
+} from "./service.js";
 import {
   projectNoteForModel,
   reconstructNoteContent,
@@ -462,14 +466,14 @@ export const notesAction: Action = {
         params.dateRange === undefined
           ? undefined
           : parseNoteDateRange(params.dateRange);
-      const normalizedTopic = topic?.toLocaleLowerCase();
+      const normalizedTopic = topic ? normalizedLookup(topic) : undefined;
       const candidates = noteId
         ? notes.filter((note) => note.id === noteId)
         : normalizedTopic
           ? notes.filter((note) =>
-              reconstructNoteContent(note)
-                .toLocaleLowerCase()
-                .includes(normalizedTopic),
+              normalizedLookup(reconstructNoteContent(note)).includes(
+                normalizedTopic,
+              ),
             )
           : notes;
       if (
