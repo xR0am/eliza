@@ -53,10 +53,16 @@ it("scopes room and world reads, updates and deletes to each adapter", async () 
     expect(await owner.isRoomParticipant(room.id, entityId)).toBe(true);
     expect(await owner.removeParticipant(entityId, room.id)).toBe(true);
     expect(await owner.getParticipantsForRoom(room.id)).toEqual([]);
-    expect(await other.getWorld(worldId)).toBeNull();
-    expect((await other.getWorldsByIds([worldId, ownOtherWorld])).map((world) => world.id)).toEqual(
-      [ownOtherWorld]
-    );
+    // Hosts derive some world ids without the agent (for example
+    // `server:${SERVER_NAME}`), and worlds are keyed by id alone. A second agent
+    // must find the existing row, as runtime.ensureWorldExists does, instead of
+    // failing on a duplicate insert. It must not take ownership of the row.
+    expect((await other.getWorld(worldId))?.agentId).toBe(ownerId);
+    expect(
+      (await other.getWorldsByIds([worldId, ownOtherWorld])).map((world) => world.id).sort()
+    ).toEqual([worldId, ownOtherWorld].sort());
+    await other.upsertWorlds([{ id: worldId, agentId: otherId, name: "Foreign rename" }]);
+    expect(await owner.getWorld(worldId)).toMatchObject({ agentId: ownerId, name: "Owner world" });
     expect(await other.getRoomsByWorld(worldId)).toEqual([]);
     expect((await owner.getRoomsByWorld(worldId)).map((entry) => entry.id)).toEqual([room.id]);
     await other.updateRoom({ ...room, name: "Foreign rename" });
