@@ -1,4 +1,9 @@
-import type { IAgentRuntime, ReadRangeUnit, ReadView } from "@elizaos/core";
+import type {
+  IAgentRuntime,
+  ReadRangeUnit,
+  ReadView,
+  UUID,
+} from "@elizaos/core";
 /**
  * Cross-platform message triage — shared type contract.
  *
@@ -87,6 +92,8 @@ export interface DraftRequest {
 
 export interface DraftRecord {
   draftId: string;
+  /** Runtime agent that prepared this draft. Absent only on legacy scheduled rows. */
+  agentId?: UUID;
   source: MessageSource;
   inReplyToId?: string;
   threadId?: string;

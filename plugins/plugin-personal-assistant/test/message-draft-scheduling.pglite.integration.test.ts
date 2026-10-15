@@ -135,20 +135,23 @@ async function bootRuntime(
   };
 }
 
-function saveDraft(): void {
+function saveDraft(runtime: IAgentRuntime): void {
   getDefaultTriageService()
     .getStore()
-    .saveDraft({
-      draftId: "durable-draft-1",
-      source: "discord",
-      to: [{ identifier: "family-channel" }],
-      body: "Pickup moved to 5:30; please confirm.",
-      preview: "Pickup moved to 5:30; please confirm.",
-      createdAtMs: Date.parse("2026-07-27T20:00:00.000Z"),
-      sent: false,
-      channelId: "family-channel",
-      metadata: { accountId: "family-account" },
-    });
+    .saveDraft(
+      {
+        draftId: "durable-draft-1",
+        source: "discord",
+        to: [{ identifier: "family-channel" }],
+        body: "Pickup moved to 5:30; please confirm.",
+        preview: "Pickup moved to 5:30; please confirm.",
+        createdAtMs: Date.parse("2026-07-27T20:00:00.000Z"),
+        sent: false,
+        channelId: "family-channel",
+        metadata: { accountId: "family-account" },
+      },
+      runtime.agentId,
+    );
 }
 
 function resetCoreMessageSingletons(): void {
@@ -172,7 +175,7 @@ describe("deferred MESSAGE scheduling — durable ScheduledTask path", () => {
     const firstAdapter = new DurableDraftAdapter();
     const first = await bootRuntime(pg, "agent-durable-message", firstAdapter);
     harnesses.push(first);
-    saveDraft();
+    saveDraft(first.runtime);
     const sendAtMs = Date.parse("2026-07-28T09:00:00.000Z");
 
     const [scheduledA, scheduledB] = await Promise.all([
@@ -226,7 +229,7 @@ describe("deferred MESSAGE scheduling — durable ScheduledTask path", () => {
       restartedAdapter,
     );
     harnesses.push(restarted);
-    saveDraft();
+    saveDraft(restarted.runtime);
     const replay = await getDefaultTriageService().scheduleDraftSend(
       restarted.runtime,
       "durable-draft-1",
@@ -320,7 +323,7 @@ describe("deferred MESSAGE scheduling — durable ScheduledTask path", () => {
       new DurableDraftAdapter(),
     );
     harnesses.push(first);
-    saveDraft();
+    saveDraft(first.runtime);
     const scheduled = await getDefaultTriageService().scheduleDraftSend(
       first.runtime,
       "durable-draft-1",
@@ -356,7 +359,7 @@ describe("deferred MESSAGE scheduling — durable ScheduledTask path", () => {
     adapter.failSend = true;
     const harness = await bootRuntime(pg, "agent-failed-message", adapter);
     harnesses.push(harness);
-    saveDraft();
+    saveDraft(harness.runtime);
     const scheduled = await getDefaultTriageService().scheduleDraftSend(
       harness.runtime,
       "durable-draft-1",
@@ -390,7 +393,7 @@ describe("deferred MESSAGE scheduling — durable ScheduledTask path", () => {
       bridgeInstanceId: "attempt-order-process",
     });
     harnesses.push(harness);
-    saveDraft();
+    saveDraft(harness.runtime);
     const scheduled = await getDefaultTriageService().scheduleDraftSend(
       harness.runtime,
       "durable-draft-1",
@@ -444,7 +447,7 @@ describe("deferred MESSAGE scheduling — durable ScheduledTask path", () => {
       { bridgeInstanceId: "current-process" },
     );
     harnesses.push(harness);
-    saveDraft();
+    saveDraft(harness.runtime);
     const scheduled = await getDefaultTriageService().scheduleDraftSend(
       harness.runtime,
       "durable-draft-1",

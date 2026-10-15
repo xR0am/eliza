@@ -352,7 +352,7 @@ export const sendDraftAction: Action = {
       };
     }
 
-    const existing = service.getStore().getDraft(parsed.draftId);
+    const existing = service.getDraft(runtime, parsed.draftId);
     if (!existing) {
       const msg = `No draft found for id ${parsed.draftId}`;
       logger.warn(`[SendDraft] ${msg}`);

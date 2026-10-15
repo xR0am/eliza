@@ -153,7 +153,8 @@ export const respondToMessageAction: Action = {
       logger.warn(`[RespondToMessage] ${text}`);
       return { success: false, text, error: text };
     }
-    const original = service.getStore().getMessage(messageId) ?? undefined;
+    const original =
+      service.getStore().getMessage(messageId, runtime.agentId) ?? undefined;
     const body = parsed.body ?? fallbackReplyBody(original);
     const record = await service.draftReply(runtime, messageId, body);
 

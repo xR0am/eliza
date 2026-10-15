@@ -131,9 +131,9 @@ export const listInboxAction: Action = {
         ? []
         : requestedSources
           ? store
-              .listMessages()
+              .listMessages(runtime.agentId)
               .filter((m) => requestedSources.includes(m.source))
-          : store.listMessages();
+          : store.listMessages(runtime.agentId);
 
       messages = rankScored(messages);
       const sinceMs = params.sinceMs;
