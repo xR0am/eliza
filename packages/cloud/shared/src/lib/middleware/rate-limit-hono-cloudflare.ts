@@ -11,7 +11,6 @@
 import { createHash } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppContext, AppEnv, Bindings } from "../../types/cloud-worker-env";
-import { readStewardAccessCookieFromHeader } from "../auth/steward-cookies";
 import { buildRedisClient, type CompatibleRedis } from "../cache/redis-factory";
 import { isHotPathCachesEnabled } from "../services/inference-hot-path-caches";
 import { logger } from "../utils/logger";
@@ -135,16 +134,12 @@ function getDefaultKey(c: AppContext): string {
   const userId = c.get("user")?.id;
   if (userId) return `user:${userId}`;
 
-  // A session request is authenticated by its session token, whatever API-key
-  // header it also carries: bucketing on that unchecked header let a signed-in
-  // caller send a new random X-API-Key per request and get a fresh window each
-  // time. The session token itself cannot be varied without signing in again.
-  const sessionToken =
-    readStewardAccessCookieFromHeader(c.req.header("cookie") ?? null, c.env?.ENVIRONMENT) ||
-    (bearer && !bearer.startsWith("eliza_") ? bearer : null);
-  if (sessionToken) return `session:${hashRateLimitIdentifier(sessionToken)}`;
-
-  if (apiKey) return `apikey:${hashRateLimitIdentifier(apiKey)}`;
+  // An API-key header the auth middleware did not validate identifies no one:
+  // bucketing on its value let a caller send a new random key per request and
+  // get a fresh window each time (a signed-in session is still authenticated by
+  // its cookie). The limiter runs before any session token is verified, so an
+  // unvalidated credential falls back to the caller's IP.
+  if (apiKey) return getIpKey(c);
 
   const anon =
     c.req.header("x-anonymous-session") ||

@@ -1,7 +1,8 @@
 /**
- * The default rate-limit key must not come from a header the request does not
- * authenticate with. A signed-in request that adds a new random X-API-Key per
- * call used to get a fresh window each time; it is now bucketed on its session.
+ * The default rate-limit key must not come from a credential nobody has
+ * checked. A caller that sends a new random X-API-Key or Bearer token per
+ * request used to get a fresh window each time; an unvalidated credential now
+ * falls back to the caller's IP, and only a validated key keeps its own window.
  */
 import { expect, test } from "bun:test";
 import { Hono } from "hono";
@@ -21,40 +22,56 @@ function bindingAllowingTwo() {
   };
 }
 
-function limitedApp() {
+function limitedApp(validatedKeyId?: string) {
   return new Hono<AppEnv>()
+    .use("*", async (c, next) => {
+      // Stands for the auth middleware having validated the API key.
+      if (validatedKeyId) c.set("apiKeyId", validatedKeyId);
+      await next();
+    })
     .use("*", rateLimit({ windowMs: 60_000, maxRequests: 2 }, { bindingName: "TEST_LIMIT" }))
     .post("*", (c) => c.json({ ok: true }));
 }
 
-test("a session request that varies X-API-Key stays in one window", async () => {
+async function statusesFor(headers: () => Record<string, string>): Promise<number[]> {
   const binding = bindingAllowingTwo();
   const app = limitedApp();
   const statuses: number[] = [];
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await app.request(
       "/api/signup-code/redeem",
-      {
-        method: "POST",
-        headers: {
-          cookie: `${LEGACY_STEWARD_COOKIES.token}=session-token-of-one-user`,
-          "X-API-Key": `random-${crypto.randomUUID()}`,
-        },
-      },
+      { method: "POST", headers: { "cf-connecting-ip": "203.0.113.7", ...headers() } },
       { TEST_LIMIT: binding, NODE_ENV: "test" },
     );
     statuses.push(response.status);
   }
-  expect(statuses).toEqual([200, 200, 429]);
+  return statuses;
+}
+
+test("a session request that varies X-API-Key stays in one window", async () => {
+  expect(
+    await statusesFor(() => ({
+      cookie: `${LEGACY_STEWARD_COOKIES.token}=session-token-of-one-user`,
+      "X-API-Key": `random-${crypto.randomUUID()}`,
+    })),
+  ).toEqual([200, 200, 429]);
 });
 
-test("requests that carry only an API key keep a window per key", async () => {
+test("a caller that varies an unchecked Bearer token stays in one window", async () => {
+  expect(
+    await statusesFor(() => ({ authorization: `Bearer random-${crypto.randomUUID()}` })),
+  ).toEqual([200, 200, 429]);
+  expect(
+    await statusesFor(() => ({ authorization: `Bearer eliza_random_${crypto.randomUUID()}` })),
+  ).toEqual([200, 200, 429]);
+});
+
+test("validated API keys keep a window per key", async () => {
   const binding = bindingAllowingTwo();
-  const app = limitedApp();
   for (const key of ["eliza_key_a", "eliza_key_b"]) {
-    const response = await app.request(
+    const response = await limitedApp(`id-${key}`).request(
       "/api/v1/anything",
-      { method: "POST", headers: { "X-API-Key": key } },
+      { method: "POST", headers: { "X-API-Key": key, "cf-connecting-ip": "203.0.113.7" } },
       { TEST_LIMIT: binding, NODE_ENV: "test" },
     );
     expect(response.status).toBe(200);
