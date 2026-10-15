@@ -95,6 +95,7 @@
  */
 
 import {
+  ElizaError,
   type EventPayload,
   type IAgentRuntime,
   type JsonValue,
@@ -1293,6 +1294,13 @@ export class FormService extends Service {
 
     for (const control of form.controls) {
       const fieldState = session.fields[control.key];
+      if (fieldState?.status === "uncertain") {
+        throw new ElizaError(`Field ${control.key} requires confirmation`, {
+          code: "FORM_FIELD_CONFIRMATION_REQUIRED",
+          severity: "ephemeral",
+          context: { formId: form.id, field: control.key },
+        });
+      }
       if (fieldState?.value !== undefined) {
         const validation = validateField(
           fieldState.value,
