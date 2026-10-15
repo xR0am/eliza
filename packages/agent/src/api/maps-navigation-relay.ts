@@ -124,15 +124,15 @@ function status(
           ? ["navigating", "awaiting-location"]
           : ["navigating", "awaiting-location", "awaiting-confirmation"];
   if (
-    !states.includes(String(body.state)) ||
+    typeof body.state !== "string" ||
+    !states.includes(body.state) ||
     (body.placeName !== undefined &&
       (typeof body.placeName !== "string" ||
         !body.placeName.trim() ||
         body.placeName.length > 300)) ||
     (body.travelMode !== undefined &&
-      !["drive", "walk", "bicycle", "transit"].includes(
-        String(body.travelMode),
-      ))
+      (typeof body.travelMode !== "string" ||
+        !["drive", "walk", "bicycle", "transit"].includes(body.travelMode)))
   )
     throw new DeviceActionError("Invalid navigation status");
   return body as unknown as MapsDeviceNavigationStatus;
@@ -152,7 +152,8 @@ export async function handleMapsNavigationRelay(
     !/^[a-f0-9-]{36}$/i.test(body.offerId) ||
     typeof body.conversationId !== "string" ||
     !/^[a-f0-9-]{36}$/i.test(body.conversationId) ||
-    !["open", "poll", "result", "retire"].includes(String(body.phase))
+    typeof body.phase !== "string" ||
+    !["open", "poll", "result", "retire"].includes(body.phase)
   )
     throw new DeviceActionError("Invalid navigation request");
   const context = await new DeviceActionService(runtime).context(credential);

@@ -104,6 +104,23 @@ test("Maps requests reach only their enrolled conversation, once, and require a 
           },
         }),
       ).rejects.toThrow();
+      for (const malformed of [
+        { phase: ["result"], status: { state: "stopped" } },
+        { phase: "result", status: { state: ["stopped"] } },
+        {
+          phase: "result",
+          status: { state: "stopped", travelMode: ["drive"] },
+        },
+      ]) {
+        await expect(
+          handleMapsNavigationRelay(runtime, credential, {
+            offerId,
+            conversationId,
+            id: request.id,
+            ...malformed,
+          }),
+        ).rejects.toThrow();
+      }
       await handleMapsNavigationRelay(runtime, credential, {
         offerId,
         phase: "result",
