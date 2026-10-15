@@ -83,6 +83,24 @@ export function hostOf(url: string): string {
   }
 }
 
+function sanitizeListedAnswer(
+  answer: string,
+  warnings: Array<{ url: string; host: string | null; warning: string }>,
+): string {
+  let sanitized = answer;
+  for (const warning of warnings) {
+    const host = warning.host || hostOf(warning.url);
+    const escapedUrl = warning.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // A Markdown link keeps its label but loses the link target.
+    sanitized = sanitized.replace(
+      new RegExp(`\\[([^\\]]*)\\]\\(${escapedUrl}\\)`, "g"),
+      (_match, label: string) => `${label} (blocked ${host})`,
+    );
+    sanitized = sanitized.split(warning.url).join(`[blocked ${host}]`);
+  }
+  return sanitized;
+}
+
 function formatResultLine(result: SearchResult, index: number): string {
   // A listed site is named without a link so the warning cannot be skipped by a click.
   if (result.reputation?.status === "listed") {
@@ -97,8 +115,13 @@ function formatResultLine(result: SearchResult, index: number): string {
  */
 export function formatWebSearchText(searchResponse: SearchResponse): string {
   const lines: string[] = [];
+  const answerWarnings = searchResponse.reputationWarnings ?? [];
   if (searchResponse.answer) {
-    lines.push(searchResponse.answer);
+    lines.push(
+      answerWarnings.length
+        ? sanitizeListedAnswer(searchResponse.answer, answerWarnings)
+        : searchResponse.answer,
+    );
     if (searchResponse.results.length > 0) {
       lines.push(
         "",
@@ -108,7 +131,7 @@ export function formatWebSearchText(searchResponse: SearchResponse): string {
     }
   }
   const warnings = new Map<string, string>();
-  for (const warning of searchResponse.reputationWarnings ?? []) {
+  for (const warning of answerWarnings) {
     warnings.set(warning.host, warning.warning);
   }
   if (!searchResponse.answer) {
