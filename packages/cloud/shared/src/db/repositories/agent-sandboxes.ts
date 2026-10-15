@@ -334,6 +334,11 @@ const RUNNING_SANDBOX_EXECUTION_TIERS = [
   "dedicated-always",
   "custom",
 ] as const satisfies readonly AgentExecutionTier[];
+/** Tiers whose create path enqueues provisioning immediately (`tierProvisionsEagerly`). */
+const EAGER_PROVISION_EXECUTION_TIERS = [
+  "dedicated-always",
+  "custom",
+] as const satisfies readonly AgentExecutionTier[];
 const RESTORE_PROVISIONING_ADMISSIBLE_STATUSES = [
   "stopped",
   "sleeping",
@@ -1450,8 +1455,11 @@ export class AgentSandboxesRepository {
    * error makes the failure visible and lets the user retry the whole flow.
    *
    * `pool_status IS NULL` skips warm-pool rows, which are legitimately `pending`
-   * with no per-agent job until claimed. Keyed on `created_at` (not
-   * `updated_at`): the managed-env write bumps `updated_at`, so `created_at` is
+   * with no per-agent job until claimed. Only tiers that provision at create
+   * time (dedicated-always, custom) can be orphaned this way: a dedicated-lazy
+   * agent is created `pending` with no job on purpose and starts on first use.
+   * Keyed on `created_at` (not `updated_at`): the managed-env write bumps
+   * `updated_at`, so `created_at` is
    * the honest "how long has this been stuck" signal.
    */
   async markOrphanedPendingWithoutJobAsError(cutoff: Date): Promise<
@@ -1474,6 +1482,7 @@ export class AgentSandboxesRepository {
         and(
           eq(agentSandboxes.status, "pending"),
           sql`${agentSandboxes.pool_status} IS NULL`,
+          inArray(agentSandboxes.execution_tier, EAGER_PROVISION_EXECUTION_TIERS),
           lt(agentSandboxes.created_at, cutoff),
           noProvisionJob(),
         ),
@@ -1509,6 +1518,7 @@ export class AgentSandboxesRepository {
               eq(agentSandboxes.organization_id, candidate.organizationId),
               eq(agentSandboxes.status, "pending"),
               sql`${agentSandboxes.pool_status} IS NULL`,
+              inArray(agentSandboxes.execution_tier, EAGER_PROVISION_EXECUTION_TIERS),
               lt(agentSandboxes.created_at, cutoff),
               noProvisionJob(),
             ),
