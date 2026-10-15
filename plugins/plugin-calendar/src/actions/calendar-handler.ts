@@ -5256,7 +5256,7 @@ const calendarAction: CalendarHandlerAction = {
     "DO NOT use this action to propose or suggest candidate meeting times to send to someone — use PROPOSE_MEETING_TIMES for requests like 'propose three times for a 30 min sync with X', 'suggest meeting slots', or 'find times that work next week'. The create_event subaction is only for booking a single known time on your own calendar. " +
     "This action returns authoritative outcome receipts and complete internal evidence for the evaluator's final grounded reply; do not pair it with a speculative REPLY action.",
   descriptionCompressed:
-    "LifeOps calendar: view/search/create/query travel; not email/habits",
+    "Calendar view/search/create; approvals use CALENDAR_REVIEW, not create_event",
   contexts: ["calendar", "contacts", "tasks"],
   roleGate: { minRole: "OWNER" },
   suppressPostActionContinuation: true,
@@ -6467,8 +6467,8 @@ const calendarAction: CalendarHandlerAction = {
           }
           const availability = await evaluateCalendarWriteAvailability({
             runtime,
-            ...(targetEvent.grantId ? {grantId:targetEvent.grantId}:{}),
-            calendarId:targetEvent.calendarId,
+            ...(targetEvent.grantId ? { grantId: targetEvent.grantId } : {}),
+            calendarId: targetEvent.calendarId,
             startAt: proposedStart,
             endAt: proposedEnd,
             timeZone: zone,
