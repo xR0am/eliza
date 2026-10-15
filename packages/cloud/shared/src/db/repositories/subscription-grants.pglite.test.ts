@@ -47,14 +47,14 @@ async function newCode(
     family?: string;
     expiresAt?: string;
     disabled?: boolean;
-    days?: number;
+    days?: number | null;
   } = {},
 ): Promise<void> {
   const normalized = grants.normalizeSubscriptionGrantCode(code);
   if (!normalized) throw new Error(`bad test code ${code}`);
   const hash = await grants.hashSubscriptionGrantCode(normalized, PEPPER);
   await exec(`INSERT INTO subscription_grant_codes(code_hash, family, max_redemptions, duration_days, expires_at, disabled_at)
-    VALUES ('${hash}', '${options.family ?? "alpha_phone"}', ${options.max ?? 1}, ${options.days ?? 183},
+    VALUES ('${hash}', '${options.family ?? "alpha_phone"}', ${options.max ?? 1}, ${options.days === null ? "NULL" : (options.days ?? 183)},
       ${options.expiresAt ? `'${options.expiresAt}'` : "NULL"}, ${options.disabled ? "now()" : "NULL"})`);
 }
 
@@ -131,7 +131,7 @@ describe("subscription grant redemption", () => {
     const { grant, replayed } = await redeem(org, "aaaa bbbb cccc 0001");
     expect(replayed).toBe(false);
     expect(grant.plan_key).toBe("plus_monthly");
-    expect(grant.ends_at.getTime() - grant.starts_at.getTime()).toBe(183 * 86_400_000);
+    expect(grant.ends_at!.getTime() - grant.starts_at.getTime()).toBe(183 * 86_400_000);
 
     const [projection] = await rows<{
       plan_key: string;
@@ -155,13 +155,13 @@ describe("subscription grant redemption", () => {
     expect(buckets.slice(0, 6).every((bucket) => bucket.granted_amount === "25.000000")).toBe(true);
     expect(Number(buckets[6]!.granted_amount)).toBeGreaterThan(0);
     expect(Number(buckets[6]!.granted_amount)).toBeLessThan(25);
-    expect(new Date(buckets[6]!.period_end).getTime()).toBe(grant.ends_at.getTime());
+    expect(new Date(buckets[6]!.period_end).getTime()).toBe(grant.ends_at!.getTime());
 
     const during = await policyAt(org);
     expect(during.authority).toMatchObject({
       source: "promo_grant",
       sourceGrantId: grant.id,
-      effectiveUntil: grant.ends_at.toISOString(),
+      effectiveUntil: grant.ends_at!.toISOString(),
     });
     expect(during.authority.generation).not.toBe(before.authority.generation);
     expect(during.subscriptionFunded).toBe(true);
@@ -184,7 +184,7 @@ describe("subscription grant redemption", () => {
     const org = await newOrg();
     await newCode("AAAA-BBBB-CCCC-0002");
     const { grant } = await redeem(org, "AAAA-BBBB-CCCC-0002");
-    const after = new Date(grant.ends_at.getTime() + 1_000);
+    const after = new Date(grant.ends_at!.getTime() + 1_000);
     const policy = await policyAt(org, after);
     expect(policy.authority.source).toBe("legacy");
     expect(policy.subscriptionFunded).toBe(false);
@@ -378,7 +378,7 @@ describe("subscription grant records and account deletion", () => {
       `SELECT user_id, ends_at FROM subscription_grants WHERE id = '${grant.id}'`,
     );
     expect(kept!.user_id).toBeNull();
-    expect(new Date(kept!.ends_at).getTime()).toBe(grant.ends_at.getTime());
+    expect(new Date(kept!.ends_at).getTime()).toBe(grant.ends_at!.getTime());
     // The organization keeps its grant service after the user is gone.
     expect((await policyAt(org)).authority.source).toBe("promo_grant");
   });
@@ -486,4 +486,54 @@ describe("grant allowance schedule", () => {
       expect.stringMatching(/^1[12]\.\d{6}$/),
     ]);
   });
+});
+
+test("a lifetime grant publishes no expiry and retains revocation", async () => {
+  const org = await newOrg();
+  await newCode("LIFE-AAAA-BBBB-0001", { days: null });
+  const { grant } = await redeem(org, "LIFE-AAAA-BBBB-0001");
+  expect(grant.ends_at).toBeNull();
+  const farFuture = new Date(grant.starts_at);
+  farFuture.setUTCFullYear(farFuture.getUTCFullYear() + 100);
+  const policy = await policyAt(org, farFuture);
+  expect(policy.authority.source).toBe("promo_grant");
+  expect(policy.authority.effectiveUntil).toBeNull();
+  expect(policy.subscriptionFunded).toBe(true);
+  const buckets = await rows<{ count: number }>(
+    `SELECT count(*)::integer count FROM subscription_allowance_periods WHERE promo_grant_id = '${grant.id}'`,
+  );
+  expect(buckets[0]?.count).toBe(3);
+  expect(await grants.subscriptionGrantsRepository.replenishLifetimeAllowances()).toBe(0);
+  await grants.subscriptionGrantsRepository.revoke({
+    grantId: grant.id,
+    reason: "test revocation",
+  });
+  expect((await policyAt(org)).authority.source).toBe("legacy");
+  expect(await grants.subscriptionGrantsRepository.replenishLifetimeAllowances()).toBe(0);
+});
+
+test("lifetime replenishment skips missed months and replays without double credit", async () => {
+  const org = await newOrg();
+  await newCode("LIFE-AAAA-BBBB-0002", { days: null });
+  const hash = await grants.hashSubscriptionGrantCode(
+    grants.normalizeSubscriptionGrantCode("LIFE-AAAA-BBBB-0002")!,
+    PEPPER,
+  );
+  const [grant] = await rows<{
+    id: string;
+  }>(`INSERT INTO subscription_grants(organization_id,user_id,code_id,family,plan_key,catalog_version,idempotency_key,starts_at,ends_at)
+    SELECT '${org}', '${USER}', id, family, plan_key, catalog_version, 'historical-lifetime-grant', now() - interval '2 years', NULL
+    FROM subscription_grant_codes WHERE code_hash = '${hash}' RETURNING id`);
+  expect(grant).toBeDefined();
+  expect(await grants.subscriptionGrantsRepository.replenishLifetimeAllowances()).toBe(3);
+  expect(await grants.subscriptionGrantsRepository.replenishLifetimeAllowances()).toBe(0);
+  const buckets = await rows<{
+    count: number;
+    current: number;
+    ledger: number;
+  }>(`SELECT count(*)::integer count,
+    count(*) FILTER (WHERE period_start <= now() AND period_end > now())::integer current,
+    (SELECT count(*)::integer FROM subscription_allowance_transactions WHERE metadata->>'promoGrantId' = '${grant!.id}') ledger
+    FROM subscription_allowance_periods WHERE promo_grant_id = '${grant!.id}'`);
+  expect(buckets[0]).toEqual({ count: 3, current: 1, ledger: 3 });
 });
