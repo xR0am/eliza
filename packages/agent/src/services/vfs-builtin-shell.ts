@@ -576,8 +576,12 @@ function tokenize(input: string): string[] {
       const next = input[index + 1];
       if (
         next !== undefined &&
-        (quote === null || next === '"' || next === "\\" ||
-          next === "$" || next === "`" || next === "\n")
+        (quote === null ||
+          next === '"' ||
+          next === "\\" ||
+          next === "$" ||
+          next === "`" ||
+          next === "\n")
       ) {
         if (next !== "\n") {
           token += next;
@@ -601,6 +605,9 @@ function tokenize(input: string): string[] {
       token += character;
       started = true;
     }
+  }
+  if (quote !== null) {
+    throw new Error(`[vfs-shell] unterminated ${quote} quote in: ${input}`);
   }
   if (started) tokens.push(token);
   return tokens;
