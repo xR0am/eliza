@@ -14,7 +14,7 @@
  * the test is fully hermetic (no network, no real LLM, no credentials).
  *
  * Every assertion is a triage-then-read-back round-trip against the live DB,
- * and dedup-by-`source_message_id` is verified against the real table.
+ * and source-scoped message deduplication is verified against the real table.
  */
 
 import {
@@ -362,7 +362,7 @@ describe("InboxService + InboxRepository — real PGLite", () => {
     });
   });
 
-  it("dedups by source_message_id against the real DB on re-triage", async () => {
+  it("dedups one source message against the real DB on re-triage", async () => {
     const first = await service.triage([
       inbound({ id: "msg-dedup", text: "Can you confirm the meeting?" }),
     ]);
@@ -377,6 +377,32 @@ describe("InboxService + InboxRepository — real PGLite", () => {
     expect(second.triaged[0]?.entry?.id).toBe(firstEntryId);
     const after = (await service.list()).length;
     expect(after).toBe(before);
+  });
+
+  it("keeps provider-local message ids separate across sources", async () => {
+    await service.triage([
+      inbound({
+        id: "shared-provider-id",
+        source: "discord",
+        text: "Discord question?",
+      }),
+    ]);
+    const gmail = await service.triage([
+      inbound({
+        id: "shared-provider-id",
+        source: "gmail",
+        text: "Gmail question?",
+      }),
+    ]);
+
+    expect(gmail.triaged[0]?.entry?.source).toBe("gmail");
+    const matches = (await service.list()).filter(
+      (entry) => entry.sourceMessageId === "shared-provider-id",
+    );
+    expect(matches.map((entry) => entry.source).sort()).toEqual([
+      "discord",
+      "gmail",
+    ]);
   });
 
   it("filters by classification and respects resolve() against the real DB", async () => {
