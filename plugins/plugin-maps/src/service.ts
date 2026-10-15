@@ -350,8 +350,9 @@ export class MapsService extends Service {
   async planRouteAlternativesResult(
     request: RoutePlanRequest,
     provider?: string,
+    expectedGeneration?: number,
   ): Promise<{ routes: RoutePlan[]; provider: MapsProviderDescription }> {
-    const registration = this.provider(provider);
+    const registration = this.provider(provider, expectedGeneration);
     const { adapter } = registration;
     const normalized = this.routeRequest(request, adapter);
     const routes = adapter.planRouteAlternatives
