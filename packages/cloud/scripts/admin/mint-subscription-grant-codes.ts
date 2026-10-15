@@ -8,7 +8,7 @@
  *
  * Usage:
  *   bun --conditions=eliza-source packages/cloud/scripts/admin/mint-subscription-grant-codes.ts \
- *     --count 100 [--max-redemptions 1] [--duration-days 183] [--plan plus_monthly] \
+ *     --count 100 [--max-redemptions 1] [--duration-days 183 | --lifetime] [--plan plus_monthly] \
  *     [--family alpha_phone] [--expires-at 2027-12-31T00:00:00Z] [--label "Alpha Phone batch 1"]
  */
 
@@ -42,7 +42,7 @@ export function generateSubscriptionGrantCode(
 export interface MintOptions {
   count: number;
   maxRedemptions: number;
-  durationDays: number;
+  durationDays: number | null;
   planKey: "plus_monthly" | "pro_monthly";
   family: string;
   expiresAt: Date | null;
@@ -55,7 +55,8 @@ export function parseMintOptions(argv: string[]): MintOptions {
     options: {
       count: { type: "string" },
       "max-redemptions": { type: "string", default: "1" },
-      "duration-days": { type: "string", default: "183" },
+      "duration-days": { type: "string" },
+      lifetime: { type: "boolean", default: false },
       plan: { type: "string", default: "plus_monthly" },
       family: { type: "string", default: "alpha_phone" },
       "expires-at": { type: "string" },
@@ -76,6 +77,8 @@ export function parseMintOptions(argv: string[]): MintOptions {
   };
   if (values.plan !== "plus_monthly" && values.plan !== "pro_monthly")
     throw new Error("--plan must be plus_monthly or pro_monthly");
+  if (values.lifetime && values["duration-days"] !== undefined)
+    throw new Error("--lifetime and --duration-days are mutually exclusive");
   if (!/^[a-z0-9_]{1,64}$/.test(values.family ?? ""))
     throw new Error("--family must match ^[a-z0-9_]{1,64}$");
   const expiresAt = values["expires-at"]
@@ -93,7 +96,9 @@ export function parseMintOptions(argv: string[]): MintOptions {
       1,
       1_000_000,
     ),
-    durationDays: integer(values["duration-days"], "duration-days", 1, 731),
+    durationDays: values.lifetime
+      ? null
+      : integer(values["duration-days"] ?? "183", "duration-days", 1, 731),
     planKey: values.plan,
     family: values.family ?? "alpha_phone",
     expiresAt,
@@ -136,7 +141,7 @@ async function main(): Promise<void> {
     await tx.insert(subscriptionGrantCodes).values(rows);
   });
   console.error(
-    `Minted ${codes.size} ${options.planKey} code(s), family ${options.family}, ${options.durationDays} days, ` +
+    `Minted ${codes.size} ${options.planKey} code(s), family ${options.family}, ${options.durationDays === null ? "lifetime" : `${options.durationDays} days`}, ` +
       `${options.maxRedemptions} redemption(s) each. Store them now; they are not recoverable.`,
   );
   for (const code of codes) console.log(code);

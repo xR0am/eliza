@@ -864,6 +864,10 @@ export const notesAction: Action = {
         "For create: optional body only when the user supplies a separate title and body. Preserve both exactly and join them with one newline. For a complete supplied note, put its unchanged text in content and omit body; punctuation does not define a field boundary. For update, body remains a supported alternative to replacementContent for the complete updated note.",
       subactions: ["create", "update"],
       required: false,
+      // A strict provider's unset placeholder must not become create's
+      // title/body join, which would store a framing LF the owner never wrote.
+      // Update already reads an empty body as absent.
+      modelOmissionSentinels: [""],
       schema: { type: "string" },
     },
     {
