@@ -328,7 +328,11 @@ export function normalizeGmailSearchQueryMatches(
         tokenBody
           .slice(1, -1)
           .trim()
-          .match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+          // An unmatched trailing quote stays part of the member (e.g. the
+          // `subject:` fragment keeps its `"unbalanced` tail), so the member
+          // degrades to a literal subject search instead of collapsing to an
+          // empty `subject:` that matches every message.
+          .match(/(?:[^\s"]+|"[^"]*"|"[^"]*$)+/g) ?? [];
       // Gmail brace groups are already implicit disjunctions. A redundant
       // uppercase OR inside the group is syntax, not a search term: treating it
       // as a bare substring makes `{from:alice OR from:bob}` match unrelated
