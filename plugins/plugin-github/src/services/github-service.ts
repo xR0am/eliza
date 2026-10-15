@@ -52,6 +52,7 @@ export class GitHubService extends Service implements IGitHubService {
     "GitHub REST API integration for PRs, issues, and notifications";
 
   private clients = new Map<string, GitHubClientRecord>();
+  private accountGeneration = 0;
 
   constructor(
     runtime?: IAgentRuntime,
@@ -81,13 +82,15 @@ export class GitHubService extends Service implements IGitHubService {
   }
 
   private async initialize(): Promise<void> {
+    const generation = ++this.accountGeneration;
+    this.clients.clear();
     if (!this.runtime) {
       return;
     }
     const accounts = await readGitHubAccountsWithConnectorCredentials(
       this.runtime,
     );
-    this.clients.clear();
+    if (generation !== this.accountGeneration) return;
     for (const account of accounts) {
       this.clients.set(account.accountId, {
         account,
@@ -142,6 +145,7 @@ export class GitHubService extends Service implements IGitHubService {
   }
 
   async stop(): Promise<void> {
+    ++this.accountGeneration;
     this.clients.clear();
   }
 }

@@ -214,6 +214,45 @@ describe("GitHub account resolution", () => {
     expect(service.getOctokit({ role: "user" })).toBeNull();
   });
 
+  it.each(["clear", "stop"] as const)(
+    "does not restore stale accounts after %s while a reload is pending",
+    async (operation) => {
+      const settings: Record<string, unknown> = { GITHUB_TOKEN: "old-token" };
+      let waitForStorage: Promise<ConnectorAccount[]> | undefined;
+      const rt = runtimeWithConnectorStorage({
+        accounts: [],
+        vaultValues: new Map(),
+      });
+      rt.getSetting = (key: string) => toRuntimeSetting(settings[key]);
+      const storage = rt.getService("connector_account_storage") as unknown as {
+        listAccounts: () => Promise<ConnectorAccount[]>;
+      };
+      vi.spyOn(storage, "listAccounts").mockImplementation(
+        () => waitForStorage ?? Promise.resolve([]),
+      );
+      const { GitHubService } = await import("./services/github-service");
+      const service = new GitHubService(rt, () => ({}) as never);
+      await service.reloadAccounts();
+      expect(service.getOctokit("user")).not.toBeNull();
+      let release!: (accounts: ConnectorAccount[]) => void;
+      waitForStorage = new Promise((resolve) => {
+        release = resolve;
+      });
+      const pending = service.reloadAccounts();
+      // Let account resolution reach the delayed connector storage boundary.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      waitForStorage = undefined;
+      settings.GITHUB_TOKEN = null;
+      const clearing =
+        operation === "clear" ? service.reloadAccounts() : service.stop();
+      const clientDuringClear = service.getOctokit("user");
+      release([]);
+      await Promise.all([pending, clearing]);
+      expect(clientDuringClear).toBeNull();
+      expect(service.getOctokit("user")).toBeNull();
+    },
+  );
+
   it("resolves explicit accountId before role defaults", () => {
     const accounts = readGitHubAccounts(
       runtime({
