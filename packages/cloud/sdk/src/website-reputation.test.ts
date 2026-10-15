@@ -10,10 +10,7 @@ import {
   websiteReputationVerdict,
 } from "./website-reputation.js";
 
-const list = (
-  status: "current" | "stale" | "unavailable",
-  id = "phishing-database",
-) => ({
+const list = (status: "loaded" | "unavailable", id = "phishing-database") => ({
   id,
   source:
     id === "phishing-database" ? "Phishing.Database" : "HaGeZi TIF medium",
@@ -72,12 +69,12 @@ test("sha256Hex matches the reference digest", async () => {
   );
 });
 
-test("a hit on a current list is listed, even when another list is unavailable", async () => {
+test("a hit on a loaded list is listed, even when another list is unavailable", async () => {
   const candidates = await websiteHostHashes("login.evil.example");
   const parent = candidates.find((c) => c.host === "evil.example");
   const verdict = websiteReputationVerdict("login.evil.example", candidates, {
-    status: "degraded",
-    lists: [list("current"), list("unavailable", "hagezi-tif-medium")],
+    status: "partial",
+    lists: [list("loaded"), list("unavailable", "hagezi-tif-medium")],
     matches: [{ hash: parent?.hash ?? "", lists: ["phishing-database"] }],
   });
   expect(verdict).toMatchObject({
@@ -92,56 +89,56 @@ test("a hit on a current list is listed, even when another list is unavailable",
   }
 });
 
-test("no hit is never safe: only a fully current index gives not_listed", async () => {
+test("no hit is never safe: one loaded list gives not_listed, none gives unavailable", async () => {
   const candidates = await websiteHostHashes("example.com");
   const prefixOnly = {
     hash: `${hashPrefix(candidates[0].hash)}${"0".repeat(56)}`,
     lists: ["phishing-database"],
   };
-  const base = { lists: [list("current")], matches: [prefixOnly] };
-  const current = websiteReputationVerdict("example.com", candidates, {
-    ...base,
-    status: "current",
-  });
-  expect(current).toEqual({
-    status: "not_listed",
-    host: "example.com",
-    label: "No known threat",
-  });
-  expect(JSON.stringify(current).toLowerCase()).not.toContain("safe");
-  expect(
-    websiteReputationVerdict("example.com", candidates, {
+  const base = { lists: [list("loaded")], matches: [prefixOnly] };
+  for (const status of ["complete", "partial"] as const) {
+    const verdict = websiteReputationVerdict("example.com", candidates, {
       ...base,
-      status: "degraded",
-    }),
-  ).toMatchObject({ status: "unavailable", reason: "stale" });
+      status,
+    });
+    expect(verdict).toEqual({
+      status: "not_listed",
+      host: "example.com",
+      label: "No known threat",
+    });
+    expect(JSON.stringify(verdict).toLowerCase()).not.toContain("safe");
+  }
   expect(
     websiteReputationVerdict("example.com", candidates, {
       status: "unavailable",
       lists: [],
       matches: [],
     }),
-  ).toMatchObject({ status: "unavailable" });
+  ).toEqual({
+    status: "unavailable",
+    host: "example.com",
+    reason: "unavailable",
+  });
 });
 
-test("a match on a stale list does not count", async () => {
+test("a match on an unavailable list does not count", async () => {
   const candidates = await websiteHostHashes("evil.example");
   expect(
     websiteReputationVerdict("evil.example", candidates, {
-      status: "unavailable",
-      lists: [list("stale")],
-      matches: [{ hash: candidates[0].hash, lists: ["phishing-database"] }],
+      status: "partial",
+      lists: [list("loaded"), list("unavailable", "hagezi-tif-medium")],
+      matches: [{ hash: candidates[0].hash, lists: ["hagezi-tif-medium"] }],
     }),
-  ).toMatchObject({ status: "unavailable" });
+  ).toMatchObject({ status: "not_listed" });
 });
 
 test("the client sends only hash prefixes and fails to unavailable", async () => {
   const bodies: string[] = [];
   const candidates = await websiteHostHashes("login.evil.example");
   const response: WebsiteReputationLookupResponse = {
-    status: "current",
+    status: "complete",
     generatedAt: "2026-10-15T00:00:00.000Z",
-    lists: [list("current")],
+    lists: [list("loaded")],
     matches: [{ hash: candidates[1].hash, lists: ["phishing-database"] }],
   };
   const client = createWebsiteReputationClient({

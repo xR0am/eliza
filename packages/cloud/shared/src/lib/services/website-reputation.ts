@@ -1,9 +1,11 @@
 /**
  * Website reputation index: threat list selection, list parsing, the compact
- * hash index in R2, freshness and hash-prefix lookup.
+ * hash index in R2, list status and hash-prefix lookup.
  *
  * Results are `listed`, `not_listed` ("No known threat") or `unavailable`.
- * Nothing here can produce a "safe" result. The on-device list remains the
+ * Nothing here can produce a "safe" result. List age never changes a result:
+ * the last-good copy of a list always counts, and its dates and hash are
+ * provenance only. The on-device list remains the
  * primary check for a browser; this Cloud index only supplements it and must
  * never be awaited before a page opens.
  *
@@ -50,10 +52,11 @@ export interface WebsiteThreatFeed {
   license: string;
   licenseUrl: string;
   /**
-   * `verified`: redistribution and commercial use confirmed.
-   * `owner-review`: a third-party input-data question is still open.
+   * `verified`: the list license permits redistribution and commercial use.
+   * `approved`: approved by the owner with counsel (2026-10-15) for this free,
+   * open-source lookup; see docs/website-reputation.md.
    */
-  reviewState: "verified" | "owner-review";
+  reviewState: "verified" | "approved";
   minEntries: number;
   maxBytes: number;
 }
@@ -91,7 +94,7 @@ export const WEBSITE_THREAT_FEEDS: readonly WebsiteThreatFeed[] = [
     publishedAt: "hagezi-header",
     license: "GPL-3.0",
     licenseUrl: HAGEZI_LICENSE,
-    reviewState: "owner-review",
+    reviewState: "approved",
     minEntries: 50_000,
     maxBytes: 24 * MIB,
   },
@@ -103,7 +106,7 @@ export const WEBSITE_THREAT_FEEDS: readonly WebsiteThreatFeed[] = [
     publishedAt: "hagezi-header",
     license: "GPL-3.0",
     licenseUrl: HAGEZI_LICENSE,
-    reviewState: "owner-review",
+    reviewState: "approved",
     minEntries: 1000,
     maxBytes: 4 * MIB,
   },
@@ -120,10 +123,6 @@ export const RECORD_BYTES = 33;
 export const SHARD_COUNT = 256;
 /** Same bound as the on-device rule compiler (`MAX_DOMAINS`). */
 export const MAX_LIST_ENTRIES = 1_200_000;
-const HOUR = 3_600_000;
-/** Same validity window as the on-device lookup (`validFeedTime`). */
-export const validFeedTime = (time: number, now: number) =>
-  Number.isFinite(time) && time <= now + 300_000 && now - time < 48 * HOUR;
 
 export interface WebsiteReputationManifestList {
   id: string;
@@ -133,8 +132,8 @@ export interface WebsiteReputationManifestList {
   license: string;
   licenseUrl: string;
   reviewState: WebsiteThreatFeed["reviewState"];
-  /** `current`: this run validated new or unchanged data. `last-good`: reused older data. */
-  state: "current" | "last-good" | "unavailable";
+  /** `refreshed`: this run validated new or unchanged data. `last-good`: reused an older copy. */
+  state: "refreshed" | "last-good" | "unavailable";
   /** Bit in each shard record's mask; null when the list has no data. */
   bit: number | null;
   publishedAt: string | null;
@@ -302,16 +301,17 @@ export function parsePrefix(prefix: string): Uint8Array | null {
   return bytes;
 }
 
-/** Per-list freshness at `now`. Expired data is `stale` and is not used for matches. */
-export function websiteReputationFreshness(
-  manifest: WebsiteReputationManifest | null,
-  now: number,
-): { status: WebsiteReputationIndexStatus; lists: WebsiteReputationListFreshness[] } {
+/**
+ * Per-list status. A list with data is `loaded` at any age; its dates are
+ * provenance only and never downgrade a result.
+ */
+export function websiteReputationFreshness(manifest: WebsiteReputationManifest | null): {
+  status: WebsiteReputationIndexStatus;
+  lists: WebsiteReputationListFreshness[];
+} {
   if (!manifest) return { status: "unavailable", lists: [] };
   const lists = manifest.lists.map((list): WebsiteReputationListFreshness => {
-    const published = list.publishedAt ? Date.parse(list.publishedAt) : Number.NaN;
-    const status =
-      list.bit === null ? "unavailable" : validFeedTime(published, now) ? "current" : "stale";
+    const status = list.bit === null ? "unavailable" : "loaded";
     return {
       id: list.id,
       source: list.source,
@@ -322,8 +322,8 @@ export function websiteReputationFreshness(
       sha256: list.sha256,
     };
   });
-  const current = lists.filter((list) => list.status === "current").length;
-  const status = current === 0 ? "unavailable" : current === lists.length ? "current" : "degraded";
+  const loaded = lists.filter((list) => list.status === "loaded").length;
+  const status = loaded === 0 ? "unavailable" : loaded === lists.length ? "complete" : "partial";
   return { status, lists };
 }
 
@@ -387,7 +387,7 @@ const unavailableResponse = (): WebsiteReputationLookupResponse => ({
 });
 
 /**
- * Returns full hashes on current lists that start with any requested prefix.
+ * Returns full hashes on loaded lists that start with any requested prefix.
  * The caller supplies validated prefixes; nothing about them is logged.
  */
 export async function lookupWebsiteReputationPrefixes(
@@ -399,14 +399,14 @@ export async function lookupWebsiteReputationPrefixes(
   const now = options.now ?? Date.now();
   for (let attempt = 0; attempt < 2; attempt++) {
     const manifest = await cachedManifest(bucket, now, attempt > 0);
-    const freshness = websiteReputationFreshness(manifest, now);
+    const freshness = websiteReputationFreshness(manifest);
     if (!manifest || freshness.status === "unavailable") {
       return { ...unavailableResponse(), lists: freshness.lists };
     }
-    const currentBits = new Map<number, string>();
+    const loadedBits = new Map<number, string>();
     manifest.lists.forEach((list, index) => {
-      if (list.bit !== null && freshness.lists[index].status === "current") {
-        currentBits.set(list.bit, list.id);
+      if (list.bit !== null && freshness.lists[index].status === "loaded") {
+        loadedBits.set(list.bit, list.id);
       }
     });
     const shards = new Map<number, Uint8Array | null>();
@@ -419,7 +419,7 @@ export async function lookupWebsiteReputationPrefixes(
     const matches = new Map<string, WebsiteReputationMatch>();
     for (const prefix of prefixes) {
       for (const record of findPrefixInShard(shards.get(prefix[0]) as Uint8Array, prefix)) {
-        const lists = [...currentBits]
+        const lists = [...loadedBits]
           .filter(([bit]) => record.mask & (1 << bit))
           .map(([, id]) => id);
         if (lists.length) matches.set(record.hash, { hash: record.hash, lists });

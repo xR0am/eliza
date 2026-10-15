@@ -62,7 +62,7 @@ test("listed addresses inside a keyless answer are warned", async () => {
       addresses.map((address) =>
         address.includes("paypa1")
           ? listed("paypa1-login.example")
-          : { status: "unavailable", host: "news.example", reason: "stale" },
+          : { status: "unavailable", host: "news.example", reason: "unavailable" },
       ),
   });
   expect(annotated.reputationWarnings).toEqual([

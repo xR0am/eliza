@@ -13,9 +13,9 @@ A check gives one of three results:
 
 | Result | Meaning |
 | --- | --- |
-| `listed` | A current threat list contains the host or a parent domain. The result names the list and the category. |
-| `not_listed` | All lists are current and none contains the host. Show this as "No known threat". |
-| `unavailable` | The index is missing, incomplete or stale, or the address cannot be checked. |
+| `listed` | A loaded threat list contains the host or a parent domain. The result names the list and the category. |
+| `not_listed` | At least one list has loaded and no loaded list contains the host. Show this as "No known threat". |
+| `unavailable` | No list has ever loaded, the index is missing or corrupt, or the address cannot be checked. |
 
 No result means "safe". Do not show `not_listed` as safe.
 
@@ -31,8 +31,8 @@ are not used, because they block ordinary sites.
 | ID | Source | URL | License | Review state |
 | --- | --- | --- | --- | --- |
 | `phishing-database` | Phishing.Database | `https://phish.co.za/latest/phishing-domains-ACTIVE.txt` (fallback: GitHub repository at the latest commit of the file) | MIT | `verified` |
-| `hagezi-tif-medium` | HaGeZi Threat Intelligence Feeds, medium | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.medium-onlydomains.txt` | GPL-3.0 (compilation) | `owner-review` |
-| `hagezi-fake` | HaGeZi Fake | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/fake-onlydomains.txt` | GPL-3.0 (compilation) | `owner-review` |
+| `hagezi-tif-medium` | HaGeZi Threat Intelligence Feeds, medium | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.medium-onlydomains.txt` | GPL-3.0 (compilation) | `approved` |
+| `hagezi-fake` | HaGeZi Fake | `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/fake-onlydomains.txt` | GPL-3.0 (compilation) | `approved` |
 
 The list selection is `WEBSITE_THREAT_FEEDS` in
 `src/lib/services/website-reputation.ts`. The device uses HaGeZi TIF mini;
@@ -51,11 +51,12 @@ publication time and SHA-256 of the list body in
   conveyed (distributed). A server-side lookup does not convey the list.
   GPL-3.0 has no network-use clause (AGPL-3.0 has one). The lookup response
   contains only SHA-256 hashes of matching entries, not the list.
-- Open question, `owner-review`: HaGeZi states that its sources keep their own
-  terms and that GPL-3.0 grants no rights in that third-party data. Commercial
-  use terms for all TIF inputs are not confirmed. This is not marked
-  verified. The owner must decide to keep, replace or remove the HaGeZi lists.
-  Removing a list is a one-line change in `WEBSITE_THREAT_FEEDS`.
+- HaGeZi states that its sources keep their own terms and that GPL-3.0 grants
+  no rights in that third-party data. The owner consulted counsel, who said
+  that the use of the HaGeZi lists is acceptable. The lookup APIs are free and
+  open, part of the open-source stack, and not sold. Review state:
+  `approved` (owner and counsel, 2026-10-15).
+- Removing a list is a one-line change in `WEBSITE_THREAT_FEEDS`.
 
 ## Index and storage
 
@@ -83,7 +84,9 @@ For each list the job:
 2. Checks the format: at least the minimum number of valid hosts, at most 1%
    invalid lines, at most 1,200,000 entries, and for HaGeZi the declared
    "Number of entries". These are the same rules as the device parser.
-3. Rejects a list whose publication time is more than 48 hours old.
+3. Records the publication time (when the publisher gives one), the fetch
+   time and the SHA-256 as provenance. List age is never a reason to reject
+   a list.
 4. Keeps the last-good list when a download or check fails.
 
 If no list hash changed, the job only updates the manifest. Otherwise it
@@ -91,15 +94,18 @@ writes all shards to the inactive slot and then switches the manifest. The
 previous snapshot stays in use until the new one is complete. If no list is
 usable, the job fails and the previous snapshot stays.
 
-A list is `current` for 48 hours after its publication time. After that it is
-`stale`, and its entries are not used. If any list is stale or missing, a host
-that is not on a current list gives `unavailable`, not `not_listed`.
+There is no freshness requirement. A list that has loaded is used at any age,
+and the last-good copy always counts. Age never changes a result. A host that
+is not on a loaded list gives `not_listed` when at least one list has loaded.
+The result is `unavailable` only when no list has ever loaded or the index is
+missing or corrupt. The same rule applies on the device
+(`packages/os/browser/protection`).
 
 ## Privacy
 
 The lookup request contains only hash prefixes: the first 4 bytes (default) of
 the SHA-256 of each candidate host. Clients can use 2 or 3 bytes for more
-privacy. Cloud returns all full hashes on current lists that start with a
+privacy. Cloud returns all full hashes on loaded lists that start with a
 requested prefix. The client compares full hashes itself.
 
 A prefix is not anonymous. Cloud could compare a prefix with hashes of known
@@ -121,9 +127,8 @@ Before production use:
 
 - Confirm that the Worker can reach `phish.co.za`, `github.com` and
   `raw.githubusercontent.com`.
-- Run the cron once in staging and read the manifest. Each list must be
-  `current`.
+- Run the cron once in staging and read the manifest. Each list should be
+  `refreshed`.
 - Watch the cron CPU time and memory. A local run used about 1 second of CPU.
 - Phishing.Database: on 2026-10-15 the newest commit of the active list was
-  2026-10-02, so the 48-hour rule marks it `stale`. Decide whether to keep it,
-  use a longer age limit for it, or replace it.
+  2026-10-02. It is kept and used at that age (owner decision, 2026-10-15).

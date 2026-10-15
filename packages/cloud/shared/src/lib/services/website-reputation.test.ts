@@ -64,7 +64,7 @@ const hageziFeed: WebsiteThreatFeed = {
   publishedAt: "hagezi-header",
   license: "GPL-3.0",
   licenseUrl: "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE",
-  reviewState: "owner-review",
+  reviewState: "approved",
   minEntries: 3,
   maxBytes: 64 * 1024,
 };
@@ -192,8 +192,8 @@ test("ingestion builds the index; lookups return full hashes for prefixes only",
   expect(summary.recordCount).toBe(6);
   const manifest = await readWebsiteReputationManifest(bucket);
   expect(manifest?.lists.map((l) => [l.id, l.state, l.license, l.reviewState])).toEqual([
-    ["phishing-database", "current", "MIT", "verified"],
-    ["hagezi-tif-medium", "current", "GPL-3.0", "owner-review"],
+    ["phishing-database", "refreshed", "MIT", "verified"],
+    ["hagezi-tif-medium", "refreshed", "GPL-3.0", "approved"],
   ]);
   expect(manifest?.lists[1].publishedAt).toBe("2026-10-15T08:34:00.000Z");
   expect(manifest?.lists[1].sha256).toBe(
@@ -205,7 +205,7 @@ test("ingestion builds the index; lookups return full hashes for prefixes only",
     bucket,
     now: NOW,
   });
-  expect(response.status).toBe("current");
+  expect(response.status).toBe("complete");
   expect(response.matches).toEqual([
     { hash: full.toString("hex"), lists: ["phishing-database", "hagezi-tif-medium"] },
   ]);
@@ -277,65 +277,58 @@ test("a run with no usable list keeps the previous snapshot", async () => {
   ).toEqual([{ status: "unavailable", host: "example.com", reason: "unavailable" }]);
 });
 
-test("expired lists are rejected at download and stale data is never not_listed", async () => {
+test("list age never downgrades a result: old lists are used and recorded", async () => {
   const store = memoryBucket();
   const old = await refreshWebsiteReputationIndex({
     bucket: store.bucket,
     now: () => NOW,
     feeds: [phishingFeed, hageziFeed],
     fetchImpl: fetchFrom(
-      servedLists({ [hageziFeed.url]: { body: hageziBody(tifHosts, "10 Oct 2026 08:00 UTC") } }),
+      servedLists({
+        [hageziFeed.url]: { body: hageziBody(tifHosts, "10 Jan 2026 08:00 UTC") },
+        [phishingFeed.url]: { body: `${phishHosts.join("\n")}\n` },
+      }),
     ),
   });
-  expect(old.lists.map((l) => l.state)).toEqual(["current", "unavailable"]);
-  // One list current, one missing: a hit still counts, a miss is unavailable.
-  let verdicts = await checkWebsiteReputation(
-    ["https://paypa1-login.example/", "https://example.com/"],
-    { bucket: store.bucket, now: NOW },
-  );
-  expect(verdicts.map((v) => v.status)).toEqual(["listed", "unavailable"]);
+  expect(old.lists.map((l) => l.state)).toEqual(["refreshed", "refreshed"]);
+  const manifest = await readWebsiteReputationManifest(store.bucket);
+  // Provenance is kept even when the publisher gives no date.
+  expect(manifest?.lists.map((l) => l.publishedAt)).toEqual([null, "2026-01-10T08:00:00.000Z"]);
+  expect(manifest?.lists.every((l) => /^[0-9a-f]{64}$/.test(l.sha256 ?? ""))).toBe(true);
 
-  // Two days later, without a refresh, every list is stale.
-  resetWebsiteReputationCache();
-  verdicts = await checkWebsiteReputation(
-    ["https://paypa1-login.example/", "https://example.com/"],
-    { bucket: store.bucket, now: NOW + 49 * HOUR },
-  );
-  expect(verdicts.map((v) => v.status)).toEqual(["unavailable", "unavailable"]);
-  const stalePrefix = createHash("sha256").update("paypa1-login.example").digest().subarray(0, 4);
-  const response = await lookupWebsiteReputationPrefixes([stalePrefix], {
-    bucket: store.bucket,
-    now: NOW + 49 * HOUR,
-  });
-  expect(response.status).toBe("unavailable");
-  expect(response.matches).toEqual([]);
-  expect(response.lists.map((l) => l.status)).toEqual(["stale", "unavailable"]);
+  // A year later, without a refresh, the same results.
+  for (const now of [NOW, NOW + 365 * 24 * HOUR]) {
+    resetWebsiteReputationCache();
+    const verdicts = await checkWebsiteReputation(
+      ["https://login.scam-shop.test/", "https://paypa1-login.example/", "https://example.com/"],
+      { bucket: store.bucket, now },
+    );
+    expect(verdicts.map((v) => v.status)).toEqual(["listed", "listed", "not_listed"]);
+  }
 });
 
-test("matches from a stale list are not returned while other lists are current", async () => {
+test("one loaded list is enough for not_listed; a never-loaded list adds no matches", async () => {
   const store = memoryBucket();
-  await refreshWebsiteReputationIndex({
+  const summary = await refreshWebsiteReputationIndex({
     bucket: store.bucket,
     now: () => NOW,
     feeds: [phishingFeed, hageziFeed],
-    fetchImpl: fetchFrom(
-      servedLists({ [hageziFeed.url]: { body: hageziBody(tifHosts, "14 Oct 2026 08:34 UTC") } }),
-    ),
+    fetchImpl: fetchFrom({ [hageziFeed.url]: { body: hageziBody(tifHosts) } }),
   });
-  const later = NOW + 21 * HOUR; // HaGeZi is now 49 hours old; Phishing.Database 22 hours.
+  expect(summary.lists.map((l) => l.state)).toEqual(["unavailable", "refreshed"]);
   const prefix = createHash("sha256").update("scam-shop.test").digest().subarray(0, 4);
   const response = await lookupWebsiteReputationPrefixes([prefix], {
     bucket: store.bucket,
-    now: later,
+    now: NOW,
   });
-  expect(response.status).toBe("degraded");
-  expect(response.lists.map((l) => l.status)).toEqual(["current", "stale"]);
-  expect(response.matches).toEqual([]);
-  const [verdict] = await checkWebsiteReputation(["https://scam-shop.test/"], {
-    bucket: store.bucket,
-    now: later,
-  });
-  expect(verdict).toMatchObject({ status: "unavailable", reason: "stale" });
+  expect(response.status).toBe("partial");
+  expect(response.lists.map((l) => l.status)).toEqual(["unavailable", "loaded"]);
+  const verdicts = await checkWebsiteReputation(
+    ["https://scam-shop.test/", "https://paypa1-login.example/", "https://example.com/"],
+    { bucket: store.bucket, now: NOW },
+  );
+  // paypa1-login.example is only on the list that never loaded.
+  expect(verdicts.map((v) => v.status)).toEqual(["listed", "not_listed", "not_listed"]);
 });
 
 test("Phishing.Database falls back to the GitHub repository at its latest commit", async () => {
@@ -349,13 +342,16 @@ test("Phishing.Database falls back to the GitHub repository at its latest commit
       [phishingFeed.url]: { body: "Forbidden", status: 403 },
       "https://github.com/Phishing-Database/Phishing.Database/commits/master/phishing-domains-ACTIVE.txt.atom":
         {
-          body: `<?xml version="1.0"?><feed><updated>2020-01-01T00:00:00Z</updated><entry><id>tag:github.com,2008:Grit::Commit/${sha}</id><updated>${new Date(NOW - HOUR).toISOString()}</updated></entry></feed>`,
+          body: `<?xml version="1.0"?><feed><updated>2020-01-01T00:00:00Z</updated><entry><id>tag:github.com,2008:Grit::Commit/${sha}</id><updated>2026-10-02T15:30:28Z</updated></entry></feed>`,
         },
       [`https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/${sha}/phishing-domains-ACTIVE.txt`]:
         { body: `${phishHosts.join("\n")}\n` },
     }),
   });
-  expect(summary.lists[0].state).toBe("current");
+  // A 13-day-old commit is accepted; its date is provenance only.
+  expect(summary.lists[0].state).toBe("refreshed");
+  const manifest = await readWebsiteReputationManifest(store.bucket);
+  expect(manifest?.lists[0].publishedAt).toBe("2026-10-02T15:30:28.000Z");
 });
 
 test("a shard rewritten by a newer build is not served under the old manifest", async () => {

@@ -10,8 +10,10 @@
  * individual request discloses.
  *
  * Verdicts never claim that a site is safe. `not_listed` means only that the
- * current threat lists contain no entry for the host ("No known threat").
- * Missing, stale or partial list data is `unavailable`, never `not_listed`.
+ * loaded threat lists contain no entry for the host ("No known threat").
+ * List age never changes a result: the last loaded copy of a list always
+ * counts. `unavailable` means that no list has loaded or the index is
+ * missing or corrupt.
  * Callers must never wait for this lookup before they open a page.
  *
  * Matching mirrors the on-device lookup in
@@ -36,7 +38,8 @@ export type WebsiteReputationCategory =
   | "malware_or_scam"
   | "fake_shop_or_scam";
 
-export type WebsiteReputationListStatus = "current" | "stale" | "unavailable";
+/** `loaded`: Cloud holds a validated copy of the list, of any age. */
+export type WebsiteReputationListStatus = "loaded" | "unavailable";
 
 /** Public, non-sensitive description of one threat list in the served snapshot. */
 export interface WebsiteReputationListFreshness {
@@ -44,7 +47,7 @@ export interface WebsiteReputationListFreshness {
   source: string;
   category: WebsiteReputationCategory;
   status: WebsiteReputationListStatus;
-  /** Publication time stated by the list publisher (ISO 8601), when known. */
+  /** Publication time stated by the list publisher (ISO 8601), when known. Informational only. */
   publishedAt: string | null;
   /** Time Cloud downloaded and validated this list (ISO 8601). */
   fetchedAt: string | null;
@@ -52,10 +55,13 @@ export interface WebsiteReputationListFreshness {
   sha256: string | null;
 }
 
-/** `current`: every list is current. `degraded`: some lists are missing or stale. */
+/**
+ * `complete`: every list has loaded. `partial`: at least one list has loaded.
+ * `unavailable`: no list has loaded, or the index is missing or corrupt.
+ */
 export type WebsiteReputationIndexStatus =
-  | "current"
-  | "degraded"
+  | "complete"
+  | "partial"
   | "unavailable";
 
 export interface WebsiteReputationLookupRequest {
@@ -66,7 +72,7 @@ export interface WebsiteReputationLookupRequest {
 export interface WebsiteReputationMatch {
   /** Full lowercase hex SHA-256 of a listed host. */
   hash: string;
-  /** IDs of current lists that contain this host. */
+  /** IDs of loaded lists that contain this host. */
   lists: string[];
 }
 
@@ -91,7 +97,7 @@ export type WebsiteReputationVerdict =
   | {
       status: "unavailable";
       host: string | null;
-      reason: "invalid-address" | "local-address" | "stale" | "unavailable";
+      reason: "invalid-address" | "local-address" | "unavailable";
     };
 
 export interface WebsiteHostCandidate {
@@ -205,8 +211,8 @@ export function websiteReputationWarning(
 
 /**
  * Builds a verdict from local candidate hashes and a lookup response. A hit on
- * any current list is `listed` even when another list is unavailable. Without
- * a hit, only a fully current index gives `not_listed`.
+ * any loaded list is `listed`. Without a hit, `not_listed` needs at least one
+ * loaded list; otherwise the result is `unavailable`. List age is ignored.
  */
 export function websiteReputationVerdict(
   host: string,
@@ -225,7 +231,7 @@ export function websiteReputationVerdict(
       .map((id) => lists.get(id))
       .filter(
         (list): list is WebsiteReputationListFreshness =>
-          list?.status === "current",
+          list?.status === "loaded",
       );
     if (listed?.length) {
       const sources = [...new Set(listed.map((list) => list.source))];
@@ -240,13 +246,9 @@ export function websiteReputationVerdict(
       };
     }
   }
-  if (response.status === "current")
+  if (response.status !== "unavailable")
     return { status: "not_listed", host, label: "No known threat" };
-  return {
-    status: "unavailable",
-    host,
-    reason: response.status === "degraded" ? "stale" : "unavailable",
-  };
+  return { status: "unavailable", host, reason: "unavailable" };
 }
 
 export interface WebsiteReputationClientOptions {

@@ -2,8 +2,8 @@
  * Scheduled ingestion for the website reputation index.
  *
  * Downloads only the fixed public threat lists in `WEBSITE_THREAT_FEEDS`,
- * validates format, size and publication time, records a SHA-256 of each
- * list body, and builds the compact hash index in R2. A list that fails keeps
+ * validates format and size, records the publication time, fetch time and
+ * SHA-256 of each list body as provenance, and builds the compact hash index in R2. A list that fails keeps
  * its last-good body; a run that cannot build anything leaves the previous
  * snapshot in place. Visited addresses are never fetched or stored here.
  */
@@ -17,7 +17,6 @@ import {
   SHARD_COUNT,
   ShardBuilder,
   scanThreatList,
-  validFeedTime,
   WEBSITE_REPUTATION_MANIFEST_KEY,
   WEBSITE_THREAT_FEEDS,
   type WebsiteReputationManifest,
@@ -55,17 +54,21 @@ export async function readBoundedText(response: Response, maxBytes: number): Pro
   }
 }
 
-/** Download and validate one list. Mirrors the on-device `downloadThreatFeed`. */
+/**
+ * Download and validate one list. Mirrors the on-device `downloadThreatFeed`.
+ * The publication time is recorded for provenance only; list age is never a
+ * reason to reject a list.
+ */
 export async function downloadThreatFeed(
   feed: WebsiteThreatFeed,
   fetchImpl: typeof fetch,
-  now: number,
-): Promise<{ body: string; publishedAt: number; entries: number }> {
+): Promise<{ body: string; publishedAt: string | null; entries: number }> {
   const headers = { "user-agent": USER_AGENT };
-  const validate = (body: string, publishedAt: number) => {
-    if (!validFeedTime(publishedAt, now)) throw new Error("list is expired or has no valid date");
-    return { body, publishedAt, entries: scanThreatList(body, feed).entries };
-  };
+  const validate = (body: string, publishedAt: number) => ({
+    body,
+    publishedAt: Number.isFinite(publishedAt) ? new Date(publishedAt).toISOString() : null,
+    entries: scanThreatList(body, feed).entries,
+  });
   try {
     const response = await fetchImpl(feed.url, {
       headers,
@@ -161,7 +164,7 @@ export async function refreshWebsiteReputationIndex(
       bit: null,
     };
     try {
-      const { body, publishedAt, entries } = await downloadThreatFeed(feed, fetchImpl, now());
+      const { body, publishedAt, entries } = await downloadThreatFeed(feed, fetchImpl);
       const digest = sha256(body);
       const fetchedAt = new Date(now()).toISOString();
       const stored = bucket.head ? await bucket.head(websiteReputationListKey(feed.id)) : null;
@@ -171,7 +174,7 @@ export async function refreshWebsiteReputationIndex(
           customMetadata: {
             sha256: digest,
             url: feed.url,
-            publishedAt: new Date(publishedAt).toISOString(),
+            ...(publishedAt ? { publishedAt } : {}),
             fetchedAt,
             entries: String(entries),
           },
@@ -179,15 +182,15 @@ export async function refreshWebsiteReputationIndex(
       }
       outcomes.push({
         ...base,
-        state: "current",
-        publishedAt: new Date(publishedAt).toISOString(),
+        state: "refreshed",
+        publishedAt,
         fetchedAt,
         sha256: digest,
         bytes: new TextEncoder().encode(body).length,
         entries,
       });
     } catch (error) {
-      // Keep the last-good list. Its age decides freshness at lookup time.
+      // Keep the last-good list. It counts at any age.
       const lastGood = await storedBody(bucket, feed).catch(() => null);
       if (lastGood) {
         outcomes.push({
