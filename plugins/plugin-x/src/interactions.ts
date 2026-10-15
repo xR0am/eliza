@@ -1287,8 +1287,9 @@ ${tweet.text}`;
       }
       // X has no idempotency key for posts. Persist a no-replay barrier before
       // the request, as the DM path does, so a timeout or a failure after the
-      // first chunk cannot post a second public reply on the next poll. Only
-      // an explicit refusal of the first chunk reopens the mention.
+      // first chunk cannot post a second public reply on the next poll. The
+      // mention reopens only when no post request was issued (auth rotation,
+      // media fetch or upload failure) or X explicitly refused the first chunk.
       const settledKey = mentionReplySettledKey(
         this.client.accountId,
         normalizedTweet.id,
@@ -1300,6 +1301,7 @@ ${tweet.text}`;
         throw error;
       }
       let responseMemories: Memory[];
+      let postRequests = 0;
       try {
         responseMemories = await sendChunkedTweet(
           this.client,
@@ -1307,10 +1309,20 @@ ${tweet.text}`;
           message.roomId,
           normalizedTweet.username,
           tweetToReplyTo,
+          {
+            onPostRequest: () => {
+              postRequests += 1;
+            },
+          },
         );
       } catch (error) {
         deliveryError = error;
-        if (isExplicitTwitterRejection(error)) {
+        // error-policy:J2 nothing reached X, or X explicitly refused the first
+        // chunk: reopen the mention. Any other failure keeps the tombstone.
+        if (
+          postRequests === 0 ||
+          (postRequests === 1 && isExplicitTwitterRejection(error))
+        ) {
           await this.runtime.deleteCache(settledKey);
         } else {
           await this.runtime.setCache(settledKey, "indeterminate");

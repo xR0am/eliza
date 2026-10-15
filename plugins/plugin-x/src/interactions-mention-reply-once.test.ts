@@ -58,8 +58,17 @@ function createRuntime(settings: Record<string, string> = {}) {
  * updated through the same `record`/`get` methods the production code uses, so
  * both `sendTweet` and `processMentionTweets` observe one shared cursor.
  */
-function createClient(runtime: IAgentRuntime, send: ReturnType<typeof vi.fn>) {
+function createClient(
+  runtime: IAgentRuntime,
+  send: ReturnType<typeof vi.fn>,
+  options: {
+    uploadMedia?: ReturnType<typeof vi.fn>;
+    /** True while the next acquired session is rotated before it is used. */
+    rotateNextSession?: () => boolean;
+  } = {},
+) {
   let cursor: bigint | null = null;
+  const rotatedSessions = new Set<unknown>();
   const authenticatedProfile = {
     id: PROFILE_ID,
     username: "bot",
@@ -69,6 +78,7 @@ function createClient(runtime: IAgentRuntime, send: ReturnType<typeof vi.fn>) {
   };
   const twitterClient = {
     sendTweet: send,
+    uploadMedia: options.uploadMedia ?? vi.fn(async () => "media-1"),
     getTweetsV2: vi.fn(async () => []),
   };
   const client = {
@@ -77,14 +87,19 @@ function createClient(runtime: IAgentRuntime, send: ReturnType<typeof vi.fn>) {
     profile: authenticatedProfile,
     twitterClient,
     withAuthenticatedSession: vi.fn(
-      async (operation: (session: unknown) => Promise<unknown>) =>
-        operation({
+      async (operation: (session: unknown) => Promise<unknown>) => {
+        const session = {
           client: twitterClient,
           profile: authenticatedProfile,
           revision: 1,
-        }),
+        };
+        if (options.rotateNextSession?.()) rotatedSessions.add(session);
+        return operation(session);
+      },
     ),
-    isAuthenticatedSessionCurrent: vi.fn(() => true),
+    isAuthenticatedSessionCurrent: vi.fn(
+      (session: unknown) => !rotatedSessions.has(session),
+    ),
     getLatestCheckedTweetId: vi.fn((profileId: string) =>
       profileId === PROFILE_ID ? cursor : null,
     ),
@@ -121,14 +136,18 @@ function handleMessageOf(runtime: ReturnType<typeof createRuntime>) {
 
 const LONG_REPLY = `${"part one ".repeat(40)}${"part two ".repeat(40)}`.trim();
 
-function replyingRuntime() {
+function replyingRuntime(
+  reply: { text: string; attachments?: unknown[] } = { text: LONG_REPLY },
+  beforeReply?: () => void,
+) {
   const runtime = createRuntime();
   vi.mocked(handleMessageOf(runtime)).mockImplementation((async (
     _runtime: unknown,
     _message: unknown,
     callback: (c: { text: string }) => Promise<unknown>,
   ) => {
-    await callback({ text: LONG_REPLY });
+    beforeReply?.();
+    await callback(reply);
     return { responseMessages: [] };
   }) as never);
   return runtime;
@@ -198,6 +217,75 @@ describe("mention reply is posted at most once", () => {
     await poll(interactions);
 
     expect(handleMessageOf(runtime)).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a reply when credentials rotate before its first chunk is sent", async () => {
+    // The rotation lands after the poll acquired its session and before the
+    // reply's own session is used, so no post request is ever issued.
+    let rotationArmed = false;
+    let rotated = false;
+    const runtime = replyingRuntime(undefined, () => {
+      if (!rotated) rotationArmed = true;
+    });
+    const send = vi.fn(async () => ({
+      data: { data: { id: "2000000000000000001", text: "ok" } },
+    }));
+    const client = createClient(runtime, send, {
+      rotateNextSession: () => {
+        if (!rotationArmed) return false;
+        rotationArmed = false;
+        rotated = true;
+        return true;
+      },
+    });
+    const interactions = new TwitterInteractionClient(
+      client,
+      runtime,
+      {} as TwitterClientState,
+    );
+
+    await poll(interactions);
+    expect(send).not.toHaveBeenCalled();
+    await poll(interactions);
+
+    expect(handleMessageOf(runtime)).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalled();
+  });
+
+  it("retries a reply whose media upload failed before any post was sent", async () => {
+    const runtime = replyingRuntime({
+      text: "here is the picture",
+      attachments: [
+        {
+          id: "image-1",
+          url: "data:image/png;base64,iVBORw0KGgo=",
+          contentType: "image",
+        },
+      ],
+    });
+    let uploads = 0;
+    const uploadMedia = vi.fn(async () => {
+      uploads += 1;
+      if (uploads === 1)
+        throw Object.assign(new Error("Service Unavailable"), { code: 503 });
+      return "media-1";
+    });
+    const send = vi.fn(async () => ({
+      data: { data: { id: "2000000000000000001", text: "ok" } },
+    }));
+    const client = createClient(runtime, send, { uploadMedia });
+    const interactions = new TwitterInteractionClient(
+      client,
+      runtime,
+      {} as TwitterClientState,
+    );
+
+    await poll(interactions);
+    expect(send).not.toHaveBeenCalled();
+    await poll(interactions);
+
+    expect(handleMessageOf(runtime)).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

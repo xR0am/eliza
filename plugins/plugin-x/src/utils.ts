@@ -317,6 +317,14 @@ export async function sendChunkedTweet(
   roomId: UUID,
   _twitterUsername: string,
   inReplyTo?: string,
+  options: {
+    /**
+     * Called synchronously right before each chunk's post request is issued.
+     * Callers use it to tell "nothing reached X" (auth, media fetch or upload
+     * failures) from an outcome X may have accepted.
+     */
+    onPostRequest?: (index: number) => void;
+  } = {},
 ): Promise<Memory[]> {
   return client.withAuthenticatedSession(async (session) => {
     const mediaData =
@@ -345,6 +353,7 @@ export async function sendChunkedTweet(
             code: "X_AUTH_SESSION_ROTATED",
           });
         }
+        options.onPostRequest?.(index);
         try {
           return await sendTweet(
             client,
