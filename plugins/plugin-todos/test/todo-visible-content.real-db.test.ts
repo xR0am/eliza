@@ -228,6 +228,22 @@ describe("TODO visible-content addressing — real PGLite (#29690)", () => {
     expect(result.effectReceipts?.[0]?.resource.id).toBe(open.id);
   });
 
+  it("prefers an exact finished match over a paraphrase of an open todo", async () => {
+    const entityId = newEntity();
+    const water = await seed(entityId, "Pay water bill");
+    await service.update({ agentId: runtime.agentId, entityId }, water.id, {
+      status: "completed",
+    });
+    const electricity = await seed(entityId, "Pay electricity bill");
+    const result = await run(say(entityId, "delete pay water bill"), {
+      action: "delete",
+      target: "Pay water bill",
+    });
+    expect(result.effectReceipts?.[0]?.resource.id).toBe(water.id);
+    const state = await rows(entityId);
+    expect(state.map((todo) => todo.id)).toEqual([electricity.id]);
+  });
+
   it("keeps update's target separate from its replacement content, and a retry replays the original rename", async () => {
     const entityId = newEntity();
     const memo = await seed(entityId, "Draft memo");
