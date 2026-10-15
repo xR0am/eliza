@@ -2787,7 +2787,11 @@ export class AgentRuntime implements IAgentRuntime {
 								});
 							}
 							return runWithActionRoutingContext(
-								{ actionName: action.name, modelClass: action.modelClass },
+								{
+									actionName: action.name,
+									modelClass: action.modelClass,
+									...(message.id ? { messageId: message.id } : {}),
+								},
 								() =>
 									action.handler(
 										this,

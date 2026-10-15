@@ -198,7 +198,10 @@ export {
 	resolveActionRolePolicyRole,
 	warnOnUnmatchedActionRolePolicyKeys,
 } from "./runtime/action-role-policy";
-export { runWithActionRoutingContext } from "./runtime/action-routing-context.ts";
+export {
+	getActionRoutingContext,
+	runWithActionRoutingContext,
+} from "./runtime/action-routing-context.ts";
 export {
 	COMPLETION_CONTEXT_SCHEMA,
 	COMPLETION_CONTEXT_SELECTION_INSTRUCTIONS,

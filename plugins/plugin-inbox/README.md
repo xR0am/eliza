@@ -22,9 +22,11 @@ A host can set `ELIZA_MANAGED_GMAIL_READ_BROKER` to its private loopback endpoin
 `http://127.0.0.1:<port>/__alpha-owner-gmail`. The host must authenticate the
 runtime's existing `ELIZA_API_TOKEN`, verify the current owner and Google read
 grant, and return `{items: InboxActionItem[]}`. Provider credentials stay in the
-host. The owner-gated INBOX list/search/summarize path uses this source.
-`INBOX_READ` reads the provider text for an exact message id returned by that
-source; the broker must verify that id belongs to the current owner and grant.
+host. The standard MESSAGE and INBOX tools use this read-only adapter.
+Each read verifies the live owner action. Exact-message text reads use MESSAGE's
+existing source identity and integrity contract. They return complete byte reads
+or an explicit error; the host does not silently shorten message text. Inbox
+queries always revalidate the grant instead of returning an older account's cache.
 It does not enable send, drafts, or mailbox changes. Without the setting the
 existing connector path is unchanged. Android hosts must supply their own
 qualified broker; a browser host test does not qualify Android.

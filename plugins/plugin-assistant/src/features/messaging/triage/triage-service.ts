@@ -84,6 +84,7 @@ export class TriageService {
   ) {}
 
   register(adapter: MessageAdapter): void {
+    if (adapter.cachePolicy === "none") this.store.forgetSource(adapter.source);
     this.adapters.set(adapter.source, adapter);
   }
 
@@ -249,7 +250,11 @@ export class TriageService {
     }
 
     const scored = await scoreMessages(runtime, all, { nowMs: opts.nowMs });
-    this.store.saveMessages(scored);
+    this.store.saveMessages(
+      scored.filter(
+        (ref) => this.adapters.get(ref.source)?.cachePolicy !== "none",
+      ),
+    );
     return rankScored(scored);
   }
 
@@ -325,7 +330,11 @@ export class TriageService {
     if (merged.length === 0 && failures.length > 0) {
       throw failures[0].error;
     }
-    this.store.saveMessages(merged);
+    this.store.saveMessages(
+      merged.filter(
+        (ref) => this.adapters.get(ref.source)?.cachePolicy !== "none",
+      ),
+    );
     merged.sort(compareMessageRefsByRecency);
     const hasMore =
       requestedLimit === null ? null : merged.length > requestedLimit;

@@ -13,10 +13,10 @@ import {
   promoteSubactionsToActions,
 } from "@elizaos/core";
 import type { HttpPlugin as Plugin } from "@elizaos/host/protocol";
-import { inboxAction, setInboxFetchers } from "./actions/inbox.ts";
-import { managedGmailMessageReadAction } from "./actions/managed-gmail-read.ts";
+import { getDefaultTriageService } from "@elizaos/plugin-assistant";
+import { inboxAction } from "./actions/inbox.ts";
 import { inboxDbSchema } from "./db/schema.ts";
-import { managedGmailReadFetcher } from "./inbox/managed-gmail-read.ts";
+import { ManagedGmailReadAdapter } from "./inbox/managed-gmail-adapter.ts";
 import { InboxMigrationService } from "./inbox/migration.ts";
 import { crossChannelContextProvider } from "./providers/cross-channel-context.ts";
 import { inboxTriageProvider } from "./providers/inbox-triage.ts";
@@ -28,11 +28,18 @@ export const inboxPlugin: Plugin = {
   dependencies: ["@elizaos/plugin-sql"],
   schema: inboxDbSchema,
   services: [InboxMigrationService],
-  // This is the OWNER-gated INBOX read path. It does not register a global
-  // MESSAGE adapter or advertise any draft/send/mailbox mutation capability.
+  // The adapter verifies the live owner action for every read. It supports
+  // both standard MESSAGE reads and the existing INBOX fan-out, without writes.
   init: async () => {
-    const gmail = managedGmailReadFetcher();
-    if (gmail) setInboxFetchers({ gmail });
+    const gmail = new ManagedGmailReadAdapter();
+    if (gmail.isAvailable()) {
+      const registry = getDefaultTriageService();
+      if (registry.getAdapter("gmail"))
+        throw new Error(
+          "A Gmail source is already registered. Select one owner transport before starting the agent.",
+        );
+      registry.register(gmail);
+    }
   },
   // Promote the INBOX_* subaction virtuals here so they exist wherever the
   // plugin loads (including standalone, without plugin-personal-assistant).
@@ -41,9 +48,6 @@ export const inboxPlugin: Plugin = {
   // INBOX_TRIAGE — the `inbox_triage` optimized-prompt consumer — instead of
   // the list/summarize reads (#11383).
   actions: [
-    ...(process.env.ELIZA_MANAGED_GMAIL_READ_BROKER
-      ? [managedGmailMessageReadAction]
-      : []),
     ...promoteSubactionsToActions(inboxAction, {
       overrides: {
         triage: {

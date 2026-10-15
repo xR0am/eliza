@@ -241,6 +241,8 @@ export interface ManageResult {
 
 export interface MessageAdapter {
   readonly source: MessageSource;
+  /** Owner/grant-scoped sources can opt out of the shared metadata cache. */
+  readonly cachePolicy?: "none";
   isAvailable(runtime: IAgentRuntime): boolean;
   capabilities(): MessageAdapterCapabilities;
   listMessages(

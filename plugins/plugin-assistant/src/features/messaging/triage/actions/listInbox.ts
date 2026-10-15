@@ -125,7 +125,15 @@ export const listInboxAction: Action = {
       // refs answer only requests without that scope. A scoped request goes
       // to the live pull below.
       const scoped =
-        params.worldIds !== undefined || params.channelIds !== undefined;
+        params.worldIds !== undefined ||
+        params.channelIds !== undefined ||
+        service
+          .listAdapters()
+          .some(
+            (adapter) =>
+              adapter.cachePolicy === "none" &&
+              (!params.sources || params.sources.includes(adapter.source)),
+          );
       const requestedSources = params.sources;
       let messages = scoped
         ? []

@@ -6,7 +6,10 @@ import type { InboxFetcher, InboxItem } from "../actions/inbox.ts";
 const MAX_BYTES = 256 * 1024;
 const failure = (message: string) =>
   new ElizaError(message, { code: "MANAGED_GMAIL_READ_UNAVAILABLE" });
-function transport(env: NodeJS.ProcessEnv, request: typeof fetch) {
+export function managedGmailReadTransport(
+  env: NodeJS.ProcessEnv,
+  request: typeof fetch,
+) {
   const endpoint = env.ELIZA_MANAGED_GMAIL_READ_BROKER;
   if (!endpoint) return undefined;
   let url: URL;
@@ -81,19 +84,21 @@ export function managedGmailReadFetcher(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
 ): InboxFetcher | undefined {
-  const call = transport(env, request);
+  const call = managedGmailReadTransport(env, request);
   if (!call) return undefined;
   return async ({ limit = 25, query, since }) => {
     if (
       !Number.isSafeInteger(limit) ||
       limit < 1 ||
-      limit > 50 ||
+      limit > 51 ||
       (query !== undefined &&
         (typeof query !== "string" || query.length > 4096)) ||
       (since !== undefined &&
         (typeof since !== "string" || !Number.isFinite(Date.parse(since))))
     )
-      throw failure("Choose a valid Gmail read range of at most 50 messages.");
+      throw failure(
+        "Choose a valid Gmail read range of at most 50 messages plus one overflow probe.",
+      );
     const data = await call({
       limit,
       ...(query === undefined ? {} : { query }),
@@ -146,7 +151,7 @@ export function managedGmailMessageReader(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
 ) {
-  const call = transport(env, request);
+  const call = managedGmailReadTransport(env, request);
   if (!call) return undefined;
   return async (messageId: string) => {
     if (!/^alpha-gmail:[a-f0-9]{64}:[A-Za-z0-9_-]{1,160}$/.test(messageId))
@@ -165,7 +170,11 @@ export function managedGmailMessageReader(
       row.id !== messageId ||
       typeof row.from !== "string" ||
       typeof row.subject !== "string" ||
-      typeof row.bodyText !== "string"
+      typeof row.bodyText !== "string" ||
+      typeof row.receivedAt !== "string" ||
+      !Number.isFinite(Date.parse(row.receivedAt)) ||
+      typeof row.hasAttachments !== "boolean" ||
+      typeof row.unread !== "boolean"
     )
       throw failure("The Gmail message did not match the selected source.");
     return {
@@ -173,6 +182,9 @@ export function managedGmailMessageReader(
       from: row.from,
       subject: row.subject,
       bodyText: row.bodyText,
+      receivedAt: row.receivedAt,
+      hasAttachments: row.hasAttachments,
+      unread: row.unread,
     };
   };
 }
