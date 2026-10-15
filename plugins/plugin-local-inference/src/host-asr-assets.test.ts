@@ -30,11 +30,11 @@ describe("host ASR asset selection", () => {
 		);
 		expect(assets[0]?.bytes).toBe(330_632_256);
 		expect(
-			selectHostAsrAssets(bundle([phonon]), { ELIZA_ASR_BACKEND: "auto" }),
+			selectHostAsrAssets(bundle([phonon]), { ELIZA_ASR_BACKEND: "ggml" }),
 		).toBe(PHONON_ASR_ASSETS);
 		expect(
 			selectHostAsrAssets(bundle([phonon]), {
-				ELIZA_ASR_BACKEND: " Parakeet ",
+				ELIZA_ASR_BACKEND: "GGML",
 			}),
 		).toBe(PHONON_ASR_ASSETS);
 	});
@@ -49,11 +49,49 @@ describe("host ASR asset selection", () => {
 		);
 	});
 
-	it("refuses an ELIZA_ASR_BACKEND other than parakeet", () => {
-		for (const value of ["qwen3", "mtmd", "whisper"]) {
+	it("refuses overrides the native ASR registry cannot serve", () => {
+		for (const value of [
+			"qwen3",
+			"mtmd",
+			"whisper",
+			"parakeet",
+			"auto",
+			" ggml ",
+		]) {
 			expect(() =>
 				selectHostAsrAssets(bundle([phonon]), { ELIZA_ASR_BACKEND: value }),
 			).toThrow("Invalid speech ASR backend");
+		}
+	});
+
+	it("matches native global fallback and per-operation precedence", () => {
+		const root = bundle([phonon]);
+		expect(() =>
+			selectHostAsrAssets(root, { ELIZA_BACKEND: "parakeet" }),
+		).toThrow("Invalid speech ASR backend");
+		expect(() =>
+			selectHostAsrAssets(root, {
+				ELIZA_ASR_BACKEND: "",
+				ELIZA_BACKEND: "auto",
+			}),
+		).toThrow("Invalid speech ASR backend");
+		for (const value of [
+			"ggml",
+			"llama.cpp",
+			"llamacpp",
+			"llama",
+			"intree",
+			"default",
+		]) {
+			expect(selectHostAsrAssets(root, { ELIZA_BACKEND: value })).toBe(
+				PHONON_ASR_ASSETS,
+			);
+			expect(
+				selectHostAsrAssets(root, {
+					ELIZA_ASR_BACKEND: value,
+					ELIZA_BACKEND: "parakeet",
+				}),
+			).toBe(PHONON_ASR_ASSETS);
 		}
 	});
 

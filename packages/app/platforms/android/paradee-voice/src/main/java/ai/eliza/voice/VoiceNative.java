@@ -10,11 +10,11 @@ package ai.eliza.voice;
  */
 final class VoiceNative {
     static {
-        // Phonon-2 on the Parakeet-TDT backend is the only ASR. The library
-        // reads ELIZA_ASR_BACKEND when it loads the ASR region; pin it so a
-        // stale file under asr/ never selects another backend.
+        // Phonon-2 runs on the in-tree ggml path. "parakeet" is a model
+        // architecture, not a registered backend override. The installed
+        // bundle pins and verifies the only permitted ASR model.
         try {
-            android.system.Os.setenv("ELIZA_ASR_BACKEND", "parakeet", true);
+            android.system.Os.setenv("ELIZA_ASR_BACKEND", "ggml", true);
         } catch (android.system.ErrnoException unset) {
             throw new IllegalStateException("Cannot configure the Phonon-2 ASR backend", unset);
         }

@@ -440,6 +440,9 @@ const baseConfigure = [
   "-DMISAKI_G2P_ESPEAK=ON",
   `-DMISAKI_ESPEAK_INCLUDE_DIR=${path.join(espeakPrefix, "include")}`,
   `-DMISAKI_ESPEAK_LIBRARY=${path.join(espeakPrefix, "lib", "libespeak-ng.a")}`,
+  // Android exposes still-image decoding, not the ffmpeg subprocess video helper.
+  // The latter requires posix_spawn (API 28); retain the existing API floor.
+  "-DMTMD_VIDEO=OFF",
   "-DLLAMA_BUILD_COMMON=ON",
   "-DLLAMA_BUILD_EXAMPLES=OFF",
   "-DLLAMA_BUILD_TESTS=OFF",

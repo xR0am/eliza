@@ -7,7 +7,7 @@
  * Phonon-2 GGUF `asr/phonon-2-fv5.gguf` (see host-asr-assets.ts), which runs
  * on the library's Parakeet-TDT backend (CC-BY-4.0; the NOTICE ships with it).
  * ELIZA_ASR_THREADS sets the decode threads; ELIZA_ASR_BACKEND may only be
- * unset, `auto` or `parakeet`. The worker loads the ASR region and pinned
+ * unset or an in-tree selector such as `ggml`. The worker loads the ASR region and pinned
  * Silero VAD; it never loads a text model, downloads or falls back.
  *
  * Requests: `{id, op:"transcribe", pcm, encoding:"s16"|"f32", sampleRate}`

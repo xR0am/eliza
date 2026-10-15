@@ -6,8 +6,8 @@
  * libelizainference's Parakeet-TDT backend. Phonon-2 is the only local ASR.
  * `asr/` must hold no other GGUF, so the library can load nothing but the
  * bytes the worker hashed. `ELIZA_ASR_BACKEND`, which the library reads in
- * `mmap_acquire("asr")`, may be unset, `auto` or `parakeet`; any other value
- * is refused.
+ * the ASR calls, must select the in-tree ggml implementation. The native
+ * registry also honors ELIZA_BACKEND when the per-operation override is empty.
  */
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -30,15 +30,30 @@ export const PHONON_ASR_ASSETS: readonly PinnedSpeechAsset[] = [
 
 /**
  * Check that `<root>/asr/` holds only the Phonon-2 GGUF and that
- * `ELIZA_ASR_BACKEND` selects the parakeet backend. Throws a fixed message
+ * the effective backend override selects the in-tree ggml path. Throws a fixed message
  * otherwise. Hashing is the caller's job.
  */
 export function selectHostAsrAssets(
 	root: string,
 	env: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly PinnedSpeechAsset[] {
-	const forced = env.ELIZA_ASR_BACKEND?.trim().toLowerCase() ?? "";
-	if (forced !== "" && forced !== "auto" && forced !== "parakeet")
+	// Match backend-registry.h: case-insensitive aliases, no whitespace trimming.
+	const forced = (
+		env.ELIZA_ASR_BACKEND ||
+		env.ELIZA_BACKEND ||
+		""
+	).toLowerCase();
+	if (
+		![
+			"",
+			"ggml",
+			"llama.cpp",
+			"llamacpp",
+			"llama",
+			"intree",
+			"default",
+		].includes(forced)
+	)
 		throw Error("Invalid speech ASR backend");
 	const expected = PHONON_ASR_ASSETS.map((asset) =>
 		asset.path.slice("asr/".length),

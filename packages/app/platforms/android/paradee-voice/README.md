@@ -11,7 +11,7 @@ inference server, account or network use.
   (Parakeet-TDT 0.6B, five-value weights) at `<bundle>/asr/phonon-2-fv5.gguf`:
   batch (16 kHz mono in) and streaming (any rate). Phonon-2 is the only ASR
   model; the `mobile-voice` catalog record pins it. `VoiceNative` sets
-  `ELIZA_ASR_BACKEND=parakeet` before it loads the library. The GGUF is not
+  `ELIZA_ASR_BACKEND=ggml` before it loads the library. The GGUF is not
   published; build it with `bun packages/app/scripts/voice/build-phonon2-gguf.ts`
   (it converts the pinned source and checks every sha256). Use `--help` for paths.
 
