@@ -1,0 +1,41 @@
+name: Paradee native stream contract
+on:
+  pull_request:
+    paths:
+      - 'packages/app/platforms/android/paradee-voice/**'
+      - 'packages/app/platforms/android/app/src/main/elizavoice-jni/**'
+      - 'packages/app/platforms/android/app/src/main/java/ai/elizaos/app/ElizaVoiceNative.java'
+      - 'packages/app/scripts/paradee-voice/stream-contract*'
+      - 'packages/app/scripts/paradee-voice/stream-contract/**'
+      - 'plugins/plugin-local-inference/native/llama.cpp'
+      - '.github/workflows/paradee-stream-contract.yml'
+  workflow_dispatch:
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Exercise actual Java wrapper with a controlled native boundary
+        run: node --test packages/app/scripts/paradee-voice/stream-contract.test.mjs
+      - name: Load exact native headers
+        run: git submodule update --init --depth 1 plugins/plugin-local-inference/native/llama.cpp
+      - name: Install fixed Android compiler
+        run: sdkmanager 'ndk;28.2.13676358'
+      - name: Compile both native registration surfaces and ABIs
+        run: |
+          compiler="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for abi in aarch64 x86_64; do
+            for full in 0 1; do
+              "$compiler/$abi-linux-android23-clang++" -std=c++17 -fsyntax-only -DELIZA_VOICE_JNI_FULL=$full \
+                -Iplugins/plugin-local-inference/native/llama.cpp/tools/omnivoice/include \
+                packages/app/platforms/android/app/src/main/elizavoice-jni/elizavoice-jni.cpp
+            done
+          done
