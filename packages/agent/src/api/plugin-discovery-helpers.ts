@@ -1466,9 +1466,8 @@ export function readBundledPluginPackageMetadata(
     seen.add(pkgPath);
 
     try {
-      const pkg = JSON.parse(
-        fs.readFileSync(pkgPath, "utf-8"),
-      ) as PackageJsonLike;
+      const pkg = readJsonFile<PackageJsonLike>(pkgPath);
+      if (!pkg) continue;
       const extracted = extractPluginPackageMetadata(pkg, { dirName, npmName });
 
       if (!metadata.description && extracted.description) {
