@@ -180,6 +180,24 @@ describe("runVfsBuiltinShell separators", () => {
 });
 
 describe("runVfsBuiltinShell quoted redirect targets", () => {
+  it.each([
+    ['report".txt"', "report.txt"],
+    ['"two "words.txt', "two words.txt"],
+    ["two\\ words.txt", "two words.txt"],
+    ["'\"quoted.txt\"'", '"quoted.txt"'],
+  ])(
+    "uses shell word parsing for redirect target %s",
+    async (target, filename) => {
+      const result = await sh(`echo hello > ${target} && cat ${target}`);
+      expect(await vfs().readFile(filename)).toBe("hello\n");
+      expect(result).toMatchObject({
+        exitCode: 0,
+        stdout: "hello\n",
+        stderr: "",
+      });
+    },
+  );
+
   it("writes to a single-quoted target containing a space", async () => {
     const result = await sh(
       "echo hello > 'two words.txt' && cat 'two words.txt'",
