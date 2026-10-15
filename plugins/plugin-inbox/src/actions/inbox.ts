@@ -254,13 +254,17 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
         );
       }
       const refs = query
-        ? await service.search(runtime, {
-            sources: [source],
-            requester,
-            content: query,
-            sinceMs: parseSinceMs(since),
-            ...(limit === undefined ? {} : { limit }),
-          })
+        ? await service.search(
+            runtime,
+            {
+              sources: [source],
+              requester,
+              content: query,
+              sinceMs: parseSinceMs(since),
+              ...(limit === undefined ? {} : { limit }),
+            },
+            { probeOverflow: false },
+          )
         : await service.triage(runtime, {
             sources: [source],
             requester,

@@ -268,8 +268,17 @@ export class TriageService {
   async search(
     runtime: IAgentRuntime,
     filters: SearchMessagesFilters,
+    options: { probeOverflow?: boolean } = {},
   ): Promise<MessageRef[]> {
-    return (await this.searchWithReceipt(runtime, filters)).refs;
+    // INBOX already requests an overflow row and owns its cap receipt.
+    // Preserve existing search behavior for every other caller.
+    return (
+      await this.searchInternal(
+        runtime,
+        filters,
+        options.probeOverflow !== false,
+      )
+    ).refs;
   }
 
   /**
@@ -280,6 +289,14 @@ export class TriageService {
   async searchWithReceipt(
     runtime: IAgentRuntime,
     filters: SearchMessagesFilters,
+  ): Promise<MessageSearchResult> {
+    return this.searchInternal(runtime, filters, true);
+  }
+
+  private async searchInternal(
+    runtime: IAgentRuntime,
+    filters: SearchMessagesFilters,
+    probeOverflow: boolean,
   ): Promise<MessageSearchResult> {
     const requested = filters.sources ?? this.listRegisteredSources();
     const succeeded: MessageSource[] = [];
@@ -294,7 +311,7 @@ export class TriageService {
         ? Math.floor(filters.limit)
         : null;
     const probeFilters =
-      requestedLimit === null
+      requestedLimit === null || !probeOverflow
         ? filters
         : { ...filters, limit: requestedLimit + 1 };
     for (const source of requested) {
@@ -339,7 +356,9 @@ export class TriageService {
     );
     merged.sort(compareMessageRefsByRecency);
     const hasMore =
-      requestedLimit === null ? null : merged.length > requestedLimit;
+      requestedLimit === null || !probeOverflow
+        ? null
+        : merged.length > requestedLimit;
     return {
       refs: requestedLimit === null ? merged : merged.slice(0, requestedLimit),
       receipt: {
