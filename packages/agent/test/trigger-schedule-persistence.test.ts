@@ -534,6 +534,34 @@ it("sets a second relative reminder asked later, and replays only an immediate r
     expect(retry?.text).toBe("Already set — you're covered.");
     expect(await fireTimes()).toHaveLength(1);
 
+    // Editing instructions must preserve relative-delay retry identity.
+    for (const instructions of [
+      "Remind the user to move the laundry into the dryer.",
+      "Remind the user to move the laundry.",
+    ]) {
+      const updated = await triggerAction.handler(
+        fixture.runtime,
+        message,
+        undefined,
+        {
+          parameters: { action: "update", taskId: createdIds[0], instructions },
+        },
+      );
+      expect(updated, updated?.text).toMatchObject({ success: true });
+      const repeated = await triggerAction.handler(
+        fixture.runtime,
+        message,
+        undefined,
+        {
+          parameters: { action: "create", instructions, delayMinutes: 60 },
+        },
+      );
+      expect(repeated).toMatchObject({
+        success: true,
+        data: { duplicateTaskId: createdIds[0] },
+      });
+    }
+
     // The same words 40 minutes later ask for a reminder 40 minutes later.
     vi.spyOn(Date, "now").mockReturnValue(start + 40 * 60_000);
     const later = await remindInAnHour();
