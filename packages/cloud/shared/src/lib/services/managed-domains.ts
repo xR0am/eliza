@@ -395,10 +395,19 @@ export async function syncStatus(input: SyncStatusInput): Promise<ManagedDomain>
 }
 
 /**
- * Detach a domain from any resource without deleting the row. The
- * registration itself stays active until expiration.
+ * Detach a domain from its resource. A Cloudflare-registered domain keeps its
+ * row: the registration stays active until expiration. An external domain has
+ * no registration here, only a one-time TXT proof, so detaching releases it:
+ * the row is deleted, which frees the hostname for its current owner, and a
+ * later attach must prove control again.
  */
 export async function unassignFromResource(domainId: string): Promise<ManagedDomain> {
+  const [released] = await dbWrite
+    .delete(managedDomains)
+    .where(and(eq(managedDomains.id, domainId), eq(managedDomains.registrar, "external")))
+    .returning();
+  if (released) return released;
+
   const [updated] = await dbWrite
     .update(managedDomains)
     .set({
