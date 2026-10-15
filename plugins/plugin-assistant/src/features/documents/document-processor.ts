@@ -1305,7 +1305,14 @@ async function withRateLimitRetry<T>(
   }
 }
 
-function createRateLimiter(
+/**
+ * Sliding-window throttle for provider calls during document ingestion.
+ * Enforces the configured per-minute request and token budgets; each call
+ * resolves when the budget admits it. Every admitted call is timestamped at
+ * its actual send time so a call that waited advances the window instead of
+ * letting the next call share its slot.
+ */
+export function createRateLimiter(
   requestsPerMinute: number,
   tokensPerMinute?: number,
   rateLimitEnabled: boolean = true,
@@ -1353,9 +1360,14 @@ function createRateLimiter(
       }
     }
 
-    requestTimes.push(now);
+    // Timestamp the call at its actual send time, not at the moment it
+    // arrived: `now` was captured before any wait, so pushing it would let a
+    // throttled call keep its old slot and admit the next call early — the
+    // window would slide twice as fast as real time after every wait.
+    const sentAt = Date.now();
+    requestTimes.push(sentAt);
     if (tokensPerMinute) {
-      tokenUsage.push({ timestamp: now, tokens: estimatedTokens });
+      tokenUsage.push({ timestamp: sentAt, tokens: estimatedTokens });
     }
   };
 }
