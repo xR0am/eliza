@@ -16,7 +16,7 @@ import {
 } from "../../../utils/discord-api";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 export { discordApiFetch };
 
@@ -51,6 +51,7 @@ async function discordApiRequest<T>(
   endpoint: string,
   botToken: string,
   options: RequestInit = {},
+  retry: Pick<RetryOptions, "replayUnknownOutcome"> = {},
 ): Promise<T> {
   const { data } = await withRetry<T>(
     () =>
@@ -66,7 +67,7 @@ async function discordApiRequest<T>(
       if (json.code) throw new Error(json.message || `Discord error ${json.code}`);
       return json;
     },
-    { platform: "discord", maxRetries: 3 },
+    { platform: "discord", maxRetries: 3, ...retry },
   );
   return data;
 }
@@ -85,7 +86,7 @@ async function webhookRequest<T>(webhookUrl: string, payload: Record<string, unk
       if (json.code) throw new Error(json.message || `Webhook error ${json.code}`);
       return json;
     },
-    { platform: "discord", maxRetries: 3 },
+    { platform: "discord", maxRetries: 3, replayUnknownOutcome: false },
   );
   return data;
 }
@@ -207,6 +208,7 @@ export const discordProvider: SocialMediaProvider = {
             method: "POST",
             body: JSON.stringify(payload),
           },
+          { replayUnknownOutcome: false },
         );
       } else {
         return {
@@ -226,11 +228,7 @@ export const discordProvider: SocialMediaProvider = {
       // structured { success:false } PostResult the socialMediaService caller inspects and refunds on.
     } catch (error) {
       logger.error("[Discord] Post failed", { error });
-      return {
-        platform: "discord",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("discord", error);
     }
   },
 
@@ -312,6 +310,7 @@ export const discordProvider: SocialMediaProvider = {
           method: "POST",
           body: JSON.stringify(payload),
         },
+        { replayUnknownOutcome: false },
       );
 
       return {
@@ -323,11 +322,7 @@ export const discordProvider: SocialMediaProvider = {
       // error-policy:J1 transport boundary — an outbound Discord reply failure becomes the
       // structured { success:false } PostResult the socialMediaService caller inspects and refunds on.
     } catch (error) {
-      return {
-        platform: "discord",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("discord", error);
     }
   },
 
