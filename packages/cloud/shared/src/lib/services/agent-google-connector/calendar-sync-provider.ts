@@ -248,6 +248,33 @@ function snapshot(raw: Json): CalendarSyncSnapshot {
       (!Array.isArray(raw.reminders.overrides) || raw.reminders.overrides.length === 0),
   };
 }
+/**
+ * Google echoes attendees it adds itself (the organizer's own entry, booked resources).
+ * Compare only guests the request controls, so an applied create is not misread as changed.
+ */
+function requestedView(
+  raw: Json,
+  saved: CalendarSyncEvent,
+  requested: CalendarSyncEvent,
+): CalendarSyncEvent {
+  const asked = new Set(requested.attendees.map((attendee) => attendee.email)),
+    added = new Set(
+      (Array.isArray(raw.attendees) ? raw.attendees : [])
+        .filter(
+          (a): a is Json =>
+            record(a) &&
+            typeof a.email === "string" &&
+            (a.organizer === true || a.self === true || a.resource === true),
+        )
+        .map((a) => String(a.email).toLowerCase()),
+    );
+  return {
+    ...saved,
+    attendees: saved.attendees.filter(
+      (attendee) => asked.has(attendee.email) || !added.has(attendee.email),
+    ),
+  };
+}
 function etag(value: string) {
   if (!atom(value, 1024) || value === "*")
     throw reject("An exact Google event revision is required.");
@@ -515,20 +542,25 @@ export class ManagedCalendarSyncProvider {
           "precondition_failed",
           "This operation key is already bound to different event content.",
         );
+      // The event exists and is bound to this key and content, so the create was applied.
+      // Later divergence is an uncertain receipt, never "nothing was applied".
       const saved = snapshot(raw);
       if (saved.visibility !== "private" || !saved.remindersDisabled)
         throw new CalendarSyncError(
           409,
           "CALENDAR_SYNC_CREATE_CHANGED",
-          "precondition_failed",
-          "The event privacy or reminders changed after its private create. Review its current settings.",
+          "unknown",
+          "This event was created, but its privacy or reminders changed afterward. Review its current settings.",
         );
-      if ((await digest(JSON.stringify(googleBody(saved.event)))) !== fingerprint)
+      if (
+        (await digest(JSON.stringify(googleBody(requestedView(raw, saved.event, event))))) !==
+        fingerprint
+      )
         throw new CalendarSyncError(
           409,
           "CALENDAR_SYNC_CREATE_CHANGED",
-          "precondition_failed",
-          "The existing event changed after its original create. Review both versions.",
+          "unknown",
+          "This event was created, but it changed after its original create. Review both versions.",
         );
       return saved;
     };
