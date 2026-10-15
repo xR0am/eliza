@@ -276,3 +276,47 @@ describe("runVfsBuiltinShell word splitting", () => {
     expect(result.stderr).toContain("unterminated");
   });
 });
+
+describe("runVfsBuiltinShell grep/rg on empty files", () => {
+  function search(command: "grep" | "rg", args: readonly string[]) {
+    return runVfsBuiltinShell({
+      cwdUri: `vfs://${PROJECT}/`,
+      command,
+      args: [...args],
+    });
+  }
+
+  it.each([
+    ["grep", ["-n", "^$", "empty.txt"]],
+    ["grep", ["-v", "foo", "empty.txt"]],
+    ["rg", ["^$", "empty.txt"]],
+    ["rg", ["-v", "foo", "empty.txt"]],
+  ] as const)(
+    "%s %j selects no lines in a zero-byte file",
+    async (command, args) => {
+      await vfs().writeFile("empty.txt", "");
+
+      const result = await search(command, args);
+
+      expect(result).toMatchObject({ exitCode: 1, stdout: "", stderr: "" });
+    },
+  );
+
+  it.each([
+    ["grep", ["-n", "^$", "blank.txt"]],
+    ["rg", ["^$", "blank.txt"]],
+  ] as const)(
+    "%s %j matches the one blank line of a newline-only file",
+    async (command, args) => {
+      await vfs().writeFile("blank.txt", "\n");
+
+      const result = await search(command, args);
+
+      expect(result).toMatchObject({
+        exitCode: 0,
+        stdout: "blank.txt:1:\n",
+        stderr: "",
+      });
+    },
+  );
+});
