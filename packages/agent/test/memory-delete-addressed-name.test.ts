@@ -19,12 +19,17 @@ afterEach(async () => {
 });
 
 it.each([
-  ["Eliza", "<@1490833123> Eliza forget my favorite tea"],
-  ["Zoë", "<@1490833123> Zoë forget my favorite tea"],
-  ["미나", "<@1490833123> 미나 forget my favorite tea"],
+  ["Eliza", "<@1490833123> Eliza forget my favorite tea", true],
+  ["Eliza", "please delete my favorite tea", true],
+  ["Eliza", "remove my favorite tea", true],
+  ["Eliza", "could you please erase my favorite tea", true],
+  ["Eliza", 'forget the memory about "delete tea"', false],
+  ["Eliza", 'forget the memory about "remove tea"', false],
+  ["Zoë", "<@1490833123> Zoë forget my favorite tea", true],
+  ["미나", "<@1490833123> 미나 forget my favorite tea", true],
 ])(
   "drops the addressed agent name %s from the implied delete query",
-  async (agentName, text) => {
+  async (agentName, text, shouldDelete) => {
     const directory = await mkdtemp(
       path.join(tmpdir(), "memory-delete-addressed-name-"),
     );
@@ -77,7 +82,11 @@ it.each([
     const result = await memoryAction.handler(runtime, message, undefined, {
       parameters: { op: "delete", type: "facts", confirm: true },
     });
-    expect(result, JSON.stringify(result)).toMatchObject({ success: true });
-    expect(await runtime.getMemoryById(factId)).toBeNull();
+    expect(result, JSON.stringify(result)).toMatchObject({
+      success: shouldDelete,
+    });
+    const retained = await runtime.getMemoryById(factId);
+    if (shouldDelete) expect(retained).toBeNull();
+    else expect(retained?.id).toBe(factId);
   },
 );

@@ -347,6 +347,16 @@ async function main() {
     fail(`NDK ${NDK_VERSION} not installed under ${path.join(sdk, "ndk")}`);
   mkdirSync(args.workspace, { recursive: true });
   const pins = forkPins();
+  const sourceCommit = execFileSync(
+    "git",
+    ["-C", repoRoot, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
+  const nativeCommit = execFileSync(
+    "git",
+    ["-C", forkSrc, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
   // Rebuild generated assets from scratch so a removed input cannot linger.
   const bundle = path.join(args.out, BUNDLE);
   rmSync(path.join(args.out, "assets"), { recursive: true, force: true });
@@ -400,7 +410,7 @@ async function main() {
   }
   writeFileSync(
     path.join(args.out, "build-record.json"),
-    `${JSON.stringify({ inputs, abis: args.abis, files: record }, null, 2)}\n`,
+    `${JSON.stringify({ sourceCommit, nativeCommit, inputs, abis: args.abis, files: record }, null, 2)}\n`,
   );
   log(`wrote ${record.length} files under ${args.out}`);
 }
