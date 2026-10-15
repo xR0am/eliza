@@ -1,6 +1,7 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { CalendarSyncError } from "./calendar-sync-provider";
 import { createCalendarSyncRoutes } from "./calendar-sync-routes";
+
 const grant = "11111111-1111-4111-8111-111111111111";
 function fixture() {
   const calls: Array<{ op: string; args: unknown[] }> = [];
