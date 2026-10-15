@@ -243,6 +243,7 @@ export async function searchByListing(
   filters: SearchMessagesFilters,
 ): Promise<MessageRef[]> {
   const listed = await adapter.listMessages(runtime, {
+    requester: filters.requester,
     sinceMs: filters.sinceMs,
     worldIds: filters.worldIds,
     channelIds: filters.channelIds,
