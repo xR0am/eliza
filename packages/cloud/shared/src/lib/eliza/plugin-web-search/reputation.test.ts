@@ -94,6 +94,7 @@ test("listed URLs in answers are rendered as non-links", async () => {
   expect(text).not.toContain("https://paypa1-login.example/verify");
   expect(text).not.toContain("https://evil-shop.example/checkout");
 });
+
 test("a slow or failing check leaves results unchecked and adds no text", async () => {
   const slow = await annotateSearchReputation(search(), {
     timeoutMs: 20,
