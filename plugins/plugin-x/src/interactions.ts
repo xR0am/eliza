@@ -51,6 +51,7 @@ import {
   sendChunkedTweet,
   sendTextAsTweetThread,
 } from "./utils";
+import { isExplicitTwitterRejection } from "./utils/error-handler";
 import { describeTweetPhotos } from "./utils/image-descriptions";
 import {
   buildTwitterMessageMetadata,
@@ -166,6 +167,11 @@ export const messageHandlerTemplate = `
  *
  * @extends ClientBase
  */
+/** Durable per-mention reply state: egress_started, delivered or indeterminate. */
+function mentionReplySettledKey(accountId: string, tweetId: string): string {
+  return `x:mention-reply:${accountId}:${tweetId}`;
+}
+
 export class TwitterInteractionClient {
   client: ClientBase;
   runtime: IAgentRuntime;
@@ -915,9 +921,12 @@ ${tweet.text}`;
             memory.content.inReplyTo === tweetId ||
             memory.content.inReplyTo === tweet.id,
         );
-        if (hasExistingReply) {
+        const replySettled = await this.runtime.getCache<string>(
+          mentionReplySettledKey(this.client.accountId, tweet.id),
+        );
+        if (hasExistingReply || replySettled) {
           logger.log(
-            `Already responded to tweet ${tweet.id} (found in conversation history), skipping`,
+            `Already responded to tweet ${tweet.id} (${hasExistingReply ? "found in conversation history" : `reply ${replySettled}`}), skipping`,
           );
           // A durable reply can survive a crash before the cursor was saved.
           this.assertCurrentSession(session);
@@ -1279,7 +1288,23 @@ ${tweet.text}`;
         deliveryError = error;
         throw error;
       }
+      // X has no idempotency key for posts. Persist a no-replay barrier before
+      // the request, as the DM path does, so a timeout or a failure after the
+      // first chunk cannot post a second public reply on the next poll. The
+      // mention reopens only when no post request was issued (auth rotation,
+      // media fetch or upload failure) or X explicitly refused the first chunk.
+      const settledKey = mentionReplySettledKey(
+        this.client.accountId,
+        normalizedTweet.id,
+      );
+      try {
+        await this.runtime.setCache(settledKey, "egress_started");
+      } catch (error) {
+        deliveryError = error;
+        throw error;
+      }
       let responseMemories: Memory[];
+      let postRequests = 0;
       try {
         responseMemories = await sendChunkedTweet(
           this.client,
@@ -1287,11 +1312,27 @@ ${tweet.text}`;
           message.roomId,
           normalizedTweet.username,
           tweetToReplyTo,
+          {
+            onPostRequest: () => {
+              postRequests += 1;
+            },
+          },
         );
       } catch (error) {
         deliveryError = error;
+        // error-policy:J2 nothing reached X, or X explicitly refused the first
+        // chunk: reopen the mention. Any other failure keeps the tombstone.
+        if (
+          postRequests === 0 ||
+          (postRequests === 1 && isExplicitTwitterRejection(error))
+        ) {
+          await this.runtime.deleteCache(settledKey);
+        } else {
+          await this.runtime.setCache(settledKey, "indeterminate");
+        }
         throw error;
       }
+      await this.runtime.setCache(settledKey, "delivered");
       if (responseMemories.length === 0) {
         throw new Error("Failed to get X thread receipts from response");
       }
