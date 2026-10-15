@@ -114,20 +114,32 @@ async function runScript(
   cwd: string,
   script: string,
 ): Promise<VfsBuiltinCommandResult> {
-  const segments = splitScriptSegments(script)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+  const segments = splitScriptSegments(script);
   let stdout = "";
   let stderr = "";
+  let exitCode = 0;
+  let separator = ";";
   for (const segment of segments) {
-    const result = await runScriptSegment(vfs, cwd, segment);
+    if (segment === ";" || segment === "&&") {
+      separator = segment;
+      continue;
+    }
+    if (!segment.trim() || (separator === "&&" && exitCode !== 0)) continue;
+    let result: VfsBuiltinCommandResult;
+    try {
+      result = await runScriptSegment(vfs, cwd, segment.trim());
+    } catch (error) {
+      result = {
+        exitCode: 1,
+        stdout: "",
+        stderr: error instanceof Error ? `${error.message}\n` : String(error),
+      };
+    }
     stdout += result.stdout;
     stderr += result.stderr;
-    if (result.exitCode !== 0) {
-      return { exitCode: result.exitCode, stdout, stderr };
-    }
+    exitCode = result.exitCode;
   }
-  return { exitCode: 0, stdout, stderr };
+  return { exitCode, stdout, stderr };
 }
 
 function splitScriptSegments(script: string): string[] {
@@ -155,7 +167,10 @@ function splitScriptSegments(script: string): string[] {
     const separatorLength =
       character === ";" ? 1 : script.startsWith("&&", index) ? 2 : 0;
     if (separatorLength === 0) continue;
-    segments.push(script.slice(start, index));
+    segments.push(
+      script.slice(start, index),
+      script.slice(index, index + separatorLength),
+    );
     index += separatorLength - 1;
     start = index + 1;
   }
