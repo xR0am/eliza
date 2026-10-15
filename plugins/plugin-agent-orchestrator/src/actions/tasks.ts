@@ -73,6 +73,7 @@ import {
   type SpawnResult,
   TERMINAL_SESSION_STATUSES,
 } from "../services/types.js";
+import { wordTokens } from "../services/word-tokens.js";
 import type {
   AuthPromptCallback,
   CodingWorkspaceService,
@@ -3134,12 +3135,7 @@ const IN_FLIGHT_TASK_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 function goalTokenSet(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((token) => token.length > 2),
-  );
+  return new Set(wordTokens(text).filter((token) => token.length > 2));
 }
 
 /** Overlap over the smaller token set — the composed duplicate goal is often a

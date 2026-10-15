@@ -1,3 +1,5 @@
+import { SHARED_RUNTIME_TURN_DEADLINE_MS } from "./coordinator-fetch";
+import type { VerifiedNetworkAdmission } from "./network-shared-admission";
 import {
   createOwnerBoundSharedGooglePort,
   isPersonalGooglePrivateAudience,
@@ -162,7 +164,6 @@ export { sharedTurnClientMessageId } from "./shared-turn-client-message-id";
 const SSE_TRANSPORT_READY_COMMENT = ": ready\n\n";
 const BRIDGE_INSUFFICIENT_CREDITS_CODE = -32002;
 const PROVIDER_CANCELLATION_OBSERVE_MS = 5_000;
-const SHARED_STREAM_TERMINAL_DEADLINE_MS = 75_000;
 const PERSONAL_SHARED_IMAGE_MODEL_ID = "fal-ai/flux/schnell";
 const linkedCharacterMemoryCache = new InMemoryLRUCache<UserCharacter>(256, 60_000);
 
@@ -359,6 +360,8 @@ export interface SharedTurnClaimStore {
 }
 
 export interface SharedRuntimeChatOptions {
+  /** Canonical ingress capability, reverified by the server at each process boundary. */
+  trustedNetworkAdmission?: VerifiedNetworkAdmission;
   /** Server-only capability reserved by the owning Personal Shared DO. */
   ownerCapture?: OwnerModelCapture;
   /** Standard request trace propagated through the conversation coordinator. */
@@ -621,6 +624,7 @@ export function sharedElizaRuntimeExecution(
   mobilePushDispatch?: SharedRuntimeChatOptions["mobilePushDispatch"],
   channel?: NonNullable<RunSharedAgentTurnInput["execution"]>["channel"],
   trustedNetworkTurn?: unknown,
+  trustedNetworkAdmission?: VerifiedNetworkAdmission,
 ): NonNullable<RunSharedAgentTurnInput["execution"]> {
   const personalShared = funding === "platform" && isCanonicalPersonalSharedAgent(agent);
   const runtimeChannel = channel ?? {
@@ -633,9 +637,12 @@ export function sharedElizaRuntimeExecution(
     agent,
     personalShared,
     runtimeChannel.type !== ChannelType.DM || roomId !== sharedRuntimeRoomKey(agent.id, agent.id),
-    serviceNetworkStoreFactory(personalShared ? trustedNetworkTurn : undefined),
+    serviceNetworkStoreFactory(
+      personalShared ? (trustedNetworkAdmission ?? trustedNetworkTurn) : undefined,
+    ),
     undefined,
-    personalShared ? networkVoiceApp(trustedNetworkTurn) : undefined,
+    personalShared ? networkVoiceApp(trustedNetworkAdmission ?? trustedNetworkTurn) : undefined,
+    personalShared ? trustedNetworkAdmission : undefined,
   );
   return {
     agentKey: agent.id,
@@ -650,7 +657,9 @@ export function sharedElizaRuntimeExecution(
     ...(personalShared &&
     isPersonalGooglePrivateAudience(agent, runtimeChannel, params) &&
     roomId === sharedRuntimeRoomKey(agent.id, agent.id)
-      ? { google: () => createOwnerBoundSharedGooglePort(agent, runtimeChannel, params) }
+      ? {
+          google: () => createOwnerBoundSharedGooglePort(agent, runtimeChannel, params),
+        }
       : {}),
     todos: {
       scope: sharedTodoStorageScope({
@@ -1132,6 +1141,7 @@ async function admitTurn(
   }
   try {
     rateLimited = await enforceOrgRateLimit(agent.organization_id, "completions", {
+      userId: agent.user_id,
       cacheOnly: Boolean(executionCtx),
       executionCtx,
       config:
@@ -1365,7 +1375,7 @@ function sseError(message: string): Response {
 }
 
 export class SharedRuntimeChatService {
-  constructor(private readonly streamTerminalDeadlineMs = SHARED_STREAM_TERMINAL_DEADLINE_MS) {}
+  constructor(private readonly streamTerminalDeadlineMs = SHARED_RUNTIME_TURN_DEADLINE_MS) {}
 
   async recordLifecycleEvent(
     agentId: string,
@@ -1542,6 +1552,7 @@ export class SharedRuntimeChatService {
           options.mobilePushDispatch,
           options.channel,
           options.trustedNetworkTurn,
+          options.trustedNetworkAdmission,
         ),
       });
     } catch (error) {
@@ -1865,6 +1876,7 @@ export class SharedRuntimeChatService {
             options.mobilePushDispatch,
             options.channel,
             options.trustedNetworkTurn,
+            options.trustedNetworkAdmission,
           ),
         }),
       );

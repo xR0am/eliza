@@ -11,6 +11,7 @@ import {
   isNetworkAddressOptedOut,
   isNetworkProject,
   type NetworkConsentLedger,
+  networkTakeoverAppliesTo,
   redisNetworkConsentLedger,
 } from "./network-compliance";
 import type { GatewayRedis } from "./redis";
@@ -192,7 +193,12 @@ function parseDelivery(value: unknown): InternalWebhookDelivery | undefined {
   // every existing project keeps rejecting a Twilio payload exactly as before.
   if (
     input.platform === "twilio" &&
-    isNetworkProject(input.project) &&
+    (isNetworkProject(input.project) ||
+      (typeof input.phoneNumber === "string" &&
+        networkTakeoverAppliesTo(input.project, {
+          platform: "twilio",
+          senderId: input.phoneNumber,
+        }))) &&
     input.providerThreadId === undefined &&
     input.chatId === undefined &&
     typeof input.phoneNumber === "string" &&
@@ -235,17 +241,7 @@ function parseDelivery(value: unknown): InternalWebhookDelivery | undefined {
   return undefined;
 }
 
-async function deliveryHash(
-  delivery: InternalWebhookDelivery,
-): Promise<string> {
-  const body = JSON.stringify([
-    delivery.platform,
-    delivery.project,
-    delivery.app ?? null,
-    "phoneNumber" in delivery ? delivery.phoneNumber : delivery.chatId,
-    delivery.text,
-    delivery.idempotencyKey,
-  ]);
+async function sha256Hex(body: string): Promise<string> {
   return [
     ...new Uint8Array(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body)),
@@ -253,6 +249,54 @@ async function deliveryHash(
   ]
     .map((x) => x.toString(16).padStart(2, "0"))
     .join("");
+}
+
+async function deliveryHash(
+  delivery: InternalWebhookDelivery,
+): Promise<string> {
+  return sha256Hex(
+    JSON.stringify([
+      delivery.platform,
+      delivery.project,
+      delivery.app ?? null,
+      "connectorAccountId" in delivery ? delivery.connectorAccountId : null,
+      "providerThreadId" in delivery
+        ? (delivery.providerThreadId ?? null)
+        : null,
+      "phoneNumber" in delivery ? delivery.phoneNumber : delivery.chatId,
+      delivery.text,
+      delivery.idempotencyKey,
+    ]),
+  );
+}
+
+/**
+ * Receipts written before connector and thread binding (gateway until
+ * 2026-10-12) hashed six slots. They stay valid for DELIVERY_RECEIPT_TTL_SECONDS
+ * after the deploy, but cannot prove connector or thread binding. Keep their
+ * outcome unknown without resending. Remove after every such receipt expires.
+ */
+async function deliveryHashBeforeBinding(
+  delivery: InternalWebhookDelivery,
+): Promise<string> {
+  return sha256Hex(
+    JSON.stringify([
+      delivery.platform,
+      delivery.project,
+      delivery.app ?? null,
+      "phoneNumber" in delivery ? delivery.phoneNumber : delivery.chatId,
+      delivery.text,
+      delivery.idempotencyKey,
+    ]),
+  );
+}
+
+async function receiptMatches(
+  receipt: { hash?: string } | null | undefined,
+  delivery: InternalWebhookDelivery,
+): Promise<boolean> {
+  if (!receipt?.hash) return false;
+  return receipt.hash === (await deliveryHash(delivery));
 }
 
 const notClaimed = () =>
@@ -301,10 +345,10 @@ export async function readInternalDeliveryReceipt(
   const receipt = parseReceipt(value);
   if (
     receipt?.state === "abandoned" &&
-    receipt.hash === (await deliveryHash(delivery))
+    (await receiptMatches(receipt, delivery))
   )
     return notClaimed();
-  if (!receipt || receipt.hash !== (await deliveryHash(delivery)))
+  if (!receipt || !(await receiptMatches(receipt, delivery)))
     return Response.json(
       { success: false, acceptance: "unknown", retryable: false },
       { status: 202 },
@@ -350,6 +394,13 @@ export async function deliverInternalMessage(
     );
   }
 
+  const networkScoped =
+    isNetworkProject(delivery.project) ||
+    ("phoneNumber" in delivery &&
+      networkTakeoverAppliesTo(delivery.project, {
+        platform: delivery.platform,
+        senderId: delivery.phoneNumber,
+      }));
   let compliance = false;
   const proof =
     raw && typeof raw === "object"
@@ -370,7 +421,7 @@ export async function deliverInternalMessage(
       !p.messageId ||
       !verified.ok ||
       verified.id !== delivery.idempotencyKey ||
-      !isNetworkProject(delivery.project) ||
+      !networkScoped ||
       !("phoneNumber" in delivery)
     )
       return Response.json(
@@ -421,47 +472,48 @@ export async function deliverInternalMessage(
     );
   }
 
-  // The Network's consent ledger wins over every proactive send: an address
-  // that replied STOP is refused before any claim or provider work.
-  if (
-    isNetworkProject(delivery.project) &&
-    "phoneNumber" in delivery &&
-    !compliance
-  ) {
-    let optedOut: boolean;
-    try {
-      optedOut = await isNetworkAddressOptedOut(
-        dependencies.networkConsentLedger ??
-          redisNetworkConsentLedger(dependencies.redis),
-        delivery.project,
-        delivery.phoneNumber,
-        delivery.app,
-      );
-    } catch {
-      // error-policy:J1 no provider call occurs when consent is unknown.
-      return Response.json(
-        {
-          success: false,
-          error: "consent ledger unavailable",
-          retryable: true,
-          acceptance: "not_accepted",
-        },
-        { status: 503, headers: { "Retry-After": "1" } },
-      );
+  // Reuse the same refusal policy at admission and immediately before dispatch.
+  const consentRefusal = async (): Promise<Response | undefined> => {
+    if (networkScoped && "phoneNumber" in delivery && !compliance) {
+      let optedOut: boolean;
+      try {
+        optedOut = await isNetworkAddressOptedOut(
+          dependencies.networkConsentLedger ??
+            redisNetworkConsentLedger(dependencies.redis),
+          delivery.project,
+          delivery.phoneNumber,
+          delivery.app,
+        );
+      } catch {
+        // error-policy:J1 no provider call occurs when consent is unknown.
+        return Response.json(
+          {
+            success: false,
+            error: "consent ledger unavailable",
+            retryable: true,
+            acceptance: "not_accepted",
+          },
+          { status: 503, headers: { "Retry-After": "1" } },
+        );
+      }
+      if (optedOut) {
+        return Response.json(
+          {
+            success: false,
+            error: "recipient opted out",
+            code: "recipient_opted_out",
+            retryable: false,
+            acceptance: "not_accepted",
+          },
+          { status: 422 },
+        );
+      }
     }
-    if (optedOut) {
-      return Response.json(
-        {
-          success: false,
-          error: "recipient opted out",
-          code: "recipient_opted_out",
-          retryable: false,
-          acceptance: "not_accepted",
-        },
-        { status: 422 },
-      );
-    }
-  }
+
+    return undefined;
+  };
+  const admissionRefusal = await consentRefusal();
+  if (admissionRefusal) return admissionRefusal;
 
   // Keep the pre-account key as the monotonic replay fence. Changing this key
   // during rollout would strand complete/indeterminate receipts and could
@@ -483,7 +535,20 @@ export async function deliverInternalMessage(
     );
   }
   const existing = parseReceipt(existingValue);
-  if (existing?.hash && existing.hash !== hash)
+  const existingMatches = await receiptMatches(existing, delivery);
+  if (
+    existing?.hash &&
+    !existingMatches &&
+    existing.hash === (await deliveryHashBeforeBinding(delivery))
+  ) {
+    // A legacy receipt cannot prove the requested connector/thread binding.
+    // Keep the outcome unknown and never resend or claim confirmed delivery.
+    return Response.json(
+      { success: false, acceptance: "unknown", retryable: false },
+      { status: 202 },
+    );
+  }
+  if (existing?.hash && !existingMatches)
     return Response.json(
       {
         success: false,
@@ -495,8 +560,10 @@ export async function deliverInternalMessage(
     );
   if (existing?.state === "complete") {
     if (
-      delivery.idempotencyKey.startsWith("network:personal:") &&
-      (!existing.acceptedAt || existing.providerMessageIds.length === 0)
+      delivery.idempotencyKey.startsWith("network:") &&
+      (!existingMatches ||
+        !existing.acceptedAt ||
+        existing.providerMessageIds.length === 0)
     )
       return Response.json(
         { success: false, acceptance: "unknown", retryable: false },
@@ -606,6 +673,16 @@ export async function deliverInternalMessage(
         { success: false, acceptance: "unknown", retryable: false },
         { status: 202 },
       );
+    }
+    const finalRefusal = await consentRefusal();
+    if (finalRefusal) {
+      // No connector was invoked. Release only this exact unsent claim.
+      await dependencies.redis.eval(
+        'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) end return 0',
+        [dedupeKey],
+        [JSON.stringify({ state: "indeterminate", hash })],
+      );
+      return finalRefusal;
     }
     connectorAttempted = true;
     const receipt = await adapter.sendReplyWithReceipt(

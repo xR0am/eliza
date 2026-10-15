@@ -48,6 +48,7 @@ export async function runIsolatedAndroidTest({
   expectedTests = 1,
   requiredAbi,
   expectedAvdName,
+  expectedCuttlefish,
   androidUser,
   deviceLease,
   signal,
@@ -67,7 +68,30 @@ export async function runIsolatedAndroidTest({
   collectVariant,
   cleanupVariant,
 }) {
-  assert.match(serial ?? "", /^emulator-\d+$/);
+  // A TCP endpoint is never ownership. Hosts explicitly acknowledge a disposable
+  // instance and pin its serial property and full image fingerprint.
+  const cuttlefish = expectedCuttlefish ? { ...expectedCuttlefish } : null;
+  if (cuttlefish) {
+    assert.equal(
+      expectedAvdName,
+      undefined,
+      "Choose AVD or Cuttlefish admission",
+    );
+    assert.match(serial ?? "", /^127\.0\.0\.1:[1-9][0-9]{0,4}$/);
+    assert.ok(Number(serial.split(":")[1]) <= 65535);
+    assert.equal(
+      cuttlefish.callerOwned,
+      true,
+      "Caller-owned disposable Cuttlefish required",
+    );
+    assert.match(cuttlefish.serialNumber ?? "", /^[A-Za-z0-9_.-]+$/);
+    assert.match(cuttlefish.fingerprint ?? "", /^[A-Za-z0-9_./:+-]+$/);
+    assert.ok(
+      cuttlefish.fingerprint.includes("/"),
+      "Exact image fingerprint required",
+    );
+    assert.equal(androidUser, 0, "Cuttlefish currently requires owner user 0");
+  } else assert.match(serial ?? "", /^emulator-\d+$/);
   const runnerEvidenceFor = (additionalRunners) => {
     assert.ok(
       Array.isArray(additionalRunners),
@@ -126,7 +150,7 @@ export async function runIsolatedAndroidTest({
     Number.isSafeInteger(androidUser) && androidUser >= 0,
     "Explicit Android user required",
   );
-  assert.match(expectedAvdName ?? "", /^[A-Za-z0-9_.-]+$/);
+  if (!cuttlefish) assert.match(expectedAvdName ?? "", /^[A-Za-z0-9_.-]+$/);
   for (const deadline of [
     commandTimeoutMs,
     instrumentationTimeoutMs,
@@ -318,7 +342,7 @@ export async function runIsolatedAndroidTest({
   }
   // Cleanup runs independently of an aborted operation signal and has its own caller deadline.
   let cleaning = false;
-  const run = async (...args) =>
+  const rawRun = async (...args) =>
     (
       await executeFile(adb, ["-s", serial, ...args], {
         env,
@@ -332,6 +356,53 @@ export async function runIsolatedAndroidTest({
         maxBuffer: 4 * 1024 ** 2,
       })
     ).stdout;
+  let cuttlefishBootId;
+  const assertCuttlefish = async () => {
+    assert.equal(
+      (await rawRun("shell", "getprop", "ro.build.fingerprint")).trim(),
+      cuttlefish.fingerprint,
+      "Cuttlefish fingerprint changed",
+    );
+    assert.equal(
+      (await rawRun("shell", "getprop", "ro.serialno")).trim(),
+      cuttlefish.serialNumber,
+      "Cuttlefish instance changed",
+    );
+    assert.equal(
+      (await rawRun("shell", "am", "get-current-user")).trim(),
+      "0",
+      "Cuttlefish foreground user changed",
+    );
+    const bootId = (
+      await rawRun("shell", "cat", "/proc/sys/kernel/random/boot_id")
+    ).trim();
+    assert.match(bootId, /^[a-f0-9-]{36}$/);
+    if (cuttlefishBootId)
+      assert.equal(
+        bootId,
+        cuttlefishBootId,
+        "Cuttlefish boot changed; retain installations for explicit recovery",
+      );
+    else cuttlefishBootId = bootId;
+  };
+  // Recheck on every command, including callback commands and cancellation cleanup.
+  // A reconnect/reboot must not uninstall packages from a different instance.
+  const run = async (...args) => {
+    if (cuttlefishBootId) await assertCuttlefish();
+    return rawRun(...args);
+  };
+  const browserRole = async () =>
+    (
+      await run(
+        "shell",
+        "cmd",
+        "role",
+        "get-role-holders",
+        "--user",
+        "0",
+        "android.app.role.BROWSER",
+      )
+    ).trim();
   const home = async () =>
     (
       await run(
@@ -391,6 +462,7 @@ export async function runIsolatedAndroidTest({
     testPackage,
     companions,
     expectedAvdName,
+    ...(cuttlefish ? { expectedCuttlefish: cuttlefish } : {}),
     requiredAbi,
     androidUser,
     testClasses: classes,
@@ -401,10 +473,12 @@ export async function runIsolatedAndroidTest({
   let admitted = false,
     campaignFinished = false,
     previousHome,
+    previousBrowser,
     failure,
     activeContext,
     scenarioCleanupFailure;
   const owned = new Map();
+  const unacknowledgedInstalls = new Map();
   const installedHash = async (name, command = run) => {
     const lines = (
       await command("shell", "pm", "path", "--user", String(androidUser), name)
@@ -453,6 +527,9 @@ export async function runIsolatedAndroidTest({
         "Installed APK changed before replacement",
       );
     owned.set(name, expectedHash);
+    // Killing the host adb process does not cancel Android's package session.
+    // An absent package during cleanup can still finish installing afterward.
+    unacknowledgedInstalls.set(name, expectedHash);
     assert.match(
       await run(
         "install",
@@ -464,6 +541,7 @@ export async function runIsolatedAndroidTest({
       ),
       /^Success\s*$/m,
     );
+    unacknowledgedInstalls.delete(name);
     assert.equal(
       await installedHash(name),
       expectedHash,
@@ -471,20 +549,37 @@ export async function runIsolatedAndroidTest({
     );
   };
   try {
-    assert.equal(
-      (await run("shell", "getprop", "ro.kernel.qemu")).trim(),
-      "1",
-      "Disposable emulator required",
-    );
+    if (cuttlefish) {
+      assert.match(
+        (await rawRun("shell", "getprop", "ro.product.device")).trim(),
+        /^vsoc_[A-Za-z0-9_]+$/,
+        "Cuttlefish vsoc device required",
+      );
+      assert.equal(
+        (await rawRun("shell", "getprop", "sys.boot_completed")).trim(),
+        "1",
+        "Cuttlefish boot incomplete",
+      );
+      await assertCuttlefish();
+      report.bootId = cuttlefishBootId;
+      previousBrowser = await browserRole();
+      report.originalBrowser = previousBrowser;
+    } else {
+      assert.equal(
+        (await run("shell", "getprop", "ro.kernel.qemu")).trim(),
+        "1",
+        "Disposable emulator required",
+      );
+      assert.equal(
+        (await run("emu", "avd", "name")).split(/\r?\n/)[0],
+        expectedAvdName,
+        "Selected emulator is not the caller-owned fixture AVD",
+      );
+    }
     assert.equal(
       (await run("shell", "getprop", "ro.product.cpu.abi")).trim(),
       requiredAbi,
       "Emulator ABI mismatch",
-    );
-    assert.equal(
-      (await run("emu", "avd", "name")).split(/\r?\n/)[0],
-      expectedAvdName,
-      "Selected emulator is not the caller-owned fixture AVD",
     );
     report.selinux = (await run("shell", "getenforce")).trim();
     assert.equal(
@@ -497,6 +592,7 @@ export async function runIsolatedAndroidTest({
       "App or retained package data already exists; refusing replacement",
     );
     previousHome = await home();
+    report.originalHome = previousHome;
     fs.mkdirSync(directory, { recursive: true });
     admitted = true;
     for (const [index, variant] of variants.entries()) {
@@ -719,6 +815,7 @@ export async function runIsolatedAndroidTest({
             assert.ok(!settled, "Instrumentation exited before interruption");
             effectIssued = true;
           }
+          if (cuttlefishBootId) await assertCuttlefish();
           return (
             await executeFile(adb, ["-s", serial, ...args], {
               env,
@@ -869,6 +966,12 @@ export async function runIsolatedAndroidTest({
       assert.ok(!(await installed()), "Variant package cleanup failed");
       owned.clear();
       assert.equal(await home(), previousHome, "Default HOME changed");
+      if (cuttlefish)
+        assert.equal(
+          await browserRole(),
+          previousBrowser,
+          "Default browser changed",
+        );
     }
     report.verifiedAt = new Date().toISOString();
   } catch (error) {
@@ -880,6 +983,17 @@ export async function runIsolatedAndroidTest({
       if (admitted) {
         // Only identities absent from all users at admission are owned by this run.
         report.cleanupErrors = [];
+        if (unacknowledgedInstalls.size) {
+          report.unacknowledgedInstalls = [...unacknowledgedInstalls].map(
+            ([packageName, expectedSha256]) => ({
+              packageName,
+              expectedSha256,
+            }),
+          );
+          report.cleanupErrors.push(
+            "An install was not acknowledged; the device may still commit it. Explicit fixture recovery is required.",
+          );
+        }
         try {
           await restoreScenario();
         } catch {
@@ -927,11 +1041,15 @@ export async function runIsolatedAndroidTest({
             }
           }
         try {
-          report.cleaned = !(await installed());
+          report.cleaned =
+            !(await installed()) && unacknowledgedInstalls.size === 0;
           report.homeUnchanged = (await home()) === previousHome;
+          if (cuttlefish)
+            report.browserUnchanged = (await browserRole()) === previousBrowser;
         } catch {
           report.cleaned = false;
           report.homeUnchanged = false;
+          if (cuttlefish) report.browserUnchanged = false;
         }
         fs.writeFileSync(
           path.join(directory, "verification.json"),
@@ -940,6 +1058,7 @@ export async function runIsolatedAndroidTest({
         if (
           !report.cleaned ||
           !report.homeUnchanged ||
+          (cuttlefish && !report.browserUnchanged) ||
           report.cleanupErrors.length
         )
           failure ??= new Error(

@@ -186,6 +186,33 @@ describe("TASKS stop_agent / cancel default target", () => {
   }
 });
 
+describe("TASKS control / share default target", () => {
+  it("control stop without a session id ends the running sub-agent", async () => {
+    await withRunningAndFinished("control-stop", async (ctx) => {
+      const result = await runTasks(ctx.runtime, {
+        action: "control",
+        controlAction: "stop",
+      });
+
+      expect(result?.success).toBe(true);
+      expect((await ctx.service.getSession(ctx.runningId))?.status).toBe(
+        "stopped",
+      );
+    });
+  }, 20_000);
+
+  it("share without a session id reports the running sub-agent", async () => {
+    await withRunningAndFinished("share", async (ctx) => {
+      const result = await runTasks(ctx.runtime, { action: "share" });
+
+      expect(result?.success).toBe(true);
+      expect(
+        (result?.data as { sessionId?: string } | undefined)?.sessionId,
+      ).toBe(ctx.runningId);
+    });
+  }, 20_000);
+});
+
 /**
  * Two sub-agents run at once. The older one belongs to a durable task; the
  * newer one does not. A task id must select the older one.
@@ -445,6 +472,60 @@ describe("TASKS control resume with an instruction and no running session", () =
       await service.stop();
     }
   }, 20_000);
+});
+
+describe("resumeTask after a failed re-engage spawn", () => {
+  it("keeps the re-engage for the next resume", async () => {
+    let service: AcpService | undefined;
+    let tasks: OrchestratorTaskService | undefined;
+    const runtime = runtimeWith(
+      () => service,
+      () => tasks,
+    );
+    service = new AcpService(runtime);
+    await service.start();
+    const store = new OrchestratorTaskStore({ backend: "memory" });
+    tasks = new OrchestratorTaskService(runtime, { store });
+    const live = async (taskId: string) =>
+      (await store.getTask(taskId))?.sessions.filter(
+        (s) => s.status !== "stopped",
+      ) ?? [];
+    try {
+      const task = await store.createTask({
+        title: "Interrupted task",
+        goal: "finish the long build",
+        acceptanceCriteria: [],
+        roomId: "target-room",
+        worldId: "target-world",
+      });
+      const taskId = task.task.id;
+      await tasks.spawnAgentForTask(taskId);
+      await tasks.pauseTask(taskId);
+      expect(await live(taskId)).toEqual([]);
+
+      // The coding CLI cannot start a session (for example, it lost its login).
+      await writeFile(
+        cliPath,
+        '#!/usr/bin/env node\nprocess.stderr.write("not authenticated\\n");\nprocess.exit(1);\n',
+      );
+      await expect(tasks.resumeTask(taskId)).rejects.toThrow();
+      expect(await live(taskId)).toEqual([]);
+
+      // After the CLI works again, resume must start the interrupted work.
+      await writeFile(cliPath, FAKE_ACPX);
+      await tasks.resumeTask(taskId);
+      expect(await live(taskId)).toHaveLength(1);
+      expect(
+        (await store.getTask(taskId))?.task.metadata?.pausedWithActiveWork,
+      ).toBeUndefined();
+
+      // A completed re-engage is not repeated by another resume.
+      await tasks.resumeTask(taskId);
+      expect(await live(taskId)).toHaveLength(1);
+    } finally {
+      await service.stop();
+    }
+  }, 30_000);
 });
 
 describe("TASKS history with a task id", () => {

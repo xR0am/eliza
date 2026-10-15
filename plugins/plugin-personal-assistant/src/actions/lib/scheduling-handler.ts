@@ -1530,16 +1530,19 @@ export async function runSchedulingNegotiationHandler(
       }
       // The negotiation zone is the zone offset-less proposal clocks are read
       // in, so a name that identifies no zone is refused instead of stored.
-      const timezone =
-        params.timezone === undefined
-          ? undefined
-          : resolveKnownTimeZone(params.timezone);
+      // Without one, the owner's meeting-preference zone applies, as it does
+      // for slot proposals and availability checks. The stored preference
+      // passes the same check, because its writer accepts any short string.
+      const requestedTimezone =
+        params.timezone ??
+        (await readLifeOpsMeetingPreferences(runtime)).timeZone;
+      const timezone = resolveKnownTimeZone(requestedTimezone);
       if (timezone === null) {
         return respond({
           success: false,
           scenario: "scheduling_negotiation_start_unknown_timezone",
-          fallback: `I don't recognize the time zone "${params.timezone}". Give an IANA time zone such as America/New_York.`,
-          data: { error: "UNKNOWN_TIMEZONE", timezone: params.timezone },
+          fallback: `I don't recognize the time zone "${requestedTimezone}". Give an IANA time zone such as America/New_York.`,
+          data: { error: "UNKNOWN_TIMEZONE", timezone: requestedTimezone },
         });
       }
       // Contact graph stores do not accept the PA transaction handle. Resolve

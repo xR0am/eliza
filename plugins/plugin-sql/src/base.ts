@@ -2085,7 +2085,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       assertJsonbStorable(component.data);
       await this.db.insert(componentTable).values({
         ...component,
-        createdAt: new Date(),
+        createdAt: component.createdAt !== undefined ? new Date(component.createdAt) : new Date(),
       });
       return true;
     });
@@ -4086,11 +4086,15 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         // string exceeds levenshtein's 255-char ceiling, so no fuzzy cache
         // match can exist for it: an empty result is the correct typed answer,
         // not a masked failure. Every other error is a real fault → rethrow.
-        if (
-          error instanceof Error &&
-          error.message === "levenshtein argument exceeds maximum length of 255 characters"
-        ) {
-          return [];
+        // Drizzle wraps the database error in Error.cause.
+        const seen = new Set<Error>();
+        let current = error;
+        while (current instanceof Error && !seen.has(current)) {
+          seen.add(current);
+          if (current.message === "levenshtein argument exceeds maximum length of 255 characters") {
+            return [];
+          }
+          current = current.cause;
         }
         throw new ElizaError("getCachedEmbeddings failed", {
           code: "DB_QUERY_FAILED",
@@ -6184,7 +6188,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           entityId: task.entityId as UUID,
           tags: task.tags,
           metadata: metadata,
-          createdAt: now,
+          // Preserve a caller-supplied createdAt (agent import replays the
+          // original task row, and sqlite keeps it too). Stamp now only
+          // when the caller did not provide one.
+          createdAt: task.createdAt !== undefined ? new Date(Number(task.createdAt)) : now,
           updatedAt: now,
           agentId: this.agentId as UUID,
         };

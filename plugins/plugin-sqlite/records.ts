@@ -892,7 +892,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
               params.agentId ? component.agentId === params.agentId : true,
           )
         : (matchedComponentsByEntity.get(entity.id) ?? []);
-      if (components.length > 0) {
+      if (params.includeAllComponents || hasComponentQuery) {
         entity.components = components;
       } else {
         delete entity.components;
@@ -1886,6 +1886,11 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       }
       for (const removedId of removedIds)
         await this.vectorIndex.remove(removedId);
+      for (const segment of storedSegments) {
+        if (segment.id && segment.embedding && segment.embedding.length > 0) {
+          await this.vectorIndex.add(segment.id, segment.embedding);
+        }
+      }
       return {
         status: params.mode === "create" ? "created" : "updated",
         parent: toMemory(storedParent),
@@ -3457,15 +3462,14 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   }
 
   async deleteCaches(keys: string[]): Promise<boolean> {
-    let removed = false;
+    // Storage failures throw, so reaching the end means every delete
+    // succeeded — including no-ops that matched no rows. Report success to
+    // match the pg adapter, whose deleteCache returns true on any successful
+    // DELETE regardless of row count.
     for (const key of keys) {
-      const ok = await this.storage.delete(
-        COLLECTIONS.CACHE,
-        this.cacheStorageKey(key),
-      );
-      if (ok) removed = true;
+      await this.storage.delete(COLLECTIONS.CACHE, this.cacheStorageKey(key));
     }
-    return removed;
+    return true;
   }
 
   // ── Task CRUD ─────────────────────────────────────────────────────────

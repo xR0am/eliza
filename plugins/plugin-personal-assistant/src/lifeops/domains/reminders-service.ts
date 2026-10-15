@@ -655,18 +655,25 @@ function normalizeIsoString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     fail(400, `${field} must be an ISO 8601 string`);
   }
-  const ms = Date.parse(value);
+  const ms = Date.parse(value.trim());
   if (!Number.isFinite(ms)) {
     fail(400, `${field} must be a valid ISO 8601 string`);
   }
-  return value;
+  // Match the canonical LifeOps normalizer (@elizaos/contracts
+  // service-normalize, used by every other PA service): return the canonical
+  // ISO form, not the caller's spelling. The repositories filter and sort
+  // persisted timestamps as text (`observed_at >= sinceAt`,
+  // `ORDER BY observed_at DESC`), so an offset, date-only, or unpadded
+  // spelling stored verbatim would compare against canonical values as a
+  // different instant.
+  return new Date(ms).toISOString();
 }
 
 function normalizeOptionalIsoString(
   value: unknown,
   field: string,
 ): string | null {
-  if (value === undefined || value === null) return null;
+  if (value === undefined || value === null || value === "") return null;
   return normalizeIsoString(value, field);
 }
 
@@ -682,7 +689,16 @@ function normalizeOptionalNonNegativeInteger(
   value: unknown,
   field: string,
 ): number | null {
-  if (value === undefined || value === null) return null;
+  // Match the canonical LifeOps normalizer (@elizaos/contracts
+  // service-normalize, used by every sibling PA service): an empty
+  // string is absent (null), not 0 — Number("") === 0 would otherwise
+  // fabricate an idle time of 0 seconds for a field the caller never
+  // sent. A whitespace-only string is not absent either; the
+  // canonical copy rejects it, so reject it here too.
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "string" && value.trim().length === 0) {
+    fail(400, `${field} must be a non-negative integer`);
+  }
   const num = typeof value === "string" ? Number(value) : value;
   if (typeof num !== "number" || !Number.isInteger(num) || num < 0) {
     fail(400, `${field} must be a non-negative integer`);
@@ -2554,9 +2570,27 @@ export class RemindersDomain {
     timezone?: string | null;
     now?: Date;
   }): Promise<LifeOpsScheduleMergedStateRecord | null> {
-    const timezone =
-      normalizeOptionalString(args?.timezone) ?? resolveDefaultTimeZone();
     const now = args?.now ?? new Date();
+    const preferred = await this.readStoredEffectiveScheduleState({
+      timezone: args?.timezone,
+      now,
+    });
+    return preferred ? refreshLifeOpsRelativeTime(preferred, now) : null;
+  }
+
+  /**
+   * The preferred merged state as persisted, keeping the relative time it was
+   * computed with. The circadian tick diffs the refreshed state against this:
+   * re-projecting the previous state onto `now` would give it the current
+   * `minutesUntilBedtimeTarget`, so `bedtime.imminent` could never see the
+   * crossing into its window.
+   */
+  private async readStoredEffectiveScheduleState(args: {
+    timezone?: string | null;
+    now: Date;
+  }): Promise<LifeOpsScheduleMergedStateRecord | null> {
+    const timezone =
+      normalizeOptionalString(args.timezone) ?? resolveDefaultTimeZone();
     const local = await this.ctx.repository.getScheduleMergedState(
       this.ctx.agentId(),
       "local",
@@ -2567,12 +2601,11 @@ export class RemindersDomain {
       "cloud",
       timezone,
     );
-    const preferred = preferEffectiveMergedState({
-      now,
+    return preferEffectiveMergedState({
+      now: args.now,
       local,
       cloud,
     });
-    return preferred ? refreshLifeOpsRelativeTime(preferred, now) : null;
   }
 
   public async refreshEffectiveScheduleState(args?: {
@@ -6429,7 +6462,7 @@ export class RemindersDomain {
         // Same owner-zone anchor as the reminder pass (#13509): the sleep
         // cycle check-ins read `currentSchedule.timezone`.
         const timezone = await resolveOwnerTimeZone(this.ctx.runtime, now);
-        const previousSchedule = await this.readEffectiveScheduleState({
+        const previousSchedule = await this.readStoredEffectiveScheduleState({
           timezone,
           now,
         });

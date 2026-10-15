@@ -11,6 +11,7 @@ const {
   MockSmsInbox,
   SmsDestinationNotAllowedError,
   SmsSendBudgetExceededError,
+  smsSendGlobalMaxPerHour,
 } = await import("../auth/index");
 const { getPhoneAuth } = await import("../api/services/auth-lifecycle");
 const { setDatabaseAuthRateLimiter } = await import(
@@ -52,6 +53,17 @@ test("default policy: US and Canada only, NANP Caribbean and toll-free refused",
 });
 
 test("allowlist is configurable and never fails open on a malformed value", () => {
+  for (const raw of ["0invalid", "0.5", "Infinity", "9007199254740992"]) {
+    expect(
+      smsSendGlobalMaxPerHour({ STEWARD_SMS_SEND_GLOBAL_MAX_PER_HOUR: raw }),
+    ).toBe(300);
+  }
+  expect(
+    smsSendGlobalMaxPerHour({ STEWARD_SMS_SEND_GLOBAL_MAX_PER_HOUR: "0" }),
+  ).toBe(0);
+  expect(
+    smsSendGlobalMaxPerHour({ STEWARD_SMS_SEND_GLOBAL_MAX_PER_HOUR: "1e3" }),
+  ).toBe(1000);
   expect(
     isSmsDestinationAllowed("+447700900123", {
       STEWARD_SMS_ALLOWED_COUNTRY_CODES: "1,44",

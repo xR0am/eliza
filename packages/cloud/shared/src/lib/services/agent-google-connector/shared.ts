@@ -111,13 +111,21 @@ export interface ManagedGoogleGmailReadResult {
   attachments?: GoogleGmailAttachment[];
   message: ManagedGoogleGmailMessage;
   bodyText: string;
+  bodyHtml: string | null;
+  bodyHtmlStatus: "available" | "none" | "too-large" | "owner-only";
   /** Inert http(s) anchors from the HTML parts; clients review them before opening. */
   links?: GmailMessageLink[];
 }
 
 export interface ManagedGoogleGmailSearchResult {
+  supportsSpamTrash: boolean;
   nextPageToken?: string | null;
   messages: ManagedGoogleGmailMessage[];
+  /**
+   * Gmail mailbox historyId read before a search page. When two pages of one
+   * search report different values, the mailbox changed between them.
+   */
+  mailboxHistoryId?: string;
   syncedAt: string;
 }
 
