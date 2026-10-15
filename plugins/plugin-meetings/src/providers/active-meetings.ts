@@ -36,6 +36,8 @@ export const activeMeetingsProvider: Provider = {
   description:
     "Meetings the notetaker bot is currently attending and transcribing",
   dynamic: true,
+  // Meeting URLs can carry join passwords; only the owner sees them.
+  roleGate: { minRole: "OWNER" },
   get: async (runtime: IAgentRuntime, _message: Memory, _state: State) => {
     const service = runtime.getService<MeetingService>("meetings");
     const active = service?.listSessions({ active: true }) ?? [];
