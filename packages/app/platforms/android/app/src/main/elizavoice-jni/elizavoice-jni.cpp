@@ -28,8 +28,8 @@
 
 #include "eliza-inference-ffi.h"
 
-#if ELIZA_INFERENCE_ABI_VERSION < 17
-#error "elizavoice-jni needs eliza-inference-ffi.h ABI 17 or newer (Paradee TTS, ASR cancel)"
+#if ELIZA_INFERENCE_ABI_VERSION < 19
+#error "elizavoice-jni needs eliza-inference-ffi.h ABI 19 or newer (Paradee streaming)"
 #endif
 
 #ifndef ELIZA_VOICE_JNI_CLASS
