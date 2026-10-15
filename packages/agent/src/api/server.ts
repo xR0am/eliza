@@ -4456,14 +4456,24 @@ export async function startApiServer(opts?: {
       void sendInitialStatus();
       // Replay stays synchronous so newer live events cannot overtake history
       // while the optional model-readiness probe reads the local registry.
+      // Pagination stays synchronous for the same reason: every page must
+      // drain before the live subscription attaches, or a live event could
+      // be delivered ahead of the history it belongs to.
       try {
-        const replay = selectReplayEvents(
-          state.eventBuffer,
-          replayCursor,
-          DEFAULT_REPLAY_LIMIT,
-        );
-        for (const event of replay) {
-          sendWebSocket(ws, JSON.stringify(event));
+        let cursor = replayCursor;
+        const maxPages =
+          Math.ceil(state.eventBuffer.length / DEFAULT_REPLAY_LIMIT) + 1;
+        for (let page = 0; page < maxPages; page++) {
+          const result = selectReplayEvents(
+            state.eventBuffer,
+            cursor,
+            DEFAULT_REPLAY_LIMIT,
+          );
+          for (const event of result.events) {
+            sendWebSocket(ws, JSON.stringify(event));
+          }
+          if (!result.hasMore || result.nextCursor === null) break;
+          cursor = result.nextCursor;
         }
       } catch (err) {
         logger.error(
