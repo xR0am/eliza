@@ -709,3 +709,42 @@ test(
   },
   TEST_TIMEOUT,
 );
+
+test(
+  "the deferred backfill keeps an unmarked eager agent created before the marker out of the sweep",
+  async () => {
+    const { agentSandboxesRepository } = await import("../../../db/repositories/agent-sandboxes");
+    // Created with `autoProvision: false` before the create route set the
+    // marker: eager tier, pending, no provision job, no marker.
+    const legacy = await seedAgent();
+    const running = await seedAgent();
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ created_at: old, agent_config: { theme: "dark" } })
+      .where(eq(agentSandboxes.id, legacy.agentId));
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ status: "running", created_at: old })
+      .where(eq(agentSandboxes.id, running.agentId));
+
+    const migration = await readFile(
+      join(import.meta.dir, "../../../db/migrations/0548_agent_provisioning_deferred_backfill.sql"),
+      "utf8",
+    );
+    await dbWrite.execute(sql.raw(migration));
+
+    const result = await agentSandboxesRepository.markOrphanedPendingWithoutJobAsError(
+      new Date(Date.now() - 10 * 60 * 1000),
+    );
+
+    expect(result.updated.map((row) => row.agentId)).not.toContain(legacy.agentId);
+    const after = await readAgent(legacy.agentId);
+    expect(after.status).toBe("pending");
+    expect(after.agent_config).toEqual({ theme: "dark", __agentProvisioningDeferred: true });
+    expect((await readAgent(running.agentId)).agent_config).not.toHaveProperty(
+      "__agentProvisioningDeferred",
+    );
+  },
+  TEST_TIMEOUT,
+);
