@@ -532,9 +532,14 @@ export function normalizeLifeOpsMeetingPreferencesPatch(
     if (tz.length > 0 && tz.length <= 64) out.timeZone = tz;
   }
   const s = normalizeTimeOfDay(patch.preferredStartLocal);
-  if (s) out.preferredStartLocal = s;
   const e = normalizeTimeOfDay(patch.preferredEndLocal);
-  if (e) out.preferredEndLocal = e;
+  if (s && e && s >= e) {
+    // Overnight windows (e.g. 22:00-06:00) can never match a slot in the
+    // current read path; reject like normalizeBlackoutWindow does.
+  } else {
+    if (s) out.preferredStartLocal = s;
+    if (e) out.preferredEndLocal = e;
+  }
   if (
     typeof patch.defaultDurationMinutes === "number" &&
     patch.defaultDurationMinutes >= 5 &&
