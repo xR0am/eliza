@@ -546,6 +546,37 @@ it("sets a second relative reminder asked later, and replays only an immediate r
     const times = (await fireTimes()).map((iso) => Date.parse(iso ?? ""));
     expect(times).toHaveLength(2);
     expect(times[1] - times[0]).toBeGreaterThanOrEqual(39 * 60_000);
+
+    // Moving a relative reminder to an explicit time must retire its old
+    // delay identity, so a create for the new time replays that same task.
+    const scheduledAtIso = new Date(start + 2 * 60 * 60_000).toISOString();
+    const moved = await triggerAction.handler(
+      fixture.runtime,
+      message,
+      undefined,
+      {
+        parameters: { action: "update", taskId: createdIds[0], scheduledAtIso },
+      },
+    );
+    expect(moved, moved?.text).toMatchObject({ success: true });
+    const movedTask = await fixture.runtime.getTask(createdIds[0]);
+    expect(movedTask && readTriggerConfig(movedTask)?.delayMs).toBeUndefined();
+    const repeated = await triggerAction.handler(
+      fixture.runtime,
+      message,
+      undefined,
+      {
+        parameters: {
+          action: "create",
+          instructions: "Remind the user to move the laundry.",
+          scheduledAtIso,
+        },
+      },
+    );
+    expect(repeated).toMatchObject({
+      success: true,
+      data: { duplicateTaskId: createdIds[0] },
+    });
   } finally {
     vi.restoreAllMocks();
     for (const id of createdIds) if (id) await fixture.runtime.deleteTask(id);
