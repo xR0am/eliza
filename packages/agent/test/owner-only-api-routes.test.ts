@@ -169,6 +169,15 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
     expect(process.env.OPENAI_BASE_URL).not.toBe("https://example.invalid/v1");
     expect(runtime.character.system).not.toBe("Changed by guest.");
 
+    // The connector OAuth callback is authenticated by its state/code, so the
+    // owner gate leaves it to the callback handler.
+    const callback = await send(
+      "guest-session-id",
+      "/api/connectors/google/oauth/callback",
+      { method: "POST", body: JSON.stringify({ code: "c", state: "s" }) },
+    );
+    expect(callback.status).not.toBe(403);
+
     // Reads of settings stay open to the session; the owner keeps every route.
     expect((await send("guest-session-id", "/api/config")).status).toBe(200);
     const ownerBrowse = await send(

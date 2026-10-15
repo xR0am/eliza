@@ -1063,8 +1063,10 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
         under("/api/files") ||
         // Shell, trading, automation and computer-use permissions.
         under("/api/permissions") ||
-        // Bot tokens and allowlists of the owner's connectors.
-        under("/api/connectors") ||
+        // Bot tokens and allowlists of the owner's connectors. The provider's
+        // OAuth callback is authenticated by its state/code, not the owner.
+        (under("/api/connectors") &&
+          !/^\/api\/connectors\/[^/]+\/oauth\/callback\/?$/.test(pathname)) ||
         // Who receives the model traffic, and with which key.
         pathname === "/api/provider/switch"))
   );
