@@ -40,6 +40,10 @@ final class VoiceNative {
 
     static native String nativeParadeePhonemize(long ctx, byte[] utf8Text);
 
+    static native int nativeParadeeStreamSupported();
+
+    static native void nativeParadeeSynthesizeStream(long ctx, byte[] utf8Text, float speed, Object sink);
+
     static native float[] nativeParadeeSynthesize(long ctx, byte[] utf8Text, float speed);
 
     static native float[] nativeParadeeSynthesizePhonemes(long ctx, byte[] utf8Phonemes, float speed);
