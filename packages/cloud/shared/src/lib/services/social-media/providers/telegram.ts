@@ -13,7 +13,7 @@ import type {
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
 import { TELEGRAM_API_BASE } from "../../../utils/telegram-api";
-import { withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const TELEGRAM_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -62,6 +62,7 @@ async function telegramApiRequest<T>(
   token: string,
   method: string,
   params?: Record<string, unknown>,
+  retry: Pick<RetryOptions, "replayUnknownOutcome"> = {},
 ): Promise<T> {
   const url = `${TELEGRAM_API_BASE}/bot${token}/${method}`;
   const { data } = await withRetry<T>(
@@ -80,7 +81,7 @@ async function telegramApiRequest<T>(
       }
       return payload.result as T;
     },
-    { platform: "telegram", maxRetries: 3 },
+    { platform: "telegram", maxRetries: 3, ...retry },
   );
   return data;
 }
@@ -98,10 +99,15 @@ async function sendMediaGroup(
     parse_mode: "HTML",
   }));
 
-  return telegramApiRequest<TelegramMessage[]>(token, "sendMediaGroup", {
-    chat_id: chatId,
-    media: mediaItems,
-  });
+  return telegramApiRequest<TelegramMessage[]>(
+    token,
+    "sendMediaGroup",
+    {
+      chat_id: chatId,
+      media: mediaItems,
+    },
+    { replayUnknownOutcome: false },
+  );
 }
 
 export const telegramProvider: SocialMediaProvider = {
@@ -165,23 +171,33 @@ export const telegramProvider: SocialMediaProvider = {
         if (content.media.length === 1) {
           const media = content.media[0];
           if (media.type === "video") {
-            message = await telegramApiRequest<TelegramMessage>(credentials.botToken, "sendVideo", {
-              chat_id: chatId,
-              video: media.url,
-              caption: content.text,
-              parse_mode: options?.telegram?.parseMode || "HTML",
-              reply_to_message_id: options?.telegram?.replyToMessageId,
-              disable_notification: options?.telegram?.disableNotification,
-            });
+            message = await telegramApiRequest<TelegramMessage>(
+              credentials.botToken,
+              "sendVideo",
+              {
+                chat_id: chatId,
+                video: media.url,
+                caption: content.text,
+                parse_mode: options?.telegram?.parseMode || "HTML",
+                reply_to_message_id: options?.telegram?.replyToMessageId,
+                disable_notification: options?.telegram?.disableNotification,
+              },
+              { replayUnknownOutcome: false },
+            );
           } else {
-            message = await telegramApiRequest<TelegramMessage>(credentials.botToken, "sendPhoto", {
-              chat_id: chatId,
-              photo: media.url,
-              caption: content.text,
-              parse_mode: options?.telegram?.parseMode || "HTML",
-              reply_to_message_id: options?.telegram?.replyToMessageId,
-              disable_notification: options?.telegram?.disableNotification,
-            });
+            message = await telegramApiRequest<TelegramMessage>(
+              credentials.botToken,
+              "sendPhoto",
+              {
+                chat_id: chatId,
+                photo: media.url,
+                caption: content.text,
+                parse_mode: options?.telegram?.parseMode || "HTML",
+                reply_to_message_id: options?.telegram?.replyToMessageId,
+                disable_notification: options?.telegram?.disableNotification,
+              },
+              { replayUnknownOutcome: false },
+            );
           }
         } else {
           // Multiple media - use media group
@@ -215,6 +231,7 @@ export const telegramProvider: SocialMediaProvider = {
           credentials.botToken,
           "sendMessage",
           params,
+          { replayUnknownOutcome: false },
         );
       }
 
@@ -227,11 +244,7 @@ export const telegramProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 transport boundary — an outbound Telegram send failure becomes the typed { success:false } PostResult the caller renders (never a fabricated success)
       logger.error("[Telegram] Post failed", { error });
-      return {
-        platform: "telegram",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("telegram", error);
     }
   },
 
