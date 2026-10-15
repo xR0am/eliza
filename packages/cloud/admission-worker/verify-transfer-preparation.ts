@@ -39,12 +39,13 @@ requireContract(
   "Transfer account must match source",
 );
 requireContract(
-  target.compatibility_date === source.compatibility_date,
+  target.compatibility_date ===
+    (stage.compatibility_date ?? source.compatibility_date),
   "Compatibility date drift",
 );
 requireContract(
   JSON.stringify(target.compatibility_flags) ===
-    JSON.stringify(source.compatibility_flags),
+    JSON.stringify(stage.compatibility_flags ?? source.compatibility_flags),
   "Compatibility flag drift",
 );
 requireContract(
