@@ -9,6 +9,7 @@
  */
 
 import {
+  ElizaError,
   OWNER_EXCLUSIVE_DISCLOSURE_GATE,
   promoteSubactionsToActions,
 } from "@elizaos/core";
@@ -34,9 +35,11 @@ export const inboxPlugin: Plugin = {
     const gmail = new ManagedGmailReadAdapter();
     if (gmail.isAvailable()) {
       const registry = getDefaultTriageService();
-      if (registry.getAdapter("gmail"))
-        throw new Error(
+      const existing = registry.getAdapter("gmail");
+      if (existing && !(existing instanceof ManagedGmailReadAdapter))
+        throw new ElizaError(
           "A Gmail source is already registered. Select one owner transport before starting the agent.",
+          { code: "MANAGED_GMAIL_SOURCE_CONFLICT" },
         );
       registry.register(gmail);
     }
