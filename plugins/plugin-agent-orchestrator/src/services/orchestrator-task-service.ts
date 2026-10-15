@@ -1356,7 +1356,7 @@ export class OrchestratorTaskService extends Service {
     if (!shouldAutoVerifyGoal()) return;
     const docs = await this.store.listTaskDocuments({
       includeArchived: false,
-      status: "validating",
+      statuses: ["validating"],
     });
     if (docs.length === 0) return;
     const localScope = await getVerifierProcessScope();
@@ -7037,7 +7037,7 @@ export class OrchestratorTaskService extends Service {
       const acp = this.acp();
       const docs = await this.store.listTaskDocuments({
         includeArchived: false,
-        status: "active",
+        statuses: ["active"],
       });
       for (const candidate of docs) {
         // The bulk snapshot is candidate discovery only. A session may attach
@@ -7248,7 +7248,7 @@ export class OrchestratorTaskService extends Service {
    * mid-queue resumes deterministically. Scans `open` tasks for a queued
    * admission record and seeds `admissionQueue` in current priority order. */
   private async rebuildAdmissionQueueFromStore(): Promise<void> {
-    const open = await this.store.listTasks({ status: "open" });
+    const open = await this.store.listTasks({ statuses: ["open"] });
     const entries: QueueEntry[] = [];
     for (const task of open) {
       const admission = OrchestratorTaskService.admissionOf(task);
