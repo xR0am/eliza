@@ -318,7 +318,12 @@ describe("Cloud role models under the sealed launcher overlay", () => {
   it.each(["offline", "staging-default"])("retains the %s outbound block", (authority) => {
     process.env.ELIZA_DEV_SOURCE = "1";
     process.env.ELIZA_DEV_CLOUD_ENV_AUTHORITY = authority;
-    expect(resolveCloudSdkAuthorityTuple(sealedRuntime()).outboundAllowed).toBe(false);
+    const runtime = sealedRuntime();
+    expect(resolveCloudSdkAuthorityTuple(runtime).outboundAllowed).toBe(false);
+    expect(getNativeApplicationSlot(runtime)).toBeUndefined();
+    expect(inferenceHeaders(runtime, "/chat/completions").has("X-Eliza-Application-Slot")).toBe(
+      false
+    );
   });
 
   it("retains ordinary runtime precedence without a launcher authority", () => {
