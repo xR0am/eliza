@@ -281,6 +281,35 @@ describe("TODO visible-content addressing — real PGLite (#29690)", () => {
     expect(await rows(entityId)).toEqual([]);
   });
 
+  it("keeps positive and negative numeric todos distinct through create and completion", async () => {
+    const entityId = newEntity();
+    const positive = await seed(entityId, "Set target to 5");
+    const created = await run(say(entityId, "add Set target to -5"), {
+      action: "create",
+      content: "Set target to -5",
+    });
+    expect(created.effectReceipts?.[0]?.outcome).toBe("applied");
+    expect(await rows(entityId)).toHaveLength(2);
+    const duplicate = await run(say(entityId, "add Set target to −5"), {
+      action: "create",
+      content: "Set target to −5",
+    });
+    expect(duplicate.data).toMatchObject({ duplicate: true });
+    expect(await rows(entityId)).toHaveLength(2);
+    const completed = await run(say(entityId, "complete Set target to -5"), {
+      action: "complete",
+      target: "Set target to -5",
+    });
+    expect(completed.effectReceipts?.[0]?.outcome).toBe("applied");
+    const persisted = await rows(entityId);
+    expect(persisted.find((todo) => todo.id === positive.id)?.status).toBe(
+      "pending",
+    );
+    expect(
+      persisted.find((todo) => todo.content === "Set target to -5")?.status,
+    ).toBe("completed");
+  });
+
   it("asks before duplicating an open todo and creates it only after the user's yes", async () => {
     const entityId = newEntity();
     const existing = await seed(entityId, "Call mom");
