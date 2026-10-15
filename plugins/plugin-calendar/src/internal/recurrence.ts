@@ -816,15 +816,25 @@ function* generateOccurrences(args: {
     const daysAfterAnchor = daysBetweenLocalDates(anchorDate, date);
     if (daysAfterAnchor < 0) continue;
     if (
+      rule.count === undefined &&
       skipBeforeDate &&
       daysAfterAnchor > 0 &&
       compareLocalDates(date, skipBeforeDate) < 0
     ) {
-      emitted += 1;
-      if (emitted >= emitBudget) return;
       continue;
     }
     const instant = toInstant(date);
+    const actual = getZonedDateParts(instant, timeZone);
+    if (
+      actual.year !== date.year ||
+      actual.month !== date.month ||
+      actual.day !== date.day ||
+      actual.hour !== timeOfDay.hour ||
+      actual.minute !== timeOfDay.minute ||
+      actual.second !== timeOfDay.second
+    ) {
+      continue;
+    }
     if (instant.getTime() >= rangeEndMs) return;
     if (instant.getTime() <= startMs) continue;
     if (pastUntil(instant.getTime(), date)) return;
