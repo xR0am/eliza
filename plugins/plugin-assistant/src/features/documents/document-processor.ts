@@ -1363,6 +1363,7 @@ export function createRateLimiter(
             tokenUsage[0].timestamp + intervalMs - now,
           );
         }
+        if (timeToWait <= 0) break;
         await new Promise((resolve) => setTimeout(resolve, timeToWait));
       }
 
