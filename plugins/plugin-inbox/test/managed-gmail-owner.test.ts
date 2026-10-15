@@ -1,10 +1,12 @@
 import type { IAgentRuntime, Memory } from "@elizaos/core";
+import {
+  __resetDefaultTriageServiceForTests,
+  getDefaultTriageService,
+} from "@elizaos/plugin-assistant";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagedGmailAdapter } from "../src/inbox/managed-gmail-adapter.ts";
-import {
-  getDefaultTriageService,
-  __resetDefaultTriageServiceForTests,
-} from "@elizaos/plugin-assistant";
+import { inboxPlugin } from "../src/plugin.ts";
+
 const access = vi.hoisted(() => ({ allowed: true }));
 vi.mock("@elizaos/core", async (original) => ({
   ...(await original<typeof import("@elizaos/core")>()),
@@ -13,6 +15,7 @@ vi.mock("@elizaos/core", async (original) => ({
 
 describe("managed Gmail owner boundary", () => {
   beforeEach(() => {
+    __resetDefaultTriageServiceForTests();
     access.allowed = true;
     vi.stubEnv(
       "ELIZA_MANAGED_GMAIL_READ_BROKER",
@@ -39,7 +42,7 @@ describe("managed Gmail owner boundary", () => {
         providerResult: accepted ? { messageId: "provider-accepted" } : null,
       });
       if (input.operation === "prepare") {
-        id = "alpha-gmail-send:" + "b".repeat(64) + ":" + input.requestId;
+        id = `alpha-gmail-send:${"b".repeat(64)}:${input.requestId}`;
         return Response.json({
           send: {
             id,
@@ -113,6 +116,22 @@ describe("managed Gmail owner boundary", () => {
     __resetDefaultTriageServiceForTests();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
+  });
+  it("can initialize a second runtime without duplicating or disabling the managed source", async () => {
+    const runtime = { agentId: "owned-agent" } as IAgentRuntime;
+    if (!inboxPlugin.init) throw new Error("Missing inbox initialization");
+    await inboxPlugin.init({}, runtime);
+    const first = getDefaultTriageService().getAdapter("gmail");
+    expect(first).toBeInstanceOf(ManagedGmailAdapter);
+    if (!inboxPlugin.init) throw new Error("Missing inbox initialization");
+    await inboxPlugin.init({}, runtime);
+    const second = getDefaultTriageService().getAdapter("gmail");
+    expect(second).toBeInstanceOf(ManagedGmailAdapter);
+    expect(
+      getDefaultTriageService()
+        .listAdapters()
+        .filter((adapter) => adapter.source === "gmail"),
+    ).toHaveLength(1);
   });
   it("refuses a source call without an executing owner action before network access", async () => {
     const network = vi.spyOn(globalThis, "fetch");
