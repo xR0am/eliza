@@ -7,6 +7,7 @@ import { managedCalendarSyncProvider } from "@elizaos/cloud-shared/lib/services/
 import { createCalendarSyncRoutes } from "@elizaos/cloud-shared/lib/services/agent-google-connector/calendar-sync-routes";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
+
 const app = new Hono<AppEnv>();
 app.route(
   "/",
