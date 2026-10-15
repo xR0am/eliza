@@ -1,5 +1,5 @@
-# STAGING-ONLY pending-transfer candidate. No namespace is created here.
-# Do not deploy until source/target parity and the transfer acceptance plan pass.
+# STAGING-ONLY steady state after the admission namespace transfer is accepted.
+# Preserve the adopted namespace and the private recovery service binding.
 name = "eliza-cloud-admission-staging"
 main = "src/index.ts"
 account_id = "23cf6feaeaa541f6a0675053c33da768"
@@ -32,13 +32,14 @@ __filename = "\"/worker.js\""
 [observability]
 enabled = true
 
-# The existing source uses declarative exports. Legacy migrations cannot be mixed in.
-# No self-binding is legal during pending transfer. Add it only after commit.
+# The namespace is already adopted; do not reintroduce a transfer declaration.
 [exports.InferenceAdmissionGate]
 type = "durable-object"
-state = "expecting-transfer"
 storage = "sqlite"
-transfer_from = "eliza-cloud-api-staging"
+
+[[durable_objects.bindings]]
+name = "INFERENCE_ADMISSION_GATES"
+class_name = "InferenceAdmissionGate"
 
 [vars]
 NODE_ENV = "production"
