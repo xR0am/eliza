@@ -1,5 +1,6 @@
 import type {
   IAgentRuntime,
+  Memory,
   ReadRangeUnit,
   ReadView,
   UUID,
@@ -125,6 +126,8 @@ export interface DraftRecord {
 }
 
 export interface ListOptions {
+  /** Verified caller injected by the tool boundary; never read from model parameters. */
+  requester?: Memory;
   sinceMs?: number;
   limit?: number;
   /**
@@ -154,6 +157,8 @@ export interface MessageAdapterCapabilities {
 }
 
 export interface SearchMessagesFilters {
+  /** Verified caller injected by the tool boundary; never read from model parameters. */
+  requester?: Memory;
   sources?: MessageSource[];
   worldIds?: string[];
   channelIds?: string[];
@@ -169,6 +174,8 @@ export interface SearchMessagesFilters {
 
 /** Provider-native request for one exact, bounded page of a message body. */
 export interface ReadMessageRequest {
+  /** Verified caller injected by the tool boundary; never read from model parameters. */
+  requester?: Memory;
   messageId?: string;
   reference?: string;
   worldId?: string;
@@ -248,6 +255,8 @@ export interface ManageResult {
 
 export interface MessageAdapter {
   readonly source: MessageSource;
+  /** Owner/grant-scoped sources can opt out of the shared metadata cache. */
+  readonly cachePolicy?: "none";
   isAvailable(runtime: IAgentRuntime): boolean;
   capabilities(): MessageAdapterCapabilities;
   listMessages(

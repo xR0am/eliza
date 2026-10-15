@@ -106,6 +106,11 @@ export interface InboxItem {
   readonly snippet: string;
   readonly receivedAt: string;
   readonly threadTopic?: string;
+  /**
+   * The conversation this message belongs to, scoped to its account
+   * (`worldId:threadId`); absent when the source has no thread.
+   */
+  readonly threadKey?: string;
   readonly deepLink?: string;
   readonly unread?: boolean;
 }
@@ -181,6 +186,7 @@ export type InboxSendAuthorization =
  */
 export type InboxFetcher = (args: {
   runtime: IAgentRuntime;
+  requester?: Memory;
   since?: string;
   limit?: number;
   query?: string;
@@ -209,6 +215,9 @@ function mapMessageRefToInboxItem(ref: MessageRef): InboxItem | null {
     snippet: ref.snippet,
     receivedAt: new Date(ref.receivedAtMs).toISOString(),
     ...(ref.subject ? { threadTopic: ref.subject } : {}),
+    ...(ref.threadId
+      ? { threadKey: `${ref.worldId ?? ""}:${ref.threadId}` }
+      : {}),
     ...(typeof ref.metadata?.htmlLink === "string"
       ? { deepLink: ref.metadata.htmlLink }
       : {}),
@@ -240,7 +249,7 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
       throw new Error(`no inbox source registered for ${platform}`);
     };
   }
-  return async ({ runtime, since, limit, query }) => {
+  return async ({ runtime, since, limit, query, requester }) => {
     if (typeof runtime.getService !== "function") return [];
     try {
       const service = getDefaultTriageService();
@@ -253,14 +262,20 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
         );
       }
       const refs = query
-        ? await service.search(runtime, {
-            sources: [source],
-            content: query,
-            sinceMs: parseSinceMs(since),
-            ...(limit === undefined ? {} : { limit }),
-          })
+        ? await service.search(
+            runtime,
+            {
+              sources: [source],
+              requester,
+              content: query,
+              sinceMs: parseSinceMs(since),
+              ...(limit === undefined ? {} : { limit }),
+            },
+            { probeOverflow: false },
+          )
         : await service.triage(runtime, {
             sources: [source],
+            requester,
             sinceMs: parseSinceMs(since),
             ...(limit === undefined ? {} : { limit }),
           });
@@ -347,9 +362,14 @@ function resolvePlatforms(
   return [...seen];
 }
 
+/**
+ * One row per conversation: messages of one thread collapse to the newest. A
+ * subject is not a thread (two senders can both write "Quick question"), so
+ * only the source's own thread id groups messages.
+ */
 function dedupeKey(item: InboxItem): string {
-  if (item.threadTopic && item.threadTopic.length > 0) {
-    return `topic:${item.threadTopic.toLowerCase()}::${item.platform}::${item.channel}`;
+  if (item.threadKey) {
+    return `thread:${item.platform}::${item.threadKey}`;
   }
   return `id:${item.platform}::${item.id}`;
 }
@@ -398,6 +418,7 @@ export function dedupeAndOrder(
  */
 async function fetchInboxItems(args: {
   runtime: IAgentRuntime;
+  requester?: Memory;
   platforms: readonly InboxPlatform[];
   since?: string;
   limit?: number;
@@ -414,6 +435,7 @@ async function fetchInboxItems(args: {
       const fetcher = activeFetchers[platform];
       return fetcher({
         runtime: args.runtime,
+        requester: args.requester,
         ...(args.since ? { since: args.since } : {}),
         ...(probeLimit === undefined ? {} : { limit: probeLimit }),
         ...(args.query ? { query: args.query } : {}),
@@ -833,15 +855,30 @@ export async function executeInboxQueueOperation(args: {
       }
       const { merged, degraded, capped } = await fetchInboxItems({
         runtime: args.runtime,
+        requester:
+          args.authorization.kind === "turn"
+            ? args.authorization.message
+            : undefined,
         platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
       });
-      const alreadyTriaged = await repo.getBySourceMessageIds(
-        merged.map((item) => item.id),
+      const alreadyTriagedByPlatform = new Map<InboxPlatform, Set<string>>();
+      await Promise.all(
+        platforms.map(async (platform) => {
+          const ids = merged
+            .filter((item) => item.platform === platform)
+            .map((item) => item.id);
+          alreadyTriagedByPlatform.set(
+            platform,
+            await repo.getBySourceMessageIds(platform, ids),
+          );
+        }),
       );
       const freshMessages = merged
-        .filter((item) => !alreadyTriaged.has(item.id))
+        .filter(
+          (item) => !alreadyTriagedByPlatform.get(item.platform)?.has(item.id),
+        )
         .map((item) => toInboundMessage(args.runtime, item));
       if (freshMessages.length > 0) {
         const service = new InboxService(args.runtime);
@@ -1214,6 +1251,7 @@ export const inboxAction: Action & {
     const { merged, totalBeforeDedupe, degraded, capped } =
       await fetchInboxItems({
         runtime,
+        requester: message,
         platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),

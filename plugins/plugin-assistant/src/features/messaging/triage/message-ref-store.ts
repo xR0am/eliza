@@ -52,6 +52,13 @@ export class MessageRefStore {
     for (const r of refs) setMostRecent(messages, r.id, r);
   }
 
+  /** Forget only transient source metadata; drafts and provider mail are untouched. */
+  forgetSource(source: MessageSource): void {
+    for (const messages of this.messages.values())
+      for (const [id, ref] of messages)
+        if (ref.source === source) messages.delete(id);
+  }
+
   getMessage(id: string, agentId: UUID): MessageRef | null {
     return this.messages.get(this.scope(agentId))?.get(id) ?? null;
   }

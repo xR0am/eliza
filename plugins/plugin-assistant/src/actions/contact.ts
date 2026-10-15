@@ -1025,11 +1025,17 @@ export function createContactActions(dependencies: ContactActionDependencies): {
       );
     }
 
-    let existing: Entity | null = null;
+    let existing: Entity | null;
     try {
       existing = await runtime.getEntityById(entityId as UUID);
-    } catch {
-      existing = null;
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      runtime.reportError("contact:update:lookup", error, { entityId });
+      return fail(
+        `Failed to load contact for update: ${errMsg}`,
+        error instanceof ElizaError ? error.code : "UPDATE_FAILED",
+        "update",
+      );
     }
     if (!existing) {
       return fail(`Contact ${entityId} was not found.`, "NOT_FOUND", "update");

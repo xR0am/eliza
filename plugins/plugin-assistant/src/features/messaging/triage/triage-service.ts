@@ -10,7 +10,7 @@
  *   await getDefaultTriageService().triage(runtime, { sources: ["my-source"] });
  */
 
-import type { IAgentRuntime } from "@elizaos/core";
+import type { IAgentRuntime, Memory } from "@elizaos/core";
 import { ElizaError, logger } from "@elizaos/core";
 import { searchByListing } from "./adapters/base.ts";
 import { getDeferredMessageScheduler } from "./deferred-send-scheduler.ts";
@@ -38,6 +38,7 @@ import type {
 } from "./types.ts";
 
 export interface TriageOptions {
+  requester?: Memory;
   sources?: MessageSource[];
   worldIds?: string[];
   channelIds?: string[];
@@ -84,6 +85,7 @@ export class TriageService {
   ) {}
 
   register(adapter: MessageAdapter): void {
+    if (adapter.cachePolicy === "none") this.store.forgetSource(adapter.source);
     this.adapters.set(adapter.source, adapter);
   }
 
@@ -238,6 +240,7 @@ export class TriageService {
       let batch: MessageRef[];
       try {
         batch = await adapter.listMessages(runtime, {
+          requester: opts.requester,
           sinceMs: opts.sinceMs,
           limit: opts.limit,
           unreadOnly: opts.unreadOnly,
@@ -266,7 +269,12 @@ export class TriageService {
     }
 
     const scored = await scoreMessages(runtime, all, { nowMs: opts.nowMs });
-    this.store.saveMessages(scored, runtime.agentId);
+    this.store.saveMessages(
+      scored.filter(
+        (ref) => this.adapters.get(ref.source)?.cachePolicy !== "none",
+      ),
+      runtime.agentId,
+    );
     return rankScored(scored);
   }
 
@@ -278,8 +286,17 @@ export class TriageService {
   async search(
     runtime: IAgentRuntime,
     filters: SearchMessagesFilters,
+    options: { probeOverflow?: boolean } = {},
   ): Promise<MessageRef[]> {
-    return (await this.searchWithReceipt(runtime, filters)).refs;
+    // INBOX already requests an overflow row and owns its cap receipt.
+    // Preserve existing search behavior for every other caller.
+    return (
+      await this.searchInternal(
+        runtime,
+        filters,
+        options.probeOverflow !== false,
+      )
+    ).refs;
   }
 
   /**
@@ -290,6 +307,14 @@ export class TriageService {
   async searchWithReceipt(
     runtime: IAgentRuntime,
     filters: SearchMessagesFilters,
+  ): Promise<MessageSearchResult> {
+    return this.searchInternal(runtime, filters, true);
+  }
+
+  private async searchInternal(
+    runtime: IAgentRuntime,
+    filters: SearchMessagesFilters,
+    probeOverflow: boolean,
   ): Promise<MessageSearchResult> {
     const requested = filters.sources ?? this.listRegisteredSources();
     const succeeded: MessageSource[] = [];
@@ -304,7 +329,7 @@ export class TriageService {
         ? Math.floor(filters.limit)
         : null;
     const probeFilters =
-      requestedLimit === null
+      requestedLimit === null || !probeOverflow
         ? filters
         : { ...filters, limit: requestedLimit + 1 };
     for (const source of requested) {
@@ -342,10 +367,17 @@ export class TriageService {
     if (merged.length === 0 && failures.length > 0) {
       throw failures[0].error;
     }
-    this.store.saveMessages(merged, runtime.agentId);
+    this.store.saveMessages(
+      merged.filter(
+        (ref) => this.adapters.get(ref.source)?.cachePolicy !== "none",
+      ),
+      runtime.agentId,
+    );
     merged.sort(compareMessageRefsByRecency);
     const hasMore =
-      requestedLimit === null ? null : merged.length > requestedLimit;
+      requestedLimit === null || !probeOverflow
+        ? null
+        : merged.length > requestedLimit;
     return {
       refs: requestedLimit === null ? merged : merged.slice(0, requestedLimit),
       receipt: {

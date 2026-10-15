@@ -215,6 +215,8 @@ import {
   buildActiveReminders,
   isReminderChannelAllowedForUrgency,
   isWithinQuietHours as isWithinQuietHoursPolicy,
+  normalizeGeneratedReminderBody,
+  normalizeGeneratedWorkflowBody,
 } from "../service-helpers-misc.js";
 import { computeDefinitionPerformance } from "../service-helpers-occurrence.js";
 import {
@@ -904,16 +906,6 @@ function readMemoryCreatedAtMs(memory: { createdAt?: unknown }): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function normalizeGeneratedReminderBody(value: string): string | null {
-  const cleaned = value.replace(/^["'`]+|["'`]+$/g, "").trim();
-  return cleaned.length > 0 ? cleaned : null;
-}
-
-function normalizeGeneratedWorkflowBody(value: string): string | null {
-  const cleaned = value.replace(/^["'`]+|["'`]+$/g, "").trim();
-  return cleaned.length > 0 ? cleaned : null;
 }
 
 function formatReminderPromptValue(value: unknown): string {
