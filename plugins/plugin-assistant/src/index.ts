@@ -287,6 +287,7 @@ export {
   DeviceActionService,
   type DeviceCredential,
   deviceProposalDigest,
+  getDeviceActionTurn,
   setDeviceReadReplyConversation,
   withDeviceActionTurn,
 } from "./services/device-actions/service.ts";
