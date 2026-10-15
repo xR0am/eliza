@@ -278,4 +278,28 @@ describe("Maps shared allowance", () => {
         .status,
     ).toBe(503);
   });
+  test("Maps requires selected burst and sustained configuration as well as an allowance", async () => {
+    const absentOrUnselected = [
+      "",
+      JSON.stringify({
+        selected: false,
+        plans: {
+          default: {
+            burst: { capacity: 2, refillPerSecond: 1 },
+            sustained: { capacity: 2, refillPerSecond: 1 },
+          },
+        },
+      }),
+      JSON.stringify({ selected: true, plans: {} }),
+    ];
+    for (const [index, value] of absentOrUnselected.entries()) {
+      const gate = `maps-rate-unconfigured-${index}`;
+      await post("/test/config", { ELIZA_CLOUD_PLAN_RATE_LIMITS: value }, gate);
+      const result = await post("/maps/admit", mapsRequest("request"), gate);
+      expect(result.status).toBe(503);
+      expect(
+        ((await result.json()) as { error: { code: string } }).error.code,
+      ).toBe("maps_allowance_unconfigured");
+    }
+  });
 });

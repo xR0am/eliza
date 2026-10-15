@@ -146,8 +146,7 @@ export class MapsRequestAllowanceController {
       const config = readPlanRequestLimitConfig(
         this.env as Record<string, string | undefined>,
       );
-      if (config && !config.selected)
-        return fail("maps_allowance_unconfigured", 503);
+      if (!config?.selected) return fail("maps_allowance_unconfigured", 503);
       const plan = config
         ? Object.hasOwn(config.plans, request.policy.planKey)
           ? config.plans[request.policy.planKey]
@@ -157,7 +156,7 @@ export class MapsRequestAllowanceController {
     } catch {
       return fail("maps_allowance_unconfigured", 503);
     }
-    if (!allowance) return fail("maps_allowance_unconfigured", 503);
+    if (!allowance || !limits) return fail("maps_allowance_unconfigured", 503);
     const period = allowance.windowSeconds * 1000;
     const start = Math.floor(now / period) * period,
       end = start + period;
