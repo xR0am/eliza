@@ -64,11 +64,13 @@ export function resolveImageBytes(input: VisionImageInput): {
 			const payload = match[2];
 			const isBase64 = /;base64/i.test(input.dataUrl);
 			const payloadBytes = Buffer.concat(
-				payload.split(/(%[0-9a-f]{2})/gi).map((part) =>
-					/^%[0-9a-f]{2}$/i.test(part)
-						? Buffer.from([Number.parseInt(part.slice(1), 16)])
-						: Buffer.from(part, "utf8"),
-				),
+				payload
+					.split(/(%[0-9a-f]{2})/gi)
+					.map((part) =>
+						/^%[0-9a-f]{2}$/i.test(part)
+							? Buffer.from([Number.parseInt(part.slice(1), 16)])
+							: Buffer.from(part, "utf8"),
+					),
 			);
 			const bytes = Uint8Array.from(
 				isBase64
