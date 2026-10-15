@@ -611,6 +611,8 @@
     "./lib/services/voice-model-catalog": "./src/lib/services/voice-model-catalog.ts",
     "./lib/services/voice-usage-meter": "./src/lib/services/voice-usage-meter.ts",
     "./lib/services/wallet-signup": "./src/lib/services/wallet-signup.ts",
+    "./lib/services/website-reputation": "./src/lib/services/website-reputation.ts",
+    "./lib/services/website-reputation-ingest": "./src/lib/services/website-reputation-ingest.ts",
     "./lib/services/whatsapp-automation": "./src/lib/services/whatsapp-automation.ts",
     "./lib/services/x": "./src/lib/services/x.ts",
     "./lib/services/x402-facilitator": "./src/lib/services/x402-facilitator.ts",
