@@ -58,7 +58,7 @@ A new APK must be built from the changed native sources and tested on the device
 Install dependencies with `bun install` at the repository root. Run from that root:
 
 ```bash
-bun run build:client  # build
+bun run --cwd packages/app build  # build
 bun run --cwd packages/app test   # tests
 ```
 
