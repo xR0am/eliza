@@ -16,7 +16,8 @@ export function gmailAttachmentParts(payload: GmailMimePartLike | undefined) {
   const seen = new Set<string>();
   walkGmailMimeParts(payload, (part) => {
     if (!part.filename && !part.body?.attachmentId) return;
-    const { partId, filename, mimeType } = part;
+    const { filename, mimeType } = part;
+    const partId = part.partId ?? "";
     const size = part.body?.size;
     const attachmentId = part.body?.attachmentId ?? null;
     if (
