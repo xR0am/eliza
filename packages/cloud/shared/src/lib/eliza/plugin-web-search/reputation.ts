@@ -87,13 +87,13 @@ function sanitizeListedAnswer(
   answer: string,
   warnings: Array<{ url: string; host: string | null; warning: string }>,
 ): string {
-  let sanitized = answer
+  let sanitized = answer;
   for (const warning of warnings) {
-    const host = warning.host || hostOf(warning.url)
-    sanitized = sanitized.split(`](${warning.url})`).join("]")
-    sanitized = sanitized.split(warning.url).join(`[blocked ${host}]`)
+    const host = warning.host || hostOf(warning.url);
+    sanitized = sanitized.split(`](${warning.url})`).join("]");
+    sanitized = sanitized.split(warning.url).join(`[blocked ${host}]`);
   }
-  return sanitized
+  return sanitized;
 }
 function formatResultLine(result: SearchResult, index: number): string {
   // A listed site is named without a link so the warning cannot be skipped by a click.
@@ -108,14 +108,14 @@ function formatResultLine(result: SearchResult, index: number): string {
  * for other sites, so the text never implies that a site is safe.
  */
 export function formatWebSearchText(searchResponse: SearchResponse): string {
-  const lines: string[] = []
-  const answerWarnings = searchResponse.reputationWarnings ?? []
+  const lines: string[] = [];
+  const answerWarnings = searchResponse.reputationWarnings ?? [];
   if (searchResponse.answer) {
     lines.push(
       answerWarnings.length
         ? sanitizeListedAnswer(searchResponse.answer, answerWarnings)
         : searchResponse.answer,
-    )
+    );
     if (searchResponse.results.length > 0) {
       lines.push(
         "",
