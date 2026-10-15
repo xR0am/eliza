@@ -717,12 +717,19 @@ export class ContainersRepository {
     now: Date,
   ): Promise<void> {
     const [container] = await tx
-      .select({ user_id: containers.user_id, name: containers.name })
+      .select({
+        user_id: containers.user_id,
+        name: containers.name,
+        billing_status: containers.billing_status,
+      })
       .from(containers)
       .where(and(eq(containers.id, id), eq(containers.organization_id, organizationId)))
       .for("update")
       .limit(1);
-    if (!container) return;
+    // A suspended row already left billing through a settled boundary (app
+    // teardown, the billing stop job): settling again would charge time after
+    // metering stopped, up to the daemon's delayed delete.
+    if (!container || container.billing_status === "suspended") return;
     const [organization] = await tx
       .select({ pay_as_you_go_from_earnings: organizations.pay_as_you_go_from_earnings })
       .from(organizations)
