@@ -1879,6 +1879,21 @@ export class InferenceAdmissionGate {
         ),
       );
     }
+    if (path === "/maps/admit" || path === "/maps/usage") {
+      const { MapsRequestAllowanceController } = await import(
+        "./maps-request-allowance-controller"
+      );
+      return this.serializeRevocation(async () => {
+        const controller = new MapsRequestAllowanceController(
+          this.state.storage,
+          this.env as Record<string, unknown>,
+          {
+            credential: (value) => this.credentialDenial(value),
+          },
+        );
+        return controller.handle(path, body);
+      });
+    }
     if (path === "/hydrate") {
       return await this.serialize(() => this.hydrate(body as HydrateRequest));
     }
