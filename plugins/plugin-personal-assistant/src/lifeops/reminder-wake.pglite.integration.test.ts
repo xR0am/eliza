@@ -7,8 +7,10 @@ import {
   AgentEventService,
   attestDeliveryAudienceFromCanonicalRoom,
   ChannelType,
+  ElizaError,
   executePlannedToolCall,
   type Memory,
+  SEND_HANDLER_NOT_FOUND,
   TaskService,
   type UUID,
 } from "@elizaos/core";
@@ -654,13 +656,18 @@ it.each([
     "runtime_send_partially_delivered",
   ],
   ["no delivery evidence", undefined, "runtime_send_unknown"],
+  [
+    "a send that threw after the request left",
+    Error("socket hang up"),
+    "runtime_send_acceptance_unknown",
+  ],
 ])(
   "a connector reminder with %s is not sent again",
   async (_case, sendResult, reason) => {
     const f = await createLifeOpsTestRuntime();
-    const send = vi
-      .spyOn(f.runtime, "sendMessageToTarget")
-      .mockResolvedValue(sendResult as never);
+    const send = vi.spyOn(f.runtime, "sendMessageToTarget");
+    if (sendResult instanceof Error) send.mockRejectedValue(sendResult);
+    else send.mockResolvedValue(sendResult as never);
     try {
       const service = new LifeOpsService(f.runtime);
       await service.upsertChannelPolicy({
@@ -715,6 +722,90 @@ it.each([
   },
   120000,
 );
+
+it("a connector reminder whose send handler is not registered yet is retried and delivered once", async () => {
+  const f = await createLifeOpsTestRuntime();
+  const send = vi
+    .spyOn(f.runtime, "sendMessageToTarget")
+    .mockRejectedValueOnce(
+      new ElizaError("Send handler not found for source: telegram", {
+        code: SEND_HANDLER_NOT_FOUND,
+        context: { source: "telegram" },
+      }),
+    )
+    .mockResolvedValue({
+      kind: "delivered",
+      receipt: {
+        providerMessageIds: ["tg-1"],
+        acceptedAt: 1,
+        persistence: { status: "not_attempted", reason: "test fixture" },
+      },
+      memories: [],
+    } as never);
+  try {
+    const service = new LifeOpsService(f.runtime);
+    await service.upsertChannelPolicy({
+      channelType: "telegram",
+      channelRef: "owner-chat",
+      allowReminders: true,
+      metadata: { channelId: "owner-chat" },
+    });
+    const due = Date.now() + 90000;
+    await service.createDefinition({
+      title: "Connector startup proof",
+      kind: "habit",
+      cadence: {
+        kind: "once",
+        dueAt: new Date(due).toISOString(),
+        visibilityLeadMinutes: 0,
+      },
+      timezone: "UTC",
+      metadata: { ownerSurface: "OWNER_REMINDERS" },
+      reminderPlan: {
+        steps: [{ channel: "telegram", offsetMinutes: 0, label: "Ping" }],
+      },
+    });
+    vi.setSystemTime(new Date(due));
+    await service.processReminders({
+      now: new Date(due).toISOString(),
+      scope: "definitions",
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    const first = await service.repository.listReminderAttempts(
+      f.runtime.agentId,
+    );
+    expect(first.filter((a) => a.channel === "telegram")).toEqual([
+      expect.objectContaining({
+        outcome: "blocked_connector",
+        deliveryMetadata: expect.objectContaining({
+          reason: "runtime_send_handler_missing",
+        }),
+      }),
+    ]);
+    // Nothing was sent, so the next tick retries once the handler exists,
+    // and later ticks do not send the delivered step again.
+    for (const later of [due + 60_000, due + 120_000]) {
+      vi.setSystemTime(new Date(later));
+      await service.processReminders({
+        now: new Date(later).toISOString(),
+        scope: "definitions",
+      });
+    }
+    expect(send).toHaveBeenCalledTimes(2);
+    const attempts = await service.repository.listReminderAttempts(
+      f.runtime.agentId,
+    );
+    expect(
+      attempts
+        .filter((a) => a.channel === "telegram")
+        .map((a) => a.outcome)
+        .sort(),
+    ).toEqual(["blocked_connector", "delivered"]);
+  } finally {
+    send.mockRestore();
+    await f.cleanup();
+  }
+}, 120000);
 
 it("native owner creation and a current body edit deliver exact UTF text once through in-app and notification events", async () => {
   const f = await createLifeOpsTestRuntime();
