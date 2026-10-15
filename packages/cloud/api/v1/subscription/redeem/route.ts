@@ -209,7 +209,7 @@ export function createSubscriptionRedeemRoute(
             id: result.grant.id,
             planKey: result.grant.plan_key,
             startsAt: result.grant.starts_at.toISOString(),
-            endsAt: result.grant.ends_at.toISOString(),
+            endsAt: result.grant.ends_at?.toISOString() ?? null,
             revoked: result.grant.revoked_at !== null,
             // An effective paid plan keeps precedence; the grant serves only
             // inside its window after the paid plan stops serving.
