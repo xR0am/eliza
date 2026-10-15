@@ -27,6 +27,7 @@ test("private recovery callback transport awaits publication and retains a lease
     workers: [
       {
         name: "client",
+        modulesRoot: directory,
         modules: true,
         scriptPath: path.join(directory, "inference-recovery-rpc-client.js"),
         compatibilityDate: "2026-04-01",
@@ -41,6 +42,7 @@ test("private recovery callback transport awaits publication and retains a lease
       },
       {
         name: "recovery",
+        modulesRoot: directory,
         modules: true,
         scriptPath: path.join(
           directory,
