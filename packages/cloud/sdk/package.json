@@ -179,7 +179,7 @@
     }
   },
   "dependencies": {
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@typescript/native": "npm:typescript@^7.0.2"
