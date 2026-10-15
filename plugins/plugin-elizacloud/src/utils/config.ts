@@ -128,6 +128,8 @@ export function getApiKey(runtime: IAgentRuntime): string | undefined {
 }
 /** Explicit configured native product; the server resolves all tenant and funding authority. */
 export function getNativeApplicationSlot(runtime: IAgentRuntime): string | undefined {
+    const snapshot = captureDevCloudEnvAuthoritySnapshot(process.env);
+    if (snapshot) return snapshot.values.ELIZAOS_CLOUD_APPLICATION_SLOT;
     return getSetting(runtime, "ELIZAOS_CLOUD_APPLICATION_SLOT");
 }
 /** One key per logical model call, retained by the caller across warming or transport retries. */
