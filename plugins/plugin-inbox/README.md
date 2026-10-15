@@ -15,3 +15,14 @@ Install dependencies with `bun install` at the repository root. Run from that ro
 bun run --cwd plugins/plugin-inbox build  # build
 bun run --cwd plugins/plugin-inbox test   # tests
 ```
+
+## Private host Gmail reads
+
+A host can set `ELIZA_MANAGED_GMAIL_READ_BROKER` to its private loopback endpoint
+`http://127.0.0.1:<port>/__alpha-owner-gmail`. The host must authenticate the
+runtime's existing `ELIZA_API_TOKEN`, verify the current owner and Google read
+grant, and return `{items: InboxActionItem[]}`. Provider credentials stay in the
+host. Only the owner-gated INBOX list/search/summarize path uses this source.
+It does not enable send, drafts, or mailbox changes. Without the setting the
+existing connector path is unchanged. Android hosts must supply their own
+qualified broker; a browser host test does not qualify Android.

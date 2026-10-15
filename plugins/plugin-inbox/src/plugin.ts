@@ -13,8 +13,9 @@ import {
   promoteSubactionsToActions,
 } from "@elizaos/core";
 import type { HttpPlugin as Plugin } from "@elizaos/host/protocol";
-import { inboxAction } from "./actions/inbox.ts";
+import { inboxAction, setInboxFetchers } from "./actions/inbox.ts";
 import { inboxDbSchema } from "./db/schema.ts";
+import { managedGmailReadFetcher } from "./inbox/managed-gmail-read.ts";
 import { InboxMigrationService } from "./inbox/migration.ts";
 import { crossChannelContextProvider } from "./providers/cross-channel-context.ts";
 import { inboxTriageProvider } from "./providers/inbox-triage.ts";
@@ -26,6 +27,12 @@ export const inboxPlugin: Plugin = {
   dependencies: ["@elizaos/plugin-sql"],
   schema: inboxDbSchema,
   services: [InboxMigrationService],
+  // This is the OWNER-gated INBOX read path. It does not register a global
+  // MESSAGE adapter or advertise any draft/send/mailbox mutation capability.
+  init: async () => {
+    const gmail = managedGmailReadFetcher();
+    if (gmail) setInboxFetchers({ gmail });
+  },
   // Promote the INBOX_* subaction virtuals here so they exist wherever the
   // plugin loads (including standalone, without plugin-personal-assistant).
   // The `triage` override sharpens the planner signal so a genuine triage
