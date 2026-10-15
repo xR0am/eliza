@@ -365,6 +365,7 @@ describe("Personal Shared cutover reminder containment in Workerd", () => {
                 : await store.load(body.agentId, body.channelId));
             }
             if (new URL(request.url).pathname === "/__test/legacy-intents") {
+              await request.json();
               // Rewrite delivery intents as stored before dispatchedAt existed.
               const intents = await this.testState.storage.list({ prefix: "network-delivery:" });
               for (const [key, intent] of intents) {
@@ -2064,7 +2065,8 @@ describe("Personal Shared cutover reminder containment in Workerd", () => {
     gatewayDown = calls;
     try {
       expect((await post(name, "/network-delivery", payload)).status).toBe(202);
-      await post(name, "/__test/legacy-intents", {});
+      const migrated = await post(name, "/__test/legacy-intents", {});
+      expect(await migrated.json()).toEqual({ success: true });
       const recovery = await post(name, "/network-delivery", payload);
       expect(recovery.status).toBe(202);
       expect(await recovery.json()).toMatchObject({ error: "unknown" });
