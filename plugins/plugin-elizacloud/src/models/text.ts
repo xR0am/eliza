@@ -957,6 +957,41 @@ function unwrapJsonSchema(value: unknown): unknown {
   return record.schema ?? record.jsonSchema ?? value;
 }
 
+// OpenAI-style strict function calling requires every object level to list all
+// of its properties in `required` and to set `additionalProperties: false`.
+function isStrictCompatibleJsonSchema(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.every(isStrictCompatibleJsonSchema);
+  }
+  if (!value || typeof value !== "object") {
+    return true;
+  }
+  const schema = value as Record<string, unknown>;
+  const isObject =
+    schema.type === "object" ||
+    (Array.isArray(schema.type) && schema.type.includes("object")) ||
+    schema.properties !== undefined;
+  if (isObject) {
+    const properties = asRecord(schema.properties);
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    if (
+      schema.additionalProperties !== false ||
+      Object.keys(properties).some((key) => !required.includes(key)) ||
+      !Object.values(properties).every(isStrictCompatibleJsonSchema)
+    ) {
+      return false;
+    }
+  }
+  return (
+    ["items", "anyOf", "oneOf", "allOf"].every((key) =>
+      isStrictCompatibleJsonSchema(schema[key])
+    ) &&
+    ["$defs", "definitions"].every((key) =>
+      Object.values(asRecord(schema[key])).every(isStrictCompatibleJsonSchema)
+    )
+  );
+}
+
 // Normalize a single tool entry into the OpenAI `{ type, function }` wire
 // shape. Accepts BOTH the already-nested form (`{ type: "function", function:
 // { name, parameters } }`) and core's FLAT `ToolDefinition` envelope
@@ -976,7 +1011,7 @@ function normalizeNativeToolEntry(
     return undefined;
   }
   const description = firstString(nested.description, tool.description);
-  const strict =
+  const requestedStrict =
     typeof nested.strict === "boolean"
       ? nested.strict
       : typeof tool.strict === "boolean"
@@ -988,6 +1023,14 @@ function normalizeNativeToolEntry(
       tool.parameters ??
       tool.schema ?? { type: "object" }
   );
+  // Core's `strict` is a caller preference: action tools default to
+  // `strict: true` while optional parameters stay out of `required`. Forward
+  // `strict: true` only for schemas that meet the strict contract, so strict
+  // providers do not reject the whole request. `strict: false` is always safe.
+  const strict =
+    requestedStrict === true && !isStrictCompatibleJsonSchema(inputSchema)
+      ? undefined
+      : requestedStrict;
   return {
     type: "function",
     function: {
