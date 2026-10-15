@@ -97,6 +97,42 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
       [`/api/memories/${memoryId}`, { method: "DELETE" }],
       [`/api/files/${"a".repeat(64)}.png`, { method: "DELETE" }],
       [
+        "/api/agent/export",
+        {
+          method: "POST",
+          body: JSON.stringify({ password: "guest-pass-123" }),
+        },
+      ],
+      ["/api/snapshot", { method: "POST" }],
+      ["/api/restore", { method: "POST", body: "{}" }],
+      ["/api/backups", {}],
+      ["/api/agent/import", { method: "POST", body: "{}" }],
+      ["/api/agent/reset", { method: "POST" }],
+      ["/api/agent/stop", { method: "POST" }],
+      [
+        "/api/agent/autonomy",
+        { method: "POST", body: JSON.stringify({ enabled: true }) },
+      ],
+      [
+        "/api/permissions/shell",
+        { method: "PUT", body: JSON.stringify({ enabled: true }) },
+      ],
+      [
+        "/api/permissions/trade-mode",
+        { method: "PUT", body: JSON.stringify({ mode: "agent-auto" }) },
+      ],
+      [
+        "/api/connectors",
+        {
+          method: "POST",
+          body: JSON.stringify({ name: "discord", config: {} }),
+        },
+      ],
+      [
+        "/api/provider/switch",
+        { method: "POST", body: JSON.stringify({ provider: "openai" }) },
+      ],
+      [
         "/api/config",
         {
           method: "PUT",
