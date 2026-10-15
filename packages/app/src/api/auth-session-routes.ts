@@ -259,9 +259,11 @@ let setupMutex: Promise<void> = Promise.resolve();
 
 function acquireSetupMutex(): Promise<() => void> {
   let release!: () => void;
-  const next = setupMutex.then(() => new Promise<void>((r) => { release = r; }));
-  setupMutex = next.catch(() => {});
-  return next.then(() => release);
+  const previous = setupMutex;
+  setupMutex = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return previous.then(() => release);
 }
 
 async function handleSetup(
