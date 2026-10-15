@@ -167,6 +167,12 @@
       "types": "./dist/native-speech-stream.d.ts",
       "import": "./dist/native-speech-stream.js",
       "default": "./dist/native-speech-stream.js"
+    },
+    "./website-reputation": {
+      "eliza-source": "./src/website-reputation.ts",
+      "types": "./dist/website-reputation.d.ts",
+      "import": "./dist/website-reputation.js",
+      "default": "./dist/website-reputation.js"
     }
   },
   "elizaos": {

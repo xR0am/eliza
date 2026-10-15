@@ -1036,10 +1036,39 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     under("/api/memories") ||
     // Served by the memory handler from the same stored notes.
     under("/api/context/quick") ||
+    // Whole-agent data: export/snapshot carry the memories and secrets,
+    // restore/import/reset replace or wipe them.
+    under("/api/snapshot") ||
+    pathname === "/api/restore" ||
+    under("/api/backups") ||
+    under("/api/agent/export") ||
+    (write &&
+      [
+        "import",
+        "reset",
+        "start",
+        "stop",
+        "restart",
+        "pause",
+        "resume",
+        "autonomy",
+      ].some((op) => under(`/api/agent/${op}`))) ||
+    // Legacy restart endpoint: exits and restarts the whole agent process.
+    (write && pathname === "/api/restart") ||
     (write &&
       (pathname.startsWith("/api/wallet/") ||
         under("/api/config") ||
-        under("/api/character")))
+        under("/api/character") ||
+        // Deleting a stored file removes the owner's attachments for good.
+        under("/api/files") ||
+        // Shell, trading, automation and computer-use permissions.
+        under("/api/permissions") ||
+        // Bot tokens and allowlists of the owner's connectors. The provider's
+        // OAuth callback is authenticated by its state/code, not the owner.
+        (under("/api/connectors") &&
+          !/^\/api\/connectors\/[^/]+\/oauth\/callback\/?$/.test(pathname)) ||
+        // Who receives the model traffic, and with which key.
+        pathname === "/api/provider/switch"))
   );
 }
 
