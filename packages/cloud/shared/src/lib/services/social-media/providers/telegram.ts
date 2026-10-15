@@ -1,6 +1,7 @@
 /**
  * Telegram Provider - Bot API
  */
+import { ElizaError } from "@elizaos/core";
 
 import type {
   MediaAttachment,
@@ -13,7 +14,12 @@ import type {
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
 import { TELEGRAM_API_BASE } from "../../../utils/telegram-api";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const TELEGRAM_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -74,10 +80,37 @@ async function telegramApiRequest<T>(
       }),
     async (response) => {
       const payload = (await response.json()) as TelegramResponse<T>;
-      if (!payload.ok) {
-        throw new Error(
+      if (payload.ok === false) {
+        throw new SocialApiRejectionError(
           payload.description ?? `Telegram API error: ${payload.error_code ?? response.status}`,
         );
+      }
+      if (payload.ok !== true) {
+        throw new ElizaError("Telegram response lacks a valid acknowledgement", {
+          code: "SOCIAL_API_INVALID_RESPONSE",
+          severity: "ephemeral",
+        });
+      }
+      if (["sendMessage", "sendPhoto", "sendVideo", "sendMediaGroup"].includes(method)) {
+        const messages = method === "sendMediaGroup" ? payload.result : [payload.result];
+        if (
+          !Array.isArray(messages) ||
+          messages.length === 0 ||
+          messages.some(
+            (message) =>
+              !message ||
+              typeof message !== "object" ||
+              !("message_id" in message) ||
+              typeof message.message_id !== "number" ||
+              !Number.isSafeInteger(message.message_id) ||
+              message.message_id <= 0,
+          )
+        ) {
+          throw new ElizaError("Telegram response lacks a publication receipt", {
+            code: "SOCIAL_API_INVALID_RESPONSE",
+            severity: "ephemeral",
+          });
+        }
       }
       return payload.result as T;
     },
