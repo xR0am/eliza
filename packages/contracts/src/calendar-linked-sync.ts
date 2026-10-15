@@ -477,9 +477,18 @@ export class LinkedCalendarReconciler<
       });
       return "pulled";
     }
+    if (!provider.etag)
+      return this.quarantine(
+        record,
+        "LINKED_PROVIDER_REVISION_MISSING",
+        "The provider did not supply an exact revision. No write was attempted.",
+      );
     const dirty = await this.repository.save(record, {
       state: "dirty",
       pendingOperation: "update",
+      providerEventId: provider.eventId,
+      providerEtag: provider.etag,
+      localRevision: local.revision,
       lastCommonSemanticHash: await linkedCalendarSemanticDigest(
         provider.event,
       ),
