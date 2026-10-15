@@ -19,7 +19,7 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const BLUESKY_SERVICE = "https://bsky.social";
 
@@ -400,11 +400,7 @@ export const blueskyProvider: SocialMediaProvider = {
       // error-policy:J1 boundary translation of the Bluesky post call into the typed
       // PostResult failure the caller renders; a failure, not a fabricated success.
       logger.error("[Bluesky] Post failed", { error });
-      return {
-        platform: "bluesky",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("bluesky", error);
     }
   },
 
@@ -618,11 +614,7 @@ export const blueskyProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 boundary translation of the Bluesky repost call into the typed
       // PostResult failure the caller renders; a failure, not a fabricated success.
-      return {
-        platform: "bluesky",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("bluesky", error);
     }
   },
 };

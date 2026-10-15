@@ -68,6 +68,9 @@ test("bluesky sends createRecord once and reports the unknown outcome", async ()
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("reddit sends /api/submit once and reports the unknown outcome", async () => {
@@ -85,6 +88,9 @@ test("reddit sends /api/submit once and reports the unknown outcome", async () =
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("linkedin sends /ugcPosts once and reports the unknown outcome", async () => {
@@ -100,6 +106,9 @@ test("linkedin sends /ugcPosts once and reports the unknown outcome", async () =
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("twitter sends /tweets once and reports the unknown outcome", async () => {
@@ -111,6 +120,9 @@ test("twitter sends /tweets once and reports the unknown outcome", async () => {
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("telegram sends sendMessage once and reports the unknown outcome", async () => {
@@ -126,6 +138,9 @@ test("telegram sends sendMessage once and reports the unknown outcome", async ()
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("discord sends a channel message once and reports the unknown outcome", async () => {
@@ -141,6 +156,9 @@ test("discord sends a channel message once and reports the unknown outcome", asy
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("discord executes a webhook once and reports the unknown outcome", async () => {
@@ -155,6 +173,9 @@ test("discord executes a webhook once and reports the unknown outcome", async ()
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("slack sends chat.postMessage once and reports the unknown outcome", async () => {
@@ -170,6 +191,9 @@ test("slack sends chat.postMessage once and reports the unknown outcome", async 
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("facebook sends a page feed post once and reports the unknown outcome", async () => {
@@ -185,6 +209,9 @@ test("facebook sends a page feed post once and reports the unknown outcome", asy
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
 });
 
 test("tiktok sends a pulled video init once and reports the unknown outcome", async () => {
@@ -204,4 +231,27 @@ test("tiktok sends a pulled video init once and reports the unknown outcome", as
 
   expect(seen.creates).toBe(1);
   expect(result.success).toBe(false);
+  // The platform may have published it: hold the credit, do not refund.
+  expect(result.creditDisposition).toBe("hold");
+  expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
+});
+
+test("a create the platform refuses is a plain, refundable failure", async () => {
+  let sends = 0;
+  spies.push(
+    spyOn(globalThis, "fetch").mockImplementation(async () => {
+      sends += 1;
+      return json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }, 400);
+    }),
+  );
+
+  const result = await telegramProvider.createPost(
+    { botToken: "123:abc" },
+    { text: "Launch day" },
+    { telegram: { chatId: "-100" } },
+  );
+
+  expect(sends).toBe(1);
+  expect(result.success).toBe(false);
+  expect(result.creditDisposition).toBeUndefined();
 });

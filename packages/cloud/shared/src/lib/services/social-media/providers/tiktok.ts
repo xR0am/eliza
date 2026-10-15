@@ -23,7 +23,12 @@ import {
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
 import { assertSocialMediaBytesWithinBudget, decodeSocialMediaBase64 } from "../media-download";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  UnknownPostOutcomeError,
+  withRetry,
+} from "../rate-limit";
 
 const TIKTOK_API_BASE = "https://open.tiktokapis.com/v2";
 
@@ -711,6 +716,7 @@ export const tiktokProvider: SocialMediaProvider = {
       // PostResult the caller inspects; socialMediaService relies on this (not a throw) to
       // drive the per-platform credit refund (#11680).
       logger.error("[TikTok] Post failed", { error });
+      if (error instanceof UnknownPostOutcomeError) return failedPostResult("tiktok", error);
       return {
         platform: "tiktok",
         success: false,

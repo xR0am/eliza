@@ -13,7 +13,7 @@ import type {
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
 import { TELEGRAM_API_BASE } from "../../../utils/telegram-api";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const TELEGRAM_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -244,11 +244,7 @@ export const telegramProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 transport boundary — an outbound Telegram send failure becomes the typed { success:false } PostResult the caller renders (never a fabricated success)
       logger.error("[Telegram] Post failed", { error });
-      return {
-        platform: "telegram",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("telegram", error);
     }
   },
 

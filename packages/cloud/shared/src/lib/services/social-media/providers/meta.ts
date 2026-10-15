@@ -14,7 +14,7 @@ import type {
 } from "../../../types/social-media";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const GRAPH_API_BASE = "https://graph.facebook.com/v19.0";
 
@@ -205,11 +205,7 @@ async function createFacebookPost(
     // error-policy:J1 boundary translation — a failed Graph API post becomes a typed
     // {success:false} PostResult the caller inspects, not a swallowed error.
     logger.error("[Facebook] Post failed", { error });
-    return {
-      platform: "facebook",
-      success: false,
-      error: extractErrorMessage(error),
-    };
+    return failedPostResult("facebook", error);
   }
 }
 
@@ -368,11 +364,7 @@ async function createInstagramPost(
     // error-policy:J1 boundary translation — a failed Graph API post becomes a typed
     // {success:false} PostResult the caller inspects, not a swallowed error.
     logger.error("[Instagram] Post failed", { error });
-    return {
-      platform: "instagram",
-      success: false,
-      error: extractErrorMessage(error),
-    };
+    return failedPostResult("instagram", error);
   }
 }
 
@@ -592,11 +584,7 @@ export const metaProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 boundary translation — a failed Graph API comment becomes a typed
       // {success:false} PostResult the caller inspects, not a swallowed error.
-      return {
-        platform: "facebook",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("facebook", error);
     }
   },
 

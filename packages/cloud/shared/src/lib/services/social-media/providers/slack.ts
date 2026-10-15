@@ -14,7 +14,7 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const SLACK_API_BASE = "https://slack.com/api";
 
@@ -273,11 +273,7 @@ export const slackProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 outbound Slack post boundary — translate any send failure into a structured PostResult failure (success:false) the caller renders; the message is not fabricated as sent.
       logger.error("[Slack] Post failed", { error });
-      return {
-        platform: "slack",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("slack", error);
     }
   },
 

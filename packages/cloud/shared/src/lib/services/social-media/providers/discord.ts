@@ -16,7 +16,7 @@ import {
 } from "../../../utils/discord-api";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 export { discordApiFetch };
 
@@ -228,11 +228,7 @@ export const discordProvider: SocialMediaProvider = {
       // structured { success:false } PostResult the socialMediaService caller inspects and refunds on.
     } catch (error) {
       logger.error("[Discord] Post failed", { error });
-      return {
-        platform: "discord",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("discord", error);
     }
   },
 
@@ -326,11 +322,7 @@ export const discordProvider: SocialMediaProvider = {
       // error-policy:J1 transport boundary — an outbound Discord reply failure becomes the
       // structured { success:false } PostResult the socialMediaService caller inspects and refunds on.
     } catch (error) {
-      return {
-        platform: "discord",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("discord", error);
     }
   },
 
