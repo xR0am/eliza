@@ -158,7 +158,17 @@ export interface MessageAdapterCapabilities {
     markRead?: boolean;
     unsubscribe?: boolean;
   };
-  send: { reply?: boolean; new?: boolean; schedule?: boolean };
+  send: {
+    reply?: boolean;
+    new?: boolean;
+    schedule?: boolean;
+    /**
+     * True when delivery must run inside the executing owner request (the
+     * adapter authorizes against a live requester). Such drafts cannot be
+     * handed to the durable deferred-send runner, which fires without one.
+     */
+    requiresLiveRequester?: boolean;
+  };
   worlds: "single" | "multi";
   channels: "explicit" | "implicit" | "none";
 }

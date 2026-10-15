@@ -11,11 +11,11 @@ import {
 } from "@elizaos/core";
 import {
   BaseMessageAdapter,
-  type ListOptions,
   type DraftRequest,
+  type ListOptions,
   type MessageDraftContext,
-  type MessageSendContext,
   type MessageRef,
+  type MessageSendContext,
   type ReadMessageRequest,
   type ReadMessageResult,
   type SearchMessagesFilters,
@@ -26,8 +26,8 @@ import {
   managedGmailReadFetcher,
 } from "./managed-gmail-read.ts";
 import {
-  managedGmailSender,
   type ManagedSendContent,
+  managedGmailSender,
 } from "./managed-gmail-send.ts";
 
 const unavailable = (message: string) =>
@@ -67,7 +67,9 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
       list: true,
       search: true,
       manage: {},
-      send: this.sender ? { new: true } : {},
+      send: this.sender
+        ? { new: true, requiresLiveRequester: true }
+        : { requiresLiveRequester: true },
       worlds: "single" as const,
       channels: "none" as const,
     };

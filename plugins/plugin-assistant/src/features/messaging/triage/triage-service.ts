@@ -845,12 +845,10 @@ export class TriageService {
       );
     }
 
+    const sendCapabilities = adapter.capabilities().send;
     // A connector-owned remote schedule is authoritative when available.
     // Every other adapter must use the one durable ScheduledTask runner.
-    if (
-      adapter.capabilities().send.schedule === true &&
-      adapter.scheduleSend != null
-    ) {
+    if (sendCapabilities.schedule === true && adapter.scheduleSend != null) {
       const { scheduledId } = await adapter.scheduleSend(
         runtime,
         draftId,
@@ -882,6 +880,20 @@ export class TriageService {
       };
       this.store.saveDraft(updated);
       return updated;
+    }
+
+    // The durable runner dispatches without an executing requester, so an
+    // adapter that authorizes delivery against a live owner request would
+    // accept the schedule and then fail at send time. Refuse it up front.
+    if (sendCapabilities.requiresLiveRequester === true) {
+      throw new ElizaError(
+        `Scheduled delivery is not supported for ${record.source} drafts; send it now instead.`,
+        {
+          code: "MESSAGE_SCHEDULE_UNSUPPORTED",
+          context: { draftId, source: record.source, sendAtMs },
+          severity: "ephemeral",
+        },
+      );
     }
 
     const scheduler = getDeferredMessageScheduler(runtime);
