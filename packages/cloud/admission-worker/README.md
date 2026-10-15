@@ -36,7 +36,7 @@ Use the normal built workspace dependencies and pinned Wrangler. After the sole
 build owner releases the producer, from the repository root run:
 
 ```bash
-bun packages/cloud/admission-worker/verify-transfer-preparation.ts
+bun packages/cloud/admission-worker/verify-staging-contract.ts
 bun x --no-install wrangler deploy --config packages/cloud/admission-worker/wrangler.toml --dry-run --outdir test-results/admission-worker-candidate
 ```
 

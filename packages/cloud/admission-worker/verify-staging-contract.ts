@@ -1,4 +1,4 @@
-/** Read-only source checks for the pending staging transfer; never invokes Cloudflare. */
+/** Read-only source checks for the accepted staging topology; never invokes Cloudflare. */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +12,7 @@ interface WorkerConfig {
   preview_urls?: boolean;
   routes?: unknown[];
   migrations?: unknown[];
-  durable_objects?: { bindings?: unknown[] };
+  durable_objects?: { bindings?: Record<string, unknown>[] };
   exports?: Record<string, Record<string, unknown>>;
   vars?: Record<string, unknown>;
   define?: Record<string, string>;
@@ -37,7 +37,10 @@ const target = Bun.TOML.parse(
   await readFile(new URL("./wrangler.toml", import.meta.url), "utf8"),
 ) as WorkerConfig;
 const stage = source.env?.staging;
-requireContract(stage?.name, "Source staging Worker must be declared");
+requireContract(
+  stage?.name === "eliza-cloud-api-staging",
+  "Source must remain the canonical staging API Worker",
+);
 requireContract(
   target.account_id === source.account_id,
   "Transfer account must match source",
@@ -52,7 +55,7 @@ requireContract(
     JSON.stringify(stage.compatibility_flags ?? source.compatibility_flags),
   "Compatibility flag drift",
 );
-function sortedEntries(values: Record<string, string> | undefined) {
+function sortedEntries<T>(values: Record<string, T> | undefined) {
   return Object.entries(values ?? {}).sort(([left], [right]) =>
     left.localeCompare(right),
   );
@@ -107,29 +110,80 @@ requireContract(
   "Admission Worker must have no public routes",
 );
 requireContract(
-  !target.durable_objects?.bindings?.length,
-  "Pending transfer cannot self-bind",
+  JSON.stringify(stage.migrations) === "[]",
+  "Accepted staging must explicitly disable inherited legacy migrations",
 );
-const declaration = target.exports?.InferenceAdmissionGate;
+const expectedClasses = [
+  "SharedRuntimeConversation",
+  "InferenceAdmissionGate",
+  "AnonymousChatGate",
+  "OnboardingSessionCoordinator",
+  "TwitterOAuthRefreshCoordinator",
+  "PersonalDeliveryProjection",
+  "PersonalTelegramDelivery",
+  "InferenceRateLimitV2RollbackFloor",
+  "DoorDashCheckoutGate",
+].sort();
 requireContract(
-  declaration?.type === "durable-object",
-  "Missing admission export",
+  JSON.stringify(Object.keys(stage.exports ?? {}).sort()) ===
+    JSON.stringify(expectedClasses),
+  "Staging must retain exactly all nine source declarations",
+);
+for (const name of expectedClasses) {
+  const globalDeclaration = source.exports?.[name];
+  requireContract(
+    globalDeclaration?.type === "durable-object" &&
+      globalDeclaration.storage === "sqlite",
+    `Global source SQLite declaration must remain: ${name}`,
+  );
+  const expected =
+    name === "InferenceAdmissionGate"
+      ? {
+          type: "durable-object",
+          state: "transferred",
+          transferred_to: target.name,
+        }
+      : globalDeclaration;
+  requireContract(
+    JSON.stringify(sortedEntries(stage.exports?.[name])) ===
+      JSON.stringify(sortedEntries(expected)),
+    `Accepted staging declaration drift: ${name}`,
+  );
+}
+requireContract(
+  JSON.stringify(target.exports) ===
+    JSON.stringify({
+      InferenceAdmissionGate: { type: "durable-object", storage: "sqlite" },
+    }),
+  "Target must retain exactly one live SQLite export without transfer state",
 );
 requireContract(
-  declaration.state === "expecting-transfer",
-  "Only pending transfer is prepared",
+  target.name === "eliza-cloud-admission-staging",
+  "Admission target must remain staging-only",
 );
 requireContract(
-  declaration.transfer_from === stage.name,
-  "Transfer source must be staging API",
+  JSON.stringify(target.durable_objects?.bindings) ===
+    JSON.stringify([
+      {
+        name: "INFERENCE_ADMISSION_GATES",
+        class_name: "InferenceAdmissionGate",
+      },
+    ]),
+  "Accepted target must have exactly one local admission self-binding",
+);
+const sourceGateBindings = stage.durable_objects?.bindings?.filter(
+  (binding) => binding.name === "INFERENCE_ADMISSION_GATES",
 );
 requireContract(
-  declaration.storage === "sqlite",
-  "Storage backend must stay SQLite",
-);
-requireContract(
-  source.exports?.InferenceAdmissionGate?.storage === "sqlite",
-  "Source storage drift",
+  JSON.stringify(sourceGateBindings) ===
+    JSON.stringify([
+      {
+        name: "INFERENCE_ADMISSION_GATES",
+        class_name: "InferenceAdmissionGate",
+        script_name: target.name,
+      },
+    ]),
+  "Staging API admission binding must reference the adopted target",
 );
 for (const [key, value] of Object.entries(target.vars ?? {})) {
   requireContract(
@@ -174,10 +228,6 @@ requireContract(
   ),
   "Entry must reuse canonical admission class",
 );
-console.log(
-  "Admission staging transfer source contract passed; live namespace and secret parity unverified.",
-);
-
 requireContract(
   target.alias?.[
     "@elizaos/cloud-shared/lib/services/inference-admission-recovery"
@@ -198,4 +248,8 @@ requireContract(
 requireContract(
   !target.hyperdrive?.length && !target.kv_namespaces?.length,
   "Target must not own database or cache credentials",
+);
+
+console.log(
+  "Admission staging steady-state source contract passed; live namespace and secret parity require separate receipts.",
 );
