@@ -24,6 +24,23 @@ export function createX402Client(
 }
 
 /**
+ * [MAX-ADDED] Build a RequestInit from a Request object. An explicit init
+ * takes precedence over the Request's own fields.
+ */
+function requestInitFromRequest(
+  input: Request,
+  init?: RequestInit,
+): RequestInit {
+  return {
+    method: input.method,
+    headers: input.headers,
+    body: input.body,
+    redirect: input.redirect,
+    ...init,
+  };
+}
+
+/**
  * [MAX-ADDED] Create an x402-aware fetch function (drop-in replacement).
  *
  * Usage:
@@ -40,8 +57,10 @@ export function createX402Fetch(
 ): typeof globalThis.fetch {
   const client = new X402Client(wallet, config);
   const impl = (input: string | URL | Request, init?: RequestInit) => {
-    const url = input instanceof Request ? input.url : input.toString();
-    return client.fetch(url, init);
+    if (input instanceof Request) {
+      return client.fetch(input.url, requestInitFromRequest(input, init));
+    }
+    return client.fetch(input.toString(), init);
   };
   return impl as typeof globalThis.fetch;
 }
@@ -80,7 +99,10 @@ export function wrapWithX402(
     if (!selected) return response;
 
     // Use the client's fetch for retry (which calls globalThis.fetch)
-    return wrappedClient.fetch(url, init);
+    return wrappedClient.fetch(
+      url,
+      input instanceof Request ? requestInitFromRequest(input, init) : init,
+    );
   };
   return impl as typeof globalThis.fetch;
 }
