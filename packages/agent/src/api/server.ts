@@ -1039,7 +1039,9 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     (write &&
       (pathname.startsWith("/api/wallet/") ||
         under("/api/config") ||
-        under("/api/character")))
+        under("/api/character") ||
+        // Deleting a stored file removes the owner's attachments for good.
+        under("/api/files")))
   );
 }
 

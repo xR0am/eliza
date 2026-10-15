@@ -95,6 +95,7 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
       ["/api/context/quick?q=private", {}],
       ["/api/context/quick/?q=private", {}],
       [`/api/memories/${memoryId}`, { method: "DELETE" }],
+      [`/api/files/${"a".repeat(64)}.png`, { method: "DELETE" }],
       [
         "/api/config",
         {
