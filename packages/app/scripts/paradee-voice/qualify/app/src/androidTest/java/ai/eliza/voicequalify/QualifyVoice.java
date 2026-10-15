@@ -40,20 +40,20 @@ final class QualifyVoice implements AutoCloseable {
     }
 
     synchronized Audio synthesize(String text, float speed) throws IOException {
-        if (tts == null) tts = ParadeeVoice.open(bundle);
+        if (tts == null) tts = new ParadeeVoice(bundle.model, bundle.lexicon, bundle.espeakDir);
         ParadeeVoice.Audio audio = tts.synthesize(text, speed);
         return new Audio(audio.samples, audio.sampleRate);
     }
 
     synchronized String phonemize(String text) throws IOException {
-        if (tts == null) tts = ParadeeVoice.open(bundle);
+        if (tts == null) tts = new ParadeeVoice(bundle.model, bundle.lexicon, bundle.espeakDir);
         return tts.phonemize(text);
     }
 
     /** 16 kHz mono fp32 in; VAD-gated, so no speech gives "". */
     synchronized String transcribe(float[] pcm16k) throws IOException {
-        if (asr == null) asr = NativeAsr.open(bundle);
-        return asr.transcribe(pcm16k, 16000);
+        if (asr == null) asr = new NativeAsr(bundle.root);
+        return asr.transcribe(pcm16k);
     }
 
     @Override
