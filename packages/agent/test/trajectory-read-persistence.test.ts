@@ -809,6 +809,14 @@ it("records every planner, evaluator and concurrent provider model call with its
       )?.promptOptimization?.originalPromptChars,
     ]),
   ).toEqual(prompts.map((prompt) => [prompt, 11, 5, prompt.length]));
+  for (const call of calls ?? []) {
+    expect(call.providerMetadata).toMatchObject({
+      promptOptimization: {
+        originalPromptTokens: expect.any(Number),
+        finalPromptTokens: expect.any(Number),
+      },
+    });
+  }
   await direct.endTrajectory(trajectoryId, "completed");
 });
 
@@ -833,6 +841,10 @@ it("redacts the text that a model-call update fills in as it redacts a call reco
   direct.updateLlmCall(stepId, callId, {
     userPrompt: privateText,
     response: privateText,
+    providerMetadata: {
+      promptOptimization: { budgetTokens: 1000, outputReserveTokens: 100 },
+      accessToken: "fixture-private-credential",
+    },
   });
   await direct.flushWriteQueue(trajectoryId);
   const [call] =
@@ -842,6 +854,10 @@ it("redacts the text that a model-call update fills in as it redacts a call reco
   expect([call?.systemPrompt, call?.userPrompt, call?.response]).toEqual(
     Array(3).fill("write to <EMAIL>, card <CARD>"),
   );
+  expect(call?.providerMetadata).toMatchObject({
+    promptOptimization: { budgetTokens: 1000, outputReserveTokens: 100 },
+    accessToken: "[REDACTED]",
+  });
   await direct.endTrajectory(trajectoryId, "completed");
 });
 
