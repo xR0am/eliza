@@ -246,7 +246,7 @@ export function parseFormExtractorOutput(raw: unknown): IntentResult | null {
     if (!fieldKey) continue;
     if (!isSafeExtractionField(fieldKey)) continue;
 
-    const dedupeKey = `${fieldKey}\0${String(entry.value ?? "")}`;
+    const dedupeKey = `${fieldKey}\0${JSON.stringify(entry.value ?? null)}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 

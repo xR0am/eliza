@@ -13,6 +13,7 @@ process.env.NODE_ENV ||= "test";
 process.env.MOCK_REDIS = "1";
 process.env.SKIP_AGENT_SANDBOX_ENSURE = "1";
 
+import { AGENT_PRICING } from "@elizaos/cloud-sdk/browser-contracts";
 import { pushSchema } from "drizzle-kit/api";
 import { eq, sql } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
@@ -41,6 +42,8 @@ import { orgStorageQuota } from "../../../db/schemas/org-storage-quota";
 import { organizationConfig } from "../../../db/schemas/organization-config";
 import { organizationEntitlements } from "../../../db/schemas/organization-entitlements";
 import { organizations } from "../../../db/schemas/organizations";
+import { personalDedicatedAdoptionSelections } from "../../../db/schemas/personal-dedicated-adoption-selections";
+import { personalDedicatedUpgradeAuthorities } from "../../../db/schemas/personal-dedicated-upgrade-authorities";
 import { usageRecords } from "../../../db/schemas/usage-records";
 import { userCharacters } from "../../../db/schemas/user-characters";
 import { users } from "../../../db/schemas/users";
@@ -88,6 +91,8 @@ beforeAll(async () => {
     usageRecords,
     jobs,
     jobExecutionLeases,
+    personalDedicatedUpgradeAuthorities,
+    personalDedicatedAdoptionSelections,
   };
   const { apply } = await pushSchema(schema as never, dbWrite as never);
   await apply();
@@ -577,6 +582,93 @@ test(
       push.mockRestore();
       ensure.mockRestore();
     }
+  },
+  TEST_TIMEOUT,
+);
+
+test(
+  "a disconnected Dedicated upgrade target still owns the upgrade",
+  async () => {
+    const { findLiveTierUpgradeTarget } = await import("../agent-tier-upgrade-target");
+    const source = await seedAgent();
+    const [target] = await dbWrite
+      .insert(agentSandboxes)
+      .values({
+        organization_id: source.orgId,
+        user_id: source.userId,
+        agent_name: unique("dedicated"),
+        status: "disconnected",
+        execution_tier: "dedicated-always",
+        database_status: "ready",
+      })
+      .returning();
+    await dbWrite.insert(personalDedicatedUpgradeAuthorities).values({
+      organization_id: source.orgId,
+      user_id: source.userId,
+      source_agent_id: source.agentId,
+      dedicated_agent_id: target.id,
+    });
+
+    // Heartbeat loss before cutover keeps the container and node slot; the
+    // upgrade must reattach to it, not report "available" and mint again.
+    const live = await findLiveTierUpgradeTarget(source.orgId, source.agentId);
+    expect(live?.id).toBe(target.id);
+  },
+  TEST_TIMEOUT,
+);
+
+test(
+  "adopting a disconnected Dedicated target binds it without reprovisioning",
+  async () => {
+    const { adoptPersonalDedicatedTargetWithProvision, resolvePersonalDedicatedAdoption } =
+      await import("../agent-tier-upgrade-target");
+    const source = await seedAgent();
+    const [target] = await dbWrite
+      .insert(agentSandboxes)
+      .values({
+        organization_id: source.orgId,
+        user_id: source.userId,
+        agent_name: unique("dedicated"),
+        status: "disconnected",
+        execution_tier: "dedicated-always",
+        database_status: "ready",
+      })
+      .returning();
+
+    const resolved = await resolvePersonalDedicatedAdoption({
+      organizationId: source.orgId,
+      userId: source.userId,
+      sourceAgentId: source.agentId,
+    });
+    expect(resolved.state).toBe("available");
+
+    const result = await adoptPersonalDedicatedTargetWithProvision({
+      organizationId: source.orgId,
+      userId: source.userId,
+      sourceAgentId: source.agentId,
+      expectedTargetId: target.id,
+      expectedLifecycleRevision: target.lifecycle_revision,
+      expectedStatus: "disconnected",
+      expectedBalance: 5,
+      expectedHourlyRate: AGENT_PRICING.RUNNING_HOURLY_RATE,
+      expectedDailyRate: AGENT_PRICING.DAILY_RUNNING_COST,
+      expectedMinimumBalance: AGENT_PRICING.UPGRADE_MINIMUM_BALANCE,
+      expectedMinimumRunwayDays: AGENT_PRICING.UPGRADE_MIN_HOSTING_DAYS,
+      expectedActivationAuthorityKey: "unreviewed-auto",
+    });
+
+    // Disconnected recovery owns reconnecting the kept container; adoption
+    // must not commit a same-id provision job that rebuilds it.
+    expect(result.jobCreated).toBe(false);
+    expect(result.job).toBeUndefined();
+    expect(result.agent.status).toBe("disconnected");
+    const targetJobs = await dbWrite.select().from(jobs).where(eq(jobs.agent_id, target.id));
+    expect(targetJobs).toHaveLength(0);
+    const authorities = await dbWrite
+      .select()
+      .from(personalDedicatedUpgradeAuthorities)
+      .where(eq(personalDedicatedUpgradeAuthorities.dedicated_agent_id, target.id));
+    expect(authorities).toHaveLength(1);
   },
   TEST_TIMEOUT,
 );
