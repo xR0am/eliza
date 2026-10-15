@@ -26,6 +26,7 @@ import {
 } from "./base";
 import type { Client, Tweet } from "./client/index";
 import { parseTwitterInterval } from "./environment";
+import { normalizePositiveInteger } from "./interactions";
 import {
   quoteTweetTemplate,
   replyTweetTemplate,
@@ -44,7 +45,6 @@ import {
   isTweetProcessed,
 } from "./utils/memory";
 import { extractXWriteReceiptId } from "./utils/provider-receipt";
-import { normalizePositiveInteger } from "./interactions";
 import { getSetting } from "./utils/settings";
 import { getEpochMs } from "./utils/time";
 

@@ -234,8 +234,10 @@ export class TwitterDiscoveryClient {
         5,
       ),
       maxEngagementsPerCycle: normalizePositiveInteger(
-        (getSetting(this.runtime, "TWITTER_MAX_ENGAGEMENTS_PER_RUN") as string) ||
-          process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
+        (getSetting(
+          this.runtime,
+          "TWITTER_MAX_ENGAGEMENTS_PER_RUN",
+        ) as string) || process.env.TWITTER_MAX_ENGAGEMENTS_PER_RUN,
         5, // Reduced from 10 to 5
       ),
       likeThreshold: 0.5, // Increased from 0.3 (be more selective)
