@@ -18,7 +18,10 @@ import { parseJSONObjectFromText } from "@elizaos/core/protocol";
 import { createCalendarActionRunner } from "./calendar-handler.js";
 import type { CalendarActionDeps, CalendarModelCallArgs } from "./deps.js";
 
+import {createCalendarMutationApprovalGateway} from "./mutation-approval.js";
+
 const standaloneCalendarDeps: CalendarActionDeps = {
+  mutationGateway: createCalendarMutationApprovalGateway(),
   async runTextModel(args) {
     if (typeof args.runtime.useModel !== "function") return null;
     assertActiveTrajectoryForLlmCall({
