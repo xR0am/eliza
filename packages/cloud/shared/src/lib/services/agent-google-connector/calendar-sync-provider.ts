@@ -18,6 +18,7 @@ export interface CalendarSyncOwner {
 export interface CalendarSyncGrant {
   connectionId: string;
   accountId: string;
+  accountEmail?: string;
   token: string;
   capabilities: readonly string[];
 }
@@ -361,6 +362,8 @@ export class ManagedCalendarSyncProvider {
       version: 1,
       calendarId,
       accountId: grant.accountId,
+      accountEmail: grant.accountEmail ?? null,
+      calendarLabel: typeof calendar.summary === "string" ? calendar.summary : calendarId,
       read: true,
       write:
         grant.capabilities.includes("google.calendar.write") &&

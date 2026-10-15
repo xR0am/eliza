@@ -27,6 +27,7 @@ async function current(owner: CalendarSyncOwner) {
   return {
     connectionId: owner.grantId,
     accountId: status.identity.id,
+    ...(typeof status.identity.email === "string" ? { accountEmail: status.identity.email } : {}),
     capabilities: status.grantedCapabilities,
   };
 }
@@ -74,6 +75,7 @@ export const managedCalendarSyncProvider = new ManagedCalendarSyncProvider({
     return {
       connectionId: token.connectionId,
       accountId: latest.accountId,
+      accountEmail: latest.accountEmail,
       token: token.accessToken,
       capabilities: latest.capabilities,
     };
