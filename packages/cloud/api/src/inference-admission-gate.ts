@@ -273,11 +273,11 @@ function nonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function validId(value: unknown): value is string {
+export function validId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256;
 }
 
-function validRequestId(value: unknown): value is string {
+export function validRequestId(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length > 0 &&
@@ -308,7 +308,7 @@ function sessionBindingStorageKey(
   return `${revocationStorageKey(REVOKED_SESSION_BINDING_PREFIX, userId)}:${encodeURIComponent(stewardUserId)}`;
 }
 
-function validRecoveryContext(
+export function validRecoveryContext(
   value: unknown,
   requestId: string,
   organizationId: string,

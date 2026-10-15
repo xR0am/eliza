@@ -54,7 +54,13 @@ export default {
       const stub = env.INFERENCE_ADMISSION_GATES.getByName(
         `rate-limit:v2:${organizationId}`,
       );
-      return await stub.fetch(new Request(`https://gate.test${path}`, request));
+      return await stub.fetch(
+        new Request(`https://gate.test${path}`, {
+          method: request.method,
+          headers: request.headers,
+          body: await request.arrayBuffer(),
+        }),
+      );
     }
     return await runWithCloudBindingsAsync(
       env as unknown as Record<string, unknown>,

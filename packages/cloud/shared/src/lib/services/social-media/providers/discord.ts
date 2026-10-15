@@ -16,7 +16,12 @@ import {
 } from "../../../utils/discord-api";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 export { discordApiFetch };
 
@@ -64,7 +69,8 @@ async function discordApiRequest<T>(
       }),
     async (response) => {
       const json = (await response.json()) as T & { code?: number; message?: string };
-      if (json.code) throw new Error(json.message || `Discord error ${json.code}`);
+      if (json.code)
+        throw new SocialApiRejectionError(json.message || `Discord error ${json.code}`);
       return json;
     },
     { platform: "discord", maxRetries: 3, ...retry },
@@ -83,7 +89,8 @@ async function webhookRequest<T>(webhookUrl: string, payload: Record<string, unk
       }),
     async (response) => {
       const json = (await response.json()) as T & { code?: number; message?: string };
-      if (json.code) throw new Error(json.message || `Webhook error ${json.code}`);
+      if (json.code)
+        throw new SocialApiRejectionError(json.message || `Webhook error ${json.code}`);
       return json;
     },
     { platform: "discord", maxRetries: 3, replayUnknownOutcome: false },
