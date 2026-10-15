@@ -36,6 +36,23 @@ it("scopes room and world reads, updates and deletes to each adapter", async () 
       name: "Owner room",
     };
     await owner.createRooms([room]);
+    const entityId = randomUUID() as UUID;
+    await owner.createEntities([{ id: entityId, agentId: ownerId, names: ["Owner participant"] }]);
+    expect(await owner.addParticipant(entityId, room.id)).toBe(true);
+    expect(await owner.getParticipantsForRoom(room.id)).toEqual([entityId]);
+    expect(await other.getParticipantsForRoom(room.id)).toEqual([]);
+    expect(await other.getParticipantsForRooms([room.id])).toEqual([
+      { roomId: room.id, entityIds: [] },
+    ]);
+    expect(await other.getParticipantsForEntity(entityId)).toEqual([]);
+    expect(await other.getRoomsForParticipant(entityId)).toEqual([]);
+    expect(await other.getRoomsForParticipants([entityId])).toEqual([]);
+    expect(await other.getEntitiesForRoom(room.id)).toEqual([]);
+    expect(await other.isRoomParticipant(room.id, entityId)).toBe(false);
+    expect(await other.removeParticipant(entityId, room.id)).toBe(false);
+    expect(await owner.isRoomParticipant(room.id, entityId)).toBe(true);
+    expect(await owner.removeParticipant(entityId, room.id)).toBe(true);
+    expect(await owner.getParticipantsForRoom(room.id)).toEqual([]);
     expect(await other.getWorld(worldId)).toBeNull();
     expect((await other.getWorldsByIds([worldId, ownOtherWorld])).map((world) => world.id)).toEqual(
       [ownOtherWorld]
