@@ -20,7 +20,7 @@ afterEach(async () => {
 
 async function runtimeOn(dataDir: string): Promise<AgentRuntime> {
   const adapter = createDatabaseAdapter({ dataDir }, agentId);
-  await adapter.init();
+  await adapter.initialize();
   return new AgentRuntime({
     agentId,
     character: { name: "HotReload" },
