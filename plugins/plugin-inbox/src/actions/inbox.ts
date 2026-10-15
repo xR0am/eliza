@@ -181,6 +181,7 @@ export type InboxSendAuthorization =
  */
 export type InboxFetcher = (args: {
   runtime: IAgentRuntime;
+  requester?: Memory;
   since?: string;
   limit?: number;
   query?: string;
@@ -240,7 +241,7 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
       throw new Error(`no inbox source registered for ${platform}`);
     };
   }
-  return async ({ runtime, since, limit, query }) => {
+  return async ({ runtime, since, limit, query, requester }) => {
     if (typeof runtime.getService !== "function") return [];
     try {
       const service = getDefaultTriageService();
@@ -253,14 +254,20 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
         );
       }
       const refs = query
-        ? await service.search(runtime, {
-            sources: [source],
-            content: query,
-            sinceMs: parseSinceMs(since),
-            ...(limit === undefined ? {} : { limit }),
-          })
+        ? await service.search(
+            runtime,
+            {
+              sources: [source],
+              requester,
+              content: query,
+              sinceMs: parseSinceMs(since),
+              ...(limit === undefined ? {} : { limit }),
+            },
+            { probeOverflow: false },
+          )
         : await service.triage(runtime, {
             sources: [source],
+            requester,
             sinceMs: parseSinceMs(since),
             ...(limit === undefined ? {} : { limit }),
           });
@@ -398,6 +405,7 @@ export function dedupeAndOrder(
  */
 async function fetchInboxItems(args: {
   runtime: IAgentRuntime;
+  requester?: Memory;
   platforms: readonly InboxPlatform[];
   since?: string;
   limit?: number;
@@ -414,6 +422,7 @@ async function fetchInboxItems(args: {
       const fetcher = activeFetchers[platform];
       return fetcher({
         runtime: args.runtime,
+        requester: args.requester,
         ...(args.since ? { since: args.since } : {}),
         ...(probeLimit === undefined ? {} : { limit: probeLimit }),
         ...(args.query ? { query: args.query } : {}),
@@ -825,6 +834,10 @@ export async function executeInboxQueueOperation(args: {
       }
       const { merged, degraded, capped } = await fetchInboxItems({
         runtime: args.runtime,
+        requester:
+          args.authorization.kind === "turn"
+            ? args.authorization.message
+            : undefined,
         platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
@@ -1206,6 +1219,7 @@ export const inboxAction: Action & {
     const { merged, totalBeforeDedupe, degraded, capped } =
       await fetchInboxItems({
         runtime,
+        requester: message,
         platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
