@@ -400,6 +400,10 @@ export async function handleTriggerRoutes(ctx: TriggerRouteContext): Promise<boo
     }
     const triggerId = stringToUuid(crypto.randomUUID());
     const trigger = buildTriggerConfig({ draft: normalized.draft, triggerId });
+    // An omitted cron timezone is documented to mean UTC
+    // (packages/agent/src/triggers/scheduling.ts), and the route stores it as
+    // undefined, so normalize before comparing to avoid treating legacy
+    // timezone-less triggers as different from explicit-UTC ones.
     const duplicate = existingTasks.find((task) => {
       if (isAgentOwnedHeartbeat(task, runtime.agentId)) return false;
       const existingTrigger = readTriggerConfig(task);
@@ -407,7 +411,8 @@ export async function handleTriggerRoutes(ctx: TriggerRouteContext): Promise<boo
         existingTrigger?.enabled &&
         existingTrigger.dedupeKey &&
         existingTrigger.dedupeKey === trigger.dedupeKey &&
-        (trigger.triggerType !== 'cron' || existingTrigger.timezone === trigger.timezone)
+        (trigger.triggerType !== 'cron' ||
+          (existingTrigger.timezone ?? 'UTC') === (trigger.timezone ?? 'UTC'))
       );
     });
     if (duplicate?.id) {
