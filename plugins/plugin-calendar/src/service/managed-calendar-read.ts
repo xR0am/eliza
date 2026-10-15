@@ -120,6 +120,17 @@ export function createManagedCalendarRead(
         !Number.isFinite(Date.parse(feed.syncedAt))
       )
         throw fail();
+      const health = feed.sources[0];
+      if (
+        !record(health) ||
+        !record(health.key) ||
+        health.key.grantId !== calendar.grantId ||
+        health.key.calendarId !== calendar.calendarId ||
+        health.key.side !== "owner" ||
+        health.key.provider !== "google" ||
+        health.status !== "fresh"
+      )
+        throw fail();
       for (const event of feed.events)
         if (
           !record(event) ||
