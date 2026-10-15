@@ -401,7 +401,16 @@ export class TwitterInteractionClient {
         logger.info(
           `Engaging with tweet from @${username}: ${tweet.text.substring(0, 50)}...`,
         );
-        const engaged = await this.engageWithTweet(tweet, actions, session);
+        let engaged: boolean;
+        try {
+          engaged = await this.engageWithTweet(tweet, actions, session);
+        } catch (error) {
+          // An earlier action (a quote, a like) may already be public. Mark the
+          // tweet processed so the next poll does not ask the model again and
+          // repeat it; X has no idempotency key for these writes.
+          await this.ensureTweetContext(tweet);
+          throw error;
+        }
         if (engaged) {
           await this.ensureTweetContext(tweet);
           engagementCount++;
