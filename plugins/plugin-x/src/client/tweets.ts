@@ -529,17 +529,22 @@ export function parseTweetV2ToV1(
 
   // Process Polls
   if (includes?.polls?.length) {
-    const poll = includes.polls[0];
-    parsedTweet.poll = {
-      id: poll.id,
-      end_datetime: poll.end_datetime,
-      options: poll.options.map((option) => ({
-        position: option.position,
-        label: option.label,
-        votes: option.votes,
-      })),
-      voting_status: poll.voting_status,
-    };
+    const pollId = tweetV2.attachments?.poll_ids?.[0];
+    const poll = pollId
+      ? includes.polls.find((p) => p.id === pollId)
+      : undefined;
+    if (poll) {
+      parsedTweet.poll = {
+        id: poll.id,
+        end_datetime: poll.end_datetime,
+        options: poll.options.map((option) => ({
+          position: option.position,
+          label: option.label,
+          votes: option.votes,
+        })),
+        voting_status: poll.voting_status,
+      };
+    }
   }
 
   // Process Media (photos and videos)
