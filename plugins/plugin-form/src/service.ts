@@ -1288,6 +1288,9 @@ export class FormService extends Service {
 
     for (const control of form.controls) {
       const fieldState = session.fields[control.key];
+      if (fieldState?.status === "uncertain") {
+        throw new Error(`Field ${control.key} requires confirmation`);
+      }
       if (fieldState?.value !== undefined) {
         const validation = validateField(
           fieldState.value,
