@@ -642,6 +642,7 @@ function googleEventInput(event: LinkedCalendarSemanticEvent) {
       email: attendee.email,
       optional: attendee.optional === true,
     })),
+    recurrence: event.recurrence ? [...event.recurrence] : [],
   };
 }
 
@@ -675,7 +676,11 @@ export function linkedCalendarSnapshotFromGoogle(
       isAllDay: event.isAllDay === true,
       attendees: (event.attendees ?? []).map((attendee) => ({
         email: attendee.email,
+        optional: attendee.optional === true,
       })),
+      ...(event.recurrence?.length
+        ? { recurrence: [...event.recurrence] }
+        : {}),
       deleted: event.status === "cancelled",
     },
   };

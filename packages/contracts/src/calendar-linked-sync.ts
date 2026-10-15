@@ -40,6 +40,7 @@ export interface LinkedCalendarSemanticEvent {
   timeZone: string | null;
   isAllDay: boolean;
   attendees: ReadonlyArray<{ email: string; optional?: boolean }>;
+  recurrence?: readonly string[];
   deleted?: boolean;
 }
 
@@ -150,6 +151,9 @@ export function linkedCalendarSemanticText(
       }))
       .sort((left, right) => left.email.localeCompare(right.email)),
     deleted: event.deleted === true,
+    ...(event.recurrence?.length
+      ? { recurrence: [...event.recurrence].map((line) => line.trim()).sort() }
+      : {}),
   };
   return JSON.stringify(normalized);
 }
