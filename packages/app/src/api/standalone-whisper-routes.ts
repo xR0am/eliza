@@ -286,7 +286,6 @@ export async function handleStandaloneWhisperRoute(
     sendJson(res, 415, { error: "pcm_wav_required" });
     return true;
   }
-  seen.set(key, now + 600000);
   active = true;
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -302,6 +301,7 @@ export async function handleStandaloneWhisperRoute(
   try {
     const bytes = await bytesFrom(req, controller.signal),
       durationSeconds = validateWav(bytes);
+    seen.set(key, now + 600000);
     const text = await decode(config, bytes, controller.signal);
     if (!controller.signal.aborted && !res.destroyed)
       sendJson(res, 200, {
