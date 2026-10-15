@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppContext, AppEnv, Bindings } from "../../types/cloud-worker-env";
+import { readStewardAccessCookieFromHeader } from "../auth/steward-cookies";
 import { buildRedisClient, type CompatibleRedis } from "../cache/redis-factory";
 import { isHotPathCachesEnabled } from "../services/inference-hot-path-caches";
 import { logger } from "../utils/logger";
@@ -121,19 +122,29 @@ function hashRateLimitIdentifier(value: string): string {
 }
 
 function getDefaultKey(c: AppContext): string {
+  const bearer = c.req.header("authorization")?.startsWith("Bearer ")
+    ? c.req.header("authorization")!.slice(7)
+    : null;
   const apiKey =
     c.req.header("x-api-key") ||
     c.req.header("X-API-Key") ||
-    (() => {
-      const auth = c.req.header("authorization");
-      if (!auth?.startsWith("Bearer ")) return null;
-      const token = auth.slice(7);
-      return token.startsWith("eliza_") ? token : null;
-    })();
-  if (apiKey) return `apikey:${hashRateLimitIdentifier(apiKey)}`;
+    (bearer?.startsWith("eliza_") ? bearer : null);
+  // A key the auth middleware already validated keeps its own window.
+  if (apiKey && c.get("apiKeyId")) return `apikey:${hashRateLimitIdentifier(apiKey)}`;
 
   const userId = c.get("user")?.id;
   if (userId) return `user:${userId}`;
+
+  // A session request is authenticated by its session token, whatever API-key
+  // header it also carries: bucketing on that unchecked header let a signed-in
+  // caller send a new random X-API-Key per request and get a fresh window each
+  // time. The session token itself cannot be varied without signing in again.
+  const sessionToken =
+    readStewardAccessCookieFromHeader(c.req.header("cookie") ?? null, c.env?.ENVIRONMENT) ||
+    (bearer && !bearer.startsWith("eliza_") ? bearer : null);
+  if (sessionToken) return `session:${hashRateLimitIdentifier(sessionToken)}`;
+
+  if (apiKey) return `apikey:${hashRateLimitIdentifier(apiKey)}`;
 
   const anon =
     c.req.header("x-anonymous-session") ||
