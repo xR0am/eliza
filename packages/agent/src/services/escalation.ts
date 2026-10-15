@@ -675,7 +675,6 @@ export class EscalationService {
       );
       if (sent) {
         state.channelsSent.push(channel);
-        state.currentStep = index;
         break;
       }
     }
