@@ -4,6 +4,7 @@ export const POSTGRES_UNDEFINED_TABLE_CODE = "42P01";
 export const PHONE_SCHEMA_MIGRATION_REQUIRED_CODE = "PHONE_SCHEMA_MIGRATION_REQUIRED";
 export const PHONE_MESSAGE_PERSISTENCE_FAILED_CODE = "PHONE_MESSAGE_PERSISTENCE_FAILED";
 export const PHONE_MESSAGE_ROUTING_UNAVAILABLE_CODE = "PHONE_MESSAGE_ROUTING_UNAVAILABLE";
+export const PHONE_AGENT_BRIDGE_FAILED_CODE = "PHONE_AGENT_BRIDGE_FAILED";
 
 export type PhoneErrorClass =
   | "bridge_failed"
@@ -23,6 +24,7 @@ const ERROR_CLASS_BY_CODE: ReadonlyMap<string, PhoneErrorClass> = new Map([
   [PHONE_SCHEMA_MIGRATION_REQUIRED_CODE, "schema_migration_required"],
   [PHONE_MESSAGE_PERSISTENCE_FAILED_CODE, "payload_persistence_failed"],
   [PHONE_MESSAGE_ROUTING_UNAVAILABLE_CODE, "routing_lookup_failed"],
+  [PHONE_AGENT_BRIDGE_FAILED_CODE, "bridge_failed"],
   ["PHONE_GATEWAY_METADATA_INVALID", "gateway_metadata_invalid"],
   ["PHONE_MESSAGE_METADATA_INVALID", "payload_invalid"],
   ["PHONE_MESSAGE_MEDIA_URLS_INVALID", "payload_invalid"],

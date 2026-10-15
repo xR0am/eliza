@@ -14,7 +14,10 @@ import {
   RateLimitPresets,
   rateLimit,
 } from "@elizaos/cloud-shared/lib/middleware/rate-limit-hono-cloudflare";
-import { phoneErrorDiagnostic } from "@elizaos/cloud-shared/lib/services/phone-error-diagnostics";
+import {
+  PHONE_AGENT_BRIDGE_FAILED_CODE,
+  phoneErrorDiagnostic,
+} from "@elizaos/cloud-shared/lib/services/phone-error-diagnostics";
 import { twilioAutomationService } from "@elizaos/cloud-shared/lib/services/twilio-automation";
 import { usageService } from "@elizaos/cloud-shared/lib/services/usage";
 import { processOnce } from "@elizaos/cloud-shared/lib/utils/idempotency";
@@ -30,6 +33,7 @@ import type {
   AppContext,
   AppEnv,
 } from "@elizaos/cloud-shared/types/cloud-worker-env";
+import { ElizaError } from "@elizaos/core";
 import { Hono } from "hono";
 import { ZodError } from "zod";
 
@@ -252,6 +256,12 @@ async function handleIncomingMessage(
   });
 
   if (!routed.handled || !routed.userId) {
+    if (routed.reason === "bridge_failed") {
+      throw new ElizaError("Phone agent bridge is unavailable", {
+        code: PHONE_AGENT_BRIDGE_FAILED_CODE,
+        severity: "ephemeral",
+      });
+    }
     logger.warn("[TwilioWebhook] Failed to route message to owned Agent", {
       orgId,
       reason: routed.reason,
