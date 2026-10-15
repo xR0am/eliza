@@ -6003,8 +6003,14 @@ export class RemindersDomain {
         }),
       );
     }
+    // An all-day event has no start time: its stored startAt is UTC midnight
+    // of the date, so an offset step would fire at an arbitrary local hour.
+    const allDayEventIds = new Set(
+      calendarEvents.filter((event) => event.isAllDay).map((event) => event.id),
+    );
     const plansByEventId = new Map<string, LifeOpsReminderPlan>();
     for (const plan of eventPlans) {
+      if (allDayEventIds.has(plan.ownerId)) continue;
       const effectivePlan = this.resolveEffectiveReminderPlan(
         plan,
         globalReminderPreference,
