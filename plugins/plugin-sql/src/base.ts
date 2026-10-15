@@ -5272,7 +5272,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       await this.db
         .update(roomTable)
         .set({ ...room, agentId: this.agentId })
-        .where(eq(roomTable.id, room.id));
+        .where(and(eq(roomTable.id, room.id), eq(roomTable.agentId, this.agentId)));
     });
   }
 
@@ -5309,7 +5309,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
     if (!roomId) throw new Error("Room ID is required");
     return this.withDatabase(async () => {
       await this.db.transaction(async (tx) => {
-        await tx.delete(roomTable).where(eq(roomTable.id, roomId));
+        await tx
+          .delete(roomTable)
+          .where(and(eq(roomTable.id, roomId), eq(roomTable.agentId, this.agentId)));
       });
     });
   }
@@ -6001,7 +6003,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async getWorld(id: UUID): Promise<World | null> {
     return this.withDatabase(async () => {
-      const result = await this.db.select().from(worldTable).where(eq(worldTable.id, id));
+      const result = await this.db
+        .select()
+        .from(worldTable)
+        .where(and(eq(worldTable.id, id), eq(worldTable.agentId, this.agentId)));
       return result.length > 0 ? this.mapWorldResult(result[0]) : null;
     });
   }
@@ -6157,7 +6162,9 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async removeWorld(id: UUID): Promise<void> {
     return this.withDatabase(async () => {
-      await this.db.delete(worldTable).where(eq(worldTable.id, id));
+      await this.db
+        .delete(worldTable)
+        .where(and(eq(worldTable.id, id), eq(worldTable.agentId, this.agentId)));
     });
   }
 
@@ -8187,7 +8194,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       const result = await this.db
         .select()
         .from(worldTable)
-        .where(inArray(worldTable.id, worldIds));
+        .where(and(inArray(worldTable.id, worldIds), eq(worldTable.agentId, this.agentId)));
       return result.map((world) => this.mapWorldResult(world));
     });
   }
