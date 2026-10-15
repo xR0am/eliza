@@ -359,8 +359,8 @@ export function createCalendarMutationApprovalGateway(options?: {
         provider: boundCalendarProviderForGrant(args.request.grantId),
         payload,
         reason: payload.allDay
-          ? `Create "${approvalSafeLabel(payload.title)}" as an all-day event from ${payload.allDay.startDate} through ${payload.allDay.endDateExclusive} (exclusive) on the bound calendar${travel}, ${notification}.`
-          : `Create "${approvalSafeLabel(payload.title)}" at ${new Date(payload.startsAtMs).toISOString()} on the bound calendar${travel}, ${notification}.`,
+          ? `Create "${approvalSafeLabel(payload.title)}" as an all-day event from ${payload.allDay.startDate} through ${payload.allDay.endDateExclusive} (exclusive) on calendar "${approvalSafeLabel(payload.calendarId)}"${travel}, ${notification}.`
+          : `Create "${approvalSafeLabel(payload.title)}" at ${new Date(payload.startsAtMs).toISOString()} on calendar "${approvalSafeLabel(payload.calendarId)}"${travel}, ${notification}.`,
       });
     },
     async modify(args) {

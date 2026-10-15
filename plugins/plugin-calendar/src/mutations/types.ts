@@ -86,6 +86,7 @@ export interface CalendarMutationAttempt {
 }
 
 export interface CalendarMutationPreflight {
+  readonly managedAccountId?: string;
   readonly operation: CalendarMutationOperation;
   readonly provider: LifeOpsCalendarEvent["provider"];
   readonly sourceId: string;

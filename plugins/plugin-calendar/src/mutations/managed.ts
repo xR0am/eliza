@@ -1,0 +1,202 @@
+/** Owner-scoped Cloud writes through the existing private host transport. */
+import type { LifeOpsCalendarEvent } from "@elizaos/contracts";
+import type { ApprovalPayload } from "@elizaos/plugin-assistant";
+import { createManagedCalendarRead } from "../service/managed-calendar-read.js";
+import {
+  calendarMutationApprovalSha256,
+  calendarMutationOperationKey,
+} from "./ledger.js";
+import {
+  type CalendarMutationPort,
+  type CalendarMutationPreflight,
+  CalendarMutationPreflightError,
+} from "./types.js";
+
+type Payload = Extract<
+  ApprovalPayload,
+  { action: "schedule_event" | "modify_event" | "cancel_event" }
+>;
+const scoped = (v: unknown): v is string =>
+  typeof v === "string" && /^alpha-google:[a-f0-9]{64}$/.test(v);
+function object(v: unknown): Record<string, unknown> {
+  if (!v || typeof v !== "object" || Array.isArray(v))
+    throw Error("Invalid managed Calendar response");
+  return v as Record<string, unknown>;
+}
+export function createManagedCalendarMutationPort(
+  env: NodeJS.ProcessEnv,
+  request: typeof fetch,
+  agentId: string,
+) {
+  const transport = createManagedCalendarRead(env, request);
+  if (!transport) return;
+  const call = transport.mutation;
+  async function capabilities(grantId: string, calendarId: string) {
+    if (!scoped(grantId) || !calendarId)
+      throw Error("Choose the exact connected Calendar");
+    const c = object(
+      await call({ operation: "write-capabilities", grantId, calendarId }),
+    );
+    if (
+      c.grantId !== grantId ||
+      c.calendarId !== calendarId ||
+      typeof c.accountId !== "string" ||
+      c.read !== true ||
+      c.write !== true ||
+      c.idempotentCreate !== true ||
+      c.conditionalWrites !== true ||
+      c.providerExactlyOnce !== false
+    )
+      throw Error("Calendar write access could not be verified");
+    return c as Record<string, unknown> & { accountId: string };
+  }
+  async function target(grantId: string, calendarId: string, eventId: string) {
+    const raw = object(
+      await call({ operation: "write-target", grantId, calendarId, eventId }),
+    );
+    const event = object(raw.event);
+    if (
+      event.grantId !== grantId ||
+      event.calendarId !== calendarId ||
+      event.side !== "owner" ||
+      event.provider !== "google" ||
+      (event.id !== eventId && event.externalId !== eventId) ||
+      typeof event.externalId !== "string" ||
+      typeof event.startAt !== "string" ||
+      typeof event.endAt !== "string" ||
+      !Array.isArray(event.attendees) ||
+      !event.metadata
+    )
+      throw Error("Calendar target changed");
+    return { ...event, agentId } as unknown as LifeOpsCalendarEvent;
+  }
+  const port: CalendarMutationPort = {
+    async preflight(approval) {
+      const p = approval.payload as Payload;
+      if (
+        !["schedule_event", "modify_event", "cancel_event"].includes(
+          p.action,
+        ) ||
+        p.side !== "owner" ||
+        !scoped(p.grantId)
+      )
+        throw new CalendarMutationPreflightError(
+          "CALENDAR_MANAGED_SOURCE_REQUIRED",
+          "Choose the exact owner Calendar",
+        );
+      if (
+        p.action !== "schedule_event" &&
+        p.recurrenceScope &&
+        p.recurrenceScope !== "instance"
+      )
+        throw new CalendarMutationPreflightError(
+          "CALENDAR_MANAGED_SERIES_REVIEW_REQUIRED",
+          "Review recurring-series changes in Calendar",
+        );
+      if (
+        p.notifyAttendees === true ||
+        (p.action === "schedule_event" && (p.sourceNote || p.travelBuffer)) ||
+        (p.action === "cancel_event" &&
+          p.cancellationMode === "decline_invitation")
+      )
+        throw new CalendarMutationPreflightError(
+          "CALENDAR_MANAGED_EDITOR_REQUIRED",
+          "Review these Calendar options in the editor",
+        );
+      const guests =
+        p.action === "schedule_event"
+          ? p.attendees
+          : p.action === "modify_event"
+            ? p.patch.attendees
+            : [];
+      if (guests?.some((a) => typeof a !== "string" && a.displayName))
+        throw new CalendarMutationPreflightError(
+          "CALENDAR_MANAGED_EDITOR_REQUIRED",
+          "Review named attendees in the Calendar editor",
+        );
+      const caps = await capabilities(p.grantId, p.calendarId);
+      const event =
+        p.action === "schedule_event"
+          ? null
+          : await target(p.grantId, p.calendarId, p.eventId);
+      const etag = event?.metadata.etag;
+      if (
+        event &&
+        p.action !== "schedule_event" &&
+        (!etag || etag !== p.expectedProviderVersion)
+      )
+        throw new CalendarMutationPreflightError(
+          "CALENDAR_MANAGED_TARGET_CHANGED",
+          "The Calendar event changed after review",
+        );
+      return {
+        operation: p.action,
+        provider: "google",
+        sourceId: p.grantId,
+        calendarId: p.calendarId,
+        event,
+        providerEventId: event?.externalId ?? null,
+        providerVersion: typeof etag === "string" ? etag : null,
+        idempotencyKey:
+          p.action === "schedule_event"
+            ? calendarMutationOperationKey(
+                calendarMutationApprovalSha256(approval),
+              )
+            : null,
+        recurrenceScope:
+          p.action === "schedule_event" ? null : (p.recurrenceScope ?? null),
+        cancellationMode:
+          p.action === "cancel_event" ? (p.cancellationMode ?? null) : null,
+        managedAccountId: caps.accountId,
+      } as CalendarMutationPreflight;
+    },
+    async execute(approval, preflight) {
+      const p = approval.payload as Payload;
+      const caps = await capabilities(preflight.sourceId, preflight.calendarId);
+      if (caps.accountId !== preflight.managedAccountId)
+        throw Error("Calendar account changed");
+      const raw = object(
+        await call({
+          operation: "write-execute",
+          grantId: preflight.sourceId,
+          calendarId: preflight.calendarId,
+          accountId: caps.accountId,
+          payload: p,
+          preflight: {
+            providerEventId: preflight.providerEventId,
+            providerVersion: preflight.providerVersion,
+            idempotencyKey: preflight.idempotencyKey,
+          },
+        }),
+      );
+      const e = object(raw.event);
+      if (
+        e.grantId !== preflight.sourceId ||
+        e.calendarId !== preflight.calendarId ||
+        e.provider !== "google" ||
+        e.side !== "owner" ||
+        typeof e.id !== "string" ||
+        typeof e.externalId !== "string"
+      )
+        throw Error("Calendar mutation returned a mismatched receipt");
+      const event = { ...e, agentId } as unknown as LifeOpsCalendarEvent;
+      return {
+        operation: p.action,
+        provider: "google",
+        sourceId: preflight.sourceId,
+        calendarId: preflight.calendarId,
+        eventId: event.id,
+        providerEventId: event.externalId,
+        providerVersion:
+          typeof event.metadata.etag === "string" ? event.metadata.etag : null,
+        readBackAvailable: true,
+        accessLevel: "readable",
+        eventSnapshot: event,
+        recurrenceScope: preflight.recurrenceScope,
+        cancellationMode: preflight.cancellationMode,
+        acceptedAt: new Date().toISOString(),
+      };
+    },
+  };
+  return { port, capabilities, target, owns: scoped };
+}

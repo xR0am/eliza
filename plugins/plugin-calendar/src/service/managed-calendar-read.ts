@@ -69,6 +69,7 @@ export function createManagedCalendarRead(
     return value;
   }
   return {
+    mutation: (input:Record<string,unknown>) => call(input),
     owns: (calendar: LifeOpsCalendarSummary) => scoped(calendar.grantId),
     async sources(): Promise<LifeOpsCalendarSummary[]> {
       const { calendars } = await call({ operation: "sources" });
