@@ -109,6 +109,7 @@ it("refuses owner-only writes and memory reads to a paired USER session", async 
       ["/api/agent/import", { method: "POST", body: "{}" }],
       ["/api/agent/reset", { method: "POST" }],
       ["/api/agent/stop", { method: "POST" }],
+      ["/api/restart", { method: "POST" }],
       [
         "/api/agent/autonomy",
         { method: "POST", body: JSON.stringify({ enabled: true }) },

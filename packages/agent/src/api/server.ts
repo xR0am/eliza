@@ -1053,6 +1053,8 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
         "resume",
         "autonomy",
       ].some((op) => under(`/api/agent/${op}`))) ||
+    // Legacy restart endpoint: exits and restarts the whole agent process.
+    (write && pathname === "/api/restart") ||
     (write &&
       (pathname.startsWith("/api/wallet/") ||
         under("/api/config") ||
