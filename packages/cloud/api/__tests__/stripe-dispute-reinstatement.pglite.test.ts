@@ -853,3 +853,44 @@ test("a won dispute and a full refund of one charge leave the affiliate fee reve
   await disputeRoundTrip(refundedThenWon, `dp_${randomUUID()}`, 750);
   expect(await affiliatePayable(refundedThenWon.affiliate)).toBe(1.5);
 });
+
+test("a refund that lands between a dispute and its reinstatement stays reversed", async () => {
+  const buyer = await affiliateTopUp();
+  const disputeId = `dp_${randomUUID()}`;
+  expect(
+    await processStripeEvent(
+      disputeEvent(
+        "charge.dispute.funds_withdrawn",
+        disputeId,
+        1500,
+        buyer.paymentIntentId,
+      ),
+    ),
+  ).toBe("ack");
+  // The dispute already took the whole fee and grant, so the refund adds nothing yet.
+  expect(
+    await processStripeEvent(
+      refundEvent(`ch_${disputeId}`, 1500, buyer.paymentIntentId),
+    ),
+  ).toBe("ack");
+  expect(await affiliatePayable(buyer.affiliate)).toBe(0);
+  expect(await balance(buyer.org)).toBe(0);
+
+  // Stripe returns the disputed funds, but the full refund still stands.
+  const reinstated = disputeEvent(
+    "charge.dispute.funds_reinstated",
+    disputeId,
+    1500,
+    buyer.paymentIntentId,
+  );
+  (
+    reinstated.body.event.data.object as unknown as {
+      charge: Record<string, unknown>;
+    }
+  ).charge.amount_refunded = 1500;
+  for (let delivery = 0; delivery < 2; delivery++)
+    expect(await processStripeEvent(reinstated)).toBe("ack");
+
+  expect(await affiliatePayable(buyer.affiliate)).toBe(0);
+  expect(await balance(buyer.org)).toBe(0);
+});

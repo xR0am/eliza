@@ -2116,6 +2116,12 @@ async function handleChargeDisputeFundsReinstated(
       `[Stripe Queue] ${source} ${reference}: no applied clawback amount to reinstate`,
       { clawbackAmount: clawback.amount, disputeAmount: dispute.amount },
     );
+    await reapplyRefundAfterReinstatement(
+      dispute,
+      paymentIntentId,
+      source,
+      reference,
+    );
     await settleShortfallsAfterCredit(clawback.organization_id, source);
     return;
   }
@@ -2138,7 +2144,44 @@ async function handleChargeDisputeFundsReinstated(
   logger.info(
     `[Stripe Queue] Reinstated $${reinstatedUsd.toFixed(2)} to org ${clawback.organization_id} for ${source} ${reference} (new balance $${result.newBalance.toFixed(2)})`,
   );
+  await reapplyRefundAfterReinstatement(
+    dispute,
+    paymentIntentId,
+    source,
+    reference,
+  );
   await settleShortfallsAfterCredit(clawback.organization_id, source);
+}
+
+/**
+ * A refund of the same charge that landed while the dispute was open took
+ * nothing back, because the dispute had already reversed the grant and the
+ * affiliate fee (one charge reverses them once across its series). Winning the
+ * dispute returns that share, but the refund still stands: apply the charge's
+ * current cumulative refund again, with the same key and series as
+ * `charge.refunded`, so the refund keeps its reversal.
+ */
+async function reapplyRefundAfterReinstatement(
+  dispute: Stripe.Dispute,
+  paymentIntentId: string | undefined,
+  source: string,
+  reference: string,
+): Promise<void> {
+  if (!paymentIntentId || !dispute.charge) return;
+  const charge =
+    typeof dispute.charge === "string"
+      ? await requireStripe().charges.retrieve(dispute.charge)
+      : dispute.charge;
+  const refundedCents = charge.amount_refunded ?? 0;
+  if (refundedCents <= 0) return;
+  await clawbackForReversal({
+    paymentIntentId,
+    usdReversed: refundedCents / 100,
+    idempotencyKey: `stripe:refund:${charge.id}:${refundedCents}`,
+    reversalSeries: `stripe:refund:${charge.id}:`,
+    source,
+    reference,
+  });
 }
 
 /**
