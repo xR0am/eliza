@@ -1,4 +1,4 @@
-import type { IAgentRuntime } from "@elizaos/core";
+import { buildPlannerToolsFromActions, type IAgentRuntime } from "@elizaos/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleResponseHandler, normalizeNativeTools } from "../src/models/text";
 
@@ -101,6 +101,56 @@ describe("Cloud native tool strictness", () => {
       expect(normalized[0].function.strict).toBe(expected);
     }
     expect(input).toEqual(before);
+  });
+
+  it("omits strict true for core action tools with optional parameters", () => {
+    const [tool] = buildPlannerToolsFromActions([
+      {
+        name: "SEARCH_NOTES",
+        description: "Search notes.",
+        parameters: [
+          {
+            name: "query",
+            description: "Search text.",
+            required: false,
+            schema: { type: "string" },
+          },
+        ],
+      },
+    ]);
+    expect(tool.strict).toBe(true);
+    const normalized = normalizeNativeTools([tool]) as Array<{
+      function: { name: string; parameters: unknown; strict?: boolean };
+    }>;
+    expect(normalized[0].function.name).toBe("SEARCH_NOTES");
+    expect(normalized[0].function.parameters).toBe(tool.parameters);
+    expect(normalized[0].function).not.toHaveProperty("strict");
+  });
+
+  it.each([
+    [
+      "nested optional property",
+      {
+        ...parameters,
+        properties: {
+          replyText: {
+            type: "object",
+            additionalProperties: false,
+            properties: { value: { type: "string" } },
+            required: [],
+          },
+        },
+      },
+    ],
+    ["open object", { ...parameters, additionalProperties: true }],
+    ["missing additionalProperties", { type: "object", properties: {}, required: [] }],
+  ])("omits strict true for a %s schema but keeps strict false", (_label, schema) => {
+    const normalized = normalizeNativeTools([
+      { name: "STRICT_TOOL", parameters: schema, strict: true },
+      { name: "LOOSE_TOOL", parameters: schema, strict: false },
+    ]) as Array<{ function: { strict?: boolean } }>;
+    expect(normalized[0].function).not.toHaveProperty("strict");
+    expect(normalized[1].function.strict).toBe(false);
   });
 
   it("preserves nested schema and strictness in a named tool set", () => {

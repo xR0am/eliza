@@ -672,3 +672,190 @@ test(
   },
   TEST_TIMEOUT,
 );
+
+test(
+  "the orphaned-pending sweep leaves lazy and deferred agents waiting to be provisioned",
+  async () => {
+    const { agentSandboxesRepository } = await import("../../../db/repositories/agent-sandboxes");
+    const lazy = await seedAgent();
+    const eager = await seedAgent();
+    // `alwaysOn: true, autoProvision: false`: an eager tier waiting for the
+    // caller's explicit provision call.
+    const deferred = await seedAgent();
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ execution_tier: "dedicated-lazy", created_at: old })
+      .where(eq(agentSandboxes.id, lazy.agentId));
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ created_at: old })
+      .where(eq(agentSandboxes.id, eager.agentId));
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ created_at: old, agent_config: { __agentProvisioningDeferred: true } })
+      .where(eq(agentSandboxes.id, deferred.agentId));
+
+    const result = await agentSandboxesRepository.markOrphanedPendingWithoutJobAsError(
+      new Date(Date.now() - 10 * 60 * 1000),
+    );
+
+    // The always-on agent was meant to provision at create and never got a job.
+    expect(result.updated.map((row) => row.agentId)).toEqual([eager.agentId]);
+    expect((await readAgent(eager.agentId)).status).toBe("error");
+    // A lazy agent is pending without a job by design until its first message.
+    expect((await readAgent(lazy.agentId)).status).toBe("pending");
+    expect((await readAgent(deferred.agentId)).status).toBe("pending");
+  },
+  TEST_TIMEOUT,
+);
+
+test(
+  "the deferred backfill keeps an unmarked eager agent created before the marker out of the sweep",
+  async () => {
+    const { agentSandboxesRepository } = await import("../../../db/repositories/agent-sandboxes");
+    // Created with `autoProvision: false` before the create route set the
+    // marker: eager tier, pending, no provision job, no marker.
+    const legacy = await seedAgent();
+    const running = await seedAgent();
+    // Pending with a live provision job: not deferred, so not marked.
+    const queued = await seedAgent();
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ created_at: old, agent_config: { theme: "dark" } })
+      .where(eq(agentSandboxes.id, legacy.agentId));
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ status: "running", created_at: old })
+      .where(eq(agentSandboxes.id, running.agentId));
+
+    const { provisioningJobService } = await import("../provisioning-job-queue");
+    await provisioningJobService.enqueueAgentProvisionOnce({
+      agentId: queued.agentId,
+      organizationId: queued.orgId,
+      userId: queued.userId,
+      agentName: "queued",
+    });
+
+    const migration = await readFile(
+      join(import.meta.dir, "../../../db/migrations/0548_agent_provisioning_deferred_backfill.sql"),
+      "utf8",
+    );
+    await dbWrite.execute(sql.raw(migration));
+
+    const result = await agentSandboxesRepository.markOrphanedPendingWithoutJobAsError(
+      new Date(Date.now() - 10 * 60 * 1000),
+    );
+
+    expect(result.updated.map((row) => row.agentId)).not.toContain(legacy.agentId);
+    const after = await readAgent(legacy.agentId);
+    expect(after.status).toBe("pending");
+    expect(after.agent_config).toEqual({ theme: "dark", __agentProvisioningDeferred: true });
+    expect((await readAgent(running.agentId)).agent_config).not.toHaveProperty(
+      "__agentProvisioningDeferred",
+    );
+
+    expect((await readAgent(queued.agentId)).agent_config).not.toHaveProperty(
+      "__agentProvisioningDeferred",
+    );
+
+    // The backfill cannot tell this row from a real orphan whose enqueue was
+    // lost. The normal create retry (default `autoProvision: true`) reuses the
+    // pending row through the real reuse guard and must leave it provisioning.
+    const retry = await new ElizaSandboxService(
+      dockerProvider(legacy, { creates: 0, exactStops: [], nameStops: [] }),
+    ).createAgent({
+      organizationId: legacy.orgId,
+      userId: legacy.userId,
+      agentName: "legacy",
+      // A default retry without `alwaysOn` names the shared tier; the reuse
+      // guard still returns the org's pending dedicated agent, so the route
+      // decides repair from the reused agent's tier.
+      executionTier: "shared",
+      reuseExistingNonTerminal: true,
+    });
+    expect({
+      id: retry.agent.id,
+      idempotent: retry.idempotent,
+      tier: retry.agent.execution_tier,
+    }).toEqual({ id: legacy.agentId, idempotent: true, tier: "dedicated-always" });
+    const recovered = await provisioningJobService.enqueueReusedPendingAgentProvision({
+      agent: retry.agent,
+      organizationId: legacy.orgId,
+      userId: legacy.userId,
+    });
+    expect(recovered?.created).toBe(true);
+    const [job] = await dbWrite
+      .select({ type: jobs.type, status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.id, recovered?.job.id ?? ""));
+    expect(job).toEqual({ type: "agent_provision", status: "pending" });
+    // A second retry gets the same live job, not another one.
+    const again = await provisioningJobService.enqueueReusedPendingAgentProvision({
+      agent: retry.agent,
+      organizationId: legacy.orgId,
+      userId: legacy.userId,
+    });
+    expect({ created: again?.created, jobId: again?.job.id }).toEqual({
+      created: false,
+      jobId: recovered?.job.id,
+    });
+  },
+  TEST_TIMEOUT,
+);
+
+test(
+  "an eager agent created through createAgent with provisioning deferred stays out of the sweep",
+  async () => {
+    const { agentSandboxesRepository } = await import("../../../db/repositories/agent-sandboxes");
+    const fixture = await seedAgent();
+    await dbWrite
+      .update(agentSandboxes)
+      .set({ status: "running" })
+      .where(eq(agentSandboxes.id, fixture.agentId));
+    const service = new ElizaSandboxService(
+      dockerProvider(fixture, { creates: 0, exactStops: [], nameStops: [] }),
+    );
+    // `alwaysOn: true, autoProvision: false` through the create route.
+    const deferred = await service.createAgent({
+      organizationId: fixture.orgId,
+      userId: fixture.userId,
+      agentName: "deferred",
+      agentConfig: { theme: "dark" },
+      executionTier: "dedicated-always",
+      provisioningDeferred: true,
+    });
+    // A caller cannot set the marker through `agentConfig`.
+    const unmarked = await service.createAgent({
+      organizationId: fixture.orgId,
+      userId: fixture.userId,
+      agentName: "unmarked",
+      agentConfig: { __agentProvisioningDeferred: true },
+      executionTier: "dedicated-always",
+    });
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    for (const id of [deferred.agent.id, unmarked.agent.id]) {
+      await dbWrite
+        .update(agentSandboxes)
+        .set({ created_at: old })
+        .where(eq(agentSandboxes.id, id));
+    }
+
+    const result = await agentSandboxesRepository.markOrphanedPendingWithoutJobAsError(
+      new Date(Date.now() - 10 * 60 * 1000),
+    );
+
+    const swept = result.updated.map((row) => row.agentId);
+    expect(swept).toContain(unmarked.agent.id);
+    expect(swept).not.toContain(deferred.agent.id);
+    const stored = await readAgent(deferred.agent.id);
+    expect(stored.status).toBe("pending");
+    expect(stored.agent_config).toMatchObject({
+      theme: "dark",
+      __agentProvisioningDeferred: true,
+    });
+    expect((await readAgent(unmarked.agent.id)).status).toBe("error");
+  },
+  TEST_TIMEOUT,
+);
