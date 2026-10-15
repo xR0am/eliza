@@ -17,7 +17,7 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { type RetryOptions, withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const TWITTER_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -319,11 +319,7 @@ export const twitterProvider: SocialMediaProvider = {
       // error-policy:J1 boundary translation — a failed Twitter post becomes the {success:false}
       // PostResult the credit-refund flow depends on, never a fabricated success.
       logger.error("[Twitter] Post failed", { error });
-      return {
-        platform: "twitter",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("twitter", error);
     }
   },
 
@@ -478,11 +474,7 @@ export const twitterProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 boundary translation — a failed Twitter repost becomes the {success:false}
       // PostResult the caller inspects, never a fabricated success.
-      return {
-        platform: "twitter",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("twitter", error);
     }
   },
 };

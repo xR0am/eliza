@@ -963,6 +963,71 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
     },
   );
 
+  it("preserves elapsed duration when a pure move crosses a DST fold", async () => {
+    const created = await service.createCalendarEventMutation(INTERNAL_URL, {
+      title: "Overnight maintenance",
+      startAt: "2026-10-25T04:30:00.000Z",
+      endAt: "2026-10-25T06:30:00.000Z",
+      timeZone: "America/New_York",
+      idempotencyKey: "calendar-fold-duration-regression",
+    });
+    if (!created.event)
+      throw new Error("Calendar fixture event was not created");
+
+    const action = createCalendarActionRunner({
+      runTextModel: vi.fn(async () => null),
+      runJsonModel: vi.fn(async ({ actionType }) =>
+        actionType === "lifeops.calendar.extract_update_event"
+          ? {
+              rawResponse: JSON.stringify({
+                startAt: "2026-11-01T00:30:00",
+                timeZone: "America/New_York",
+              }),
+              parsed: {
+                startAt: "2026-11-01T00:30:00",
+                timeZone: "America/New_York",
+              },
+            }
+          : null,
+      ),
+      recentConversationTexts: vi.fn(async () => []),
+    });
+    const result = await action.handler(
+      runtime,
+      {
+        id: "00000000-0000-0000-0000-000000000205",
+        entityId: "00000000-0000-0000-0000-000000000102",
+        roomId: "00000000-0000-0000-0000-000000000103",
+        createdAt: Date.parse("2026-10-31T16:00:00.000Z"),
+        content: {
+          text: "move overnight maintenance to November 1 at 12:30am",
+        },
+      } as Memory,
+      undefined,
+      {
+        parameters: {
+          subaction: "update_event",
+          query: "overnight maintenance",
+          details: {
+            eventId: created.event.id,
+            grantId: ELIZA_CALENDAR_GRANT_ID,
+            calendarId: ELIZA_CALENDAR_ID,
+            timeZone: "America/New_York",
+            start: "2026-11-01T00:30:00",
+          },
+        },
+      },
+    );
+
+    expect(result?.success, JSON.stringify(result)).toBe(true);
+    expect(
+      (result?.data as { event?: LifeOpsCalendarEvent })?.event,
+    ).toMatchObject({
+      startAt: "2026-11-01T04:30:00.000Z",
+      endAt: "2026-11-01T06:30:00.000Z",
+    });
+  });
+
   it("moves a source-scoped target when only the destination is stated in the follow-up", async () => {
     const created = await service.createCalendarEventMutation(
       INTERNAL_URL,
