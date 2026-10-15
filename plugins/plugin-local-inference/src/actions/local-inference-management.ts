@@ -66,6 +66,21 @@ function paramsFromOptions(options?: HandlerOptions): Record<string, unknown> {
 	return isRecord(options?.parameters) ? options.parameters : {};
 }
 
+function quietHoursParam(
+	params: Record<string, unknown>,
+): Array<{ start: string; end: string }> | undefined {
+	const value = params["quietHours"];
+	if (!Array.isArray(value)) return undefined;
+	const hours = value
+		.filter(isRecord)
+		.map((q) => ({
+			start: typeof q["start"] === "string" ? q["start"] : "",
+			end: typeof q["end"] === "string" ? q["end"] : "",
+		}))
+		.filter((q) => q.start.length > 0 && q.end.length > 0);
+	return hours;
+}
+
 function fail(
 	error: string,
 	text: string,
@@ -108,6 +123,7 @@ export function parseLocalInferenceManagementInput(
 			autoUpdateOnWifi: booleanParam(params, "autoUpdateOnWifi"),
 			autoUpdateOnCellular: booleanParam(params, "autoUpdateOnCellular"),
 			autoUpdateOnMetered: booleanParam(params, "autoUpdateOnMetered"),
+			quietHours: quietHoursParam(params),
 		},
 	};
 }
@@ -273,6 +289,13 @@ export const localInferenceManagementAction: Action = {
 			description: "Enable voice model auto-updates on metered networks.",
 			required: false,
 			schema: { type: "boolean" as const },
+		},
+		{
+			name: "quietHours",
+			description:
+				"Quiet hours for voice model auto-updates, as a list of {start, end} time ranges (for example [{start: \"22:00\", end: \"07:00\"}]).",
+			required: false,
+			schema: { type: "array" as const },
 		},
 		{
 			name: "policy",
