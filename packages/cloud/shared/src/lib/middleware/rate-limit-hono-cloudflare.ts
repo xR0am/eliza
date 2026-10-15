@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppContext, AppEnv, Bindings } from "../../types/cloud-worker-env";
+import { readStewardAccessCookieFromHeader } from "../auth/steward-cookies";
 import { buildRedisClient, type CompatibleRedis } from "../cache/redis-factory";
 import { isHotPathCachesEnabled } from "../services/inference-hot-path-caches";
 import { logger } from "../utils/logger";
@@ -128,17 +129,21 @@ function getDefaultKey(c: AppContext): string {
     c.req.header("x-api-key") ||
     c.req.header("X-API-Key") ||
     (bearer?.startsWith("eliza_") ? bearer : null);
-  // A key the auth middleware already validated keeps its own window.
-  if (apiKey && c.get("apiKeyId")) return `apikey:${hashRateLimitIdentifier(apiKey)}`;
+  // A request that also carries a session may reach a session-only handler,
+  // which never looks at its API-key header. Bucketing on that header let
+  // a signed-in caller send a new random X-API-Key per request and get a fresh
+  // window each time; such a request is counted by IP instead. A request with
+  // only an API key keeps its per-key window (random-key spray is bounded by the
+  // global per-IP limiter, so clients behind one NAT keep separate windows).
+  const sessionCredential =
+    Boolean(
+      readStewardAccessCookieFromHeader(c.req.header("cookie") ?? null, c.env?.ENVIRONMENT),
+    ) || Boolean(bearer && !bearer.startsWith("eliza_"));
+  if (apiKey && !sessionCredential) return `apikey:${hashRateLimitIdentifier(apiKey)}`;
 
   const userId = c.get("user")?.id;
   if (userId) return `user:${userId}`;
 
-  // An API-key header the auth middleware did not validate identifies no one:
-  // bucketing on its value let a caller send a new random key per request and
-  // get a fresh window each time (a signed-in session is still authenticated by
-  // its cookie). The limiter runs before any session token is verified, so an
-  // unvalidated credential falls back to the caller's IP.
   if (apiKey) return getIpKey(c);
 
   const anon =
