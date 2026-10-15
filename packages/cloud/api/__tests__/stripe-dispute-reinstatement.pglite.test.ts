@@ -894,3 +894,47 @@ test("a refund that lands between a dispute and its reinstatement stays reversed
   expect(await affiliatePayable(buyer.affiliate)).toBe(0);
   expect(await balance(buyer.org)).toBe(0);
 });
+
+async function affiliateAvailable(userId: string): Promise<number> {
+  const rows = await pg().query<{ available: string }>(
+    "SELECT available_balance::text AS available FROM redeemable_earnings WHERE user_id=$1",
+    [userId],
+  );
+  return Number(rows.rows[0]?.available);
+}
+
+test("a won dispute does not return an affiliate fee the affiliate already spent", async () => {
+  const buyer = await affiliateTopUp();
+  // The affiliate is paid the $3 fee out first, as debitAffiliatePayout does.
+  const paidOut = await redeemableEarningsService.reduceEarnings({
+    userId: buyer.affiliate,
+    amount: 3,
+    source: "affiliate",
+    sourceId: `payout:${randomUUID()}`,
+    description: "Affiliate payout",
+    requireSufficientBalance: true,
+    dedupeBySourceId: true,
+    countAsRedeemed: true,
+  });
+  expect(paidOut.success).toBe(true);
+  expect(await affiliateAvailable(buyer.affiliate)).toBe(0);
+  expect(await affiliatePayable(buyer.affiliate)).toBe(0);
+
+  // The withdrawal can take nothing from the paid-out balance, so it books the
+  // fee as ledger debt, and winning the dispute clears that debt without
+  // adding the fee to the balance a second time.
+  await disputeRoundTrip(buyer, `dp_${randomUUID()}`, 1500);
+  expect(await affiliateAvailable(buyer.affiliate)).toBe(0);
+  expect(await affiliatePayable(buyer.affiliate)).toBe(0);
+
+  // A later full refund books the paid-out fee as debt once.
+  const charge = `ch_${randomUUID()}`;
+  for (let delivery = 0; delivery < 2; delivery++)
+    expect(
+      await processStripeEvent(
+        refundEvent(charge, 1500, buyer.paymentIntentId),
+      ),
+    ).toBe("ack");
+  expect(await affiliateAvailable(buyer.affiliate)).toBe(0);
+  expect(await affiliatePayable(buyer.affiliate)).toBe(-3);
+});

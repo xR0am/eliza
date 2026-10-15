@@ -46,6 +46,14 @@ interface AddEarningsParams {
   metadata?: Record<string, unknown>;
   dedupeBySourceId?: boolean;
   reversesRedemption?: boolean;
+  /**
+   * Move the balances by this part of `amount` (0 to `amount`) while the
+   * ledger books all of `amount`. Returns a reversal that
+   * `reduceEarnings({ capBalanceDebitAtAvailable })` booked partly as ledger
+   * debt: the ledger debt is cleared, but the balances get back only what the
+   * reversal took from them.
+   */
+  balanceAmount?: number | string;
   /** Reuse the caller's settlement transaction when this earning is one leg of a larger unit. */
   transaction?: DbTransaction;
 }
@@ -277,6 +285,23 @@ class RedeemableEarningsService {
       };
     }
     const amountDecimal = quantizedAmount.toFixed(4);
+    const balanceQuantized =
+      params.balanceAmount === undefined
+        ? quantizedAmount
+        : new Decimal(params.balanceAmount).toDecimalPlaces(4, Decimal.ROUND_DOWN);
+    if (
+      !balanceQuantized.isFinite() ||
+      balanceQuantized.lt(0) ||
+      balanceQuantized.gt(quantizedAmount)
+    ) {
+      return {
+        success: false,
+        newBalance: 0,
+        ledgerEntryId: "",
+        error: "Balance amount must be between 0 and the earning amount",
+      };
+    }
+    const balanceDecimal = balanceQuantized.toFixed(4);
     const ledgerSourceId = normalizeLedgerSourceId(sourceId);
     const ledgerMetadata = normalizeLedgerMetadata({
       ...(metadata ?? {}),
@@ -365,16 +390,16 @@ class RedeemableEarningsService {
           .insert(redeemableEarnings)
           .values({
             user_id: userId,
-            total_earned: amountDecimal,
-            available_balance: amountDecimal,
-            earned_from_miniapps: source === "miniapp" ? amountDecimal : "0.0000",
-            earned_from_agents: source === "agent" ? amountDecimal : "0.0000",
-            earned_from_mcps: source === "mcp" ? amountDecimal : "0.0000",
-            earned_from_affiliates: source === "affiliate" ? amountDecimal : "0.0000",
+            total_earned: balanceDecimal,
+            available_balance: balanceDecimal,
+            earned_from_miniapps: source === "miniapp" ? balanceDecimal : "0.0000",
+            earned_from_agents: source === "agent" ? balanceDecimal : "0.0000",
+            earned_from_mcps: source === "mcp" ? balanceDecimal : "0.0000",
+            earned_from_affiliates: source === "affiliate" ? balanceDecimal : "0.0000",
             earned_from_app_owner_shares:
-              source === "app_owner_revenue_share" ? amountDecimal : "0.0000",
+              source === "app_owner_revenue_share" ? balanceDecimal : "0.0000",
             earned_from_creator_shares:
-              source === "creator_revenue_share" ? amountDecimal : "0.0000",
+              source === "creator_revenue_share" ? balanceDecimal : "0.0000",
             last_earning_at: new Date(),
           })
           .returning();
@@ -398,15 +423,15 @@ class RedeemableEarningsService {
           .set(
             params.reversesRedemption
               ? {
-                  total_redeemed: sql`GREATEST(0, ${redeemableEarnings.total_redeemed} - ${amountDecimal})`,
-                  available_balance: sql`${redeemableEarnings.available_balance} + ${amountDecimal}`,
+                  total_redeemed: sql`GREATEST(0, ${redeemableEarnings.total_redeemed} - ${balanceDecimal})`,
+                  available_balance: sql`${redeemableEarnings.available_balance} + ${balanceDecimal}`,
                   version: sql`${redeemableEarnings.version} + 1`,
                   updated_at: new Date(),
                 }
               : {
-                  total_earned: sql`${redeemableEarnings.total_earned} + ${amountDecimal}`,
-                  available_balance: sql`${redeemableEarnings.available_balance} + ${amountDecimal}`,
-                  [sourceColumn.name]: sql`${sourceColumn} + ${amountDecimal}`,
+                  total_earned: sql`${redeemableEarnings.total_earned} + ${balanceDecimal}`,
+                  available_balance: sql`${redeemableEarnings.available_balance} + ${balanceDecimal}`,
+                  [sourceColumn.name]: sql`${sourceColumn} + ${balanceDecimal}`,
                   last_earning_at: new Date(),
                   version: sql`${redeemableEarnings.version} + 1`,
                   updated_at: new Date(),
@@ -516,6 +541,16 @@ class RedeemableEarningsService {
      */
     dedupeBySourceId?: boolean;
     countAsRedeemed?: boolean;
+    /**
+     * When true, the balances (available, total earned and the source column)
+     * drop by at most the locked `available_balance`, while the ledger row
+     * still books the full amount as debt that later earnings net against.
+     * The row's metadata records the balance debit as
+     * `applied_balance_debit_usd`, so a later reinstatement can return exactly
+     * that. Without it, reversing earnings already paid out would lower
+     * `total_earned` under `total_redeemed` and fail the totals CHECK.
+     */
+    capBalanceDebitAtAvailable?: boolean;
     /** Reuse an owning settlement transaction so every money leg commits together. */
     transaction?: DbTransaction;
   }): Promise<{
@@ -644,21 +679,31 @@ class RedeemableEarningsService {
                   ? redeemableEarnings.earned_from_app_owner_shares
                   : redeemableEarnings.earned_from_creator_shares;
 
+      const balanceDebit = params.capBalanceDebitAtAvailable
+        ? Decimal.max(
+            0,
+            Decimal.min(
+              amountDecimal,
+              parseRedeemableEarningsNumber(earnings.available_balance, "available_balance"),
+            ),
+          ).toFixed(4)
+        : amountDecimal;
+
       // Reduce balances - use GREATEST to prevent going negative
       const [updated] = await tx
         .update(redeemableEarnings)
         .set(
           params.countAsRedeemed
             ? {
-                total_redeemed: sql`${redeemableEarnings.total_redeemed} + ${amountDecimal}`,
-                available_balance: sql`GREATEST(0, ${redeemableEarnings.available_balance} - ${amountDecimal})`,
+                total_redeemed: sql`${redeemableEarnings.total_redeemed} + ${balanceDebit}`,
+                available_balance: sql`GREATEST(0, ${redeemableEarnings.available_balance} - ${balanceDebit})`,
                 version: sql`${redeemableEarnings.version} + 1`,
                 updated_at: new Date(),
               }
             : {
-                total_earned: sql`GREATEST(0, ${redeemableEarnings.total_earned} - ${amountDecimal})`,
-                available_balance: sql`GREATEST(0, ${redeemableEarnings.available_balance} - ${amountDecimal})`,
-                [sourceColumn.name]: sql`GREATEST(0, ${sourceColumn} - ${amountDecimal})`,
+                total_earned: sql`GREATEST(0, ${redeemableEarnings.total_earned} - ${balanceDebit})`,
+                available_balance: sql`GREATEST(0, ${redeemableEarnings.available_balance} - ${balanceDebit})`,
+                [sourceColumn.name]: sql`GREATEST(0, ${sourceColumn} - ${balanceDebit})`,
                 version: sql`${redeemableEarnings.version} + 1`,
                 updated_at: new Date(),
               },
@@ -677,7 +722,9 @@ class RedeemableEarningsService {
           earnings_source: source,
           source_id: ledgerSourceId,
           description,
-          metadata: ledgerMetadata,
+          metadata: params.capBalanceDebitAtAvailable
+            ? { ...ledgerMetadata, applied_balance_debit_usd: balanceDebit }
+            : ledgerMetadata,
         })
         .returning();
 
@@ -770,8 +817,11 @@ class RedeemableEarningsService {
    * debit is the series delta capped by what the fee still has to return
    * across every series of the payment (a refund and a dispute of one charge
    * reverse it once); a reinstated dispute no longer counts. An already
-   * paid-out fee leaves a negative ledger sum that later affiliate earnings
-   * net against.
+   * spent or paid-out fee leaves a negative ledger sum that later affiliate
+   * earnings net against, while the balances drop only by what is still
+   * available; the row records that applied part, so a won dispute gives back
+   * only that, as the credit side reinstates only the applied clawback
+   * (#31449).
    */
   async reverseAutoTopUpAffiliateFee(params: {
     paymentIntentId: string;
@@ -817,6 +867,7 @@ class RedeemableEarningsService {
           payment_intent_id: paymentIntentId,
           affiliate_reversal_series: reversalSeries,
         },
+        capBalanceDebitAtAvailable: true,
         transaction: tx,
       });
       if (!result.success) {
@@ -826,7 +877,12 @@ class RedeemableEarningsService {
     });
   }
 
-  /** A won dispute returns the affiliate fee share its funds-withdrawn event took back. */
+  /**
+   * A won dispute returns the affiliate fee share its funds-withdrawn event
+   * took back. The ledger gets back the whole debit, but the balances get
+   * back only the recorded applied part, never the ledger target, so a fee
+   * spent or paid out before the dispute is not paid a second time.
+   */
   async reinstateAutoTopUpAffiliateFee(params: {
     paymentIntentId: string;
     reversalSeries: string;
@@ -845,9 +901,13 @@ class RedeemableEarningsService {
         params.reversalSeries,
       );
       if (taken.series.lte(0)) return 0;
+      // The ledger gets back the whole series debit (its unrecovered part was
+      // only ever debt); the balances get back only what the debit took.
+      const balanceAmount = Decimal.min(taken.seriesApplied, taken.series);
       const result = await this.addEarnings({
         userId: earning.userId,
-        amount: taken.series.toNumber(),
+        amount: taken.series.toFixed(4),
+        balanceAmount: balanceAmount.toFixed(4),
         source: "affiliate",
         sourceId: `affiliate_reinstated:${params.reinstatementKey}`,
         dedupeBySourceId: true,
@@ -863,7 +923,7 @@ class RedeemableEarningsService {
           `Failed to reinstate affiliate fee for ${params.paymentIntentId}: ${result.error}`,
         );
       }
-      return result.deduplicated ? 0 : taken.series.toNumber();
+      return result.deduplicated ? 0 : balanceAmount.toNumber();
     });
   }
 
@@ -888,19 +948,21 @@ class RedeemableEarningsService {
   /**
    * What reversals of one payment's affiliate fee have taken back: in
    * `series`, and across every series. A reversal series that a won dispute
-   * reinstated counts in neither, as in the credit clawback.
+   * reinstated counts in neither, as in the credit clawback. `seriesApplied`
+   * is the part of `series` that the balances actually lost.
    */
   private async affiliateFeeReversalState(
     db: DbTransaction,
     userId: string,
     paymentIntentId: string,
     reversalSeries: string,
-  ): Promise<{ series: Decimal; total: Decimal }> {
+  ): Promise<{ series: Decimal; total: Decimal; seriesApplied: Decimal }> {
     const ledger = redeemableEarningsLedger;
     const rows = await db
       .select({
         series: sql<string>`${ledger.metadata}->>'affiliate_reversal_series'`,
         taken: sql<string>`SUM(-${ledger.amount})::text`,
+        applied: sql<string>`COALESCE(SUM((${ledger.metadata}->>'applied_balance_debit_usd')::numeric), 0)::text`,
       })
       .from(ledger)
       .where(
@@ -921,12 +983,16 @@ class RedeemableEarningsService {
       .groupBy(sql`${ledger.metadata}->>'affiliate_reversal_series'`);
     let series = new Decimal(0);
     let total = new Decimal(0);
+    let seriesApplied = new Decimal(0);
     for (const row of rows) {
       const taken = new Decimal(row.taken ?? "0");
       total = total.plus(taken);
-      if (row.series === reversalSeries) series = taken;
+      if (row.series === reversalSeries) {
+        series = taken;
+        seriesApplied = new Decimal(row.applied ?? "0");
+      }
     }
-    return { series, total };
+    return { series, total, seriesApplied };
   }
 }
 
