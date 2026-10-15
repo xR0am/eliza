@@ -17,6 +17,7 @@
  * - MCP creator earnings
  */
 
+import { ElizaError } from "@elizaos/core";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import { type DbTransaction, dbRead, dbWrite } from "../../db/client";
@@ -833,7 +834,14 @@ class RedeemableEarningsService {
     const { paymentIntentId, reversedCents, chargeCents, reversalSeries, idempotencyKey } = params;
     if (reversedCents <= 0n || chargeCents <= 0n) return 0;
     const earning = await this.findAutoTopUpAffiliateEarning(paymentIntentId);
-    if (!earning) return 0;
+    if (!earning) {
+      // Credit settlement can commit before the affiliate projection. Keep the
+      // reversal in the retry lane until that earning can be reversed as well.
+      throw new ElizaError("Auto top-up affiliate earning is not yet available", {
+        code: "AFFILIATE_EARNING_PENDING",
+        context: { paymentIntentId },
+      });
+    }
 
     const fee = new Decimal(earning.amount);
     const reversed = reversedCents < chargeCents ? reversedCents : chargeCents;

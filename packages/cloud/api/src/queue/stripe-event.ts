@@ -1910,7 +1910,12 @@ async function clawbackForReversal(params: {
         )
       : minBigInt(reversedMicros, grantAmountMicros);
   const cappedUsdReversed = Number(targetMicros) / 1_000_000;
-  if (autoTopUpCharge && chargeAmountCents && chargeAmountCents > 0n) {
+  if (
+    autoTopUpCharge &&
+    (parseCreditMicros(autoTopUpCharge.affiliateMarkupUsd) ?? 0n) > 0n &&
+    chargeAmountCents &&
+    chargeAmountCents > 0n
+  ) {
     // The charge also paid the affiliate fee as payable earnings; take back
     // the same share of it, or a refunded or disputed charge still pays out.
     await redeemableEarningsService.reverseAutoTopUpAffiliateFee({

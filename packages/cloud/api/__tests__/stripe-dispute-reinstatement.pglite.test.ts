@@ -268,20 +268,7 @@ test("a partially consumed pack restores only the applied clawback, never the sh
 });
 
 test("a half dispute on a $15 fee-inclusive auto top-up claws back half of its 10 credits", async () => {
-  const buyer = await purchase({
-    credits: "10",
-    cents: null,
-    balance: "10",
-    metadata: {
-      type: "auto_top_up",
-      auto_top_up_attempt_id: randomUUID(),
-      base_amount: "10.00",
-      total_charged: "15.00",
-      platform_fee_amount: "2.00",
-      affiliate_fee_amount: "3.00",
-      fees_included: "true",
-    },
-  });
+  const buyer = await affiliateTopUp();
   expect(await disputeRoundTrip(buyer, `dp_${randomUUID()}`, 750)).toBe(5);
   expect(await balance(buyer.org)).toBe(10);
   expect(await ledger(buyer.org)).toEqual([
@@ -475,7 +462,9 @@ test("cumulative partial refunds on a low balance book each unrecovered credit o
 });
 
 /** A $15 auto top-up (10 credits) whose $3 affiliate fee was paid out as earnings. */
-async function affiliateTopUp(): Promise<Purchase & { affiliate: string }> {
+async function affiliateTopUp(
+  deferFee = false,
+): Promise<Purchase & { affiliate: string }> {
   const buyer = await purchase({
     credits: "10",
     cents: null,
@@ -495,6 +484,7 @@ async function affiliateTopUp(): Promise<Purchase & { affiliate: string }> {
     "INSERT INTO users(id,organization_id,steward_user_id,role) VALUES ($1,$2,$3,'owner')",
     [affiliate, buyer.org, `subject_${affiliate}`],
   );
+  if (deferFee) return { ...buyer, affiliate };
   // The same credit the payment_intent.succeeded handler books.
   const earned = await redeemableEarningsService.addEarnings({
     userId: affiliate,
@@ -937,4 +927,22 @@ test("a won dispute does not return an affiliate fee the affiliate already spent
     ).toBe("ack");
   expect(await affiliateAvailable(buyer.affiliate)).toBe(0);
   expect(await affiliatePayable(buyer.affiliate)).toBe(-3);
+});
+
+test("a refund waits for the pending affiliate earning before acknowledgement", async () => {
+  const buyer = await affiliateTopUp(true);
+  const event = refundEvent(`ch_${randomUUID()}`, 1500, buyer.paymentIntentId);
+  expect(await processStripeEvent(event)).toBe("retry");
+  const earned = await redeemableEarningsService.addEarnings({
+    userId: buyer.affiliate,
+    amount: 3,
+    source: "affiliate",
+    sourceId: `affiliate_auto_topup:${buyer.paymentIntentId}:${randomUUID()}`,
+    dedupeBySourceId: true,
+    description: "Delayed auto top-up affiliate fee",
+    metadata: { payment_intent_id: buyer.paymentIntentId },
+  });
+  expect(earned.success).toBe(true);
+  expect(await processStripeEvent(event)).toBe("ack");
+  expect(await affiliatePayable(buyer.affiliate)).toBe(0);
 });
