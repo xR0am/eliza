@@ -1507,7 +1507,11 @@ export class FormService extends Service {
       const rawValue = autofill.values[control.key];
       if (rawValue !== undefined) {
         const value = this.normalizeBuiltinDateValue(rawValue, control);
-        const validation = validateField(value, control, this.getControlType(control.type));
+        const validation = validateField(
+          value,
+          control,
+          this.getControlType(control.type),
+        );
         if (!validation.valid) continue;
         session.fields[control.key] = {
           status: "filled",
