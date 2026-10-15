@@ -115,7 +115,8 @@ export function formatWebSearchText(searchResponse: SearchResponse): string {
       answerWarnings.length
         ? sanitizeListedAnswer(searchResponse.answer, answerWarnings)
         : searchResponse.answer,
-    )    if (searchResponse.results.length > 0) {
+    )
+    if (searchResponse.results.length > 0) {
       lines.push(
         "",
         "For more details, you can check out these resources:",
