@@ -5911,7 +5911,8 @@ const calendarAction: CalendarHandlerAction = {
         );
         const availability = await evaluateCalendarWriteAvailability({
           runtime,
-          ...(nativeGrantId ? { grantId: nativeGrantId } : {}),
+          grantId: requestToApprove.grantId,
+          calendarId: requestToApprove.calendarId,
           startAt: requestToApprove.startAt,
           endAt: requestToApprove.endAt,
           timeZone: requestToApprove.timeZone,
@@ -6466,7 +6467,8 @@ const calendarAction: CalendarHandlerAction = {
           }
           const availability = await evaluateCalendarWriteAvailability({
             runtime,
-            ...(nativeGrantId ? { grantId: nativeGrantId } : {}),
+            ...(targetEvent.grantId ? {grantId:targetEvent.grantId}:{}),
+            calendarId:targetEvent.calendarId,
             startAt: proposedStart,
             endAt: proposedEnd,
             timeZone: zone,

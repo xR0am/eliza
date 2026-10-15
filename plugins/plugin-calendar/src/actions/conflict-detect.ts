@@ -107,6 +107,8 @@ export interface ConflictDetectLoader {
     runtime: IAgentRuntime;
     range: ConflictRange;
     grantId?: string;
+    calendarId?: string;
+    timeZone?: string;
   }) => Promise<ConflictDetectLoadResult>;
   loadFreeBusy?: (args: {
     runtime: IAgentRuntime;
@@ -154,6 +156,8 @@ interface CalendarConflictFeedService {
       timeMin: string;
       timeMax: string;
       grantId?: string;
+      calendarId?: string;
+      timeZone?: string;
     },
   ): Promise<LifeOpsCalendarFeed>;
 }
@@ -373,7 +377,7 @@ export function createCalendarFeedConflictLoader(): Pick<
   "loadFeed" | "loadFreeBusy"
 > {
   return {
-    loadFeed: async ({ runtime, range, grantId }) => {
+    loadFeed: async ({ runtime, range, grantId, calendarId, timeZone }) => {
       const service = runtime.getService(CALENDAR_SERVICE_TYPE);
       if (!isCalendarConflictFeedService(service)) {
         throw new CalendarServiceError(
@@ -385,6 +389,8 @@ export function createCalendarFeedConflictLoader(): Pick<
       const feed = await service.getCalendarFeed(INTERNAL_URL, {
         side: "owner",
         ...(grantId ? { grantId } : {}),
+        ...(calendarId ? { calendarId } : {}),
+        ...(timeZone ? { timeZone } : {}),
         timeMin: range.start,
         timeMax: range.end,
       });
@@ -419,6 +425,7 @@ export async function evaluateCalendarWriteAvailability(args: {
   timeZone: string;
   excludeEventId?: string;
   grantId?: string;
+  calendarId?: string;
 }): Promise<
   CalendarAvailabilityEvaluation & {
     localTimes: {
@@ -435,6 +442,8 @@ export async function evaluateCalendarWriteAvailability(args: {
     runtime: args.runtime,
     range,
     ...(args.grantId ? { grantId: args.grantId } : {}),
+    ...(args.calendarId ? { calendarId: args.calendarId } : {}),
+    timeZone: args.timeZone,
   });
   const sources = normalizeLoadResult(loaded, {
     id: "owner-calendar-feed",
@@ -489,6 +498,8 @@ export async function evaluateCalendarWriteAvailability(args: {
       runtime: args.runtime,
       range: alternativesRange,
       ...(args.grantId ? { grantId: args.grantId } : {}),
+      ...(args.calendarId ? { calendarId: args.calendarId } : {}),
+      timeZone: args.timeZone,
     });
     const alternativeSources = normalizeLoadResult(alternativeFeed, {
       id: "owner-calendar-feed",
