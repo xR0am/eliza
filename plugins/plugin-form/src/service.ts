@@ -639,7 +639,8 @@ export class FormService extends Service {
     // Limit history size
     const maxUndo = form.ux?.maxUndoSteps ?? 5;
     if (session.history.length > maxUndo) {
-      session.history = session.history.slice(-maxUndo);
+      // slice(-0) is slice(0): a zero limit must clear, not keep everything.
+      session.history = maxUndo > 0 ? session.history.slice(-maxUndo) : [];
     }
 
     // Update field state
