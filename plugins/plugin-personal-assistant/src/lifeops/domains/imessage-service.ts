@@ -57,6 +57,15 @@ type NativeIMessageChat = {
   participants: Array<{ handle: string; isPhoneNumber: boolean }>;
 };
 
+type RuntimeIMessageSendResult = {
+  success: boolean;
+  messageId?: string;
+  messageIds?: string[];
+  localEffectIds?: string[];
+  chatId?: string;
+  error?: string;
+};
+
 type RuntimeIMessageServiceLike = {
   isConnected(): boolean;
   getStatus?(): RuntimeIMessageStatus;
@@ -64,14 +73,7 @@ type RuntimeIMessageServiceLike = {
     to: string,
     text: string,
     options?: { mediaUrl?: string; maxBytes?: number; accountId?: string },
-  ): Promise<{
-    success: boolean;
-    messageId?: string;
-    messageIds?: string[];
-    localEffectIds?: string[];
-    chatId?: string;
-    error?: string;
-  }>;
+  ): Promise<RuntimeIMessageSendResult>;
   getMessages?(options?: {
     chatId?: string;
     limit?: number;
@@ -418,6 +420,40 @@ function unknownDeliveryStatus(messageIds: string[]): IMessageDeliveryResult[] {
   }));
 }
 
+function completeIMessageSend(
+  to: string,
+  result: RuntimeIMessageSendResult,
+): IMessageSendReceipt {
+  if (!result.success) {
+    const hasCompletionEvidence =
+      Boolean(result.messageId?.trim()) ||
+      Boolean(result.messageIds?.some((id) => id.trim())) ||
+      Boolean(result.localEffectIds?.some((id) => id.trim()));
+    if (hasCompletionEvidence) {
+      throw new ConnectorDeliveryEvidenceError(
+        "iMessage accepted part of the send; reconcile before sending again.",
+        {
+          provider: "imessage",
+          channelId: to,
+          deliveryStatus: "partial",
+          ...(result.messageId ? { messageId: result.messageId } : {}),
+          ...(result.messageIds ? { messageIds: result.messageIds } : {}),
+          ...(result.localEffectIds
+            ? { localEffectIds: result.localEffectIds }
+            : {}),
+        },
+      );
+    }
+    fail(502, result.error ?? "iMessage runtime service send failed.");
+  }
+  return {
+    ok: true,
+    ...(result.messageId ? { messageId: result.messageId } : {}),
+    ...(result.messageIds ? { messageIds: result.messageIds } : {}),
+    ...(result.localEffectIds ? { localEffectIds: result.localEffectIds } : {}),
+  };
+}
+
 /**
  * iMessage connector reads and sends through the active transport exposed by
  * the runtime `@elizaos/plugin-imessage` service.
@@ -442,18 +478,7 @@ export class IMessageDomain {
         mediaUrl: req.attachmentPaths?.[0],
       });
       if (delegated.status === "handled") {
-        return {
-          ok: true,
-          ...(delegated.value.messageId
-            ? { messageId: delegated.value.messageId }
-            : {}),
-          ...(delegated.value.messageIds
-            ? { messageIds: delegated.value.messageIds }
-            : {}),
-          ...(delegated.value.localEffectIds
-            ? { localEffectIds: delegated.value.localEffectIds }
-            : {}),
-        };
+        return completeIMessageSend(req.to, delegated.value);
       }
       if (delegated.error) {
         this.ctx.logLifeOpsWarn(
@@ -496,31 +521,7 @@ export class IMessageDomain {
           : {}),
       }),
     );
-    if (!result.success) {
-      if (result.messageIds?.length || result.localEffectIds?.length) {
-        throw new ConnectorDeliveryEvidenceError(
-          "iMessage accepted part of the send; reconcile before sending again.",
-          {
-            provider: "imessage",
-            channelId: req.to,
-            deliveryStatus: "partial",
-            ...(result.messageIds ? { messageIds: result.messageIds } : {}),
-            ...(result.localEffectIds
-              ? { localEffectIds: result.localEffectIds }
-              : {}),
-          },
-        );
-      }
-      fail(502, result.error ?? "iMessage runtime service send failed.");
-    }
-    return {
-      ok: true,
-      messageId: result.messageId,
-      ...(result.messageIds ? { messageIds: result.messageIds } : {}),
-      ...(result.localEffectIds
-        ? { localEffectIds: result.localEffectIds }
-        : {}),
-    };
+    return completeIMessageSend(req.to, result);
   }
 
   async readIMessages(opts: {
