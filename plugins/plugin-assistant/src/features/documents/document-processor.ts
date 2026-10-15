@@ -1352,10 +1352,7 @@ export function createRateLimiter(
 
         let timeToWait = 0;
         if (requestLimitExceeded && requestTimes.length > 0) {
-          timeToWait = Math.max(
-            timeToWait,
-            requestTimes[0] + intervalMs - now,
-          );
+          timeToWait = Math.max(timeToWait, requestTimes[0] + intervalMs - now);
         }
         if (tokenLimitExceeded && tokenUsage.length > 0) {
           timeToWait = Math.max(
