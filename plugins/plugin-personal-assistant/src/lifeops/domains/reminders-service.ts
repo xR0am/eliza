@@ -379,6 +379,21 @@ function foregroundRequestHandling(
   }
 }
 
+/**
+ * Reminder attempts whose send may have reached the recipient: the connector
+ * accepted part of it, accepted it but failed to save it, gave no delivery
+ * evidence, or threw after the request left. Sending the same step again would
+ * duplicate the message, so these attempts count as consumed on every
+ * channel. A clean refusal (`runtime_send_not_delivered`) is retried.
+ */
+const SEND_MAY_HAVE_REACHED_RECIPIENT = new Set([
+  "runtime_send_acceptance_unknown",
+  "runtime_send_partially_delivered",
+  "runtime_send_persistence_failed",
+  "runtime_send_unknown",
+  "runtime_send_in_flight",
+]);
+
 export { REMINDER_DISPATCH_INSTRUCTIONS } from "../optimized-prompt-instructions.js";
 
 const LIFEOPS_SCHEDULE_DEVICE_KINDS = [
@@ -6024,10 +6039,10 @@ export class RemindersDomain {
         .filter(
           (attempt) =>
             isDeliveredReminderOutcome(attempt.outcome) ||
-            ((attempt.channel === "in_app" || attempt.channel === "sms") &&
-              attempt.outcome === "blocked_connector" &&
-              attempt.deliveryMetadata.reason ===
-                "runtime_send_acceptance_unknown"),
+            (attempt.outcome === "blocked_connector" &&
+              SEND_MAY_HAVE_REACHED_RECIPIENT.has(
+                String(attempt.deliveryMetadata.reason),
+              )),
         )
         .map((attempt) =>
           attemptKey(attempt.planId, attempt.stepIndex, attempt.scheduledFor),
