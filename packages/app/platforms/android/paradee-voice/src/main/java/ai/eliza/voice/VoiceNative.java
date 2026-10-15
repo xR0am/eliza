@@ -10,6 +10,14 @@ package ai.eliza.voice;
  */
 final class VoiceNative {
     static {
+        // Phonon-2 runs on the in-tree ggml path. "parakeet" is a model
+        // architecture, not a registered backend override. The installed
+        // bundle pins and verifies the only permitted ASR model.
+        try {
+            android.system.Os.setenv("ELIZA_ASR_BACKEND", "ggml", true);
+        } catch (android.system.ErrnoException unset) {
+            throw new IllegalStateException("Cannot configure the Phonon-2 ASR backend", unset);
+        }
         System.loadLibrary("elizainference");
         System.loadLibrary("paradeevoicejni");
     }

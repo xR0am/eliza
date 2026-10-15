@@ -7,12 +7,27 @@ inference server, account or network use.
 - **Speech:** Paradee-8M v1.0 (one voice, `af_heart`, 24 kHz). Native misaki
   G2P makes the phonemes: the misaki lexicon and rules, with eSpeak NG only
   for words outside the lexicon.
-- **Transcription:** the ASR head of `libelizainference`. The default is
-  Phonon-2 (Parakeet-TDT 0.6B, five-value weights) at
-  `<bundle>/asr/phonon-2-fv5.gguf`: batch (16 kHz mono in) and streaming (any
-  rate). The Qwen3-ASR text + mmproj pair is the batch-only alternative
-  (`ELIZA_ASR_BACKEND=qwen3`). `asr/` holds one of the two, as the
-  `mobile-voice` catalog record pins it.
+- **Transcription:** the ASR head of `libelizainference` with Phonon-2
+  (Parakeet-TDT 0.6B, five-value weights) at `<bundle>/asr/phonon-2-fv5.gguf`:
+  batch (16 kHz mono in) and streaming (any rate). Phonon-2 is the only ASR
+  model; the `mobile-voice` catalog record pins it. `VoiceNative` sets
+  `ELIZA_ASR_BACKEND=ggml` before it loads the library. The GGUF is not
+  published; build it with `bun packages/app/scripts/voice/build-phonon2-gguf.ts`
+  (it converts the pinned source and checks every sha256). Use `--help` for paths.
+
+To build the unpublished ASR model, initialize the native submodule and use a
+Python environment with the native `gguf-py` package, `zstandard`, and `librosa`:
+
+```bash
+python3 -m venv .cache/phonon-python
+.cache/phonon-python/bin/pip install ./plugins/plugin-local-inference/native/llama.cpp/gguf-py zstandard librosa
+bun packages/app/scripts/voice/build-phonon2-gguf.ts --python .cache/phonon-python/bin/python
+```
+
+The default output is `.cache/phonon-2/bundle/asr/`, with the GGUF, NOTICE,
+and weight license. Set `ELIZA_VOICE_BUNDLE_FROM=.cache/phonon-2/bundle`
+when staging. This command builds ASR only; TTS and VAD still need their
+pinned files. It performs no upload or device installation.
 
 ```java
 VoiceAssets.Bundle bundle = VoiceAssets.install(context); // worker thread
@@ -41,9 +56,11 @@ natives. Its `JNI_OnLoad` registers the methods and is its only export.
 
 Generate the native inputs and the hash-pinned bundle (NDK 28.2, arm64-v8a and
 x86_64, 16 KiB pages). Pins are in `inputs.json` and must equal the fork pins
-in `tools/paradee/pins.json` and `tools/misaki-g2p/pins.json`. The GGUF and the
-lexicon are converted in the fork from the pinned PyTorch weights and misaki
-data; `--python` needs torch and numpy. `--model-cache` is searched first.
+in `tools/paradee/pins.json`, `tools/misaki-g2p/pins.json`,
+`tools/parakeet/pins.json`, and the mobile voice catalog. The builder includes
+Paradee, the misaki lexicon, Phonon-2, Silero VAD, and their attribution.
+`--python` needs torch plus the conversion dependencies installed above.
+`--model-cache` is searched first; every cached file is checked against its pin.
 
 ```sh
 ANDROID_HOME=~/Library/Android/sdk node packages/app/scripts/paradee-voice/build-native.ts \
