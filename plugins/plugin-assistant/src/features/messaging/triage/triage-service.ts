@@ -439,6 +439,7 @@ export class TriageService {
     runtime: IAgentRuntime,
     inReplyToId: string,
     body: string,
+    requester?: Memory,
   ): Promise<DraftRecord> {
     const original = this.store.getMessage(inReplyToId, runtime.agentId);
     if (!original) {
@@ -465,6 +466,7 @@ export class TriageService {
     const { draftId, preview, snapshot } = await adapter.createDraft(
       runtime,
       draftRequest,
+      { requester },
     );
     const record: DraftRecord = {
       draftId,
@@ -490,6 +492,7 @@ export class TriageService {
   async draftFollowup(
     runtime: IAgentRuntime,
     params: {
+      requester?: Memory;
       source: MessageSource;
       to: Array<{ identifier: string; displayName?: string }>;
       subject?: string;
@@ -503,15 +506,19 @@ export class TriageService {
     if (!adapter) {
       throw new Error(`No adapter registered for source "${params.source}"`);
     }
-    const { draftId, preview, snapshot } = await adapter.createDraft(runtime, {
-      source: params.source,
-      threadId: params.threadId,
-      to: params.to,
-      subject: params.subject,
-      body: params.body,
-      worldId: params.worldId,
-      channelId: params.channelId,
-    });
+    const { draftId, preview, snapshot } = await adapter.createDraft(
+      runtime,
+      {
+        source: params.source,
+        threadId: params.threadId,
+        to: params.to,
+        subject: params.subject,
+        body: params.body,
+        worldId: params.worldId,
+        channelId: params.channelId,
+      },
+      { requester: params.requester },
+    );
     const record: DraftRecord = {
       draftId,
       agentId: runtime.agentId,
@@ -536,6 +543,7 @@ export class TriageService {
     runtime: IAgentRuntime,
     draftId: string,
     consentDigest?: string,
+    requester?: Memory,
   ): Promise<DraftRecord> {
     const record = this.getDraft(runtime, draftId);
     if (!record) {
@@ -554,6 +562,9 @@ export class TriageService {
         { code: "MESSAGE_DRAFT_CONSENT_DIGEST_MISMATCH" },
       );
     }
+    await this.adapters
+      .get(record.source)
+      ?.authorizeSend?.(runtime, requester, draftId);
     if (record.sent) return record;
     const sendKey = `${String(runtime.agentId)}:${record.source}:${draftId}`;
     const pending = this.sendsInFlight.get(sendKey);
@@ -565,7 +576,12 @@ export class TriageService {
         });
       return pending.promise;
     }
-    const send = this.sendDraftOnce(runtime, structuredClone(record), digest);
+    const send = this.sendDraftOnce(
+      runtime,
+      structuredClone(record),
+      digest,
+      requester,
+    );
     this.sendsInFlight.set(sendKey, { digest, promise: send });
     try {
       return await send;
@@ -580,6 +596,7 @@ export class TriageService {
     runtime: IAgentRuntime,
     record: DraftRecord,
     consentDigest?: string,
+    requester?: Memory,
   ): Promise<DraftRecord> {
     const adapter = this.adapters.get(record.source);
     if (!adapter?.isAvailable(runtime)) {
@@ -602,7 +619,10 @@ export class TriageService {
         { code: "MESSAGE_DRAFT_CONSENT_DIGEST_MISMATCH" },
       );
     }
-    const { externalId } = await adapter.sendDraft(runtime, record.draftId);
+    const { externalId } = await adapter.sendDraft(runtime, record.draftId, {
+      requester,
+      snapshot: record,
+    });
     if (typeof externalId !== "string" || externalId.trim().length === 0) {
       throw new ElizaError(
         `The ${record.source} adapter did not return an accepted message identifier.`,
@@ -860,12 +880,10 @@ export class TriageService {
       );
     }
 
+    const sendCapabilities = adapter.capabilities().send;
     // A connector-owned remote schedule is authoritative when available.
     // Every other adapter must use the one durable ScheduledTask runner.
-    if (
-      adapter.capabilities().send.schedule === true &&
-      adapter.scheduleSend != null
-    ) {
+    if (sendCapabilities.schedule === true && adapter.scheduleSend != null) {
       const { scheduledId } = await adapter.scheduleSend(
         runtime,
         draftId,
@@ -897,6 +915,20 @@ export class TriageService {
       };
       this.store.saveDraft(updated, runtime.agentId);
       return updated;
+    }
+
+    // The durable runner dispatches without an executing requester, so an
+    // adapter that authorizes delivery against a live owner request would
+    // accept the schedule and then fail at send time. Refuse it up front.
+    if (sendCapabilities.requiresLiveRequester === true) {
+      throw new ElizaError(
+        `Scheduled delivery is not supported for ${record.source} drafts; send it now instead.`,
+        {
+          code: "MESSAGE_SCHEDULE_UNSUPPORTED",
+          context: { draftId, source: record.source, sendAtMs },
+          severity: "ephemeral",
+        },
+      );
     }
 
     const scheduler = getDeferredMessageScheduler(runtime);
