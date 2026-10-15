@@ -1,4 +1,4 @@
-/** Optional private host transport for owner-only INBOX Gmail reads.
+/** Optional private host transport for owner-only Inbox Gmail reads.
  * The host retains provider credentials. This source never sends or changes mail. */
 import { ElizaError } from "@elizaos/core";
 import type { InboxFetcher, InboxItem } from "../actions/inbox.ts";
@@ -6,10 +6,7 @@ import type { InboxFetcher, InboxItem } from "../actions/inbox.ts";
 const MAX_BYTES = 256 * 1024;
 const failure = (message: string) =>
   new ElizaError(message, { code: "MANAGED_GMAIL_READ_UNAVAILABLE" });
-export function managedGmailReadFetcher(
-  env: NodeJS.ProcessEnv = process.env,
-  request: typeof fetch = fetch,
-): InboxFetcher | undefined {
+function transport(env: NodeJS.ProcessEnv, request: typeof fetch) {
   const endpoint = env.ELIZA_MANAGED_GMAIL_READ_BROKER;
   if (!endpoint) return undefined;
   let url: URL;
@@ -32,17 +29,7 @@ export function managedGmailReadFetcher(
   const token = env.ELIZA_API_TOKEN;
   if (!token || !/^[a-f0-9]{64}$/.test(token))
     throw failure("Managed Gmail host authentication is unavailable.");
-  return async ({ limit = 25, query, since }) => {
-    if (
-      !Number.isSafeInteger(limit) ||
-      limit < 1 ||
-      limit > 50 ||
-      (query !== undefined &&
-        (typeof query !== "string" || query.length > 4096)) ||
-      (since !== undefined &&
-        (typeof since !== "string" || !Number.isFinite(Date.parse(since))))
-    )
-      throw failure("Choose a valid Gmail read range of at most 50 messages.");
+  return async (body: object) => {
     const response = await request(url, {
       method: "POST",
       redirect: "error",
@@ -51,11 +38,7 @@ export function managedGmailReadFetcher(
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        limit,
-        ...(query === undefined ? {} : { query }),
-        ...(since === undefined ? {} : { since }),
-      }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       await response.body?.cancel();
@@ -89,14 +72,34 @@ export function managedGmailReadFetcher(
     } catch {
       throw failure("The Gmail host returned an invalid result.");
     }
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      throw failure("The Gmail host returned an invalid result.");
+    return data as Record<string, unknown>;
+  };
+}
+export function managedGmailReadFetcher(
+  env: NodeJS.ProcessEnv = process.env,
+  request: typeof fetch = fetch,
+): InboxFetcher | undefined {
+  const call = transport(env, request);
+  if (!call) return undefined;
+  return async ({ limit = 25, query, since }) => {
     if (
-      !data ||
-      typeof data !== "object" ||
-      Array.isArray(data) ||
-      !("items" in data) ||
-      !Array.isArray(data.items) ||
-      data.items.length > limit
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 50 ||
+      (query !== undefined &&
+        (typeof query !== "string" || query.length > 4096)) ||
+      (since !== undefined &&
+        (typeof since !== "string" || !Number.isFinite(Date.parse(since))))
     )
+      throw failure("Choose a valid Gmail read range of at most 50 messages.");
+    const data = await call({
+      limit,
+      ...(query === undefined ? {} : { query }),
+      ...(since === undefined ? {} : { since }),
+    });
+    if (!Array.isArray(data.items) || data.items.length > limit)
       throw failure("The Gmail host returned an invalid message list.");
     const ids = new Set<string>();
     return data.items.map((value: unknown): InboxItem => {
@@ -137,5 +140,39 @@ export function managedGmailReadFetcher(
         ...(row.unread === undefined ? {} : { unread: row.unread as boolean }),
       };
     });
+  };
+}
+export function managedGmailMessageReader(
+  env: NodeJS.ProcessEnv = process.env,
+  request: typeof fetch = fetch,
+) {
+  const call = transport(env, request);
+  if (!call) return undefined;
+  return async (messageId: string) => {
+    if (!/^alpha-gmail:[a-f0-9]{64}:[A-Za-z0-9_-]{1,160}$/.test(messageId))
+      throw failure(
+        "Select an exact message from the current Gmail list or search.",
+      );
+    const data = await call({ messageId });
+    if (
+      !data.message ||
+      typeof data.message !== "object" ||
+      Array.isArray(data.message)
+    )
+      throw failure("The Gmail host returned an invalid message.");
+    const row = data.message as Record<string, unknown>;
+    if (
+      row.id !== messageId ||
+      typeof row.from !== "string" ||
+      typeof row.subject !== "string" ||
+      typeof row.bodyText !== "string"
+    )
+      throw failure("The Gmail message did not match the selected source.");
+    return {
+      id: messageId,
+      from: row.from,
+      subject: row.subject,
+      bodyText: row.bodyText,
+    };
   };
 }

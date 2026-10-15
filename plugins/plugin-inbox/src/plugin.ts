@@ -14,6 +14,7 @@ import {
 } from "@elizaos/core";
 import type { HttpPlugin as Plugin } from "@elizaos/host/protocol";
 import { inboxAction, setInboxFetchers } from "./actions/inbox.ts";
+import { managedGmailMessageReadAction } from "./actions/managed-gmail-read.ts";
 import { inboxDbSchema } from "./db/schema.ts";
 import { managedGmailReadFetcher } from "./inbox/managed-gmail-read.ts";
 import { InboxMigrationService } from "./inbox/migration.ts";
@@ -40,6 +41,9 @@ export const inboxPlugin: Plugin = {
   // INBOX_TRIAGE — the `inbox_triage` optimized-prompt consumer — instead of
   // the list/summarize reads (#11383).
   actions: [
+    ...(process.env.ELIZA_MANAGED_GMAIL_READ_BROKER
+      ? [managedGmailMessageReadAction]
+      : []),
     ...promoteSubactionsToActions(inboxAction, {
       overrides: {
         triage: {
