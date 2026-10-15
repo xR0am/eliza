@@ -14,12 +14,15 @@ import {
   type LinkedCalendarCheckpointStore,
   type LinkedCalendarEventRecord,
   type LinkedCalendarLocalSnapshot,
+  type LinkedCalendarLocalPort,
+  type LinkedCalendarProviderPort,
   type LinkedCalendarProviderSnapshot,
   LinkedCalendarReconciler,
   LinkedCalendarRepository,
   type LinkedCalendarSemanticEvent,
   linkedCalendarSemanticHash,
 } from "./linked-calendar-sync.js";
+import { linkedCalendarSemanticDigest } from "@elizaos/contracts";
 import { ensureLinkedCalendarEventTable } from "./migration.js";
 
 const baseEvent: LinkedCalendarSemanticEvent = {
@@ -32,6 +35,78 @@ const baseEvent: LinkedCalendarSemanticEvent = {
   isAllDay: false,
   attendees: [],
 };
+
+it("the shared engine preserves opaque phone revisions through push and pull", async () => {
+  let current: LinkedCalendarEventRecord<string> = {
+    ...record(),
+    localRevision: "phone-rev-1",
+  };
+  let local: LinkedCalendarLocalSnapshot<string> = {
+    eventId: current.localEventId,
+    revision: "phone-rev-1",
+    event: structuredClone(baseEvent),
+  };
+  let remote: LinkedCalendarProviderSnapshot | null = null,
+    creates = 0;
+  const checkpoints: LinkedCalendarCheckpointStore<string> = {
+    async save(expected, patch) {
+      expect(expected.updatedAt).toBe(current.updatedAt);
+      current = { ...current, ...patch, updatedAt: crypto.randomUUID() };
+      return current;
+    },
+  };
+  const localPort: LinkedCalendarLocalPort<string> = {
+    async get() {
+      return local;
+    },
+    async applyProviderEvent(id, event, expected) {
+      expect(id).toBe(local.eventId);
+      expect(expected).toBe(local.revision);
+      local = { eventId: id, event, revision: "phone-rev-2" };
+      return local;
+    },
+    async delete() {
+      throw Error("Not requested");
+    },
+  };
+  const provider: LinkedCalendarProviderPort<string> = {
+    async get() {
+      return remote;
+    },
+    async create(_record, event) {
+      creates++;
+      remote = { eventId: "google-event", etag: '"v1"', event };
+      return remote;
+    },
+    async update() {
+      throw Error("Not requested");
+    },
+    async delete() {
+      throw Error("Not requested");
+    },
+  };
+  const sync = new LinkedCalendarReconciler<string>(
+    checkpoints,
+    localPort,
+    provider,
+  );
+  expect(await sync.reconcile(current)).toBe("pushed");
+  expect(creates).toBe(1);
+  expect(current.localRevision).toBe("phone-rev-1");
+  expect(await linkedCalendarSemanticDigest(baseEvent)).toBe(
+    linkedCalendarSemanticHash(baseEvent),
+  );
+  expect(await sync.reconcile(current)).toBe("clean");
+  expect(creates).toBe(1);
+  remote = {
+    ...remote!,
+    etag: '"v2"',
+    event: { ...baseEvent, title: "Updated in Google" },
+  };
+  expect(await sync.reconcile(current)).toBe("pulled");
+  expect(local.event.title).toBe("Updated in Google");
+  expect(current.localRevision).toBe("phone-rev-2");
+});
 
 function record(
   overrides: Partial<LinkedCalendarEventRecord> = {},
