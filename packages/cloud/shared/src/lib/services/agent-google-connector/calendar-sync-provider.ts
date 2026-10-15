@@ -138,6 +138,58 @@ function googleBody(event: CalendarSyncEvent) {
     recurrence: event.recurrence ? [...event.recurrence] : [],
   };
 }
+/** Google recommends get+update: preserve every unedited provider field under the exact ETag. */
+function replacement(previous: Json, before: CalendarSyncEvent, event: CalendarSyncEvent): Json {
+  if (previous.attendeesOmitted === true)
+    throw new CalendarSyncError(
+      409,
+      "CALENDAR_SYNC_INCOMPLETE_ATTENDEES",
+      "not_accepted",
+      "Google did not return the complete guest list. Nothing was changed.",
+    );
+  const next: Json = { ...previous },
+    body = googleBody(event);
+  if (event.title !== before.title) next.summary = event.title;
+  if (event.description !== before.description) next.description = event.description;
+  if (event.location !== before.location) next.location = event.location;
+  if (event.isAllDay !== before.isAllDay || event.timeZone !== before.timeZone) {
+    next.start = body.start;
+    next.end = body.end;
+  } else {
+    if (event.startAt !== before.startAt)
+      next.start = {
+        ...objectDate(previous.start),
+        ...(event.isAllDay ? { date: event.startAt } : { dateTime: event.startAt }),
+      };
+    if (event.endAt !== before.endAt)
+      next.end = {
+        ...objectDate(previous.end),
+        ...(event.isAllDay ? { date: event.endAt } : { dateTime: event.endAt }),
+      };
+  }
+  if (JSON.stringify(event.recurrence || []) !== JSON.stringify(before.recurrence || []))
+    next.recurrence = body.recurrence;
+  if (JSON.stringify(event.attendees) !== JSON.stringify(before.attendees)) {
+    const old = new Map<string, Json>();
+    for (const value of Array.isArray(previous.attendees) ? previous.attendees : []) {
+      if (!record(value) || typeof value.email !== "string")
+        throw reject("Review the complete Google guest list.");
+      const key = value.email.toLowerCase();
+      if (old.has(key)) throw reject("Google returned ambiguous duplicate guests.");
+      old.set(key, value);
+    }
+    next.attendees = event.attendees.map((attendee) => ({
+      ...old.get(attendee.email),
+      email: attendee.email,
+      optional: attendee.optional === true,
+    }));
+  }
+  return next;
+}
+function objectDate(value: unknown): Json {
+  if (!record(value)) throw reject("Review the Google event dates.");
+  return value;
+}
 function snapshot(raw: Json): CalendarSyncSnapshot {
   if (!atom(raw.id) || !atom(raw.etag) || !record(raw.start) || !record(raw.end))
     throw new CalendarSyncError(
@@ -505,11 +557,22 @@ export class ManagedCalendarSyncProvider {
     if (!atom(eventId, 1024)) throw reject("Select an exact event.");
     this.calendar(calendarId);
     const scope = await this.session(owner, "write");
+    const previous = await this.raw(scope, calendarId, eventId);
+    if (!previous || previous.etag !== expectedEtag)
+      throw new CalendarSyncError(
+        412,
+        "CALENDAR_SYNC_PRECONDITION",
+        "precondition_failed",
+        "The Google event changed. Refresh before editing it.",
+      );
+    const before = snapshot(previous),
+      body = replacement(previous, before.event, event);
+    if (JSON.stringify(body) === JSON.stringify(previous)) return before;
     const result = await this.call(
       scope,
-      `${this.calendar(calendarId)}/${encodeURIComponent(eventId)}?sendUpdates=none`,
-      "PATCH",
-      googleBody(event),
+      `${this.calendar(calendarId)}/${encodeURIComponent(eventId)}?sendUpdates=none&conferenceDataVersion=1&supportsAttachments=true&eventLabelVersion=${typeof previous.eventLabelId === "string" ? 1 : 0}`,
+      "PUT",
+      body,
       expectedEtag,
     );
     if (result.status !== 200 || !result.data) throw providerFailure(result.status);

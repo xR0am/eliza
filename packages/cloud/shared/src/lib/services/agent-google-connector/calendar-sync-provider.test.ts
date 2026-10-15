@@ -86,7 +86,7 @@ function fixture() {
       }
       if (!stored) return Response.json({}, { status: 404 });
       if (headers.get("if-match") !== stored.etag) return Response.json({}, { status: 412 });
-      if (method === "PATCH") {
+      if (method === "PUT") {
         patches++;
         const next = { ...stored, ...JSON.parse(String(init.body)), etag: '"2"' };
         events.set(id, next);
@@ -192,6 +192,72 @@ describe("managed Calendar conditional provider", () => {
       outcome: "unknown",
     });
     expect(second.writes()).toBe(1);
+  });
+  test("conditional updates preserve unedited guest and provider metadata", async () => {
+    const f = fixture(),
+      initial = { ...event, attendees: [{ email: "guest@example.invalid", optional: false }] };
+    const first = await f.provider.create(owner, "primary", "metadata", initial),
+      raw = f.events.get(first.eventId)!;
+    raw.attendees[0] = {
+      ...raw.attendees[0],
+      responseStatus: "accepted",
+      comment: "Guest response",
+      displayName: "Guest",
+      additionalGuests: 2,
+    };
+    raw.end.timeZone = "Asia/Tokyo";
+    raw.conferenceData = {
+      conferenceId: "retained-conference",
+      entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/retained-link" }],
+    };
+    raw.eventLabelId = "existing-label";
+    raw.visibility = "public";
+    raw.reminders = { useDefault: false, overrides: [{ method: "popup", minutes: 10 }] };
+    raw.attachments = [{ fileUrl: "https://example.invalid/file", title: "Retained attachment" }];
+    const guests = structuredClone(raw.attendees),
+      extra = structuredClone(raw.attachments);
+    const saved = await f.provider.update(owner, "primary", first.eventId, first.etag!, {
+      ...initial,
+      title: "Updated title",
+    });
+    expect(saved.event.title).toBe("Updated title");
+    expect(f.events.get(first.eventId)!.attendees).toEqual(guests);
+    expect(f.events.get(first.eventId)!.attachments).toEqual(extra);
+    expect(f.events.get(first.eventId)!.end.timeZone).toBe("Asia/Tokyo");
+    expect(f.events.get(first.eventId)!.conferenceData).toEqual(raw.conferenceData);
+    expect(f.events.get(first.eventId)!.eventLabelId).toBe("existing-label");
+    const write = f.calls.find((call) => call.method === "PUT");
+    if (!write) throw Error("Expected a conditional provider update");
+    const request = new URL(write.url);
+    expect(request.searchParams.get("conferenceDataVersion")).toBe("1");
+    expect(request.searchParams.get("supportsAttachments")).toBe("true");
+    expect(request.searchParams.get("eventLabelVersion")).toBe("1");
+    expect(saved.visibility).toBe("public");
+    expect(saved.remindersDisabled).toBe(false);
+    await f.provider.update(owner, "primary", first.eventId, saved.etag!, {
+      ...initial,
+      title: "Updated title",
+      attendees: [
+        { email: "guest@example.invalid", optional: true },
+        { email: "new@example.invalid", optional: false },
+      ],
+    });
+    expect(f.events.get(first.eventId)!.attendees[0]).toMatchObject({
+      ...guests[0],
+      optional: true,
+    });
+    expect(
+      f.calls.filter((call) => call.method === "PUT").every((call) => call.headers.get("if-match")),
+    ).toBe(true);
+    const before = f.patches();
+    f.events.get(first.eventId)!.attendeesOmitted = true;
+    await expect(
+      f.provider.update(owner, "primary", first.eventId, '"2"', { ...initial, title: "Refused" }),
+    ).rejects.toMatchObject({
+      code: "CALENDAR_SYNC_INCOMPLETE_ATTENDEES",
+      outcome: "not_accepted",
+    });
+    expect(f.patches()).toBe(before);
   });
   test("wildcard preconditions, malformed dates, and conflicting references make no request", async () => {
     const f = fixture();
