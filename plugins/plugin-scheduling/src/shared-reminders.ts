@@ -18,7 +18,7 @@ import type {
   Memory,
   Plugin,
 } from "@elizaos/core";
-import { stableStringify } from "@elizaos/core";
+import { parseCronExpression, stableStringify } from "@elizaos/core";
 import {
   hasScheduledTaskApplyReceipt,
   isScheduledTaskRecurring,
@@ -34,6 +34,7 @@ import type {
   ScheduledTaskStatus,
   ScheduledTaskTrigger,
 } from "./scheduled-task/types.js";
+import { cronHasCalendarDate } from "./scheduled-task/validation.js";
 import { resolveExplicitSharedReminderDelay } from "./shared-reminder-relative-delay.js";
 
 /** Dedicated runtimes route imported Shared reminders through Cloud's trusted gateway. */
@@ -690,6 +691,7 @@ function reminderTrigger(
   input: Record<string, unknown>,
   now: Date,
   explicitDelayMilliseconds?: number,
+  storedTimezone?: string,
 ): ScheduledTaskTrigger | undefined {
   if (explicitDelayMilliseconds !== undefined) {
     const at = now.getTime() + explicitDelayMilliseconds;
@@ -724,8 +726,32 @@ function reminderTrigger(
     return { kind: "interval", everyMinutes };
   }
   const expression = textParameter(input, "cronExpression", "cron");
-  const tz = validTimeZone(textParameter(input, "timezone", "tz"));
+  const tz =
+    validTimeZone(textParameter(input, "timezone", "tz")) ?? storedTimezone;
   if (expression && tz) return { kind: "cron", expression, tz };
+  return undefined;
+}
+
+/**
+ * Names the reason the scheduler will refuse a recurring trigger, so the
+ * handler can say it before the write instead of reporting an unverified
+ * mutation. Mirrors `validateTrigger` in scheduled-task/validation.ts.
+ */
+function recurringTriggerRejection(
+  trigger: ScheduledTaskTrigger,
+): string | undefined {
+  if (trigger.kind === "interval" && !Number.isInteger(trigger.everyMinutes)) {
+    return "everyMinutes must be a whole number of minutes, 1 or more.";
+  }
+  if (trigger.kind === "cron") {
+    const schedule = parseCronExpression(trigger.expression);
+    if (!schedule) {
+      return "cronExpression must be a five-field cron expression such as 0 9 * * *.";
+    }
+    if (!cronHasCalendarDate(schedule)) {
+      return "cronExpression names a date that never occurs.";
+    }
+  }
   return undefined;
 }
 
@@ -1481,8 +1507,8 @@ export function createSharedRemindersEdgeAction(
       },
       {
         name: "everyMinutes",
-        description: "Recurring interval in minutes.",
-        schema: { type: "number" },
+        description: "Recurring interval in whole minutes, 1 or more.",
+        schema: { type: "integer", minimum: 1 },
       },
       {
         name: "cronExpression",
@@ -1492,7 +1518,7 @@ export function createSharedRemindersEdgeAction(
       {
         name: "timezone",
         description:
-          "Canonical IANA timezone used to display one-off atIso times in local time; required with cronExpression.",
+          "Canonical IANA timezone used to display one-off atIso times in local time; required with cronExpression on create. An update that omits it keeps the reminder's stored timezone.",
         schema: { type: "string" },
       },
       {
@@ -1680,6 +1706,12 @@ export function createSharedRemindersEdgeAction(
               { operation },
             );
           }
+          const triggerRejection = recurringTriggerRejection(trigger);
+          if (triggerRejection) {
+            return await actionFailure(triggerRejection, callback, {
+              operation,
+            });
+          }
           const outcome = await scheduleSemanticReminder({
             runner: options.runner,
             agentId: options.agentId,
@@ -1850,6 +1882,7 @@ export function createSharedRemindersEdgeAction(
                 explicitDelay.kind === "resolved"
                   ? explicitDelay.milliseconds
                   : undefined,
+                timezone,
               )
             : requestedTimezone &&
                 timezone &&
@@ -1858,7 +1891,19 @@ export function createSharedRemindersEdgeAction(
               : target.task.trigger;
           if (!trigger) {
             return await actionFailure(
-              "I couldn't understand the replacement reminder time. Nothing was changed.",
+              textParameter(input, "cronExpression", "cron") && !timezone
+                ? "cronExpression needs a timezone. Nothing was changed."
+                : "I couldn't understand the replacement reminder time. Nothing was changed.",
+              callback,
+              { operation },
+            );
+          }
+          const triggerRejection = hasSchedulePatch
+            ? recurringTriggerRejection(trigger)
+            : undefined;
+          if (triggerRejection) {
+            return await actionFailure(
+              `${triggerRejection} Nothing was changed.`,
               callback,
               { operation },
             );

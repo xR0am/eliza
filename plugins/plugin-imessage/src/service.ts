@@ -16,6 +16,7 @@ import {
   checkPairingAllowed,
   createUniqueUuid,
   DEFAULT_CONNECTOR_ATTACHMENT_MAX_BYTES,
+  detectMime,
   ElizaError,
   type Entity,
   type EventPayload,
@@ -387,15 +388,20 @@ function statusMetadata(status: IMessageServiceStatus): Record<string, string | 
 }
 
 function normalizedSearchText(value: string | undefined): string {
+  // Fold Latin accents ("Jose" matches "José") while preserving marks in other scripts.
   return (value ?? "")
+    .normalize("NFKD")
+    .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
+    .normalize("NFC")
     .toLowerCase()
-    .replace(/[^a-z0-9@+._-]+/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}@+._-]+/gu, " ")
     .trim();
 }
 
 function matchesQuery(query: string, ...values: Array<string | undefined>): boolean {
+  if (!query.trim()) return true;
   const normalizedQuery = normalizedSearchText(query);
-  if (!normalizedQuery) return true;
+  if (!normalizedQuery) return false;
   const normalizedHandleQuery = normalizedSearchText(normalizeIMessageConnectorHandle(query));
   return values.some((value) => {
     const normalizedValue = normalizedSearchText(value);
@@ -461,10 +467,14 @@ function publicIMessageToMemory(
   const entityId = message.isFromMe
     ? runtime.agentId
     : (createUniqueUuid(runtime, handle || message.chatId || message.id) as UUID);
-  const channelType = message.chatId.includes(";+;") ? ChannelType.GROUP : ChannelType.DM;
+  const channelType = isGroupIMessage(message) ? ChannelType.GROUP : ChannelType.DM;
 
   return {
-    id: createUniqueUuid(runtime, `imessage-public:${message.id}`) as UUID,
+    // Same message and reply keys as the live inbound path (chat.db guid).
+    id: createUniqueUuid(
+      runtime,
+      message.guid ? `imessage-guid-${message.guid}` : `imessage-public:${message.id}`
+    ) as UUID,
     entityId,
     agentId: runtime.agentId,
     roomId,
@@ -473,6 +483,11 @@ function publicIMessageToMemory(
       text: message.text,
       source: "imessage",
       channelType,
+      ...(message.replyToGuid
+        ? {
+            inReplyTo: createUniqueUuid(runtime, `imessage-guid-${message.replyToGuid}`) as UUID,
+          }
+        : {}),
       ...(message.attachmentPaths?.length
         ? {
             attachments: message.attachmentPaths.map((path) => ({
@@ -620,6 +635,18 @@ async function resolveIMessageChatId(
  * iMessage service for Eliza agents.
  * Note: This only works on macOS.
  */
+/**
+ * Whether a sender handle is in IMESSAGE_ALLOW_FROM. Both sides use the same
+ * normalization as the contacts lookup, so "+1 (555) 123-4567" or
+ * "15551234567" entries match the E.164 handle "+15551234567" that chat.db and
+ * Blooio report, and emails match case-insensitively.
+ */
+function isAllowlistedHandle(allowFrom: readonly string[], handle: string): boolean {
+  const normalizedHandle = normalizeContactHandle(handle);
+  if (!normalizedHandle) return false;
+  return allowFrom.some((allowed) => normalizeContactHandle(allowed) === normalizedHandle);
+}
+
 export class IMessageService extends Service implements IIMessageService {
   static serviceType: string = IMESSAGE_SERVICE_NAME;
 
@@ -928,7 +955,7 @@ export class IMessageService extends Service implements IIMessageService {
                   IMESSAGE_LOCAL_ACCOUNT_ID
                 ),
                 label: contacts.get(normalizeContactHandle(handle))?.name ?? message.handle,
-                kind: message.chatId.includes(";+;") ? "group" : contactKind(handle),
+                kind: isGroupIMessage(message) ? "group" : contactKind(handle),
                 score: 0.68,
                 metadata: {
                   accountId: IMESSAGE_LOCAL_ACCOUNT_ID,
@@ -962,7 +989,7 @@ export class IMessageService extends Service implements IIMessageService {
         if (platformMessages.length > 0) {
           const roomId =
             target?.roomId ??
-            (createUniqueUuid(context.runtime, `imessage-read:${chatId ?? "recent"}`) as UUID);
+            (createUniqueUuid(context.runtime, chatId ?? "imessage-read:recent") as UUID);
           return platformMessages
             .map((message) => publicIMessageToMemory(context.runtime, message, roomId, accountId))
             .sort(compareNewestFirst);
@@ -993,7 +1020,7 @@ export class IMessageService extends Service implements IIMessageService {
           .catch(() => []);
         const roomId =
           target?.roomId ??
-          (createUniqueUuid(context.runtime, `imessage-read:${chatId ?? "recent"}`) as UUID);
+          (createUniqueUuid(context.runtime, chatId ?? "imessage-read:recent") as UUID);
         // chat.db reads come back oldest-first; sort newest-first so `limit`
         // keeps the most recent matches, like fetchMessages and the
         // stored-memory fallback below.
@@ -1604,13 +1631,23 @@ export class IMessageService extends Service implements IIMessageService {
         return "ignored";
       }
 
-      const media: Media[] = inbound.mediaUrls.map((url, index) => ({
-        id: `${inbound.messageId}-${index}`,
-        url,
-        source: "imessage",
-        title: "Blooio attachment",
-        description: "Inbound Blooio attachment",
-      }));
+      // Type each attachment from its file name (or URL) so the message
+      // pipeline describes images and transcribes audio. A preset
+      // description would make it skip the image as already described.
+      const media: Media[] = await Promise.all(
+        inbound.attachments.map(async ({ url, name }, index) => {
+          const mimeType = await detectMime({ filePath: name ?? url });
+          return {
+            id: `${inbound.messageId}-${index}`,
+            url,
+            source: "imessage",
+            title: name ?? "Blooio attachment",
+            ...(name ? { filename: name } : {}),
+            ...(mimeType ? { mimeType } : {}),
+            contentType: mimeToContentType(mimeType ?? null, null),
+          };
+        })
+      );
       const row: ChatDbMessage = {
         rowId: inbound.timestamp,
         guid: inbound.messageId,
@@ -2297,9 +2334,9 @@ export class IMessageService extends Service implements IIMessageService {
           size: stored.size,
           contentType: mimeToContentType(attachment.mimeType, attachment.uti),
           source: "imessage",
-          description: attachment.isSticker
-            ? "sticker"
-            : (attachment.filename ?? attachment.mimeType ?? attachment.uti ?? ""),
+          // Only a sticker gets a preset description. Any description makes
+          // the message pipeline skip image description for the attachment.
+          ...(attachment.isSticker ? { description: "sticker" } : {}),
           text: "",
         });
       } catch (error) {
@@ -2791,9 +2828,7 @@ export class IMessageService extends Service implements IIMessageService {
     }
 
     // allowlist — only handles present in IMESSAGE_ALLOW_FROM may participate.
-    const inAllowlist = this.settings.allowFrom.some(
-      (allowed) => allowed.toLowerCase() === handle.toLowerCase()
-    );
+    const inAllowlist = isAllowlistedHandle(this.settings.allowFrom, handle);
     return { allowed: inAllowlist };
   }
 
@@ -2819,9 +2854,7 @@ export class IMessageService extends Service implements IIMessageService {
       return { allowed: false };
     }
 
-    const inStaticAllowlist = this.settings.allowFrom.some(
-      (allowed) => allowed.toLowerCase() === handle.toLowerCase()
-    );
+    const inStaticAllowlist = isAllowlistedHandle(this.settings.allowFrom, handle);
 
     if (this.settings.dmPolicy === "allowlist") {
       return { allowed: inStaticAllowlist };
@@ -2994,6 +3027,15 @@ function mimeToContentType(mimeType: string | null, uti: string | null): Content
  * Exported so the test suite can exercise it in isolation without
  * spinning up a full runtime + service instance.
  */
+/**
+ * chat.db rows carry the chat kind; an AppleScript row only has its guid,
+ * where a group chat contains ";+;". A chat.db group identifier ("chat…")
+ * never contains it.
+ */
+function isGroupIMessage(message: IMessageMessage): boolean {
+  return message.chatType ? message.chatType === "group" : message.chatId.includes(";+;");
+}
+
 export function chatDbMessageToPublicShape(row: ChatDbMessage): IMessageMessage {
   return {
     id: String(row.rowId),
@@ -3002,6 +3044,9 @@ export function chatDbMessageToPublicShape(row: ChatDbMessage): IMessageMessage 
     chatId: row.chatId,
     timestamp: row.timestamp,
     isFromMe: row.isFromMe,
+    chatType: row.chatType,
+    ...(row.guid ? { guid: row.guid } : {}),
+    ...(row.replyToGuid ? { replyToGuid: row.replyToGuid } : {}),
     hasAttachments: row.attachments.length > 0,
     ...(row.attachments.length > 0
       ? {

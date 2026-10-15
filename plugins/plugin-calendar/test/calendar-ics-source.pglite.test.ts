@@ -18,7 +18,10 @@ import {
   it,
   vi,
 } from "vitest";
-import { createCalendarFeedConflictLoader } from "../src/actions/conflict-detect.js";
+import {
+  createCalendarFeedConflictLoader,
+  evaluateCalendarWriteAvailability,
+} from "../src/actions/conflict-detect.js";
 import {
   type CalendarHostGate,
   CalendarRepository,
@@ -677,6 +680,96 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
       ],
     });
   });
+
+  it("does not report a free subscribed event as a conflict", async () => {
+    const source = await createSource();
+    const event = (
+      title: string,
+      start: string,
+      end: string,
+      extra: string[],
+    ) =>
+      [
+        "BEGIN:VEVENT",
+        `UID:${title}`,
+        "DTSTAMP:20260701T080000Z",
+        `DTSTART:${start}`,
+        `DTEND:${end}`,
+        ...extra,
+        `SUMMARY:${title}`,
+        "END:VEVENT",
+      ].join("\r\n");
+    await syncBody(
+      source.id,
+      calendar(
+        event("Lunch reminder", "20260701T100000Z", "20260701T110000Z", [
+          "TRANSP:TRANSPARENT",
+        ]),
+        event("School pickup", "20260701T140000Z", "20260701T150000Z", []),
+      ),
+    );
+    const conflictsAt = async (startAt: string, endAt: string) =>
+      (
+        await evaluateCalendarWriteAvailability({
+          runtime,
+          startAt,
+          endAt,
+          timeZone: "UTC",
+        })
+      ).conflicts.map((conflict) => conflict.eventB.title);
+
+    // TRANSP:TRANSPARENT marks time that stays free (RFC 5545 3.8.2.7).
+    expect(
+      await conflictsAt("2026-07-01T10:15:00.000Z", "2026-07-01T10:45:00.000Z"),
+    ).toEqual([]);
+    expect(
+      await conflictsAt("2026-07-01T14:15:00.000Z", "2026-07-01T14:45:00.000Z"),
+    ).toEqual(["School pickup"]);
+  });
+
+  it.each(["ü", "€", "😀"])(
+    "reads a feed folded between every UTF-8 octet of %s",
+    async (character) => {
+      const source = await createSource();
+      // The first fold falls at 75 octets. Further folds inside the same
+      // scalar must also be removed before the strict UTF-8 decode.
+      const title = `${"a".repeat(66)}${character}ber`;
+      const line = new TextEncoder().encode(`SUMMARY:${title}`);
+      const body = Buffer.concat([
+        Buffer.from(
+          "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n" +
+            "BEGIN:VEVENT\r\nUID:folded\r\nDTSTAMP:20260701T080000Z\r\n" +
+            "DTSTART:20260701T100000Z\r\nDTEND:20260701T110000Z\r\n",
+        ),
+        line.subarray(0, 74),
+        ...Array.from(Buffer.from(character)).flatMap((octet, index) =>
+          index === 0
+            ? [Buffer.from([octet])]
+            : [Buffer.from("\r\n "), Buffer.from([octet])],
+        ),
+        line.subarray(74 + Buffer.byteLength(character)),
+        Buffer.from("\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"),
+      ]);
+      expect(line[74]).toBe(Buffer.from(character)[0]);
+
+      await service.syncIcsCalendarSource(source.id, {
+        transport: {
+          fetchImpl: async () =>
+            new Response(body, {
+              status: 200,
+              headers: { "content-type": "text/calendar" },
+            }),
+        },
+      });
+      const feed = await service.getCalendarFeed(
+        new URL("http://internal.test/api/calendar"),
+        { grantId: source.id, ...WINDOW },
+        new Date(),
+      );
+
+      expect(feed.events.map((event) => event.title)).toEqual([title]);
+    },
+  );
 
   it("keeps decoded parameter names through subscription sync and feed reads", async () => {
     const source = await createSource();
@@ -1588,6 +1681,47 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
       "1998-03-12",
       "1998-03-19",
       "1998-03-26",
+    ]);
+  });
+
+  it("expands a daily series that lists weekdays", async () => {
+    const source = await createSource();
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:every-weekday",
+          "DTSTAMP:19970801T000000Z",
+          "DTSTART;TZID=America/New_York:19970902T090000",
+          "DURATION:PT1H",
+          "RRULE:FREQ=DAILY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;COUNT=8",
+          "SUMMARY:Every weekday",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "1997-09-01T00:00:00.000Z",
+        timeMax: "1997-10-01T00:00:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(feed.state).toBe("complete");
+    // 1997-09-02 is a Tuesday. September 6 and 7 are a weekend.
+    expect(feed.events.map((event) => event.startAt.slice(0, 10))).toEqual([
+      "1997-09-02",
+      "1997-09-03",
+      "1997-09-04",
+      "1997-09-05",
+      "1997-09-08",
+      "1997-09-09",
+      "1997-09-10",
+      "1997-09-11",
     ]);
   });
 

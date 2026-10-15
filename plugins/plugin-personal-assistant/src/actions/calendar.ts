@@ -1667,7 +1667,7 @@ export const calendarAction: Action & {
     "CARVE_OUT_TIME",
     "RESERVE_TIME",
     // PRD action-catalog aliases. These resolve to CALENDAR subactions via
-    // handler argument routing; see packages/docs/action-prd-map.md.
+    // handler argument routing.
     "CALENDAR_LIST_UPCOMING",
     "CALENDAR_FIND_AVAILABILITY",
     "CALENDAR_CREATE_EVENT",

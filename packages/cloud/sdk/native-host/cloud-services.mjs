@@ -4,6 +4,7 @@ import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createDocumentImageDescriber } from "./document-image-describer.mjs";
 import { NativeCloudServiceError } from "./errors.mjs";
+import { createMailboxReadPort } from "./mailbox-read-port.mjs";
 import { createManagedGoogleReadPort } from "./managed-google-read-port.mjs";
 import { executePlanChange, validatePlanChangeInput } from "./plan-change.mjs";
 import { projectRenewalReview } from "./subscription-review.mjs";
@@ -432,6 +433,7 @@ export function createCloudRoutes({
   hostPolicy,
   initialApiKey,
   credentialStore,
+  verifiedAccountStore,
   credentialGate,
   pendingCredentialStore,
 } = {}) {
@@ -475,16 +477,92 @@ export function createCloudRoutes({
     hostPolicy.messages?.[key] ?? `Cloud service request failed (${key})`;
   const site = origin(cloudSiteBase),
     api = origin(cloudApiBase);
-  let memory = initialApiKey || null;
-  const store = credentialStore || {
-    read: async () => memory,
-    write: async (value) => {
-      memory = value;
-    },
-    clear: async () => {
-      memory = null;
-    },
+  const verifiedRequired = () =>
+    Object.assign(new Error("Verified Cloud account activation required"), {
+      status: 409,
+      code: "VERIFIED_ACCOUNT_REQUIRED",
+    });
+  if (
+    verifiedAccountStore !== undefined &&
+    (!verifiedAccountStore ||
+      typeof verifiedAccountStore.read !== "function" ||
+      typeof verifiedAccountStore.compareExchange !== "function" ||
+      !pendingCredentialStore ||
+      credentialStore !== undefined ||
+      initialApiKey !== undefined)
+  )
+    throw new TypeError(
+      "Verified account mode requires an exclusive native account store and enrollment journal",
+    );
+  const verifiedSnapshot = async () => {
+    const raw = await verifiedAccountStore.read();
+    if (raw === null) return { raw, record: null };
+    try {
+      const record = JSON.parse(raw);
+      const validText = (value, min, max) =>
+        typeof value === "string" &&
+        value.length >= min &&
+        value.length <= max &&
+        value === value.trim() &&
+        value.isWellFormed() &&
+        !Array.from(value).some(
+          (c) =>
+            c.charCodeAt(0) < 32 ||
+            (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159),
+        );
+      if (
+        typeof raw !== "string" ||
+        record?.version !== 1 ||
+        Object.keys(record).length !== 4 ||
+        !validText(record.credential, 20, 512) ||
+        !validText(record.credentialId, 1, 256) ||
+        !record.owner ||
+        Object.keys(record.owner).length !== 3 ||
+        !validText(record.owner.userId, 1, 256) ||
+        !validText(record.owner.organizationId, 1, 256) ||
+        !validText(record.owner.authority, 1, 2048)
+      )
+        throw Error();
+      const authority = new URL(record.owner.authority);
+      if (
+        authority.origin !== record.owner.authority ||
+        !(
+          authority.protocol === "https:" ||
+          (authority.protocol === "http:" &&
+            ["localhost", "127.0.0.1", "[::1]"].includes(authority.hostname))
+        )
+      )
+        throw Error();
+      return { raw, record };
+    } catch {
+      throw verifiedRequired();
+    }
   };
+  const verifiedExchange = async (expected, next) => {
+    if ((await verifiedAccountStore.compareExchange(expected, next)) !== true)
+      throw verifiedRequired();
+  };
+  let memory = initialApiKey || null;
+  const store = verifiedAccountStore
+    ? {
+        read: async () => (await verifiedSnapshot()).record?.credential ?? null,
+        write: async () => {
+          throw verifiedRequired();
+        },
+        clear: async () => {
+          const { raw } = await verifiedSnapshot();
+          await verifiedExchange(raw, null);
+        },
+      }
+    : credentialStore || {
+        read: async () => memory,
+        write: async (value) => {
+          memory = value;
+        },
+        clear: async () => {
+          memory = null;
+        },
+      };
   // Native/custom stores need the same ordering as the host file store. A
   // logout must finish clearing a credential whose write was already pending.
   let credentialWrites = Promise.resolve();
@@ -552,6 +630,18 @@ export function createCloudRoutes({
           attempts.clear();
           await mutateCredential(() => store.clear());
         },
+        ...(verifiedAccountStore
+          ? {
+              activateVerified: (record, guard) =>
+                mutateCredential(async () => {
+                  guard();
+                  const { raw } = await verifiedSnapshot();
+                  guard();
+                  await verifiedExchange(raw, JSON.stringify(record));
+                  guard();
+                }),
+            }
+          : {}),
         activate: (value, guard) =>
           mutateCredential(async () => {
             guard();
@@ -1349,9 +1439,10 @@ export function createCloudRoutes({
         send(res, 200, {
           connected: Boolean(key) && !disconnectPending,
           disconnectPending,
-          credentialPersistence: credentialStore
-            ? "host-managed"
-            : "process-memory",
+          credentialPersistence:
+            credentialStore || verifiedAccountStore
+              ? "host-managed"
+              : "process-memory",
         });
         return true;
       }
@@ -1395,6 +1486,7 @@ export function createCloudRoutes({
         return true;
       }
       if (method === "POST" && path === "/cloud/login") {
+        if (verifiedAccountStore) throw verifiedRequired();
         await body(req);
         const epoch = advanceGeneration();
         await nativeAuth?.cancel({ disconnect: true });
@@ -1437,6 +1529,7 @@ export function createCloudRoutes({
         }
         if (!attempt.poll)
           attempt.poll = (async () => {
+            if (verifiedAccountStore) throw verifiedRequired();
             if (attempt.authenticated)
               return { status: "authenticated", connected: true };
             // The provider result is single-use: finish private persistence even if
@@ -1876,6 +1969,9 @@ export function createCloudRoutes({
         else
           send(res, error.status || 502, {
             error: error.status ? error.message : "Cloud service unavailable",
+            ...(error.code === "VERIFIED_ACCOUNT_REQUIRED"
+              ? { code: error.code }
+              : {}),
           });
       }
     }
@@ -1893,12 +1989,10 @@ export function createCloudRoutes({
   // is still the grant it reads, so a reconnect to another mailbox is noticed.
   // Without `accountId`, the caller binds each task to the grant that
   // `currentAccountId()` returned when the task started.
-  handleCloudRoute.googleForAccount = ({
-    actorId,
-    accountId,
-    timeoutMs = 20000,
-    retryDelaysMs = [250, 1000],
-  }) => {
+  const googleReadPort = (
+    { actorId, accountId, timeoutMs = 20000, retryDelaysMs = [250, 1000] },
+    createPort,
+  ) => {
     if (typeof credentialGate !== "function" || typeof actorId !== "string")
       throw fail(message("taskAccountBindingUnavailable"), 503);
     const epoch = generation;
@@ -2003,14 +2097,17 @@ export function createCloudRoutes({
     };
     const currentAccountId = async (googleEpoch) =>
       (await currentAccount(googleEpoch)).accountId;
-    const port = createManagedGoogleReadPort({
+    const port = createPort({
       accountId,
       request: async (path, maxBytes, grantId) => {
         const googleEpoch = googleGeneration;
         if ((await currentAccountId(googleEpoch)) !== grantId)
           throw googleReadFailure("account_changed");
         try {
-          return await readJson(path, maxBytes, googleEpoch);
+          const value = await readJson(path, maxBytes, googleEpoch);
+          if ((await currentAccountId(googleEpoch)) !== grantId)
+            throw googleReadFailure("account_changed");
+          return value;
         } catch (error) {
           if (!error?.googleConflict) throw error;
           // Name the Google conflict from the connection's current status:
@@ -2027,6 +2124,12 @@ export function createCloudRoutes({
       currentAccount: () => currentAccount(googleGeneration),
     });
   };
+  handleCloudRoute.googleForAccount = (options) =>
+    googleReadPort(options, createManagedGoogleReadPort);
+  // A separate read-only inbox projection. Hosts must explicitly authorize its
+  // renderer/native bridge; existing task routes do not gain inbox authority.
+  handleCloudRoute.mailboxForAccount = (options) =>
+    googleReadPort(options, createMailboxReadPort);
   handleCloudRoute.documentImagesForAccount = ({
     actorId,
     model,

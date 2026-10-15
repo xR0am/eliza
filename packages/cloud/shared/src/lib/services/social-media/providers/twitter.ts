@@ -17,7 +17,7 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { withRetry } from "../rate-limit";
+import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
 
 const TWITTER_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -42,6 +42,7 @@ async function twitterApiRequest<T>(
   endpoint: string,
   accessToken: string,
   options: RequestInit = {},
+  retry: Pick<RetryOptions, "replayUnknownOutcome"> = {},
 ): Promise<T> {
   const url = endpoint.startsWith("http") ? endpoint : `${TWITTER_API_BASE}${endpoint}`;
   const { data } = await withRetry<T>(
@@ -55,7 +56,7 @@ async function twitterApiRequest<T>(
         },
       }),
     async (response) => response.json(),
-    { platform: "twitter", maxRetries: 3 },
+    { platform: "twitter", maxRetries: 3, ...retry },
   );
   return data;
 }
@@ -296,10 +297,17 @@ export const twitterProvider: SocialMediaProvider = {
 
       const response = await twitterApiRequest<{
         data: { id: string; text: string };
-      }>("/tweets", credentials.accessToken, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      }>(
+        "/tweets",
+        credentials.accessToken,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+        // A replay after a timeout or a 5xx is refused by X as duplicate
+        // content, which turned a published tweet into a reported failure.
+        { replayUnknownOutcome: false },
+      );
 
       return {
         platform: "twitter",
@@ -311,11 +319,7 @@ export const twitterProvider: SocialMediaProvider = {
       // error-policy:J1 boundary translation — a failed Twitter post becomes the {success:false}
       // PostResult the credit-refund flow depends on, never a fabricated success.
       logger.error("[Twitter] Post failed", { error });
-      return {
-        platform: "twitter",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("twitter", error);
     }
   },
 
@@ -470,11 +474,7 @@ export const twitterProvider: SocialMediaProvider = {
     } catch (error) {
       // error-policy:J1 boundary translation — a failed Twitter repost becomes the {success:false}
       // PostResult the caller inspects, never a fabricated success.
-      return {
-        platform: "twitter",
-        success: false,
-        error: extractErrorMessage(error),
-      };
+      return failedPostResult("twitter", error);
     }
   },
 };

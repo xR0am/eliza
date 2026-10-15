@@ -11,7 +11,7 @@
 import crypto from "node:crypto";
 import type http from "node:http";
 import { logger as Logger } from "@elizaos/core";
-import { authStoreForRuntime } from "../services/auth-store";
+import { authStoreForHost } from "../services/auth-store";
 import {
   appendAuditEvent,
   bootstrapExchangeLimiter,
@@ -82,7 +82,7 @@ export async function handleAuthBootstrapRoutes(
     return true;
   }
 
-  const store = authStoreForRuntime(state.current);
+  const store = authStoreForHost(state);
   if (!store) {
     sendJsonResponse(res, 503, {
       error: "db_unavailable",

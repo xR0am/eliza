@@ -649,7 +649,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const entity of entities) {
       const id = (entity.id ?? randomUUID()) as UUID;
-      await this.storage.set(COLLECTIONS.ENTITIES, id, { ...entity, id });
+      // Components live in their own collection, never in the entity row.
+      const { components: _components, ...row } = entity;
+      await this.storage.set(COLLECTIONS.ENTITIES, id, { ...row, id });
       ids.push(id);
     }
     return ids;
@@ -662,20 +664,37 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         COLLECTIONS.ENTITIES,
         entity.id,
       );
-      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, {
+      const { components: _components, ...row } = {
         ...(existing ?? {}),
         ...entity,
-      });
+      };
+      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, row);
     }
   }
 
   async getEntitiesByIds(entityIds: UUID[]): Promise<Entity[]> {
+    const entities = await this.loadEntityRows(entityIds);
+    await this.attachComponents(entities);
+    return entities;
+  }
+
+  private async loadEntityRows(entityIds: UUID[]): Promise<Entity[]> {
     const entities: Entity[] = [];
     for (const id of entityIds) {
       const entity = await this.storage.get<Entity>(COLLECTIONS.ENTITIES, id);
       if (entity) entities.push(entity);
     }
     return entities;
+  }
+
+  /** plugin-sql left-joins components; [] when the entity has none. */
+  private async attachComponents(entities: Entity[]): Promise<void> {
+    const components = await this.getComponentsForEntities(
+      entities.flatMap((entity) => (entity.id ? [entity.id] : [])),
+    );
+    for (const entity of entities) {
+      entity.components = components.filter((c) => c.entityId === entity.id);
+    }
   }
 
   async updateEntities(entities: Entity[]): Promise<void> {
@@ -686,10 +705,8 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         entity.id,
       );
       if (!existing) continue;
-      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, {
-        ...existing,
-        ...entity,
-      });
+      const { components: _components, ...row } = { ...existing, ...entity };
+      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, row);
     }
   }
 
@@ -744,17 +761,12 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       const entityIds = [
         ...new Set(participants.map((p) => p.entityId)),
       ] as UUID[];
-      const entities = await this.getEntitiesByIds(entityIds);
-
+      const entities = await this.loadEntityRows(entityIds);
       if (includeComponents) {
-        for (const entity of entities) {
-          if (!entity.id) continue;
-          const components = await this.getComponentsForEntities([entity.id]);
-          (entity as Entity & { components?: Component[] }).components =
-            components;
-        }
+        await this.attachComponents(entities);
+      } else {
+        for (const entity of entities) entity.components = undefined;
       }
-
       result.push({ roomId, entities });
     }
     return result;
@@ -880,7 +892,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
               params.agentId ? component.agentId === params.agentId : true,
           )
         : (matchedComponentsByEntity.get(entity.id) ?? []);
-      if (components.length > 0) {
+      if (params.includeAllComponents || hasComponentQuery) {
         entity.components = components;
       } else {
         delete entity.components;
@@ -1874,6 +1886,11 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       }
       for (const removedId of removedIds)
         await this.vectorIndex.remove(removedId);
+      for (const segment of storedSegments) {
+        if (segment.id && segment.embedding && segment.embedding.length > 0) {
+          await this.vectorIndex.add(segment.id, segment.embedding);
+        }
+      }
       return {
         status: params.mode === "create" ? "created" : "updated",
         parent: toMemory(storedParent),
@@ -3445,15 +3462,14 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   }
 
   async deleteCaches(keys: string[]): Promise<boolean> {
-    let removed = false;
+    // Storage failures throw, so reaching the end means every delete
+    // succeeded — including no-ops that matched no rows. Report success to
+    // match the pg adapter, whose deleteCache returns true on any successful
+    // DELETE regardless of row count.
     for (const key of keys) {
-      const ok = await this.storage.delete(
-        COLLECTIONS.CACHE,
-        this.cacheStorageKey(key),
-      );
-      if (ok) removed = true;
+      await this.storage.delete(COLLECTIONS.CACHE, this.cacheStorageKey(key));
     }
-    return removed;
+    return true;
   }
 
   // ── Task CRUD ─────────────────────────────────────────────────────────

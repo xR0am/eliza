@@ -296,6 +296,11 @@ export interface AndroidCoreRouteDeps {
   loadElizaConfig: () => AndroidElizaConfigLike;
   saveElizaConfig: (config: AndroidElizaConfigLike) => void;
   hasPersistedFirstRunState: (config: AndroidElizaConfigLike) => boolean;
+  /**
+   * The agent's live-only agent-event streams (`EPHEMERAL_AGENT_EVENT_STREAMS`)
+   * so `events_subscribe` marks them `ephemeral` exactly as the WS hub does.
+   */
+  ephemeralAgentEventStreams?: ReadonlySet<string>;
 }
 /** Structural stand-in for ElizaConfig — the bridge only touches `meta`. */
 export type AndroidElizaConfigLike = Record<string, unknown> & {

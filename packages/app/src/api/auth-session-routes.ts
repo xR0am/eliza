@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import type http from "node:http";
 import { logger } from "@elizaos/core";
 import type { AuthRepository } from "../services/auth-repository";
-import { authStoreForRuntime } from "../services/auth-store";
+import { authStoreForHost } from "../services/auth-store";
 import {
   appendAuditEvent,
   assertPasswordStrong,
@@ -30,8 +30,10 @@ import {
 import { findActiveSession, readAllCookieValues } from "./auth/sessions";
 import {
   extractHeaderValue,
+  getCompatApiToken,
   getProvidedApiToken,
   roleForIdentityKind,
+  tokenMatches,
 } from "./auth.ts";
 import {
   type CompatRuntimeState,
@@ -159,7 +161,7 @@ export async function handleAuthSessionRoutes(
   const url = new URL(req.url ?? "/", "http://localhost");
   if (!url.pathname.startsWith("/api/auth/")) return false;
 
-  const store = authStoreForRuntime(state.current);
+  const store = authStoreForHost(state);
   if (!store) {
     // Routes here all need the DB — return service unavailable rather than
     // routing further. The bootstrap-token endpoint behaves the same way.
@@ -259,6 +261,27 @@ async function handleSetup(
 ): Promise<boolean> {
   if (!consumeAuthBucket(meta.ip)) {
     sendJsonErrorResponse(res, 429, "Too many requests");
+    return true;
+  }
+
+  // Creating the first owner is the operator's step: from the host itself, or
+  // with the configured API token. Otherwise anyone who can reach a server
+  // that has no owner yet (a non-loopback bind, a tunnel, a cloud container
+  // before its owner's first visit) would claim the owner account.
+  const expectedToken = getCompatApiToken();
+  const providedToken = getProvidedApiToken(req);
+  const operator =
+    isTrustedLocalRequest(req) ||
+    Boolean(
+      expectedToken &&
+        providedToken &&
+        tokenMatches(expectedToken, providedToken),
+    );
+  if (!operator) {
+    sendJsonResponse(res, 403, {
+      error: "setup_requires_operator",
+      reason: "setup_requires_operator",
+    });
     return true;
   }
 

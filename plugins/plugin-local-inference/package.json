@@ -48,6 +48,18 @@
 			"import": "./dist/services/index.js",
 			"default": "./dist/services/index.js"
 		},
+		"./host-asr-worker": {
+			"eliza-source": "./src/host-asr-worker.ts",
+			"types": "./src/host-asr-worker.ts",
+			"import": "./dist/host-asr-worker.js",
+			"default": "./dist/host-asr-worker.js"
+		},
+		"./host-tts-worker": {
+			"eliza-source": "./src/host-tts-worker.ts",
+			"types": "./src/host-tts-worker.ts",
+			"import": "./dist/host-tts-worker.js",
+			"default": "./dist/host-tts-worker.js"
+		},
 		"./voice-workbench": {
 			"eliza-source": "./src/voice-workbench.ts",
 			"types": "./src/voice-workbench.ts",
@@ -116,7 +128,7 @@
 		"@huggingface/tokenizers": "0.1.3",
 		"phonemizer": "^1.2.1",
 		"ws": "^8.21.3",
-		"yaml": "^2.8.2",
+		"yaml": "^2.9.1",
 		"@elizaos/auth": "workspace:*",
 		"zod": "^4.4.3",
 		"@elizaos/contracts": "workspace:*",

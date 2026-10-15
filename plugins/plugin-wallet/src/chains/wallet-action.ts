@@ -717,7 +717,7 @@ export const walletRouterAction: Action = {
     {
       name: "query",
       description:
-        "Search query, coin id, or token symbol for token_info searches.",
+        "token_info only: token symbol, name, or search text. With target coingecko a token lookup reads this as the CoinGecko coin id (lowercase slug such as bitcoin or ethereum), not a symbol; send operation search to find the id from a symbol or name.",
       required: false,
       schema: { type: "string" },
     },
@@ -739,7 +739,7 @@ export const walletRouterAction: Action = {
     {
       name: "operation",
       description:
-        "token_info only: which lookup to run. token looks up one token by address or query; search matches query text; trending, boosted, and profiles list tokens; new_pairs lists new pairs (optional chain); chain_pairs lists the top pairs on chain. When omitted, a call with address or query runs token.",
+        "token_info only: which lookup to run. token looks up one token by address or query; search matches query text; trending, boosted, and profiles list tokens; new_pairs lists new pairs (optional chain); chain_pairs lists the top pairs on chain. When omitted, a call with address or query runs token. On target coingecko, token takes query as the coin id, or address with chain.",
       required: false,
       subactions: ["token_info"],
       schema: {

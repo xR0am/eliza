@@ -20,6 +20,7 @@ await build({
     "prompts/response-policy": `${root}src/prompts/response-policy.ts`,
     "text/template-engine": `${root}src/text/template-engine.ts`,
     "text/template-rendering": `${root}src/text/template-rendering.ts`,
+    "html-entities": `${root}src/utils/html-entities.ts`,
   },
   outDir: `${root}dist`,
   tsconfig: `${root}tsconfig.build.json`,

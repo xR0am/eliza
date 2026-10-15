@@ -382,6 +382,32 @@ describe("boolean contract", () => {
   });
 });
 
+describe("builtin format contracts", () => {
+  it("applies display rules with the registered builtin handlers", () => {
+    const booleanControl: FormControl = {
+      key: "optIn",
+      label: "Opt in",
+      type: "boolean",
+    };
+    const selectControl: FormControl = {
+      key: "country",
+      label: "Country",
+      type: "select",
+      options: [{ value: "US", label: "United States" }],
+    };
+
+    expect(
+      formatValue(" YES ", booleanControl, getBuiltinType("boolean")),
+    ).toBe("Yes");
+    expect(formatValue("no", booleanControl, getBuiltinType("boolean"))).toBe(
+      "No",
+    );
+    expect(formatValue("US", selectControl, getBuiltinType("select"))).toBe(
+      "United States",
+    );
+  });
+});
+
 describe("validateField currency numbers", () => {
   const control = { key: "amount", label: "Amount", type: "number" as const };
   it.each(["1,2", "12,34", "1,,234", "1.2,3"])(

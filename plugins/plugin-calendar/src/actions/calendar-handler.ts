@@ -245,6 +245,7 @@ function connectorGrantIdDetail(
   return isAppleCalendarGrant(value) ||
     isMicrosoftCalendarGrantId(value) ||
     value === ELIZA_CALENDAR_GRANT_ID ||
+    /^alpha-google:[a-f0-9]{64}$/.test(value) ||
     value.startsWith(GOOGLE_CONNECTOR_ACCOUNT_GRANT_PREFIX)
     ? value
     : undefined;
@@ -425,21 +426,67 @@ function buildIntlWeekdayMap(): Record<string, number> {
 const MONTH_MAP: Record<string, number> = buildIntlMonthMap();
 const WEEKDAY_MAP: Record<string, number> = buildIntlWeekdayMap();
 
+// `\b` is ASCII-only, so it never matches beside Hangul or Han. Letters and
+// digits of every script are word characters, except Hangul, Han and kana,
+// which may abut particles ("금요일에", "星期五下午").
+const SPACED_WORD_CHAR = String.raw`(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{M}\p{N}_]`;
+const SPACED_WORD_CHAR_PATTERN = new RegExp(`^${SPACED_WORD_CHAR}$`, "u");
+
+function wholeWordSource(name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const open = SPACED_WORD_CHAR_PATTERN.test(name.at(0) ?? "")
+    ? `(?<!${SPACED_WORD_CHAR})`
+    : "";
+  const close = SPACED_WORD_CHAR_PATTERN.test(name.at(-1) ?? "")
+    ? `(?!${SPACED_WORD_CHAR})`
+    : "";
+  return `${open}${escaped}${close}`;
+}
+
 const MONTH_NAMES_SORTED = Object.keys(MONTH_MAP).sort(
   (a, b) => b.length - a.length,
 );
 const MONTH_NAME_PATTERN = new RegExp(
-  `\\b(${MONTH_NAMES_SORTED.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
-  "i",
+  `(${MONTH_NAMES_SORTED.map(wholeWordSource).join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
+  "iu",
 );
 
-const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP).sort(
-  (a, b) => b.length - a.length,
-);
+// One-syllable Korean short forms (일, 월, 수, 금, …) are everyday words.
+const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP)
+  .filter((name) => name.length > 1)
+  .sort((a, b) => b.length - a.length);
+// Han weekday names are week-word compounds ("周五", "星期日"), and the same
+// characters also spell counts and other words: "一周五天" (five days a week),
+// "一周日程" (a week's schedule). A count before the week word, or a following
+// character that continues a different word, means no weekday was named.
+const HAN_WEEKDAY_PREFIX = /^(?:周|週|星期|礼拜|禮拜)/u;
+const HAN_COUNT_BEFORE =
+  "(?<![〇零一二两兩三四五六七八九十百几幾数數0-9０-９])";
+const HAN_SUNDAY_COMPOUND_AFTER = "(?![程期子常记記历曆])";
+const HAN_NUMBERED_DAY_COUNT_AFTER = "(?![天次个個年月周週遍回])";
+function weekdayNameSource(name: string): string {
+  const source = wholeWordSource(name);
+  if (!HAN_WEEKDAY_PREFIX.test(name)) return source;
+  return `${HAN_COUNT_BEFORE}${source}${
+    name.endsWith("日")
+      ? HAN_SUNDAY_COMPOUND_AFTER
+      : HAN_NUMBERED_DAY_COUNT_AFTER
+  }`;
+}
 const WEEKDAY_NAME_PATTERN = new RegExp(
-  `\\b(?:(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
-  "i",
+  `(?:(?<!${SPACED_WORD_CHAR})(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map(weekdayNameSource).join("|")})`,
+  "iu",
 );
+// Korean and Chinese put the week qualifier before the weekday name
+// ("다음 주 금요일", "下周五", "下周星期五", "下周的星期五"; week after next:
+// "다다음 주 금요일", "下下周五"). Past and every-week forms name no single
+// upcoming date, so they are left unresolved.
+const CJK_NEXT_WEEK_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)(?:\s*의)?|(?<!下)下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
+const CJK_WEEK_AFTER_NEXT_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:다다음\s*주|다담주)(?:\s*의)?|(?<!下)下下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
+const CJK_UNRESOLVED_WEEK_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:지난\s*주|지난|저번\s*주|저번|매주|매)(?:\s*의)?|(?:上个?|每个?)(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
 // Accepted alternate spellings for planner details live beside the
 // planner-facing schema (calendar-action-schema.ts: CALENDAR_DETAIL_ALIASES)
 // so the two surfaces are reviewed together.
@@ -1412,7 +1459,7 @@ function normalizeCalendarSearchQueryValue(
     .replace(/\bmatch against titles\b.*$/g, "")
     .replace(/\bstructured calendar arguments\b.*$/g, "")
     .replace(/[;:,]+/g, " ")
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")
+    .replace(/^[^\p{L}\p{M}\p{N}]+|[^\p{L}\p{M}\p{N}]+$/gu, "")
     .trim();
 
   if (
@@ -1426,7 +1473,9 @@ function normalizeCalendarSearchQueryValue(
   return cleaned;
 }
 
-function dedupeCalendarQueries(queries: Array<string | undefined>): string[] {
+export function dedupeCalendarQueries(
+  queries: Array<string | undefined>,
+): string[] {
   const normalized = queries
     .map((query) => normalizeCalendarSearchQueryValue(query))
     .filter((query): query is string => Boolean(query));
@@ -1748,8 +1797,19 @@ export function parseExplicitLocalDate(
   }
 
   const weekdayMatch = normalized.match(WEEKDAY_NAME_PATTERN);
-  if (weekdayMatch) {
-    const qualifier = normalizeLookupKey(weekdayMatch[1] ?? "");
+  const beforeWeekday = weekdayMatch
+    ? normalized.slice(0, weekdayMatch.index)
+    : "";
+  if (weekdayMatch && !CJK_UNRESOLVED_WEEK_QUALIFIER.test(beforeWeekday)) {
+    const cjkWeeksAhead = CJK_WEEK_AFTER_NEXT_QUALIFIER.test(beforeWeekday)
+      ? 2
+      : CJK_NEXT_WEEK_QUALIFIER.test(beforeWeekday)
+        ? 1
+        : 0;
+    const qualifier =
+      cjkWeeksAhead > 0
+        ? "cjk-week"
+        : normalizeLookupKey(weekdayMatch[1] ?? "");
     const weekdayKey = normalizeLookupKey(weekdayMatch[2] ?? "");
     const targetWeekday = WEEKDAY_MAP[weekdayKey];
     if (targetWeekday !== undefined) {
@@ -1764,6 +1824,15 @@ export function parseExplicitLocalDate(
       let delta = (targetWeekday - currentWeekday + 7) % 7;
       if (qualifier === "next") {
         delta = delta === 0 ? 7 : delta + 7;
+      } else if (qualifier === "cjk-week") {
+        // 下周 / 다음 주 (下下周 / 다다음 주) name the weekday inside the
+        // Monday-start week one (two) weeks ahead, so count to that Monday,
+        // then into the week.
+        const mondayIndex = (weekday: number) => (weekday + 6) % 7;
+        delta =
+          7 * cjkWeeksAhead -
+          mondayIndex(currentWeekday) +
+          mondayIndex(targetWeekday);
       }
       return addDaysToLocalDate(
         {
@@ -2366,9 +2435,9 @@ function parseDateTimeInZone(value: string, timeZone: string): Date | null {
  * Time range for an update. A new start without a new end keeps the event's
  * current duration (live 2026-09-10: "move my dentist appointment to friday at
  * 4pm" arrived as `start` only, the stored 3–4 pm event kept its 4 pm end, and
- * the service rejected the zero-length range). The derived end is spelled like
- * the start it follows: absolute for `Z`/offset starts, wall-clock in
- * `timeZone` otherwise. Every other combination passes through unchanged and
+ * the service rejected the zero-length range). The derived end is absolute:
+ * elapsed duration identifies one instant even when its local wall clock is a
+ * repeated DST-fold time. Every other combination passes through unchanged and
  * the service keeps validating end-after-start.
  */
 export function resolveUpdateTimeRange(args: {
@@ -2402,9 +2471,7 @@ export function resolveUpdateTimeRange(args: {
   const end = new Date(start.getTime() + durationMs);
   return {
     startAt,
-    endAt: OFFSET_OR_UTC_SUFFIX_PATTERN.test(startAt.trim())
-      ? end.toISOString()
-      : formatLocalDateTimeInZone(end, timeZone),
+    endAt: end.toISOString(),
   };
 }
 
@@ -2443,7 +2510,7 @@ function distinctStatedLocalDates(
   // A comma inside a month/day/year date is not a boundary between requests.
   // Retain its year before splitting separate date clauses for intent narrowing.
   const dateClauses = text.replace(
-    new RegExp(MONTH_NAME_PATTERN.source, "gi"),
+    new RegExp(MONTH_NAME_PATTERN.source, "giu"),
     (date) => date.replace(/,\s*(?=\d{4}\b)/, " "),
   );
   for (const segment of dateClauses.split(DATE_SEGMENT_SPLIT_PATTERN)) {
@@ -5240,7 +5307,9 @@ const calendarAction: CalendarHandlerAction = {
         transcriptVisibility: "internal",
         modelReplyRequired: true,
         turnComplete: false,
-        text: nativeCalendarFailure,
+        text:
+          nativeCalendarFailure +
+          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source, then retry this Calendar read with details.grantId and details.calendarId from that source. Do not substitute local backend records or change source selections without the owner request.",
         effectReceipts: [
           calendarFailedReceipt({
             message,

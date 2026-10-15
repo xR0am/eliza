@@ -644,6 +644,159 @@ public class ElizaAgentService extends Service {
         }
     }
 
+    /** Idle budget for an event feed; the agent sends a keepalive every 15 s. */
+    static final int LOCAL_EVENT_IDLE_TIMEOUT_MS = 45_000;
+    private static final int LOCAL_EVENT_CONNECT_TIMEOUT_MS = 10_000;
+    private static final int LOCAL_EVENT_STREAM_LIMIT = 16;
+    private static final java.util.regex.Pattern LOCAL_EVENT_STREAM_NAME =
+        java.util.regex.Pattern.compile("^[a-z0-9][a-z0-9_.:-]{0,63}$");
+
+    /**
+     * Live agent-event feed over the private IPC ({@code events_subscribe}).
+     *
+     * The port-free app has no WebSocket, so this is how WS-only
+     * {@code agent_event} envelopes (e.g. the ephemeral {@code voice-transcript}
+     * stream: speech-start | partial | final | error) reach it. {@code requestJson}
+     * is {@code {"streams":["voice-transcript", ...]}} (required exact-match
+     * filter, 1-16 names). Blocks the calling thread until the feed ends and
+     * reports, in order:
+     *   {"type":"subscribed","streams":[..]}                        (once, first)
+     *   {"type":"event","event":{agent_event envelope}}             (per event)
+     *   {"type":"dropped","count":n}                                (agent skipped an oversized event)
+     *   {"type":"end"}  or  {"type":"end","error":".."}              (terminal, exactly once)
+     *
+     * Live only: nothing is replayed, so after an {@code end} with an error the
+     * caller resubscribes and treats any in-progress turn as unknown. Event
+     * payloads are never logged here. {@link LocalStreamHandle#cancel} ends the
+     * feed with a plain {@code end}.
+     */
+    public static void subscribeLocalAgentEvents(
+        String requestJson,
+        java.util.function.Consumer<String> onEvent,
+        LocalStreamHandle handle
+    ) {
+        try {
+            JSONObject payload = buildEventSubscriptionPayload(requestJson, currentLocalAgentToken);
+            handle.check();
+            subscribeOverSocket(payload, onEvent, handle);
+        } catch (Exception error) {
+            boolean cancelled;
+            try { handle.check(); cancelled = false; } catch (IOException closed) { cancelled = true; }
+            emitEventEnd(onEvent, cancelled ? null
+                : (error.getMessage() == null ? "Local agent event feed failed" : error.getMessage()));
+        }
+    }
+
+    /** Validate the stream filter and build the {@code events_subscribe} payload. */
+    static JSONObject buildEventSubscriptionPayload(String requestJson, String token) throws JSONException {
+        JSONObject request = requestJson == null || requestJson.trim().isEmpty()
+            ? new JSONObject()
+            : new JSONObject(requestJson);
+        org.json.JSONArray raw = request.optJSONArray("streams");
+        if (raw == null || raw.length() == 0 || raw.length() > LOCAL_EVENT_STREAM_LIMIT) {
+            throw new IllegalArgumentException("Event subscription requires 1-16 stream names");
+        }
+        java.util.LinkedHashSet<String> unique = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < raw.length(); i++) {
+            Object value = raw.opt(i);
+            if (!(value instanceof String) || !LOCAL_EVENT_STREAM_NAME.matcher((String) value).matches()) {
+                throw new IllegalArgumentException("Invalid event stream name");
+            }
+            unique.add((String) value);
+        }
+        org.json.JSONArray streams = new org.json.JSONArray();
+        for (String name : unique) streams.put(name);
+        JSONObject headers = new JSONObject();
+        if (token != null && !token.trim().isEmpty()) {
+            headers.put("Authorization", "Bearer " + token.trim());
+        }
+        return new JSONObject().put("streams", streams).put("headers", headers);
+    }
+
+    /**
+     * Translate one agent subscription frame into the caller envelope.
+     * Returns null for frames the caller never sees (keepalive, unknown).
+     * A returned {@code end} envelope is terminal.
+     */
+    static JSONObject translateEventSubscriptionFrame(String line) throws JSONException {
+        JSONObject frame = new JSONObject(line);
+        String event = frame.optString("event", "");
+        switch (event) {
+            case "subscribed": {
+                org.json.JSONArray streams = frame.optJSONArray("streams");
+                return new JSONObject().put("type", "subscribed")
+                    .put("streams", streams == null ? new org.json.JSONArray() : streams);
+            }
+            case "agent_event": {
+                JSONObject data = frame.optJSONObject("data");
+                if (data == null || !"agent_event".equals(data.optString("type"))) {
+                    throw new JSONException("Invalid agent event frame");
+                }
+                return new JSONObject().put("type", "event").put("event", data);
+            }
+            case "dropped":
+                return new JSONObject().put("type", "dropped").put("count", frame.optInt("count"));
+            case "error":
+                return new JSONObject().put("type", "end")
+                    .put("error", frame.optString("error", "Local agent refused event feed"));
+            default:
+                return null;
+        }
+    }
+
+    private static void subscribeOverSocket(
+        JSONObject payload,
+        java.util.function.Consumer<String> onEvent,
+        LocalStreamHandle handle
+    ) throws IOException, JSONException {
+        JSONObject frame = new JSONObject()
+            .put("id", nextFrameId())
+            .put("method", "events_subscribe")
+            .put("payload", payload);
+        LocalSocket socket = connectLocalAgentSocket(
+            SystemClock.elapsedRealtime() + LOCAL_EVENT_CONNECT_TIMEOUT_MS, handle);
+        try {
+            handle.attach(socket);
+            writeFrameLine(socket.getOutputStream(), frame);
+            InputStream in = socket.getInputStream();
+            boolean subscribed = false;
+            while (true) {
+                // Rolling idle deadline: any frame (keepalives included) renews it.
+                long idleDeadline = SystemClock.elapsedRealtime() + LOCAL_EVENT_IDLE_TIMEOUT_MS;
+                String line = readFrameLine(socket, in, idleDeadline);
+                if (line == null) break;
+                if (line.isEmpty()) continue;
+                JSONObject envelope = translateEventSubscriptionFrame(line);
+                if (envelope == null) continue;
+                String type = envelope.optString("type");
+                if ("end".equals(type)) {
+                    onEvent.accept(envelope.toString());
+                    return;
+                }
+                if ("subscribed".equals(type)) {
+                    if (subscribed) throw new IOException("Duplicate event subscription ack");
+                    subscribed = true;
+                } else if (!subscribed) {
+                    throw new IOException("Agent event before subscription ack");
+                }
+                onEvent.accept(envelope.toString());
+            }
+            throw new IOException("Local agent event feed ended; resubscribe (no replay)");
+        } finally {
+            closeQuietly(socket);
+        }
+    }
+
+    private static void emitEventEnd(java.util.function.Consumer<String> onEvent, String error) {
+        try {
+            JSONObject end = new JSONObject().put("type", "end");
+            if (error != null) end.put("error", error);
+            onEvent.accept(end.toString());
+        } catch (JSONException ignored) {
+            onEvent.accept("{\"type\":\"end\"}");
+        }
+    }
+
     private static boolean isSafeLocalAgentPath(String path) {
         return path != null
             && path.startsWith("/")
@@ -1441,13 +1594,6 @@ public class ElizaAgentService extends Service {
         copyAssetIfPresent(assets, "agent/pglite.wasm", new File(stagingRoot, "pglite.wasm"));
         copyAssetIfPresent(assets, "agent/initdb.wasm", new File(stagingRoot, "initdb.wasm"));
         copyAssetIfPresent(assets, "agent/pglite.data", new File(stagingRoot, "pglite.data"));
-        // Legacy ONNX Runtime Web sidecars used by the removed Android Kokoro
-        // TTS path. Current AOSP TTS uses fused OmniVoice, so fresh bundles do
-        // not ship these files; keep extraction best-effort for older APKs.
-        copyAssetIfPresent(assets, "agent/ort-wasm-simd-threaded.mjs",
-            new File(stagingRoot, "ort-wasm-simd-threaded.mjs"));
-        copyAssetIfPresent(assets, "agent/ort-wasm-simd-threaded.wasm",
-            new File(stagingRoot, "ort-wasm-simd-threaded.wasm"));
         copyAssetIfPresent(assets, "agent/plugins-manifest.json",
             new File(stagingRoot, "plugins-manifest.json"));
 
@@ -1914,15 +2060,15 @@ public class ElizaAgentService extends Service {
 
     /**
      * Start the in-process bionic inference host whenever the fused native lib
-     * AND a local voice bundle (kokoro) are present — independent of the LLM
+     * AND the local Paradee voice ({@code tts/paradee/}) are present — independent of the LLM
      * runtime mode and of whether the agent process spawns fresh or adopts a
      * surviving one.
      *
      * <p>Previously the host was started ONLY inside {@link #startAgentProcess()}'s
      * fresh-spawn {@code delegateToBionicHost} block, so after a process restart
      * that adopts a surviving agent (or when the agent runs cloud-routed) the
-     * host never bound its abstract UDS, and {@code TalkMode}'s local Kokoro TTS
-     * silently fell back to the system (Google) TTS. The voice host serves Kokoro
+     * host never bound its abstract UDS, and {@code TalkMode}'s local Paradee TTS
+     * silently fell back to the system (Google) TTS. The voice host serves Paradee
      * from {@code libelizainference} + the staged bundle and needs no LLM, so its
      * lifecycle is decoupled from agent inference here.
      *
@@ -1939,8 +2085,9 @@ public class ElizaAgentService extends Service {
         if (!fusedLib.isFile() && !hasPackagedNativeLibrary("elizainference")) {
             return;
         }
-        File kokoroVoice = new File(getFilesDir(), "eliza-1/bundle/tts/kokoro");
-        if (!kokoroVoice.isDirectory()) {
+        File paradeeModel = new File(getFilesDir(), "eliza-1/bundle/"
+            + ElizaBionicInferenceServer.PARADEE_DIR + "/" + ElizaBionicInferenceServer.PARADEE_MODEL);
+        if (!paradeeModel.isFile()) {
             return;
         }
         try {
@@ -1950,7 +2097,7 @@ public class ElizaAgentService extends Service {
             host.start();
             bionicInferenceServer = host;
             Log.i(TAG, "ensureBionicVoiceHost: local voice host started"
-                + " (kokoro bundle present, independent of LLM mode)");
+                + " (Paradee voice present, independent of LLM mode)");
         } catch (Throwable t) {
             Log.w(TAG, "ensureBionicVoiceHost: could not start local voice host", t);
         }
@@ -1959,7 +2106,7 @@ public class ElizaAgentService extends Service {
     private void requestAgentStart(boolean restartFirst) {
         try { invalidateCredentialShutdown(); }
         catch (IllegalStateException retiring) { currentStatus = "stopping"; return; }
-        // Bring up the local-voice (Kokoro TTS) bionic host on every service
+        // Bring up the local-voice (Paradee TTS) bionic host on every service
         // start, before the agent-already-running guards below — so it binds
         // even when the agent is adopted rather than freshly spawned.
         ensureBionicVoiceHost();
@@ -2568,17 +2715,6 @@ public class ElizaAgentService extends Service {
                 }
                 if (!env.containsKey("ELIZA_MOBILE_LOCAL_DIRECT_REPLY")) {
                     agentEnv.put("ELIZA_MOBILE_LOCAL_DIRECT_REPLY", "1");
-                }
-                if (!env.containsKey("ELIZA_KOKORO_PREWARM")) {
-                    agentEnv.put("ELIZA_KOKORO_PREWARM", "1");
-                }
-                if (!env.containsKey("ELIZA_KOKORO_PREWARM_DELAY_MS")) {
-                    // Kokoro's first on-device ORT/WASM synthesis can be
-                    // CPU-bound for tens of seconds. Keep the warmup opt-in,
-                    // but schedule it well after the local HTTP server should
-                    // be listening so app readiness is not blocked by audio
-                    // cache priming.
-                    agentEnv.put("ELIZA_KOKORO_PREWARM_DELAY_MS", "60000");
                 }
                 // MTP (multi-token / speculative decode) is compiled into the
                 // single fused libelizainference.so (the eliza_mtp::Engine over

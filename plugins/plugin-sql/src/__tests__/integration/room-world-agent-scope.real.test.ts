@@ -1,0 +1,61 @@
+/** Two agent adapters share real PGlite; foreign operations cannot take ownership or delete data. */
+import { randomUUID } from "node:crypto";
+import { ChannelType, type UUID } from "@elizaos/core";
+import { expect, it } from "vitest";
+import { DatabaseMigrationService } from "../../migration-service";
+import { PgliteDatabaseAdapter } from "../../pglite/adapter";
+import { PGliteClientManager } from "../../pglite/manager";
+import { schema } from "../../schema";
+
+it("scopes room and world reads, updates and deletes to each adapter", async () => {
+  const manager = new PGliteClientManager({ dataDir: "memory://" });
+  const ownerId = randomUUID() as UUID;
+  const otherId = randomUUID() as UUID;
+  const owner = new PgliteDatabaseAdapter(ownerId, manager);
+  const other = new PgliteDatabaseAdapter(otherId, manager);
+  try {
+    await owner.init();
+    const migrations = new DatabaseMigrationService();
+    await migrations.initializeWithDatabase(owner.db);
+    migrations.discoverAndRegisterPluginSchemas([
+      { name: "@elizaos/plugin-sql", description: "SQL adapter", schema },
+    ]);
+    await migrations.runAllPluginMigrations();
+    await owner.createAgent({ id: ownerId, name: "Owner" });
+    await other.createAgent({ id: otherId, name: "Other" });
+    const worldId = randomUUID() as UUID;
+    const ownOtherWorld = randomUUID() as UUID;
+    await owner.createWorld({ id: worldId, agentId: ownerId, name: "Owner world" });
+    await other.createWorld({ id: ownOtherWorld, agentId: otherId, name: "Other world" });
+    const room = {
+      id: randomUUID() as UUID,
+      agentId: ownerId,
+      worldId,
+      source: "test",
+      type: ChannelType.GROUP,
+      name: "Owner room",
+    };
+    await owner.createRooms([room]);
+    expect(await other.getWorld(worldId)).toBeNull();
+    expect((await other.getWorldsByIds([worldId, ownOtherWorld])).map((world) => world.id)).toEqual(
+      [ownOtherWorld]
+    );
+    expect(await other.getRoomsByWorld(worldId)).toEqual([]);
+    expect((await owner.getRoomsByWorld(worldId)).map((entry) => entry.id)).toEqual([room.id]);
+    await other.updateRoom({ ...room, name: "Foreign rename" });
+    expect((await owner.getRoomsByIds([room.id]))?.[0]?.name).toBe("Owner room");
+    await other.deleteRoom(room.id);
+    expect((await owner.getRoomsByIds([room.id]))?.[0]?.agentId).toBe(ownerId);
+    await other.deleteWorlds([worldId]);
+    expect((await owner.getWorld(worldId))?.name).toBe("Owner world");
+    await owner.updateRoom({ ...room, name: "Owner rename" });
+    expect((await owner.getRoomsByIds([room.id]))?.[0]?.name).toBe("Owner rename");
+    await owner.deleteRoom(room.id);
+    expect(await owner.getRoomsByWorld(worldId)).toEqual([]);
+    await owner.deleteWorlds([worldId]);
+    expect(await owner.getWorld(worldId)).toBeNull();
+    expect((await other.getWorld(ownOtherWorld))?.name).toBe("Other world");
+  } finally {
+    await owner.close();
+  }
+});

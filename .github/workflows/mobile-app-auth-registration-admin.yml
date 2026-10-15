@@ -17,6 +17,14 @@ on:
         options:
           - diagnose
           - repair
+      client:
+        description: First-party native client whose apps registration to inspect or repair
+        required: false
+        default: ai.elizaos.app
+        type: choice
+        options:
+          - ai.elizaos.app
+          - ai.elizaresearch.alphaphone
 
 permissions:
   contents: read
@@ -27,7 +35,7 @@ concurrency:
 
 jobs:
   registration:
-    name: ${{ inputs.operation }} ${{ inputs.target_environment }} registration
+    name: ${{ inputs.operation }} ${{ inputs.target_environment }} ${{ inputs.client }} registration
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     timeout-minutes: 10
@@ -35,7 +43,7 @@ jobs:
       - name: Checkout exact admin source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.2
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6.1.0
         with:
           node-version: "24"
       - name: Set up Bun
@@ -50,4 +58,9 @@ jobs:
           ELIZA_MOBILE_APP_AUTH_APP_ID: ${{ secrets.ELIZA_MOBILE_APP_AUTH_APP_ID }}
           ELIZA_MOBILE_APP_AUTH_ORGANIZATION_ID: ${{ secrets.ELIZA_MOBILE_APP_AUTH_ORGANIZATION_ID }}
           ELIZA_MOBILE_APP_AUTH_OWNER_USER_ID: ${{ secrets.ELIZA_MOBILE_APP_AUTH_OWNER_USER_ID }}
+          # Additional clients (Alpha Phone) resolve their app UUID from the
+          # same registry the Worker reads, bound to this environment.
+          ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON: ${{ secrets.ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON }}
+          ELIZA_MOBILE_APP_AUTH_TARGET_CLIENT_ID: ${{ inputs.client }}
+          ELIZA_MOBILE_APP_AUTH_ENVIRONMENT: ${{ inputs.target_environment }}
         run: node packages/scripts/cloud/admin/repair-mobile-app-auth-registration.ts "${{ inputs.operation }}"

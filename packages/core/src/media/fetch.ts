@@ -91,16 +91,26 @@ function parseContentDispositionFileName(
 		const extValueMatch = /^([^']*)'([^']*)'([\s\S]*)$/.exec(cleaned);
 		const encoded = extValueMatch ? extValueMatch[3] : cleaned;
 		try {
-			return getBasename(decodeURIComponent(encoded));
+			const decoded =
+				extValueMatch?.[1].toLowerCase() === "iso-8859-1"
+					? encoded.replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
+							String.fromCharCode(Number.parseInt(hex, 16)),
+						)
+					: decodeURIComponent(encoded);
+			return getBasename(decoded);
 		} catch {
 			// error-policy:J3 Malformed RFC 5987 encoding is untrusted header
 			// input; retain only its basename as the sanitized invalid fallback.
 			return getBasename(encoded);
 		}
 	}
-	const match = /filename\s*=\s*([^;]+)/i.exec(header);
-	if (match?.[1]) {
-		return getBasename(stripQuotes(match[1].trim()));
+	const match = /filename\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^;]+))/i.exec(header);
+	if (match) {
+		const value =
+			match[1] === undefined
+				? stripQuotes(match[2].trim())
+				: match[1].replace(/\\(.)/g, "$1");
+		return getBasename(value);
 	}
 	return undefined;
 }

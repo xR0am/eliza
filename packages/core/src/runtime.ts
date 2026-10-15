@@ -3035,6 +3035,7 @@ export class AgentRuntime implements IAgentRuntime {
 		source?: string;
 		type?: ChannelType | string;
 		channelId?: string;
+		serverId?: string;
 		messageServerId?: UUID;
 		userId?: UUID;
 		metadata?: Record<string, JsonValue>;
@@ -3240,6 +3241,7 @@ export class AgentRuntime implements IAgentRuntime {
 		source,
 		type,
 		channelId,
+		serverId,
 		messageServerId,
 		worldId,
 		metadata,
@@ -3258,6 +3260,7 @@ export class AgentRuntime implements IAgentRuntime {
 				source,
 				type,
 				channelId,
+				serverId,
 				messageServerId,
 				worldId,
 				metadata,
@@ -4774,6 +4777,7 @@ export class AgentRuntime implements IAgentRuntime {
 		source,
 		type,
 		channelId,
+		serverId,
 		messageServerId,
 		worldId,
 		metadata,
@@ -4786,6 +4790,7 @@ export class AgentRuntime implements IAgentRuntime {
 				source,
 				type,
 				channelId,
+				serverId,
 				messageServerId,
 				worldId,
 				metadata,

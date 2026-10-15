@@ -17,6 +17,7 @@ import {
   queryAllBrowserWorkspaceSelector,
   resolveBrowserWorkspaceElement,
   resolveBrowserWorkspaceFindElement,
+  resolveBrowserWorkspaceFindElements,
   resolveWebBrowserWorkspaceCommandDocument,
 } from "./browser-workspace-elements.js";
 import {
@@ -991,20 +992,24 @@ export async function executeWebBrowserWorkspaceDomCommand(
             command,
             command.selector,
           );
+          let count: number;
+          if (semanticCommand?.findBy) {
+            count = resolveBrowserWorkspaceFindElements(
+              document,
+              semanticCommand,
+            ).length;
+          } else {
+            // Plain CSS, or the `css:` semantic spelling: count every match.
+            const cssSelector = semanticCommand?.selector ?? command.selector;
+            count = queryAllBrowserWorkspaceSelector(
+              document,
+              cssSelector,
+            ).length;
+          }
           return {
             mode: "web",
             subaction: command.subaction,
-            value: semanticCommand
-              ? Number(
-                  Boolean(
-                    resolveBrowserWorkspaceFindElement(
-                      document,
-                      semanticCommand,
-                    ),
-                  ),
-                )
-              : queryAllBrowserWorkspaceSelector(document, command.selector)
-                  .length,
+            value: count,
           };
         }
 

@@ -602,6 +602,19 @@ type AgentRow = typeof agentTable.$inferSelect;
 type AgentMessageExamples = NonNullable<Agent["messageExamples"]>;
 type AgentKnowledge = NonNullable<Agent["knowledge"]>;
 type MemoryRow = typeof memoryTable.$inferSelect;
+type RoomRow = Pick<
+  typeof roomTable.$inferSelect,
+  | "id"
+  | "name"
+  | "channelId"
+  | "agentId"
+  | "messageServerId"
+  | "serverId"
+  | "worldId"
+  | "type"
+  | "source"
+  | "metadata"
+>;
 
 class AtomicMemoryPublicationConflict extends Error {}
 
@@ -624,6 +637,21 @@ function memoryFromRow(row: MemoryRow, embedding?: number[], similarity?: number
         : (row.metadata as MemoryMetadata),
     ...(embedding ? { embedding } : {}),
     ...(similarity !== undefined ? { similarity } : {}),
+  };
+}
+
+function roomFromRow(room: RoomRow): Room {
+  return {
+    ...room,
+    id: room.id as UUID,
+    name: room.name ?? undefined,
+    agentId: room.agentId as UUID,
+    messageServerId: room.messageServerId as UUID,
+    serverId: room.serverId ?? undefined,
+    worldId: room.worldId as UUID,
+    channelId: room.channelId as UUID,
+    type: room.type as ChannelType,
+    metadata: room.metadata as Metadata,
   };
 }
 
@@ -2057,7 +2085,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
       assertJsonbStorable(component.data);
       await this.db.insert(componentTable).values({
         ...component,
-        createdAt: new Date(),
+        createdAt: component.createdAt !== undefined ? new Date(component.createdAt) : new Date(),
       });
       return true;
     });
@@ -4058,11 +4086,15 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         // string exceeds levenshtein's 255-char ceiling, so no fuzzy cache
         // match can exist for it: an empty result is the correct typed answer,
         // not a masked failure. Every other error is a real fault → rethrow.
-        if (
-          error instanceof Error &&
-          error.message === "levenshtein argument exceeds maximum length of 255 characters"
-        ) {
-          return [];
+        // Drizzle wraps the database error in Error.cause.
+        const seen = new Set<Error>();
+        let current = error;
+        while (current instanceof Error && !seen.has(current)) {
+          seen.add(current);
+          if (current.message === "levenshtein argument exceeds maximum length of 255 characters") {
+            return [];
+          }
+          current = current.cause;
         }
         throw new ElizaError("getCachedEmbeddings failed", {
           code: "DB_QUERY_FAILED",
@@ -5201,6 +5233,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           channelId: roomTable.channelId,
           agentId: roomTable.agentId,
           messageServerId: roomTable.messageServerId,
+          serverId: roomTable.serverId,
           worldId: roomTable.worldId,
           type: roomTable.type,
           source: roomTable.source,
@@ -5209,19 +5242,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .from(roomTable)
         .where(and(inArray(roomTable.id, roomIds), eq(roomTable.agentId, this.agentId)));
 
-      // Map the result to properly typed Room objects
-      const rooms = result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID, // Backward compatibility alias
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      const rooms = result.map(roomFromRow);
 
       return rooms;
     });
@@ -5238,18 +5259,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         .select()
         .from(roomTable)
         .where(and(eq(roomTable.worldId, worldId), eq(roomTable.agentId, this.agentId)));
-      const rooms = result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID, // Backward compatibility alias
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      const rooms = result.map(roomFromRow);
       return rooms;
     });
   }
@@ -6188,7 +6198,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
           entityId: task.entityId as UUID,
           tags: task.tags,
           metadata: metadata,
-          createdAt: now,
+          // Preserve a caller-supplied createdAt (agent import replays the
+          // original task row, and sqlite keeps it too). Stamp now only
+          // when the caller did not provide one.
+          createdAt: task.createdAt !== undefined ? new Date(Number(task.createdAt)) : now,
           updatedAt: now,
           agentId: this.agentId as UUID,
         };
@@ -8250,18 +8263,7 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
         query = query.limit(limit) as typeof query;
       }
       const result = await query;
-      return result.map((room) => ({
-        ...room,
-        id: room.id as UUID,
-        name: room.name ?? undefined,
-        agentId: room.agentId as UUID,
-        messageServerId: room.messageServerId as UUID,
-        serverId: room.messageServerId as UUID,
-        worldId: room.worldId as UUID,
-        channelId: room.channelId as UUID,
-        type: room.type as ChannelType,
-        metadata: room.metadata as Metadata,
-      }));
+      return result.map(roomFromRow);
     });
   }
 

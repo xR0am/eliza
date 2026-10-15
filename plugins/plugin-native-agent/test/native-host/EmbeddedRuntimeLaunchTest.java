@@ -37,6 +37,14 @@ public final class EmbeddedRuntimeLaunchTest {
     String output=new String(child.getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
     if(child.waitFor()!=0)throw new AssertionError("Host JVM probe failed: "+output);
     check(output.equals(state.toString()));
+    // The same trusted launch path selects x86_64 from an ABI-specific install.
+    Files.delete(installed.resolve("libeliza_ld_musl_aarch64.so"));
+    Files.writeString(installed.resolve("libeliza_ld_musl_x86_64.so"), "fixture");
+    EmbeddedRuntimeLaunch x86 = new EmbeddedRuntimeLaunch(bundle,installed,root.resolve("aliases"),state,"example.host",root.toString());
+    check(x86.gateway(bundle.resolve("gateway.js")).command().get(0).equals(installed.resolve("libeliza_ld_musl_x86_64.so").toString()));
+    Files.writeString(installed.resolve("libeliza_ld_musl_aarch64.so"), "fixture");
+    try { new EmbeddedRuntimeLaunch(bundle,installed,root.resolve("aliases"),state,"example.host",root.toString()); throw new AssertionError("Mixed ABI loaders accepted"); } catch (java.io.IOException expected) { checks++; }
+    Files.delete(installed.resolve("libeliza_ld_musl_aarch64.so"));
     Files.delete(state.resolve("tmp")); Files.createSymbolicLink(state.resolve("tmp"), bundle);
     try { new EmbeddedRuntimeLaunch(bundle,installed,root.resolve("aliases"),state,"example.host",root.toString()); throw new AssertionError(); } catch (java.io.IOException expected) { checks++; }
     System.out.println("EmbeddedRuntimeLaunch: " + checks + " checks passed");

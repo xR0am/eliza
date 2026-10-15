@@ -58,6 +58,12 @@
       "types": "./dist/actions/context-signal-lexicon.d.ts",
       "import": "./dist/actions/context-signal-lexicon.js",
       "default": "./dist/actions/context-signal-lexicon.js"
+    },
+    "./html-entities": {
+      "eliza-source": "./src/utils/html-entities.ts",
+      "types": "./dist/html-entities.d.ts",
+      "import": "./dist/html-entities.js",
+      "default": "./dist/html-entities.js"
     }
   },
   "files": [
@@ -92,7 +98,7 @@
     "mammoth": "^1.9.0",
     "unpdf": "^1.4.0",
     "uuid": "^14.0.0",
-    "yaml": "^2.7.0",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5",
     "@elizaos/contracts": "workspace:*"
   },

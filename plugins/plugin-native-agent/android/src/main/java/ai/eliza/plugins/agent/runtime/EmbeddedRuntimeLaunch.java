@@ -14,7 +14,7 @@ import java.util.*;
  * Paths must be trusted, private host directories and verified installed code.
  */
 public final class EmbeddedRuntimeLaunch {
-  private final Path bundle, installed, aliases, state;
+  private final Path bundle, installed, aliases, state, loader;
   private final Map<String,String> base = new HashMap<>();
   private final String application, dataDirectory;
 
@@ -23,9 +23,9 @@ public final class EmbeddedRuntimeLaunch {
     this.bundle = bundle.toAbsolutePath(); this.installed = installed.toAbsolutePath();
     this.aliases = aliases.toAbsolutePath(); this.state = state.toAbsolutePath();
     this.application = application; this.dataDirectory = dataDirectory;
-    if (!Files.isRegularFile(this.installed.resolve("libeliza_bun.so"))
-        || !Files.isRegularFile(this.installed.resolve("libeliza_ld_musl_aarch64.so")))
+    if (!Files.isRegularFile(this.installed.resolve("libeliza_bun.so")))
       throw new IOException("Installed embedded runtime is unavailable");
+    this.loader = InstalledRuntimeLibraries.loader(this.installed);
     privateDirectory(this.aliases);
     InstalledRuntimeLibraries.prepare(this.installed, this.aliases);
     Path temporary = this.state.resolve("tmp"); privateDirectory(temporary);
@@ -41,7 +41,7 @@ public final class EmbeddedRuntimeLaunch {
 
   private ProcessBuilder command(Path entrypoint, String... arguments) {
     List<String> command = new ArrayList<>(Arrays.asList(
-      installed.resolve("libeliza_ld_musl_aarch64.so").toString(),
+      loader.toString(),
       installed.resolve("libeliza_bun.so").toString(), "--no-env-file", "--no-install",
       entrypoint.toAbsolutePath().toString()));
     command.addAll(Arrays.asList(arguments));
