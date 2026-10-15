@@ -273,6 +273,8 @@ async function handleSetup(
     return true;
   }
 
+  let identityId: string;
+  let now: number;
   const release = await acquireSetupMutex();
   try {
     if (await store.hasOwnerIdentity()) {
@@ -306,8 +308,8 @@ async function handleSetup(
   }
 
   const passwordHash = await hashPassword(password);
-  const identityId = crypto.randomUUID();
-  const now = Date.now();
+  identityId = crypto.randomUUID();
+  now = Date.now();
     await store.createIdentity({
       id: identityId,
       kind: "owner",
