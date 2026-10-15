@@ -697,7 +697,7 @@ export class TwitterDirectMessageClient {
   }
 }
 
-function isExplicitTwitterRejection(error: unknown): boolean {
+export function isExplicitTwitterRejection(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as {
     code?: unknown;

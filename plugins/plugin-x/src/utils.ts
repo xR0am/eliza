@@ -103,7 +103,19 @@ export async function sendTextAsTweetThread(
 ): Promise<TweetThreadReceipt[]> {
   const receipts: TweetThreadReceipt[] = [];
   for (const [index, chunk] of splitTweetContent(text, maxLength).entries()) {
-    const receipt = await sendChunk(chunk, receipts[index - 1]?.id, index);
+    let receipt: SentTweet;
+    try {
+      receipt = await sendChunk(chunk, receipts[index - 1]?.id, index);
+    } catch (error) {
+      // error-policy:J2 once a chunk is public, a later failure must not look
+      // like a plain refusal: the caller would send the whole thread again.
+      if (receipts.length === 0) throw error;
+      throw new ElizaError("X thread was only partly posted", {
+        code: "X_THREAD_PARTIALLY_POSTED",
+        cause: error,
+        context: { acceptedTweetIds: receipts.map((r) => r.id) },
+      });
+    }
     receipts.push({ id: receipt.id, text: chunk });
   }
   return receipts;
