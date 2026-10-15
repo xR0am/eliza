@@ -90,11 +90,17 @@ function sanitizeListedAnswer(
   let sanitized = answer;
   for (const warning of warnings) {
     const host = warning.host || hostOf(warning.url);
-    sanitized = sanitized.split(`](${warning.url})`).join("]");
+    const escapedUrl = warning.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // A Markdown link keeps its label but loses the link target.
+    sanitized = sanitized.replace(
+      new RegExp(`\\[([^\\]]*)\\]\\(${escapedUrl}\\)`, "g"),
+      (_match, label: string) => `${label} (blocked ${host})`,
+    );
     sanitized = sanitized.split(warning.url).join(`[blocked ${host}]`);
   }
   return sanitized;
 }
+
 function formatResultLine(result: SearchResult, index: number): string {
   // A listed site is named without a link so the warning cannot be skipped by a click.
   if (result.reputation?.status === "listed") {

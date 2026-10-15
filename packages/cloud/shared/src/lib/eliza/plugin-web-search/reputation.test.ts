@@ -73,7 +73,7 @@ test("listed addresses inside a keyless answer are warned", async () => {
     },
   ]);
   expect(formatWebSearchText(annotated)).toBe(
-    `${answer}\n\nWebsite warnings:\n- paypa1-login.example: Known harmful site (Phishing.Database; phishing): do not open or enter information.`,
+    `Try [blocked paypa1-login.example], or see (https://news.example/a).\n\nWebsite warnings:\n- paypa1-login.example: Known harmful site (Phishing.Database; phishing): do not open or enter information.`,
   );
 });
 
@@ -83,9 +83,7 @@ test("listed URLs in answers are rendered as non-links", async () => {
   const annotated = await annotateSearchReputation(search({ answer, results: [] }), {
     check: async (addresses) =>
       addresses.map((address) =>
-        address.includes("paypa1")
-          ? listed("paypa1-login.example")
-          : listed("evil-shop.example"),
+        address.includes("paypa1") ? listed("paypa1-login.example") : listed("evil-shop.example"),
       ),
   });
   const text = formatWebSearchText(annotated);
