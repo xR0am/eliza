@@ -543,8 +543,11 @@ export function parseTweetV2ToV1(
   }
 
   // Process Media (photos and videos)
-  if (includes?.media?.length) {
+  // includes.media is response-scoped; only attach media this tweet references.
+  const mediaKeys = new Set(tweetV2.attachments?.media_keys ?? []);
+  if (includes?.media?.length && mediaKeys.size > 0) {
     includes.media.forEach((media: MediaObjectV2) => {
+      if (!mediaKeys.has(media.media_key)) return;
       if (media.type === "photo") {
         parsedTweet.photos.push({
           id: media.media_key,
