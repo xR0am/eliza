@@ -1,3 +1,4 @@
+import { mergeCalendarSourceSelection } from "../internal/calendar-source-selection.js";
 /**
  * Factory for the `CALENDAR` assistant action and its LLM-backed handler.
  *
@@ -353,6 +354,8 @@ type CalendarMutationSubaction =
   | "delete_event";
 
 type CalendarActionParams = {
+  grantId?: string;
+  calendarId?: string;
   target?: string;
   targetKind?: "query" | "eventId";
   subaction?: CalendarSubaction;
@@ -5285,10 +5288,10 @@ const calendarAction: CalendarHandlerAction = {
         : suppliedParams;
     const intent = resolveCalendarIntentInput(params.intent, message);
 
-    const details = normalizeCalendarDetails(params.details, [
-      params.title,
-      params.query,
-    ]);
+    const details = mergeCalendarSourceSelection(
+      normalizeCalendarDetails(params.details, [params.title, params.query]),
+      params,
+    );
     // The real action remains available for connected providers. Ask the
     // existing host policy whether backend records are forbidden on this turn.
     const nativeCalendarFailure = calendarRecordPolicyFailure();
@@ -5311,7 +5314,7 @@ const calendarAction: CalendarHandlerAction = {
         turnComplete: false,
         text:
           nativeCalendarFailure +
-          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source, then retry this Calendar read with details.grantId and details.calendarId from that source. Do not substitute local backend records or change source selections without the owner request.",
+          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source. Supply BOTH grantId and calendarId from that result, either at the top level or inside details. A calendar label alone is insufficient. Do not repeat this call until both source IDs are present. Do not substitute local backend records or change source selections without the owner request.",
         effectReceipts: [
           calendarFailedReceipt({
             message,
@@ -7389,24 +7392,24 @@ const calendarAction: CalendarHandlerAction = {
       name: "details",
       description:
         "Structured calendar fields; only the declared keys are accepted, so omit anything the user did not state. " +
-        "feed/search_events: timeMin/timeMax with timeZone. create_event: start (plus end or durationMinutes) and timeZone; location, description, recurrence and attendees only when the user gives them. " +
+        "Connected Google or Microsoft operations MUST include the exact grantId AND calendarId returned by CALENDAR_SOURCES, either as top-level fields or inside details. Never leave them out or substitute local Calendar records. feed/search_events: timeMin/timeMax with timeZone. create_event: start (plus end or durationMinutes) and timeZone; location, description, recurrence and attendees only when the user gives them. " +
         "update_event/delete_event: locate the target with eventId, oldTitle or query (plus date). The update itself (new time, rename, description, location, cleared fields) is extracted from the user's request and conversation, not copied from start/end, newTitle, description, location or clearFields, so state the requested change in intent. " +
         "Every wall-clock value is local (no Z, no offset) in timeZone; recurrenceScope is instance, this_and_following or series.",
       required: false,
       schema: CALENDAR_DETAILS_PARAMETER_SCHEMA,
     },
     {
-      // Planners habitually add a calendar-id field on feed/read calls (live:
-      // top-level calendar_id AND calendarId on one CALENDAR_FEED call, which
-      // validateToolArgs rejected and the whole read failed). Declare the
-      // field so the exact spelling calendarId validates; other spellings
-      // such as calendar_id are still rejected as unexpected arguments. Reads
-      // span the account's calendars and creation targets the built-in
-      // calendar, so the handler ignores this top-level value. An exact
-      // calendar selection is read from details.calendarId only.
+      // Explicit source IDs may be supplied together here or inside details.
+      name: "grantId",
+      description:
+        "Exact connected-provider grantId from CALENDAR_SOURCES. Required with calendarId whenever the user names Google or Microsoft. Omit only for the built-in local Calendar.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
       name: "calendarId",
       description:
-        "Ignored; leave unset. To select an exact calendar from a Calendar result, use details.calendarId. Agenda reads use the selected Calendar feed; searches cover connected calendars. Use details.includeHiddenCalendars to explicitly change that scope. Event creation targets the built-in calendar.",
+        "Exact calendarId returned by CALENDAR_SOURCES, paired with grantId. Nested details.calendarId remains supported. With no grantId this legacy top-level field does not change source selection.",
       required: false,
       schema: { type: "string" as const },
     },
