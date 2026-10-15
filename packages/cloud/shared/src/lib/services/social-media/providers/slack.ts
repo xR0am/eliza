@@ -14,7 +14,12 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const SLACK_API_BASE = "https://slack.com/api";
 
@@ -97,7 +102,7 @@ async function slackApiRequest<T>(
     async (response) => {
       const json = (await response.json()) as SlackResponse<T>;
       if (!json.ok) {
-        throw new Error(json.error ?? "Slack API error");
+        throw new SocialApiRejectionError(json.error ?? "Slack API error");
       }
       return json;
     },

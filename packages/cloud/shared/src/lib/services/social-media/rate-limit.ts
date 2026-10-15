@@ -126,6 +126,14 @@ export class UnknownPostOutcomeError extends Error {
   }
 }
 
+/** A parsed provider response explicitly rejected the operation. */
+export class SocialApiRejectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SocialApiRejectionError";
+  }
+}
+
 /** The PostResult for a failed create; an unknown outcome holds the credit. */
 export function failedPostResult(platform: SocialPlatform, error: unknown): PostResult {
   if (error instanceof UnknownPostOutcomeError) {
@@ -190,11 +198,15 @@ export async function withRetry<T>(
         throw new Error(`${platform} API error ${response.status}: ${errorBody}`);
       }
 
+      // A successful status does not prove a create failed if its response
+      // body is lost or unreadable. Only a parsed provider refusal is definite.
+      unknownOutcome = true;
       return { data: await parser(response) };
     } catch (error) {
       // error-policy:J1 outbound social-platform API transport boundary — retries transient failures and propagates the last error after exhausting retries (fail-closed)
       lastError = error instanceof Error ? error : new Error(String(error));
       if ((error as RateLimitError).rateLimited) throw error;
+      if (error instanceof SocialApiRejectionError) unknownOutcome = false;
       if (!replayUnknownOutcome) {
         throw unknownOutcome ? new UnknownPostOutcomeError(platform, lastError) : lastError;
       }

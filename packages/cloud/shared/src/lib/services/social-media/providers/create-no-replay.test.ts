@@ -255,3 +255,97 @@ test("a create the platform refuses is a plain, refundable failure", async () =>
   expect(result.success).toBe(false);
   expect(result.creditDisposition).toBeUndefined();
 });
+
+for (const [label, response] of [
+  ["truncated JSON", () => new Response('{"ok":true,"ts":', { status: 200 })],
+  [
+    "interrupted body",
+    () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("body connection closed"));
+          },
+        }),
+        { status: 200 },
+      ),
+  ],
+] as const) {
+  test(`a Slack create with ${label} retains its unknown outcome`, async () => {
+    let sends = 0;
+    spies.push(
+      spyOn(globalThis, "fetch").mockImplementation(async () => {
+        sends += 1;
+        return response();
+      }),
+    );
+    const result = await slackProvider.createPost(
+      { botToken: "xoxb-token" },
+      { text: "Launch day" },
+      { slack: { channelId: "C1" } },
+    );
+    expect(sends).toBe(1);
+    expect(result.success).toBe(false);
+    expect(result.creditDisposition).toBe("hold");
+    expect(result.errorCode).toBe("POST_OUTCOME_UNKNOWN");
+  });
+}
+
+test("an explicit Slack refusal in a successful HTTP response remains refundable", async () => {
+  let sends = 0;
+  spies.push(
+    spyOn(globalThis, "fetch").mockImplementation(async () => {
+      sends += 1;
+      return json({ ok: false, error: "channel_not_found" });
+    }),
+  );
+  const result = await slackProvider.createPost(
+    { botToken: "xoxb-token" },
+    { text: "Launch day" },
+    { slack: { channelId: "C1" } },
+  );
+  expect(sends).toBe(1);
+  expect(result.success).toBe(false);
+  expect(result.creditDisposition).toBeUndefined();
+});
+
+for (const outcome of ["unreadable", "failed", "complete"] as const) {
+  test(`TikTok preserves the original publication when its status is ${outcome}`, async () => {
+    let creates = 0;
+    spies.push(
+      spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/post/publish/video/init/")) {
+          creates += 1;
+          return json({ data: { publish_id: "original-publication" }, error: { code: "ok" } });
+        }
+        if (url.includes("/post/publish/status/fetch/")) {
+          if (outcome === "unreadable") throw new Error("status connection closed");
+          return json({
+            data:
+              outcome === "failed"
+                ? { status: "FAILED", fail_reason: "rejected" }
+                : { status: "PUBLISH_COMPLETE", publicaly_available_post_id: ["post-7"] },
+            error: { code: "ok" },
+          });
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+    const result = await tiktokProvider.createPost(
+      { accessToken: "token" },
+      { text: "Launch day", media: [{ type: "video", url: "https://cdn.example.com/v.mp4" }] },
+    );
+    expect(creates).toBe(1);
+    expect(result.success).toBe(outcome === "complete");
+    if (outcome === "unreadable") {
+      expect(result.creditDisposition).toBe("hold");
+      expect(result.errorCode).toBe("TIKTOK_PUBLISH_STATUS_UNKNOWN");
+      expect(result.metadata?.publishId).toBe("original-publication");
+    } else {
+      expect(result.creditDisposition).toBeUndefined();
+      if (outcome === "complete") expect(result.postId).toBe("post-7");
+      else expect(result.errorCode).toBe("TIKTOK_PUBLISH_FAILED");
+    }
+  });
+}

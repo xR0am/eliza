@@ -13,7 +13,12 @@ import type {
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
 import { TELEGRAM_API_BASE } from "../../../utils/telegram-api";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const TELEGRAM_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -75,7 +80,7 @@ async function telegramApiRequest<T>(
     async (response) => {
       const payload = (await response.json()) as TelegramResponse<T>;
       if (!payload.ok) {
-        throw new Error(
+        throw new SocialApiRejectionError(
           payload.description ?? `Telegram API error: ${payload.error_code ?? response.status}`,
         );
       }
