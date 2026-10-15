@@ -5,7 +5,8 @@ import {
   type ManagedCalendarSyncProvider,
   type CalendarSyncOwner,
 } from "./calendar-sync-provider";
-const selected = { grantId: z.string().uuid(), calendarId: z.string().min(1).max(1024) };
+const calendarSelection = { grantId: z.string().uuid(), calendarId: z.string().min(1).max(1024) };
+const selected = { ...calendarSelection, accountId: z.string().min(1).max(2048) };
 const querySchema = z
   .object({
     ...selected,
@@ -13,7 +14,7 @@ const querySchema = z
     idempotencyKey: z.string().min(1).max(2048).optional(),
   })
   .strict();
-const capSchema = z.object(selected).strict();
+const capSchema = z.object(calendarSelection).strict();
 const createSchema = z
   .object({
     ...selected,
@@ -120,19 +121,20 @@ export function createCalendarSyncRoutes<E extends Env>(dependencies: {
   );
   const owner = (
     identity: { organizationId: string; userId: string },
-    grantId: string,
+    selection: { grantId: string; accountId?: string },
     c: Context<E>,
   ): CalendarSyncOwner => ({
     organizationId: identity.organizationId,
     userId: identity.userId,
-    grantId,
+    grantId: selection.grantId,
+    accountId: selection.accountId,
     signal: c.req.raw.signal,
   });
   app.get("/capabilities", async (c) => {
     const identity = await dependencies.authenticate(c),
       input = query(c.req.raw, capSchema);
     return c.json(
-      await dependencies.provider.capabilities(owner(identity, input.grantId, c), input.calendarId),
+      await dependencies.provider.capabilities(owner(identity, input, c), input.calendarId),
     );
   });
   app.get("/event", async (c) => {
@@ -141,7 +143,7 @@ export function createCalendarSyncRoutes<E extends Env>(dependencies: {
     return c.json({
       version: 1,
       calendarId: input.calendarId,
-      event: await dependencies.provider.get(owner(identity, input.grantId, c), input.calendarId, {
+      event: await dependencies.provider.get(owner(identity, input, c), input.calendarId, {
         eventId: input.eventId,
         idempotencyKey: input.idempotencyKey,
       }),
@@ -156,7 +158,7 @@ export function createCalendarSyncRoutes<E extends Env>(dependencies: {
         version: 1,
         calendarId: input.calendarId,
         event: await dependencies.provider.create(
-          owner(identity, input.grantId, c),
+          owner(identity, input, c),
           input.calendarId,
           input.idempotencyKey,
           input.event,
@@ -173,7 +175,7 @@ export function createCalendarSyncRoutes<E extends Env>(dependencies: {
       version: 1,
       calendarId: input.calendarId,
       event: await dependencies.provider.update(
-        owner(identity, input.grantId, c),
+        owner(identity, input, c),
         input.calendarId,
         input.eventId,
         input.expectedEtag,
@@ -189,7 +191,7 @@ export function createCalendarSyncRoutes<E extends Env>(dependencies: {
       version: 1,
       calendarId: input.calendarId,
       ...(await dependencies.provider.delete(
-        owner(identity, input.grantId, c),
+        owner(identity, input, c),
         input.calendarId,
         input.eventId,
         input.expectedEtag,

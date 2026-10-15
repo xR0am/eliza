@@ -8,6 +8,7 @@ const owner: CalendarSyncOwner = {
   organizationId: "org",
   userId: "owner",
   grantId: "google-grant",
+  accountId: "google-user",
 };
 const event = {
   title: "Private QA",
@@ -27,13 +28,22 @@ function fixture() {
     loss = false,
     readOnly = false,
     inaccessible = false,
-    revokeAfterWrite = false;
+    revokeAfterWrite = false,
+    tokenLoads = 0,
+    accountId = "google-user",
+    switchAfterWrite = false;
+  const current = async () => ({
+    connectionId: owner.grantId,
+    accountId,
+    capabilities: ["google.calendar.read", ...(readOnly ? [] : ["google.calendar.write"])],
+  });
   const provider = new ManagedCalendarSyncProvider({
+    current,
     async grant() {
+      tokenLoads++;
       return {
-        connectionId: owner.grantId,
+        ...(await current()),
         token: "synthetic-token",
-        capabilities: ["google.calendar.read", ...(readOnly ? [] : ["google.calendar.write"])],
       };
     },
     request: async (input, init = {}) => {
@@ -61,6 +71,7 @@ function fixture() {
         writes++;
         events.set(body.id, { ...body, etag: '"1"' });
         if (revokeAfterWrite) readOnly = true;
+        if (switchAfterWrite) accountId = "another-google-user";
         if (loss) throw Error("Response lost after create");
         return Response.json(events.get(body.id), { status: 201 });
       }
@@ -80,6 +91,10 @@ function fixture() {
     },
   });
   return {
+    tokenLoads: () => tokenLoads,
+    switchAccountAfterWrite: () => {
+      switchAfterWrite = true;
+    },
     provider,
     events,
     calls,
@@ -106,6 +121,7 @@ describe("managed Calendar conditional provider", () => {
     await expect(f.provider.create(owner, "primary", "operation-1", event)).rejects.toMatchObject({
       outcome: "unknown",
     });
+    expect(f.tokenLoads()).toBe(1);
     const recovered = await f.provider.get(owner, "primary", { idempotencyKey: "operation-1" });
     expect(recovered?.event.title).toBe(event.title);
     expect((await f.provider.create(owner, "primary", "operation-1", event)).eventId).toBe(
@@ -192,6 +208,12 @@ describe("managed Calendar conditional provider", () => {
     await expect(
       f.provider.get(owner, "primary", { eventId: "id", idempotencyKey: "key" }),
     ).rejects.toMatchObject({ outcome: "not_accepted" });
+    await expect(
+      f.provider.create({ ...owner, accountId: undefined }, "primary", "key", event),
+    ).rejects.toMatchObject({ outcome: "not_accepted" });
+    await expect(
+      f.provider.create({ ...owner, accountId: "different-google-user" }, "primary", "key", event),
+    ).rejects.toMatchObject({ code: "CALENDAR_SYNC_PERMISSION", outcome: "not_accepted" });
     expect(f.calls).toHaveLength(0);
   });
   test("all-day dates and recurrence survive the provider contract", async () => {
@@ -207,5 +229,27 @@ describe("managed Calendar conditional provider", () => {
     expect(saved.event.isAllDay).toBe(true);
     expect(saved.event.startAt).toBe("2026-10-16");
     expect(saved.event.recurrence).toEqual(["RRULE:FREQ=DAILY"]);
+  });
+  test("a Google identity change under the same grant stays uncertain after dispatch", async () => {
+    const f = fixture();
+    f.switchAccountAfterWrite();
+    await expect(f.provider.create(owner, "primary", "key", event)).rejects.toMatchObject({
+      outcome: "unknown",
+      code: "CALENDAR_SYNC_GRANT_CHANGED",
+    });
+    expect(f.writes()).toBe(1);
+    expect(f.tokenLoads()).toBe(1);
+  });
+  test("private-create receipts prove privacy and disabled reminders rather than repeating defaults", async () => {
+    const f = fixture(),
+      saved = await f.provider.create(owner, "primary", "key", event);
+    expect(saved.visibility).toBe("private");
+    expect(saved.remindersDisabled).toBe(true);
+    expect(f.tokenLoads()).toBe(1);
+    f.events.get(saved.eventId)!.visibility = "public";
+    await expect(f.provider.create(owner, "primary", "key", event)).rejects.toMatchObject({
+      outcome: "precondition_failed",
+    });
+    expect(f.writes()).toBe(1);
   });
 });

@@ -21,6 +21,7 @@ function fixture() {
       return {
         version: 1,
         calendarId: "primary",
+        accountId: "google-user",
         read: true,
         write: true,
         idempotentCreate: true,
@@ -34,7 +35,13 @@ function fixture() {
     },
     async create(...args: unknown[]) {
       calls.push({ op: "create", args });
-      return { eventId: "accepted", etag: '"1"', event };
+      return {
+        eventId: "accepted",
+        etag: '"1"',
+        event,
+        visibility: "private" as const,
+        remindersDisabled: true,
+      };
     },
     async update(...args: unknown[]) {
       calls.push({ op: "update", args });
@@ -82,6 +89,7 @@ test("Calendar routes pin authenticated owner fields and reject an injected agen
     method: "POST",
     ...f.json({
       grantId: grant,
+      accountId: "google-user",
       calendarId: "primary",
       idempotencyKey: "operation-1",
       event: { title: "QA" },
@@ -92,6 +100,7 @@ test("Calendar routes pin authenticated owner fields and reject an injected agen
     organizationId: "owner-org",
     userId: "owner-user",
     grantId: grant,
+    accountId: "google-user",
   });
   expect(JSON.stringify(await result.json())).not.toContain("token");
   for (const extra of [
@@ -106,6 +115,7 @@ test("Calendar routes pin authenticated owner fields and reject an injected agen
           method: "POST",
           ...f.json({
             grantId: grant,
+            accountId: "google-user",
             calendarId: "primary",
             idempotencyKey: "operation-2",
             event: {},
@@ -123,7 +133,7 @@ test("authentication, missing fields, duplicate query and payload size fail befo
   expect(f.calls).toHaveLength(0);
   const valid = fixture();
   for (const body of [
-    { grantId: grant, calendarId: "primary", idempotencyKey: "key" },
+    { grantId: grant, accountId: "google-user", calendarId: "primary", idempotencyKey: "key" },
     { grantId: "bad", calendarId: "primary", idempotencyKey: "key", event: {} },
   ])
     expect(
@@ -132,7 +142,11 @@ test("authentication, missing fields, duplicate query and payload size fail befo
   expect(
     (
       await valid.app.request(
-        "/event?grantId=" + grant + "&grantId=" + grant + "&calendarId=primary&eventId=id",
+        "/event?grantId=" +
+          grant +
+          "&grantId=" +
+          grant +
+          "&calendarId=primary&accountId=google-user&eventId=id",
       )
     ).status,
   ).toBe(400);
@@ -142,6 +156,7 @@ test("authentication, missing fields, duplicate query and payload size fail befo
         method: "POST",
         ...valid.json({
           grantId: grant,
+          accountId: "google-user",
           calendarId: "primary",
           idempotencyKey: "key",
           event: { description: "x".repeat(256 * 1024) },
@@ -157,6 +172,7 @@ test("conditional conflicts remain explicit and delete requires its own exact pr
       method: "PATCH",
       ...f.json({
         grantId: grant,
+        accountId: "google-user",
         calendarId: "primary",
         eventId: "id",
         expectedEtag: '"old"',
@@ -167,15 +183,19 @@ test("conditional conflicts remain explicit and delete requires its own exact pr
   expect(await result.json()).toMatchObject({ outcome: "precondition_failed" });
   expect(
     (
-      await f.app.request("/event?grantId=" + grant + "&calendarId=primary&eventId=id", {
-        method: "DELETE",
-      })
+      await f.app.request(
+        "/event?grantId=" + grant + "&calendarId=primary&accountId=google-user&eventId=id",
+        {
+          method: "DELETE",
+        },
+      )
     ).status,
   ).toBe(400);
   const deleted = await f.app.request(
     "/event?" +
       new URLSearchParams({
         grantId: grant,
+        accountId: "google-user",
         calendarId: "primary",
         eventId: "id",
         expectedEtag: '"current"',
