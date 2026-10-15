@@ -39,10 +39,6 @@ export function managedGmailHostTransport(
       },
       body: JSON.stringify(body),
     });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw failure("The owner Gmail connection could not be verified.");
-    }
     if (!response.body) throw failure("The Gmail host returned no result.");
     const reader = response.body.getReader(),
       chunks: Uint8Array[] = [];
@@ -73,6 +69,18 @@ export function managedGmailHostTransport(
     }
     if (!data || typeof data !== "object" || Array.isArray(data))
       throw failure("The Gmail host returned an invalid result.");
+    if (!response.ok) {
+      if (
+        (data as Record<string, unknown>).reason ===
+        "provider-route-unavailable"
+      )
+        throw failure(
+          "The Cloud Google operation endpoint is unavailable. This does not mean the Google account is disconnected. Do not request reconnection solely for this error; check the saved receipt before repeating a send.",
+        );
+      throw failure(
+        "The Google request could not be verified. Check its account, permissions, and saved operation receipt; no outcome is confirmed.",
+      );
+    }
     return data as Record<string, unknown>;
   };
 }
