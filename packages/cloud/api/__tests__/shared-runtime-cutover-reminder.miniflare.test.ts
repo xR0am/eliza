@@ -1656,9 +1656,18 @@ describe("Personal Shared cutover reminder containment in Workerd", () => {
       { ...payload, agentId: oldId, roomId: oldId },
       { ...payload, delivery: { ...delivery, userId: "foreign-user" } },
       { ...payload, delivery: { ...delivery, organizationId: "foreign-org" } },
-      { ...payload, delivery: { ...delivery, project: "eliza-app" } },
     ])
       expect((await post(name, "/network-delivery", forged)).status).toBe(400);
+    const unsignedServiceDelivery = await post(name, "/network-delivery", {
+      ...payload,
+      delivery: { ...delivery, project: "eliza-app" },
+    });
+    expect(unsignedServiceDelivery.status).toBe(403);
+    expect(await unsignedServiceDelivery.json()).toMatchObject({
+      ok: false,
+      code: "invalid_admission",
+      retryable: false,
+    });
     expect(gatewayRequests).toHaveLength(1);
     expect(
       (await post(name, "/disabled/network-delivery", payload)).status,
