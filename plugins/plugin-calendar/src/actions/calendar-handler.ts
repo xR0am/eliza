@@ -245,6 +245,7 @@ function connectorGrantIdDetail(
   return isAppleCalendarGrant(value) ||
     isMicrosoftCalendarGrantId(value) ||
     value === ELIZA_CALENDAR_GRANT_ID ||
+    /^alpha-google:[a-f0-9]{64}$/.test(value) ||
     value.startsWith(GOOGLE_CONNECTOR_ACCOUNT_GRANT_PREFIX)
     ? value
     : undefined;
@@ -5308,7 +5309,9 @@ const calendarAction: CalendarHandlerAction = {
         transcriptVisibility: "internal",
         modelReplyRequired: true,
         turnComplete: false,
-        text: nativeCalendarFailure,
+        text:
+          nativeCalendarFailure +
+          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source, then retry this Calendar read with details.grantId and details.calendarId from that source. Do not substitute local backend records or change source selections without the owner request.",
         effectReceipts: [
           calendarFailedReceipt({
             message,
