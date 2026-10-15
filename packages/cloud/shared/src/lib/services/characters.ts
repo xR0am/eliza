@@ -31,7 +31,7 @@ import { ValidationError } from "../api/cloud-worker-errors";
 import { cache } from "../cache/client";
 import { InMemoryLRUCache } from "../cache/in-memory-lru-cache";
 import { CacheKeys, CacheTTL } from "../cache/keys";
-import { type CloudCharacterLimitSource } from "../constants/cloud-character-quota";
+import type { CloudCharacterLimitSource } from "../constants/cloud-character-quota";
 import type { ElizaCharacter } from "../types/eliza-character";
 import {
   generateUniqueUsername,
@@ -87,7 +87,8 @@ export interface CharacterCreationReceipt {
   quota?: CharacterCreationQuotaReceipt;
 }
 
-export interface MeteredCharacterCreationReceipt extends CharacterCreationReceipt {
+export interface MeteredCharacterCreationReceipt
+  extends CharacterCreationReceipt {
   created: true;
   quota: CharacterCreationQuotaReceipt;
 }
@@ -101,7 +102,11 @@ function requireCharacterCreationPolicy(
   options: CharacterCreationOptions | undefined,
 ): CharacterCreationPolicy {
   const candidate: unknown = options?.policy;
-  if (candidate !== null && typeof candidate === "object" && !Array.isArray(candidate)) {
+  if (
+    candidate !== null &&
+    typeof candidate === "object" &&
+    !Array.isArray(candidate)
+  ) {
     const record = candidate as Record<string, unknown>;
     if (record.mode === "metered" || record.mode === "bootstrap") {
       return { mode: record.mode };
@@ -113,15 +118,20 @@ function requireCharacterCreationPolicy(
     ) {
       return {
         mode: "trusted",
-        caller: record.caller as "affiliate-create-character" | "service-api-v1-agents",
+        caller: record.caller as
+          | "affiliate-create-character"
+          | "service-api-v1-agents",
       };
     }
   }
 
-  throw new ElizaError("Character creation requires a valid explicit quota policy", {
-    code: "CHARACTER_CREATION_POLICY_REQUIRED",
-    severity: "fatal",
-  });
+  throw new ElizaError(
+    "Character creation requires a valid explicit quota policy",
+    {
+      code: "CHARACTER_CREATION_POLICY_REQUIRED",
+      severity: "fatal",
+    },
+  );
 }
 
 /** Raised when a metered character create observes no remaining org capacity. */
@@ -172,7 +182,9 @@ function mirroredAgent(character: UserCharacter): Partial<Agent> {
 async function withCharacterCreationTransaction<T>(
   operation: (tx: DbTransaction) => Promise<T>,
 ): Promise<T> {
-  return await dbWrite.transaction(operation, { isolationLevel: "read committed" });
+  return await dbWrite.transaction(operation, {
+    isolationLevel: "read committed",
+  });
 }
 
 /**
@@ -249,14 +261,18 @@ export class CharactersService {
    */
   async getByIdCacheOnly(
     id: string,
-    options: { executionCtx?: { waitUntil(promise: Promise<unknown>): void } } = {},
+    options: {
+      executionCtx?: { waitUntil(promise: Promise<unknown>): void };
+    } = {},
   ): Promise<InferenceCharacterCacheResolution> {
     const inMemoryHit = inMemoryCharCache.get(id);
     if (inMemoryHit) {
       return { kind: "ready", character: structuredClone(inMemoryHit) };
     }
 
-    const outcome = await cache.getWithOutcome<UserCharacter>(characterCacheKey(id));
+    const outcome = await cache.getWithOutcome<UserCharacter>(
+      characterCacheKey(id),
+    );
     if (outcome.kind === "hit") {
       inMemoryCharCache.set(id, outcome.value);
       return { kind: "ready", character: structuredClone(outcome.value) };
@@ -284,7 +300,10 @@ export class CharactersService {
     }
 
     return {
-      kind: outcome.kind === "unavailable" || outcome.kind === "error" ? "unavailable" : "warming",
+      kind:
+        outcome.kind === "unavailable" || outcome.kind === "error"
+          ? "unavailable"
+          : "warming",
     };
   }
 
@@ -295,7 +314,9 @@ export class CharactersService {
   async invalidateCache(id: string): Promise<void> {
     inMemoryCharCache.delete(id);
     // Import dynamically to avoid circular dependency
-    const { invalidateCharacterCache } = await import("../cache/character-cache");
+    const { invalidateCharacterCache } = await import(
+      "../cache/character-cache"
+    );
 
     await Promise.all([
       // Invalidate the simple character cache key
@@ -318,20 +339,28 @@ export class CharactersService {
   }
 
   /**
-   * Whether a caller may see or link a character: the caller owns it, the
-   * caller's organization owns it, or it is public. One rule for the app
-   * link writes, the app character read and backup restore, so a character
-   * that leaves the public catalog also leaves every app that linked it.
+   * Whether a caller may see or link a character. A public character always
+   * qualifies. A link write (`userId` given) needs the caller's own character
+   * in the caller's current organization: a member removed from an
+   * organization keeps their user id, so the creator match alone would still
+   * accept the old organization's private characters. The app character read
+   * (organization only) accepts the app organization's characters. One rule
+   * for the app link writes, the app character read and backup restore, so a
+   * character that leaves the public catalog also leaves every app that
+   * linked it.
    */
   isLinkedCharacterVisible(
     character: Pick<UserCharacter, "user_id" | "organization_id" | "is_public">,
-    caller: { userId?: string; organizationId?: string },
+    caller: { userId?: string; organizationId: string },
   ): boolean {
-    return (
-      character.is_public === true ||
-      (caller.userId !== undefined && character.user_id === caller.userId) ||
-      (caller.organizationId !== undefined && character.organization_id === caller.organizationId)
-    );
+    if (character.is_public === true) return true;
+    if (caller.userId !== undefined) {
+      return (
+        character.user_id === caller.userId &&
+        character.organization_id === caller.organizationId
+      );
+    }
+    return character.organization_id === caller.organizationId;
   }
 
   /**
@@ -339,7 +368,10 @@ export class CharactersService {
    * removed from an organization keeps their user id, so the creator match
    * alone would still hand them the old organization's characters.
    */
-  async getByIdForUser(characterId: string, owner: CharacterOwner): Promise<UserCharacter | null> {
+  async getByIdForUser(
+    characterId: string,
+    owner: CharacterOwner,
+  ): Promise<UserCharacter | null> {
     const character = await userCharactersRepository.findById(characterId);
 
     if (
@@ -381,7 +413,10 @@ export class CharactersService {
     options?: { source?: "cloud" },
   ): Promise<UserCharacter[]> {
     const source = options?.source ?? "cloud";
-    return await userCharactersRepository.listByOrganization(organizationId, source);
+    return await userCharactersRepository.listByOrganization(
+      organizationId,
+      source,
+    );
   }
 
   /**
@@ -391,7 +426,10 @@ export class CharactersService {
    * stronger mirror-health probe below.
    */
   async existsForOrganization(organizationId: string): Promise<boolean> {
-    return await userCharactersRepository.existsForOrganization(organizationId, "cloud");
+    return await userCharactersRepository.existsForOrganization(
+      organizationId,
+      "cloud",
+    );
   }
 
   /**
@@ -399,8 +437,12 @@ export class CharactersService {
    * authority to create; Steward routes it to create(..., bootstrap), where
    * the primary organization lock makes the final ensure decision.
    */
-  async hasHealthyCloudCharacterMirror(organizationId: string): Promise<boolean> {
-    return await userCharactersRepository.hasHealthyCloudCharacterMirror(organizationId);
+  async hasHealthyCloudCharacterMirror(
+    organizationId: string,
+  ): Promise<boolean> {
+    return await userCharactersRepository.hasHealthyCloudCharacterMirror(
+      organizationId,
+    );
   }
 
   async listPublic(options?: {
@@ -413,7 +455,10 @@ export class CharactersService {
     return await userCharactersRepository.listPublic(options);
   }
 
-  async countPublicCatalog(options?: { search?: string; category?: string }): Promise<number> {
+  async countPublicCatalog(options?: {
+    search?: string;
+    category?: string;
+  }): Promise<number> {
     return await userCharactersRepository.countPublicCatalog(options);
   }
 
@@ -425,9 +470,13 @@ export class CharactersService {
    * Generate a unique username for a character.
    * Uses the name to create a slug, then ensures uniqueness.
    */
-  async generateUniqueUsername(name: string, tx?: DbTransaction): Promise<string> {
+  async generateUniqueUsername(
+    name: string,
+    tx?: DbTransaction,
+  ): Promise<string> {
     // Get all existing usernames
-    const existingUsernames = await userCharactersRepository.getAllUsernames(tx);
+    const existingUsernames =
+      await userCharactersRepository.getAllUsernames(tx);
 
     // Add reserved usernames
     for (const reserved of RESERVED_USERNAMES) {
@@ -471,7 +520,10 @@ export class CharactersService {
     return await userCharactersRepository.findByUsername(username);
   }
 
-  async create(data: NewUserCharacter, options: CharacterCreationOptions): Promise<UserCharacter> {
+  async create(
+    data: NewUserCharacter,
+    options: CharacterCreationOptions,
+  ): Promise<UserCharacter> {
     return (await this.createWithReceipt(data, options)).character;
   }
 
@@ -506,7 +558,9 @@ export class CharactersService {
 
     const source = data.source ?? "cloud";
     if (source !== "cloud") {
-      throw ValidationError("CharactersService.create only accepts Cloud characters");
+      throw ValidationError(
+        "CharactersService.create only accepts Cloud characters",
+      );
     }
 
     // Format validation is request-local. Global uniqueness is resolved later
@@ -530,145 +584,163 @@ export class CharactersService {
       username = validation.normalized!;
     }
 
-    const result = await withCharacterCreationTransaction<CharacterCreationReceipt>(async (tx) => {
-      // The organization row is the per-tenant serialization authority. The
-      // billing inputs, exact Cloud population, decision, character insert,
-      // and required runtime mirror therefore share one primary transaction.
-      const [organization] = await tx
-        .select({
-          id: organizations.id,
-          creditBalance: organizations.credit_balance,
-          settings: organizations.settings,
-        })
-        .from(organizations)
-        .where(eq(organizations.id, data.organization_id))
-        .limit(1)
-        .for("update");
+    const result =
+      await withCharacterCreationTransaction<CharacterCreationReceipt>(
+        async (tx) => {
+          // The organization row is the per-tenant serialization authority. The
+          // billing inputs, exact Cloud population, decision, character insert,
+          // and required runtime mirror therefore share one primary transaction.
+          const [organization] = await tx
+            .select({
+              id: organizations.id,
+              creditBalance: organizations.credit_balance,
+              settings: organizations.settings,
+            })
+            .from(organizations)
+            .where(eq(organizations.id, data.organization_id))
+            .limit(1)
+            .for("update");
 
-      if (!organization) {
-        throw new ElizaError("Character organization not found", {
-          code: "CHARACTER_ORGANIZATION_NOT_FOUND",
-          context: { organizationId: data.organization_id },
-          severity: "fatal",
-        });
-      }
+          if (!organization) {
+            throw new ElizaError("Character organization not found", {
+              code: "CHARACTER_ORGANIZATION_NOT_FOUND",
+              context: { organizationId: data.organization_id },
+              severity: "fatal",
+            });
+          }
 
-      const [population] = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(userCharacters)
-        .where(
-          and(
-            eq(userCharacters.organization_id, data.organization_id),
-            eq(userCharacters.source, "cloud"),
-          ),
-        );
-      const current = Number(population?.count ?? 0);
+          const [population] = await tx
+            .select({ count: sql<number>`count(*)::int` })
+            .from(userCharacters)
+            .where(
+              and(
+                eq(userCharacters.organization_id, data.organization_id),
+                eq(userCharacters.source, "cloud"),
+              ),
+            );
+          const current = Number(population?.count ?? 0);
 
-      if (policy.mode === "bootstrap" && current > 0) {
-        const [existing] = await tx
-          .select()
-          .from(userCharacters)
-          .where(
-            and(
-              eq(userCharacters.organization_id, data.organization_id),
-              eq(userCharacters.source, "cloud"),
-            ),
-          )
-          .orderBy(userCharacters.created_at, userCharacters.id)
-          .limit(1);
-        if (!existing) {
-          throw new ElizaError("Cloud character count and rows disagree", {
-            code: "CLOUD_CHARACTER_POPULATION_INCONSISTENT",
-            context: { organizationId: data.organization_id, current },
-            severity: "fatal",
-          });
-        }
+          if (policy.mode === "bootstrap" && current > 0) {
+            const [existing] = await tx
+              .select()
+              .from(userCharacters)
+              .where(
+                and(
+                  eq(userCharacters.organization_id, data.organization_id),
+                  eq(userCharacters.source, "cloud"),
+                ),
+              )
+              .orderBy(userCharacters.created_at, userCharacters.id)
+              .limit(1);
+            if (!existing) {
+              throw new ElizaError("Cloud character count and rows disagree", {
+                code: "CLOUD_CHARACTER_POPULATION_INCONSISTENT",
+                context: { organizationId: data.organization_id, current },
+                severity: "fatal",
+              });
+            }
 
-        // Bootstrap doubles as repair for a pre-existing character whose
-        // legacy two-step create crashed before its runtime mirror was written.
-        await agentsRepository.ensure(mirroredAgent(existing), tx);
-        return { character: existing, created: false };
-      }
+            // Bootstrap doubles as repair for a pre-existing character whose
+            // legacy two-step create crashed before its runtime mirror was written.
+            await agentsRepository.ensure(mirroredAgent(existing), tx);
+            return { character: existing, created: false };
+          }
 
-      let quota: CharacterCreationQuotaReceipt | undefined;
-      if (policy.mode === "metered") {
-        const currentPolicy = await readOrganizationQuotaPolicyInTransaction(
-          tx,
-          data.organization_id,
-        );
-        const limit = Number(requireOrganizationResourceLimit(currentPolicy, "characters"));
-        const observation = currentPolicy.limits.characters;
-        if (
-          observation.status !== "available" ||
-          (observation.source !== "subscription-entitlement" &&
-            observation.source !== "organization.settings.max_agents" &&
-            observation.source !== "organizations.credit_balance")
-        ) {
-          throw new ElizaError("Character quota provenance is unavailable", {
-            code: "RESOURCE_POLICY_UNAVAILABLE",
-          });
-        }
-        const resolution: { limit: number; source: CharacterCreationQuotaReceipt["limitSource"] } =
-          { limit, source: observation.source };
-        if (current >= resolution.limit) {
-          throw new CloudCharacterQuotaExceededError({
-            organizationId: data.organization_id,
-            current,
-            limit: resolution.limit,
-            limitSource: resolution.source,
-          });
-        }
-        quota = {
-          currentBefore: current,
-          currentAfter: current + 1,
-          limit: resolution.limit,
-          limitSource: resolution.source,
-        };
-      }
+          let quota: CharacterCreationQuotaReceipt | undefined;
+          if (policy.mode === "metered") {
+            const currentPolicy =
+              await readOrganizationQuotaPolicyInTransaction(
+                tx,
+                data.organization_id,
+              );
+            const limit = Number(
+              requireOrganizationResourceLimit(currentPolicy, "characters"),
+            );
+            const observation = currentPolicy.limits.characters;
+            if (
+              observation.status !== "available" ||
+              (observation.source !== "subscription-entitlement" &&
+                observation.source !== "organization.settings.max_agents" &&
+                observation.source !== "organizations.credit_balance")
+            ) {
+              throw new ElizaError(
+                "Character quota provenance is unavailable",
+                {
+                  code: "RESOURCE_POLICY_UNAVAILABLE",
+                },
+              );
+            }
+            const resolution: {
+              limit: number;
+              source: CharacterCreationQuotaReceipt["limitSource"];
+            } = { limit, source: observation.source };
+            if (current >= resolution.limit) {
+              throw new CloudCharacterQuotaExceededError({
+                organizationId: data.organization_id,
+                current,
+                limit: resolution.limit,
+                limitSource: resolution.source,
+              });
+            }
+            quota = {
+              currentBefore: current,
+              currentAfter: current + 1,
+              limit: resolution.limit,
+              limitSource: resolution.source,
+            };
+          }
 
-      // All insertion paths take the same global namespace authority after
-      // their organization lock. This uniform order cannot cycle, and makes
-      // the explicit check and automatic scan authoritative against each
-      // other until the unique claim commits.
-      await lockUsernameClaimAuthority(tx);
+          // All insertion paths take the same global namespace authority after
+          // their organization lock. This uniform order cannot cycle, and makes
+          // the explicit check and automatic scan authoritative against each
+          // other until the unique claim commits.
+          await lockUsernameClaimAuthority(tx);
 
-      if (username === undefined || username === null || username === "") {
-        // Blank is provided-but-unset (empty-is-unset contract), same as
-        // omitting the field. Bootstrap checks existing rows before reaching
-        // this point so concurrent ensure calls never fail on their shared
-        // deterministic username.
-        username = await this.generateUniqueUsername(data.name, tx);
-        logger.info(`[Characters] Generated username: @${username} for "${data.name}"`);
-      } else if (await userCharactersRepository.usernameExists(username, tx)) {
-        throw ValidationError("Username is already taken");
-      }
+          if (username === undefined || username === null || username === "") {
+            // Blank is provided-but-unset (empty-is-unset contract), same as
+            // omitting the field. Bootstrap checks existing rows before reaching
+            // this point so concurrent ensure calls never fail on their shared
+            // deterministic username.
+            username = await this.generateUniqueUsername(data.name, tx);
+            logger.info(
+              `[Characters] Generated username: @${username} for "${data.name}"`,
+            );
+          } else if (
+            await userCharactersRepository.usernameExists(username, tx)
+          ) {
+            throw ValidationError("Username is already taken");
+          }
 
-      const character = await userCharactersRepository.create(
-        {
-          ...data,
-          source: "cloud",
-          username,
+          const character = await userCharactersRepository.create(
+            {
+              ...data,
+              source: "cloud",
+              username,
+            },
+            tx,
+          );
+          const mirrorCreated = await agentsRepository.create(
+            mirroredAgent(character),
+            tx,
+          );
+          if (!mirrorCreated) {
+            throw new ElizaError("Character runtime mirror already exists", {
+              code: "CHARACTER_AGENT_MIRROR_CONFLICT",
+              context: {
+                organizationId: data.organization_id,
+                characterId: character.id,
+              },
+              severity: "fatal",
+            });
+          }
+
+          return {
+            character,
+            created: true,
+            ...(quota ? { quota } : {}),
+          };
         },
-        tx,
       );
-      const mirrorCreated = await agentsRepository.create(mirroredAgent(character), tx);
-      if (!mirrorCreated) {
-        throw new ElizaError("Character runtime mirror already exists", {
-          code: "CHARACTER_AGENT_MIRROR_CONFLICT",
-          context: {
-            organizationId: data.organization_id,
-            characterId: character.id,
-          },
-          severity: "fatal",
-        });
-      }
-
-      return {
-        character,
-        created: true,
-        ...(quota ? { quota } : {}),
-      };
-    });
 
     if (policy.mode === "trusted") {
       logger.info("[Characters] Trusted character quota policy used", {
@@ -684,7 +756,10 @@ export class CharactersService {
     return result;
   }
 
-  async update(id: string, data: Partial<NewUserCharacter>): Promise<UserCharacter | undefined> {
+  async update(
+    id: string,
+    data: Partial<NewUserCharacter>,
+  ): Promise<UserCharacter | undefined> {
     const updated = await userCharactersRepository.update(id, data);
     // Invalidate cache on update
     if (updated) {
@@ -710,7 +785,9 @@ export class CharactersService {
     if (updates.username !== undefined) {
       if (updates.username === null) {
         // Allow clearing username - no validation needed
-        logger.info(`[Characters] Username cleared: @${character.username} → null`);
+        logger.info(
+          `[Characters] Username cleared: @${character.username} → null`,
+        );
       } else if (typeof updates.username !== "string") {
         // The PUT route passes the request body through unvalidated, so
         // username can be any JSON shape; a non-string can't be normalized or
@@ -720,7 +797,10 @@ export class CharactersService {
       } else {
         const normalizedUsername = updates.username.toLowerCase();
         if (normalizedUsername !== character.username) {
-          const validation = await this.validateUsernameForUpdate(normalizedUsername, characterId);
+          const validation = await this.validateUsernameForUpdate(
+            normalizedUsername,
+            characterId,
+          );
           if (!validation.valid) {
             throw new Error(`Invalid username: ${validation.error}`);
           }
@@ -757,7 +837,10 @@ export class CharactersService {
     }
   }
 
-  async deleteForUser(characterId: string, owner: CharacterOwner): Promise<boolean> {
+  async deleteForUser(
+    characterId: string,
+    owner: CharacterOwner,
+  ): Promise<boolean> {
     // Verify ownership
     const character = await this.getByIdForUser(characterId, owner);
     if (!character) {
@@ -780,7 +863,9 @@ export class CharactersService {
    */
   toElizaCharacter(character: UserCharacter): ElizaCharacter {
     // Extract affiliate data from character_data if present
-    const characterData = character.character_data as Record<string, unknown> | undefined;
+    const characterData = character.character_data as
+      | Record<string, unknown>
+      | undefined;
     const affiliateData = characterData?.affiliate as
       | { vibe?: string; affiliateId?: string; [key: string]: unknown }
       | undefined;
@@ -821,7 +906,10 @@ export class CharactersService {
               Array.isArray(ex) &&
               ex.every(
                 (msg) =>
-                  typeof msg === "object" && msg !== null && "name" in msg && "content" in msg,
+                  typeof msg === "object" &&
+                  msg !== null &&
+                  "name" in msg &&
+                  "content" in msg,
               ),
           )
         ) {
@@ -832,12 +920,16 @@ export class CharactersService {
       postExamples: character.post_examples as string[] | undefined,
       topics: character.topics as string[] | undefined,
       adjectives: character.adjectives as string[] | undefined,
-      documents: character.knowledge as (string | { path: string; shared?: boolean })[] | undefined,
+      documents: character.knowledge as
+        | (string | { path: string; shared?: boolean })[]
+        | undefined,
       plugins: character.plugins as string[] | undefined,
       settings: mergedSettings as
         | Record<string, string | number | boolean | Record<string, unknown>>
         | undefined,
-      secrets: character.secrets as Record<string, string | number | boolean> | undefined,
+      secrets: character.secrets as
+        | Record<string, string | number | boolean>
+        | undefined,
       style: character.style as
         | {
             all?: string[];
@@ -876,7 +968,8 @@ export class CharactersService {
     }
 
     // Check if owned by an affiliate anonymous user
-    const isAffiliateUser = owner.email?.includes("@anonymous.elizacloud.ai") || false;
+    const isAffiliateUser =
+      owner.email?.includes("@anonymous.elizacloud.ai") || false;
     const isAnonymous = owner.is_anonymous === true;
 
     if (isAffiliateUser && isAnonymous) {
@@ -907,14 +1000,19 @@ export class CharactersService {
     const claimCheck = await this.isClaimableAffiliateCharacter(characterId);
 
     if (!claimCheck.claimable) {
-      logger.info(`[Characters] Character ${characterId} not claimable: ${claimCheck.reason}`);
+      logger.info(
+        `[Characters] Character ${characterId} not claimable: ${claimCheck.reason}`,
+      );
       return { success: false, message: claimCheck.reason || "Not claimable" };
     }
 
     const previousOwnerId = claimCheck.ownerId;
-    logger.info(`[Characters] 🎯 Claiming affiliate character ${characterId} for user ${userId}`, {
-      previousOwnerId,
-    });
+    logger.info(
+      `[Characters] 🎯 Claiming affiliate character ${characterId} for user ${userId}`,
+      {
+        previousOwnerId,
+      },
+    );
 
     // Transfer character ownership
     const updated = await userCharactersRepository.update(characterId, {
@@ -946,19 +1044,25 @@ export class CharactersService {
         .returning({ room_id: elizaRoomCharactersTable.room_id });
 
       if (roomUpdateResult.length > 0) {
-        logger.info(`[Characters] Transferred ${roomUpdateResult.length} room association(s)`, {
-          characterId,
-          fromUserId: previousOwnerId,
-          toUserId: userId,
-        });
+        logger.info(
+          `[Characters] Transferred ${roomUpdateResult.length} room association(s)`,
+          {
+            characterId,
+            fromUserId: previousOwnerId,
+            toUserId: userId,
+          },
+        );
       }
     }
 
-    logger.info(`[Characters] ✅ Successfully claimed character ${characterId}`, {
-      characterName: updated.name,
-      newOwnerId: userId,
-      newOrgId: organizationId,
-    });
+    logger.info(
+      `[Characters] ✅ Successfully claimed character ${characterId}`,
+      {
+        characterName: updated.name,
+        newOwnerId: userId,
+        newOrgId: organizationId,
+      },
+    );
 
     return {
       success: true,
@@ -1010,7 +1114,9 @@ export class CharactersService {
         avatar_url: userCharacters.avatar_url,
         bio: userCharacters.bio,
         owner_id: userCharacters.user_id,
-        owner_name: sql<string | null>`COALESCE(${users.name}, ${users.nickname})`.as("owner_name"),
+        owner_name: sql<
+          string | null
+        >`COALESCE(${users.name}, ${users.nickname})`.as("owner_name"),
         last_interaction_time: sql<string>`MAX(${memoryTable.createdAt})`.as(
           "last_interaction_time",
         ),
@@ -1091,7 +1197,9 @@ export class CharactersService {
     const messageResult = await dbRead
       .select({ count: sql<number>`count(*)` })
       .from(memoryTable)
-      .where(and(eq(memoryTable.entityId, userId), eq(memoryTable.agentId, agentId)));
+      .where(
+        and(eq(memoryTable.entityId, userId), eq(memoryTable.agentId, agentId)),
+      );
     const messageCount = messageResult[0]?.count ?? 0;
 
     // Get rooms count for this user+agent combination
@@ -1099,7 +1207,12 @@ export class CharactersService {
       .select({ count: sql<number>`count(*)` })
       .from(roomTable)
       .innerJoin(participantTable, eq(roomTable.id, participantTable.roomId))
-      .where(and(eq(roomTable.agentId, agentId), eq(participantTable.entityId, userId)));
+      .where(
+        and(
+          eq(roomTable.agentId, agentId),
+          eq(participantTable.entityId, userId),
+        ),
+      );
     const roomCount = roomResult[0]?.count ?? 0;
 
     return {
@@ -1146,7 +1259,10 @@ export class CharactersService {
 
     // Verify this is a saved agent (not owned by user)
     const agent = await dbRead.query.userCharacters.findFirst({
-      where: and(eq(userCharacters.id, agentId), ne(userCharacters.user_id, userId)),
+      where: and(
+        eq(userCharacters.id, agentId),
+        ne(userCharacters.user_id, userId),
+      ),
     });
 
     if (!agent) {
@@ -1158,15 +1274,20 @@ export class CharactersService {
       .select({ roomId: participantTable.roomId })
       .from(participantTable)
       .innerJoin(roomTable, eq(participantTable.roomId, roomTable.id))
-      .where(and(eq(participantTable.entityId, userId), eq(roomTable.agentId, agentId)));
+      .where(
+        and(
+          eq(participantTable.entityId, userId),
+          eq(roomTable.agentId, agentId),
+        ),
+      );
 
     const roomIds = userRooms
       .map((r) => r.roomId)
       .filter((roomId): roomId is string => typeof roomId === "string");
 
     // Use transaction to ensure atomicity of all delete operations
-    const { deletedMemories, deletedParticipants, deletedRooms } = await dbWrite.transaction(
-      async (tx) => {
+    const { deletedMemories, deletedParticipants, deletedRooms } =
+      await dbWrite.transaction(async (tx) => {
         let memoryCount = 0;
         let participantCount = 0;
         let roomCount = 0;
@@ -1177,7 +1298,12 @@ export class CharactersService {
           // the agent's memories and other users' data
           const memoryResult = await tx
             .delete(memoryTable)
-            .where(and(eq(memoryTable.entityId, userId), inArray(memoryTable.roomId, roomIds)))
+            .where(
+              and(
+                eq(memoryTable.entityId, userId),
+                inArray(memoryTable.roomId, roomIds),
+              ),
+            )
             .returning({ id: memoryTable.id });
           memoryCount = memoryResult.length;
 
@@ -1185,7 +1311,10 @@ export class CharactersService {
           const participantResult = await tx
             .delete(participantTable)
             .where(
-              and(eq(participantTable.entityId, userId), inArray(participantTable.roomId, roomIds)),
+              and(
+                eq(participantTable.entityId, userId),
+                inArray(participantTable.roomId, roomIds),
+              ),
             )
             .returning({ id: participantTable.id });
           participantCount = participantResult.length;
@@ -1209,12 +1338,16 @@ export class CharactersService {
 
           // Find rooms with no remaining participants (count = 0 or not in results)
           const emptyRoomIds = roomIds.filter(
-            (roomId) => !participantCountMap.has(roomId) || participantCountMap.get(roomId) === 0,
+            (roomId) =>
+              !participantCountMap.has(roomId) ||
+              participantCountMap.get(roomId) === 0,
           );
 
           // Delete all empty rooms in a single batch query
           if (emptyRoomIds.length > 0) {
-            await tx.delete(roomTable).where(inArray(roomTable.id, emptyRoomIds));
+            await tx
+              .delete(roomTable)
+              .where(inArray(roomTable.id, emptyRoomIds));
             roomCount = emptyRoomIds.length;
           }
         }
@@ -1223,7 +1356,12 @@ export class CharactersService {
         // that might be in other rooms (e.g., world rooms, etc.)
         const directMemoryResult = await tx
           .delete(memoryTable)
-          .where(and(eq(memoryTable.entityId, userId), eq(memoryTable.agentId, agentId)))
+          .where(
+            and(
+              eq(memoryTable.entityId, userId),
+              eq(memoryTable.agentId, agentId),
+            ),
+          )
           .returning({ id: memoryTable.id });
         memoryCount += directMemoryResult.length;
 
@@ -1232,8 +1370,7 @@ export class CharactersService {
           deletedParticipants: participantCount,
           deletedRooms: roomCount,
         };
-      },
-    );
+      });
 
     logger.info("[Characters] Removed saved agent:", {
       userId,
