@@ -320,12 +320,15 @@ export function normalizeGmailSearchQueryMatches(
       return true;
     }
     if (tokenBody.startsWith("{") && tokenBody.endsWith("}")) {
-      const rawGroupMembers = tokenBody
-        .slice(1, -1)
-        .trim()
-        .split(/\s+/)
-        .map((entry) => entry.trim())
-        .filter(Boolean);
+      // Split on whitespace but keep quoted phrases (with any operator prefix)
+      // together: `{subject:"project alpha"}` must stay one member, not split
+      // into `subject:"project` / `alpha"`. Mirrors the quote-preserving
+      // tokenizer used by describeEmailSearchQuery().
+      const rawGroupMembers =
+        tokenBody
+          .slice(1, -1)
+          .trim()
+          .match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
       // Gmail brace groups are already implicit disjunctions. A redundant
       // uppercase OR inside the group is syntax, not a search term: treating it
       // as a bare substring makes `{from:alice OR from:bob}` match unrelated
