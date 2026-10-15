@@ -5308,7 +5308,9 @@ const calendarAction: CalendarHandlerAction = {
         transcriptVisibility: "internal",
         modelReplyRequired: true,
         turnComplete: false,
-        text: nativeCalendarFailure,
+        text:
+          nativeCalendarFailure +
+          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source, then retry this Calendar read with details.grantId and details.calendarId from that source. Do not substitute local backend records or change source selections without the owner request.",
         effectReceipts: [
           calendarFailedReceipt({
             message,
