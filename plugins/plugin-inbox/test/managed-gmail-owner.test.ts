@@ -6,6 +6,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagedGmailAdapter } from "../src/inbox/managed-gmail-adapter.ts";
 import { inboxPlugin } from "../src/plugin.ts";
+
 const access = vi.hoisted(() => ({ allowed: true }));
 vi.mock("@elizaos/core", async (original) => ({
   ...(await original<typeof import("@elizaos/core")>()),
@@ -41,7 +42,7 @@ describe("managed Gmail owner boundary", () => {
         providerResult: accepted ? { messageId: "provider-accepted" } : null,
       });
       if (input.operation === "prepare") {
-        id = "alpha-gmail-send:" + "b".repeat(64) + ":" + input.requestId;
+        id = `alpha-gmail-send:${"b".repeat(64)}:${input.requestId}`;
         return Response.json({
           send: {
             id,
