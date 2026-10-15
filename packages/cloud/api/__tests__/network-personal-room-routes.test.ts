@@ -1,6 +1,7 @@
 /** Route component proof: real Hono handlers, entitlement room resolver, and coordinator envelopes; no inference. */
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +91,12 @@ test("Network enrichment preserves selected rooms across the four Personal HTTP 
           setup(builder) {
             builder.onResolve({ filter: /^@elizaos\/core$/ }, () => ({
               path: fileURLToPath(import.meta.resolve("@elizaos/core")),
+              external: true,
+            }));
+            // Keep the real SSH client lazy. These HTTP routes do not connect
+            // to a host; bundling ssh2 eagerly resolves its optional CPU addon.
+            builder.onResolve({ filter: /^ssh2$/ }, ({ path, importer }) => ({
+              path: createRequire(importer).resolve(path),
               external: true,
             }));
             builder.onResolve(
