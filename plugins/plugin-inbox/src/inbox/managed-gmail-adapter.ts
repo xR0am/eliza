@@ -116,8 +116,6 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
     };
     const prepared = await this.sender.prepare(content);
     await owner(runtime, context?.requester);
-    if (this.drafts.size >= 100)
-      this.drafts.delete(this.drafts.keys().next().value!);
     this.drafts.set(prepared.id, {
       agentId: runtime.agentId,
       entityId: caller.entityId,

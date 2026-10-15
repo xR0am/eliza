@@ -36,7 +36,7 @@ describe("managed Gmail owner boundary", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       const input = JSON.parse(String(init?.body)).send;
       const receipt = () => ({
-        requestId: id.split(":").at(-1),
+        requestId: (input.id ?? id).split(":").at(-1),
         kind: "send",
         state: accepted ? "succeeded" : "prepared",
         reviewDigest: digest,
@@ -86,6 +86,14 @@ describe("managed Gmail owner boundary", () => {
     });
     expect(Object.hasOwn(draft, "requester")).toBe(false);
     expect(dispatches).toBe(0);
+    // New reviews must not evict an older pending draft or its send receipt binding.
+    for (let index = 0; index < 100; index++) {
+      await service.draftFollowup(runtime, {
+        ...snapshot,
+        subject: `Later review ${index}`,
+        requester,
+      });
+    }
     await expect(
       adapter.sendDraft(runtime, draft.draftId, {
         requester,

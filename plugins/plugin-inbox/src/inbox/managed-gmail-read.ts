@@ -1,8 +1,8 @@
 /** Optional private host transport for owner-only Inbox Gmail reads.
  * The host retains provider credentials. This source never sends or changes mail. */
 import { ElizaError } from "@elizaos/core";
-import { managedGmailHostTransport } from "./managed-gmail-transport.ts";
 import type { InboxFetcher, InboxItem } from "../actions/inbox.ts";
+import { managedGmailHostTransport } from "./managed-gmail-transport.ts";
 
 const failure = (message: string) =>
   new ElizaError(message, { code: "MANAGED_GMAIL_READ_UNAVAILABLE" });

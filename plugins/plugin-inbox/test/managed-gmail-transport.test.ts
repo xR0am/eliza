@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { managedGmailHostTransport } from "../src/inbox/managed-gmail-transport.ts";
+
 it("an unavailable operation route does not claim the Google account is disconnected", async () => {
   const call = managedGmailHostTransport(
     "http://127.0.0.1:5209/__alpha-owner-gmail",
