@@ -23,6 +23,7 @@ import {
   getScheduledTaskRunner,
   ScheduledTaskRunnerService,
 } from "@elizaos/plugin-scheduling";
+import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MESSAGE_DRAFT_DISPATCH_CHANNEL,
@@ -30,14 +31,6 @@ import {
   registerMessageDraftScheduledTaskBridge,
   unregisterMessageDraftScheduledTaskBridge,
 } from "../src/lifeops/scheduled-task/message-draft-dispatch.js";
-
-type RawSqlQuery = {
-  queryChunks: Array<{ value?: unknown }>;
-};
-
-function rawQueryText(query: RawSqlQuery): string {
-  return String(query.queryChunks.map((chunk) => chunk.value ?? "").join(""));
-}
 
 class DurableDraftAdapter extends BaseMessageAdapter {
   readonly source: MessageSource = "discord";
@@ -102,9 +95,7 @@ async function bootRuntime(
   adapter?: DurableDraftAdapter,
   options: { bridgeInstanceId?: string } = {},
 ): Promise<RuntimeHarness> {
-  const db = {
-    execute: (query: RawSqlQuery) => pg.query(rawQueryText(query)),
-  };
+  const db = drizzle(pg);
   let service: ScheduledTaskRunnerService | null = null;
   const runtime = {
     agentId,
