@@ -1898,8 +1898,8 @@ AsrStream* asr_stream(JNIEnv* env, jlong handle, const char* stage) {
 }
 
 // 1 when this library can stream: the parakeet backend is compiled in and
-// some context has it loaded (0 before the first "asr" acquire, after an
-// evict, and with the Qwen3-ASR backend, which only transcribes in batch).
+// some context has it loaded (0 before the first "asr" acquire and after an
+// evict).
 jint nativeAsrStreamSupported(JNIEnv*, jclass) {
     return static_cast<jint>(eliza_inference_asr_stream_supported());
 }
