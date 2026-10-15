@@ -173,6 +173,47 @@ describe("GitHub account resolution", () => {
     );
   });
 
+  it("uses the token saved from Settings (GITHUB_TOKEN) as the user account", () => {
+    expect(
+      readGitHubAccounts(runtime({ GITHUB_TOKEN: "settings-token" })),
+    ).toEqual([{ accountId: "user", role: "user", token: "settings-token" }]);
+  });
+
+  it("keeps an explicit user PAT ahead of the Settings token", () => {
+    expect(
+      readGitHubAccounts(
+        runtime({
+          GITHUB_USER_PAT: "user-token",
+          GITHUB_TOKEN: "settings-token",
+        }),
+      ),
+    ).toEqual([{ accountId: "user", role: "user", token: "user-token" }]);
+  });
+
+  it("applies a saved or cleared Settings token without a restart", async () => {
+    const settings: Record<string, unknown> = {};
+    const rt = createTestRuntime({
+      agentId: "00000000-0000-4000-8000-000000000001",
+      character: {},
+      getSetting: (key: string) => toRuntimeSetting(settings[key]),
+      getService: () => null,
+    });
+    const { GitHubService } = await import("./services/github-service");
+    const service = (await GitHubService.start(
+      rt,
+      () => ({}) as never,
+    )) as InstanceType<typeof GitHubService>;
+    expect(service.getOctokit({ role: "user" })).toBeNull();
+
+    settings.GITHUB_TOKEN = "settings-token";
+    await service.reloadAccounts();
+    expect(service.getOctokit({ role: "user" })).not.toBeNull();
+
+    settings.GITHUB_TOKEN = null;
+    await service.reloadAccounts();
+    expect(service.getOctokit({ role: "user" })).toBeNull();
+  });
+
   it("resolves explicit accountId before role defaults", () => {
     const accounts = readGitHubAccounts(
       runtime({

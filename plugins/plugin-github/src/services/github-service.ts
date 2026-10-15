@@ -71,6 +71,15 @@ export class GitHubService extends Service implements IGitHubService {
     return service;
   }
 
+  /**
+   * Re-read the configured accounts. The Settings token routes call this after
+   * they save or clear GITHUB_TOKEN, so a connected token is used, and a
+   * disconnected one stops working, without an agent restart.
+   */
+  async reloadAccounts(): Promise<void> {
+    await this.initialize();
+  }
+
   private async initialize(): Promise<void> {
     if (!this.runtime) {
       return;

@@ -200,6 +200,24 @@ export function readGitHubAccounts(
       "ELIZA_E2E_GITHUB_USER_PAT",
     ),
   );
+  // The token saved from Settings → Coding Agents (`/api/github/token` and the
+  // device sign-in) is GITHUB_TOKEN. It is the user's own token, so it is the
+  // user account when no other user account is configured.
+  if (
+    !Array.from(accounts.values()).some((account) => account.role === "user")
+  ) {
+    addAccount(
+      accounts,
+      legacyAccount(
+        runtime,
+        "user",
+        readSetting(runtime, "GITHUB_USER_ACCOUNT_ID") ??
+          DEFAULT_GITHUB_USER_ACCOUNT_ID,
+        "GITHUB_TOKEN",
+        "GITHUB_TOKEN",
+      ),
+    );
+  }
   addAccount(
     accounts,
     legacyAccount(
