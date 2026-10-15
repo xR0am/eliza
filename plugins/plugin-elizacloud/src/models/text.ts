@@ -976,6 +976,12 @@ function normalizeNativeToolEntry(
     return undefined;
   }
   const description = firstString(nested.description, tool.description);
+  const strict =
+    typeof nested.strict === "boolean"
+      ? nested.strict
+      : typeof tool.strict === "boolean"
+        ? tool.strict
+        : undefined;
   const inputSchema = unwrapJsonSchema(
     nested.parameters ??
       tool.inputSchema ??
@@ -988,6 +994,7 @@ function normalizeNativeToolEntry(
       name,
       ...(description ? { description } : {}),
       parameters: inputSchema,
+      ...(strict !== undefined ? { strict } : {}),
     },
   };
 }
