@@ -13,11 +13,11 @@ reset quotas and split financial authority; they are outside this change.
 
 ## Pending qualification
 
-The parent commit `913cd6f` still uses the older three-second actor validity.
-Before any bundle, native test, or deployment of this split, compose the owning
-qualified five-second rate patch into the same canonical class and caller. This
-boundary commit does not carry that fix. The source-contract command below checks
-transfer preparation only; it is not runtime qualification or permission to deploy.
+This clean branch starts from `2356dd0`, which includes the qualified five-second
+caller and actor validity change. The entry reuses that same canonical actor;
+it does not inherit the separate Core import cleanup or build-foundation changes.
+The source-contract command below checks transfer preparation only; it is not
+runtime qualification or permission to deploy.
 
 ## Source and build boundary
 
