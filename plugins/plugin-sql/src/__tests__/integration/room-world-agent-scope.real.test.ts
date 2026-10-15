@@ -46,6 +46,8 @@ it("scopes room and world reads, updates and deletes to each adapter", async () 
     expect((await owner.getRoomsByIds([room.id]))?.[0]?.name).toBe("Owner room");
     await other.deleteRoom(room.id);
     expect((await owner.getRoomsByIds([room.id]))?.[0]?.agentId).toBe(ownerId);
+    await other.removeWorld(worldId);
+    expect((await owner.getWorld(worldId))?.name).toBe("Owner world");
     await other.deleteWorlds([worldId]);
     expect((await owner.getWorld(worldId))?.name).toBe("Owner world");
     await owner.updateRoom({ ...room, name: "Owner rename" });
