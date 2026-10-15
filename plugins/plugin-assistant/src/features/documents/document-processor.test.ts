@@ -669,7 +669,8 @@ describe("createRateLimiter", () => {
       sentAt.push(Date.now());
     });
 
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(59_998);
+    expect(Date.now()).toBe(59_999);
     expect(laterSettled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await later;
@@ -694,7 +695,7 @@ describe("createRateLimiter", () => {
 
     await vi.advanceTimersByTimeAsync(59_998);
     expect(sentAt).toEqual([0]);
-    await vi.advanceTimersByTimeAsync(2);
+    await vi.advanceTimersByTimeAsync(1);
     await second;
     expect(sentAt).toEqual([0, 60_000]);
 

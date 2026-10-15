@@ -14,7 +14,12 @@ import type {
 } from "../../../types/social-media";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const GRAPH_API_BASE = "https://graph.facebook.com/v19.0";
 
@@ -86,7 +91,8 @@ async function graphApiRequest<T>(
       }),
     async (response) => {
       const json = (await response.json()) as T;
-      if ((json as GraphApiError).error) throw new Error((json as GraphApiError).error!.message);
+      if ((json as GraphApiError).error)
+        throw new SocialApiRejectionError((json as GraphApiError).error!.message);
       return json;
     },
     { platform: "facebook", maxRetries: 3, ...retry },
