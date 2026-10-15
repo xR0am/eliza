@@ -24,23 +24,6 @@ export function createX402Client(
 }
 
 /**
- * [MAX-ADDED] Build a RequestInit from a Request object. An explicit init
- * takes precedence over the Request's own fields.
- */
-function requestInitFromRequest(
-  input: Request,
-  init?: RequestInit,
-): RequestInit {
-  return {
-    method: input.method,
-    headers: input.headers,
-    body: input.body,
-    redirect: input.redirect,
-    ...init,
-  };
-}
-
-/**
  * [MAX-ADDED] Create an x402-aware fetch function (drop-in replacement).
  *
  * Usage:
@@ -58,7 +41,7 @@ export function createX402Fetch(
   const client = new X402Client(wallet, config);
   const impl = (input: string | URL | Request, init?: RequestInit) => {
     if (input instanceof Request) {
-      return client.fetch(input.url, requestInitFromRequest(input, init));
+      return client.fetch(input, init);
     }
     return client.fetch(input.toString(), init);
   };
@@ -85,7 +68,12 @@ export function wrapWithX402(
     init?: RequestInit,
   ): Promise<Response> => {
     const url = input instanceof Request ? input.url : input.toString();
-    const response = await fetchFn(input, init);
+    // Keep an unconsumed branch before the first fetch reads the request body.
+    const request = input instanceof Request ? new Request(input, init) : null;
+    const retryRequest = request?.clone();
+    const response = request
+      ? await fetchFn(request)
+      : await fetchFn(input, init);
 
     if (response.status !== 402) {
       return response;
@@ -99,10 +87,9 @@ export function wrapWithX402(
     if (!selected) return response;
 
     // Use the client's fetch for retry (which calls globalThis.fetch)
-    return wrappedClient.fetch(
-      url,
-      input instanceof Request ? requestInitFromRequest(input, init) : init,
-    );
+    return retryRequest
+      ? wrappedClient.fetch(retryRequest)
+      : wrappedClient.fetch(url, init);
   };
   return impl as typeof globalThis.fetch;
 }
