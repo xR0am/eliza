@@ -196,6 +196,7 @@ function ports(args: {
   local?: LinkedCalendarLocalSnapshot | null;
   provider?: LinkedCalendarProviderSnapshot | null;
   createError?: unknown;
+  updateExpectedEtag?: string;
   localApplyError?: unknown;
   localDeleteError?: unknown;
 }) {
@@ -243,6 +244,14 @@ function ports(args: {
         event: LinkedCalendarSemanticEvent,
       ) {
         updates += 1;
+        if (
+          args.updateExpectedEtag &&
+          _record.providerEtag !== args.updateExpectedEtag
+        )
+          throw Object.assign(new Error("Provider revision changed"), {
+            outcome: "precondition_failed",
+            code: "GOOGLE_CALENDAR_PRECONDITION_FAILED",
+          });
         provider = { eventId: "google-event-1", etag: '"g2"', event };
         return provider;
       },
@@ -837,6 +846,50 @@ describe("LinkedCalendarReconciler", () => {
       lastErrorCode: "LINKED_CALENDAR_LOCAL_CAS_REJECTED",
     });
   });
+
+  it.each(['"g5"', null])(
+    "keeps the selected local value only against a fresh provider revision (%s)",
+    async (etag) => {
+      const store = new MemoryStore(
+        record({
+          state: "conflicted",
+          providerEventId: "google-event-1",
+          providerEtag: '"g1"',
+          lastCommonSemanticHash: "old",
+        }),
+      );
+      const testPorts = ports({
+        local: {
+          eventId: "local-1",
+          revision: 4,
+          event: { ...baseEvent, title: "Local wins" },
+        },
+        provider: {
+          eventId: "google-event-1",
+          etag,
+          event: { ...baseEvent, title: "Provider edit" },
+        },
+        updateExpectedEtag: '"g5"',
+      });
+      const result = await new LinkedCalendarReconciler(
+        store,
+        testPorts.localPort,
+        testPorts.providerPort,
+      ).resolveConflict(store.current, "keep_eliza");
+      expect(result).toBe(etag ? "pushed" : "quarantined");
+      expect(testPorts.counts().updates).toBe(etag ? 1 : 0);
+      if (etag)
+        expect(store.current).toMatchObject({
+          state: "clean",
+          localRevision: 4,
+          providerEtag: '"g2"',
+        });
+      else
+        expect(store.current.lastErrorCode).toBe(
+          "LINKED_PROVIDER_REVISION_MISSING",
+        );
+    },
+  );
 
   it("resolves a stale two-sided conflict using the owner's selected provider value", async () => {
     const store = new MemoryStore(
