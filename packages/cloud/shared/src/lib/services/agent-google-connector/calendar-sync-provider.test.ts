@@ -258,6 +258,19 @@ describe("managed Calendar conditional provider", () => {
       outcome: "not_accepted",
     });
     expect(f.patches()).toBe(before);
+    f.events.get(first.eventId)!.attendeesOmitted = false;
+    f.events.get(first.eventId)!.unmodeledMetadata = "X".repeat(200000);
+    await expect(
+      f.provider.update(owner, "primary", first.eventId, '"2"', {
+        ...initial,
+        description: "Y".repeat(64000),
+      }),
+    ).rejects.toMatchObject({
+      status: 413,
+      code: "CALENDAR_SYNC_TOO_LARGE",
+      outcome: "not_accepted",
+    });
+    expect(f.patches()).toBe(before);
   });
   test("wildcard preconditions, malformed dates, and conflicting references make no request", async () => {
     const f = fixture();

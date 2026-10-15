@@ -42,6 +42,7 @@ const atom = (value: unknown, max = 2048): value is string =>
   value.length <= max &&
   !/[\u0000-\u001f\u007f]/.test(value);
 const endpoint = "https://www.googleapis.com/calendar/v3";
+const providerBytesLimit = 256 * 1024;
 const eventSchema = z
   .object({
     title: z.string().trim().min(1).max(4000),
@@ -334,6 +335,14 @@ export class ManagedCalendarSyncProvider {
         "not_accepted",
         "Calendar write permission is unavailable.",
       );
+    const encoded = body ? JSON.stringify(body) : undefined;
+    if (encoded !== undefined && new TextEncoder().encode(encoded).length > providerBytesLimit)
+      throw new CalendarSyncError(
+        413,
+        "CALENDAR_SYNC_TOO_LARGE",
+        "not_accepted",
+        "The complete Calendar update exceeds the provider request budget. No fields were dropped and nothing was changed.",
+      );
     let status: number,
       data: Json | null = null;
     try {
@@ -348,12 +357,12 @@ export class ManagedCalendarSyncProvider {
             ...(body ? { "Content-Type": "application/json" } : {}),
             ...(expectedEtag ? { "If-Match": etag(expectedEtag) } : {}),
           },
-          ...(body ? { body: JSON.stringify(body) } : {}),
+          ...(encoded === undefined ? {} : { body: encoded }),
         },
         {
           provider: "google-calendar-sync",
           timeoutMs: 30000,
-          maxResponseBytes: 256 * 1024,
+          maxResponseBytes: providerBytesLimit,
           fetchImpl: this.dependencies.request,
         },
       );
