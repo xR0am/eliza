@@ -1,5 +1,6 @@
 /** Read-only source checks for the pending staging transfer; never invokes Cloudflare. */
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 interface WorkerConfig {
   name?: string;
@@ -14,6 +15,8 @@ interface WorkerConfig {
   durable_objects?: { bindings?: unknown[] };
   exports?: Record<string, Record<string, unknown>>;
   vars?: Record<string, unknown>;
+  define?: Record<string, string>;
+  alias?: Record<string, string>;
   hyperdrive?: { binding: string; id: string }[];
   kv_namespaces?: { binding: string; id: string }[];
   env?: Record<string, WorkerConfig>;
@@ -47,6 +50,39 @@ requireContract(
   JSON.stringify(target.compatibility_flags) ===
     JSON.stringify(stage.compatibility_flags ?? source.compatibility_flags),
   "Compatibility flag drift",
+);
+function sortedEntries(values: Record<string, string> | undefined) {
+  return Object.entries(values ?? {}).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+}
+
+function resolvedAliases(
+  values: Record<string, string> | undefined,
+  base: URL,
+) {
+  return sortedEntries(values).map(([name, value]) => [
+    name,
+    fileURLToPath(new URL(value, base)),
+  ]);
+}
+
+requireContract(
+  JSON.stringify(sortedEntries(target.define)) ===
+    JSON.stringify(sortedEntries(stage.define ?? source.define)),
+  "Build defines must exactly match canonical staging",
+);
+requireContract(
+  JSON.stringify(
+    resolvedAliases(target.alias, new URL("./", import.meta.url)),
+  ) ===
+    JSON.stringify(
+      resolvedAliases(
+        stage.alias ?? source.alias,
+        new URL("../api/", import.meta.url),
+      ),
+    ),
+  "Build aliases must resolve to the exact canonical staging map, without extra aliases",
 );
 requireContract(
   !target.migrations,

@@ -9,6 +9,26 @@ workers_dev = false
 preview_urls = false
 tsconfig = "../api/tsconfig.json"
 
+# Match the canonical staging API build substitutions and Worker adapters.
+[define]
+__dirname = "\"/\""
+__filename = "\"/worker.js\""
+
+[alias]
+"@elizaos/plugin-elevenlabs" = "../api/src/stubs/elizaos-plugin-elevenlabs.ts"
+"@elizaos/cloud-sdk" = "../sdk/src/index.ts"
+"@elizaos/cloud-shared" = "../shared/src/index.ts"
+"@elizaos/core/contracts/cloud-coding-containers" = "../../core/src/contracts/cloud-coding-containers.ts"
+"@elizaos/plugin-native-inference/model-catalog/voice-models" = "../../../plugins/plugin-native-inference/src/model-catalog/voice-models.ts"
+"@brighter/storage-adapter-s3" = "../api/src/stubs/brighter-storage-adapter-s3.ts"
+"ssh2" = "../api/src/stubs/ssh2.ts"
+"undici" = "../api/src/stubs/undici.ts"
+"unpdf" = "../api/src/stubs/unpdf.ts"
+"mammoth" = "../api/src/stubs/mammoth.ts"
+"@electric-sql/pglite" = "../api/src/stubs/pglite.ts"
+"@electric-sql/pglite/vector" = "../api/src/stubs/pglite.ts"
+"@electric-sql/pglite/contrib/btree_gist" = "../api/src/stubs/pglite.ts"
+
 [observability]
 enabled = true
 

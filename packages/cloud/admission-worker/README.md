@@ -27,6 +27,11 @@ snapshot validation, and logging. Funded controller and PostgreSQL recovery stay
 dynamic. This removes the API router and unrelated Durable Object classes from
 the Worker entry graph. It does not establish any cold-start improvement.
 
+The target also retains the canonical staging API define map and all 13 existing
+Worker adapters. Alias paths are rebased to this config directory; no new Core,
+plugin, or implementation aliases are introduced. The source contract compares
+resolved paths and the exact define map.
+
 Use the normal built workspace dependencies and pinned Wrangler. After the sole
 build owner releases the producer, from the repository root run:
 
