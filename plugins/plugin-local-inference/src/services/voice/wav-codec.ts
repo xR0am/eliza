@@ -60,10 +60,7 @@ export function decodeMonoPcm16Wav(bytes: Uint8Array): TranscriptionAudio {
 		throw new Error("[voice] WAV input is too short to contain a header");
 	}
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-	if (
-		readAscii(bytes, 0, 4) !== "RIFF" ||
-		readAscii(bytes, 8, 4) !== "WAVE"
-	) {
+	if (readAscii(bytes, 0, 4) !== "RIFF" || readAscii(bytes, 8, 4) !== "WAVE") {
 		throw new Error("[voice] Local transcription expects mono PCM16 WAV bytes");
 	}
 	let fmtOffset = 12;
@@ -79,7 +76,9 @@ export function decodeMonoPcm16Wav(bytes: Uint8Array): TranscriptionAudio {
 	}
 	const fmtChunkBytes = view.getUint32(fmtOffset + 4, true);
 	if (fmtChunkBytes < 16 || fmtOffset + 8 + fmtChunkBytes > bytes.byteLength) {
-		throw new Error("[voice] WAV fmt chunk exceeds input length or is too short");
+		throw new Error(
+			"[voice] WAV fmt chunk exceeds input length or is too short",
+		);
 	}
 	const audioFormat = view.getUint16(fmtOffset + 8, true);
 	const channels = view.getUint16(fmtOffset + 10, true);
