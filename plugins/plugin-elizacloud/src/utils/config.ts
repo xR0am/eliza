@@ -2,7 +2,7 @@
 import { DEFAULT_ELIZA_CLOUD_LARGE_TEXT_MODEL } from "@elizaos/host/protocol";
 import { DEFAULT_ELIZA_CLOUD_TEXT_MODEL } from "@elizaos/host/protocol";
 import { ElizaError } from "@elizaos/core";
-import { captureDevCloudEnvAuthoritySnapshot } from "../cloud-config/dev-cloud-env-authority.js";
+import { captureDevCloudEnvAuthoritySnapshot, isCloudAuthorityKey, resolveDevCloudAuthorityEnvValue } from "../cloud-config/dev-cloud-env-authority.js";
 import { logger } from "@elizaos/core";
 import { resolveSetting } from "@elizaos/core";
 import { type DevCloudEnvAuthority } from "../cloud-config/dev-cloud-env-authority.js";
@@ -16,6 +16,11 @@ export const DEFAULT_ELIZA_CLOUD_LARGE_MODEL = DEFAULT_ELIZA_CLOUD_LARGE_TEXT_MO
  * strings treated as unset).
  */
 export function getSetting(runtime: IAgentRuntime, key: string, defaultValue?: string): string | undefined {
+    // The sealed runtime uses "" for absent keys. Read the launch tuple itself
+    // so only truly absent settings fall back; explicit invalid values stay raw.
+    if (isCloudAuthorityKey(key) && captureDevCloudEnvAuthoritySnapshot(process.env)) {
+        return resolveDevCloudAuthorityEnvValue(key.toUpperCase(), process.env) ?? defaultValue;
+    }
     return defaultValue === undefined
         ? resolveSetting(runtime, key)
         : resolveSetting(runtime, key, { defaultValue });
@@ -128,8 +133,6 @@ export function getApiKey(runtime: IAgentRuntime): string | undefined {
 }
 /** Explicit configured native product; the server resolves all tenant and funding authority. */
 export function getNativeApplicationSlot(runtime: IAgentRuntime): string | undefined {
-    const snapshot = captureDevCloudEnvAuthoritySnapshot(process.env);
-    if (snapshot) return snapshot.values.ELIZAOS_CLOUD_APPLICATION_SLOT;
     return getSetting(runtime, "ELIZAOS_CLOUD_APPLICATION_SLOT");
 }
 /** One key per logical model call, retained by the caller across warming or transport retries. */
