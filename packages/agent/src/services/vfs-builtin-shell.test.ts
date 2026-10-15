@@ -77,6 +77,38 @@ describe("runVfsBuiltinShell >> redirect", () => {
   });
 });
 
+describe("runVfsBuiltinShell redirect with a failing command", () => {
+  it("truncates a stale > target and propagates the exit code", async () => {
+    await vfs().writeFile("log.txt", "alpha\n");
+    await vfs().writeFile("out.txt", "stale\n");
+
+    const result = await sh("grep nomatch log.txt > out.txt");
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(await vfs().readFile("out.txt")).toBe("");
+  });
+
+  it("creates an empty > target for an unknown command", async () => {
+    const result = await sh("unknowncmd > new.txt");
+
+    expect(result.exitCode).toBe(127);
+    expect(result.stdout).toBe("");
+    expect(await vfs().readFile("new.txt")).toBe("");
+  });
+
+  it("leaves a >> target unchanged and propagates the exit code", async () => {
+    await vfs().writeFile("log.txt", "alpha\n");
+    await vfs().writeFile("log2.txt", "keep\n");
+
+    const result = await sh("grep nomatch log.txt >> log2.txt");
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(await vfs().readFile("log2.txt")).toBe("keep\n");
+  });
+});
+
 describe("runVfsBuiltinShell quoted redirection", () => {
   it.each([
     ["echo 'alpha>beta'", "alpha>beta\n"],
