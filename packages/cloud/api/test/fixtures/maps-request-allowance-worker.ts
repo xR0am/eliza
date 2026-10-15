@@ -10,6 +10,10 @@ export class MapsTestGate {
     const result = this.queue.then(async () => {
       const body = (await request.json()) as Record<string, unknown>;
       const path = new URL(request.url).pathname;
+      if (path === "/test/config") {
+        this.env = { ...this.env, ...body };
+        return Response.json({ configured: true });
+      }
       if (path === "/test/seed") {
         await this.state.storage.put(body);
         return Response.json({ seeded: true });
