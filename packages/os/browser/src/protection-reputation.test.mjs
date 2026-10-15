@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import {
+  PHISHING_COMMIT_FEED,
+  parseLatestCommitFeed,
+} from "../protection/policy.mjs";
 import { createWebsiteReputation as create } from "../protection/reputation.mjs";
 
 const PHISHING_FEED = "https://phish.co.za/latest/phishing-domains-ACTIVE.txt";
@@ -229,17 +233,13 @@ test("primary outage uses immutable official mirror bytes; an old commit is acce
     fetchImpl: async (url) => {
       urls.push(url);
       if (url === PHISHING_FEED) return new Response("", { status: 403 });
-      if (url.startsWith("https://api.github.com/"))
-        return Response.json([
-          {
-            sha,
-            commit: {
-              committer: {
-                date: new Date(start - 13 * 24 * 3600000).toISOString(),
-              },
-            },
-          },
-        ]);
+      assert.ok(!url.startsWith("https://api.github.com/"));
+      if (url === PHISHING_COMMIT_FEED)
+        return new Response(
+          `<?xml version="1.0"?><feed><updated>2020-01-01T00:00:00Z</updated><entry><id>tag:github.com,2008:Grit::Commit/${sha}</id><updated>${new Date(
+            start - 13 * 24 * 3600000,
+          ).toISOString()}</updated></entry></feed>`,
+        );
       assert.equal(
         url,
         `https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/${sha}/phishing-domains-ACTIVE.txt`,
@@ -307,4 +307,25 @@ test("local-only checks return during a stalled feed download and use the result
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("the commit feed parser reads only the latest entry and rejects feeds without a commit", () => {
+  const sha = "b".repeat(40);
+  assert.deepEqual(
+    parseLatestCommitFeed(
+      `<feed><updated>2020-01-01T00:00:00Z</updated><entry><id>tag:github.com,2008:Grit::Commit/${sha}</id><updated>2026-10-02T15:30:28Z</updated></entry><entry><id>tag:github.com,2008:Grit::Commit/${"c".repeat(40)}</id></entry></feed>`,
+    ),
+    { sha, publishedAt: Date.parse("2026-10-02T15:30:28Z") },
+  );
+  const undated = parseLatestCommitFeed(
+    `<feed><entry><id>tag:github.com,2008:Grit::Commit/${sha}</id></entry></feed>`,
+  );
+  assert.equal(undated.sha, sha);
+  assert.ok(Number.isNaN(undated.publishedAt));
+  for (const atom of [
+    "",
+    "<html>rate limited</html>",
+    "<feed><entry><id>tag:github.com,2008:Grit::Commit/short</id></entry></feed>",
+  ])
+    assert.equal(parseLatestCommitFeed(atom), null);
 });
