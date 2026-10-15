@@ -8,13 +8,13 @@
  * subscription keeps precedence while it is effective.
  */
 import { ElizaError } from "@elizaos/core";
-import { and, desc, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { isProductionDeployment } from "../../lib/config/deployment-environment";
 import { getCloudAwareEnv } from "../../lib/runtime/cloud-bindings";
 import { ensureInferencePolicyMutation } from "../../lib/services/inference-policy-fence";
 import { resolveSubscriptionPlanDefinition } from "../../lib/services/subscription-catalog";
 import type { DbTransaction } from "../client";
-import { writeTransaction } from "../helpers";
+import { dbWrite, writeTransaction } from "../helpers";
 import { organizationSubscriptionAuthorities } from "../schemas/billing-subscriptions";
 import {
   type OrganizationEntitlement,
@@ -145,6 +145,23 @@ export function grantAllowanceSchedule(
   return schedule;
 }
 
+/** Current month plus two future months, retaining the original grant's calendar anchor. */
+function lifetimeAllowanceSchedule(startsAt: Date, now: Date, amount: string) {
+  let index = Math.max(
+    0,
+    (now.getUTCFullYear() - startsAt.getUTCFullYear()) * 12 +
+      now.getUTCMonth() -
+      startsAt.getUTCMonth(),
+  );
+  if (index > 0 && addUtcMonths(startsAt, index) > now) index -= 1;
+  return Array.from({ length: 3 }, (_, offset) => ({
+    periodStart: addUtcMonths(startsAt, index + offset),
+    periodEnd: addUtcMonths(startsAt, index + offset + 1),
+    amount,
+    index: index + offset,
+  }));
+}
+
 /** The plan policy a grant publishes; the same catalogue values a paid projection uses. */
 export function grantEntitlementPlanValues(
   grant: Pick<SubscriptionGrant, "plan_key" | "catalog_version">,
@@ -179,7 +196,7 @@ export async function readActiveSubscriptionGrant(
         eq(subscriptionGrants.organization_id, organizationId),
         isNull(subscriptionGrants.revoked_at),
         lte(subscriptionGrants.starts_at, now),
-        gt(subscriptionGrants.ends_at, now),
+        or(isNull(subscriptionGrants.ends_at), gt(subscriptionGrants.ends_at, now)),
       ),
     )
     .orderBy(desc(subscriptionGrants.ends_at))
@@ -260,7 +277,8 @@ export class SubscriptionGrantsRepository {
 
     const plan = resolveSubscriptionPlanDefinition(code.plan_key, code.catalog_version);
     const startsAt = now;
-    const endsAt = new Date(now.getTime() + code.duration_days * DAY_MS);
+    const endsAt =
+      code.duration_days === null ? null : new Date(now.getTime() + code.duration_days * DAY_MS);
     const [grant] = await tx
       .insert(subscriptionGrants)
       .values({
@@ -298,7 +316,7 @@ export class SubscriptionGrantsRepository {
       change: {
         grantId: grant.id,
         planKey: grant.plan_key,
-        endsAt: grant.ends_at.toISOString(),
+        endsAt: grant.ends_at?.toISOString() ?? null,
         projectionRevision: projected?.projection_revision ?? null,
       },
     });
@@ -310,10 +328,26 @@ export class SubscriptionGrantsRepository {
     grant: SubscriptionGrant,
     monthlyAmountUsd: string,
     now: Date,
-  ): Promise<void> {
+  ): Promise<number> {
     const environment = isProductionDeployment(getCloudAwareEnv()) ? "live" : "test";
-    const schedule = grantAllowanceSchedule(grant.starts_at, grant.ends_at, monthlyAmountUsd);
+    const schedule =
+      grant.ends_at === null
+        ? lifetimeAllowanceSchedule(grant.starts_at, now, monthlyAmountUsd)
+        : grantAllowanceSchedule(grant.starts_at, grant.ends_at, monthlyAmountUsd);
+    let created = 0;
     for (const [index, bucket] of schedule.entries()) {
+      const periodIndex = "index" in bucket ? bucket.index : index;
+      // The organization lock serializes replenishment, redemption and revocation.
+      const [existing] = await tx
+        .select({ id: subscriptionAllowancePeriods.id })
+        .from(subscriptionAllowancePeriods)
+        .where(
+          and(
+            eq(subscriptionAllowancePeriods.promo_grant_id, grant.id),
+            eq(subscriptionAllowancePeriods.period_start, bucket.periodStart),
+          ),
+        );
+      if (existing) continue;
       const [period] = await tx
         .insert(subscriptionAllowancePeriods)
         .values({
@@ -350,12 +384,12 @@ export class SubscriptionGrantsRepository {
         expired_after: "0.000000",
         clawed_back_before: "0.000000",
         clawed_back_after: "0.000000",
-        idempotency_key: `promo_grant:${grant.id}:${index}`,
+        idempotency_key: `promo_grant:${grant.id}:${periodIndex}`,
         request_digest: await sha256Hex(
           [
             "promo_grant",
             grant.id,
-            String(index),
+            String(periodIndex),
             bucket.periodStart.toISOString(),
             bucket.amount,
           ].join("\0"),
@@ -363,7 +397,68 @@ export class SubscriptionGrantsRepository {
         metadata: { promoGrantId: grant.id },
         occurred_at: now,
       });
+      created += 1;
     }
+    return created;
+  }
+
+  /** Extends only missing lifetime allowance windows; missed months never accumulate. */
+  async replenishLifetimeAllowances(limit = 5): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new Error("Lifetime grant replenishment limit must be 1 to 100");
+    const candidates = await dbWrite
+      .select({ id: subscriptionGrants.id, organizationId: subscriptionGrants.organization_id })
+      .from(subscriptionGrants)
+      .innerJoin(organizations, eq(organizations.id, subscriptionGrants.organization_id))
+      .where(
+        and(
+          eq(organizations.is_active, true),
+          eq(organizations.account_lifecycle_state, "active"),
+          isNull(subscriptionGrants.ends_at),
+          isNull(subscriptionGrants.revoked_at),
+          sql`${subscriptionGrants.starts_at} <= clock_timestamp()`,
+          sql`NOT EXISTS (SELECT 1 FROM ${subscriptionAllowancePeriods} p WHERE p.promo_grant_id = ${subscriptionGrants.id}
+          AND p.period_end > clock_timestamp() + interval '35 days')`,
+        ),
+      )
+      .orderBy(subscriptionGrants.id)
+      .limit(limit);
+    let created = 0;
+    for (const candidate of candidates) {
+      created += await writeTransaction(async (tx) => {
+        await ensureInferencePolicyMutation(tx, candidate.organizationId);
+        const [org] = await tx
+          .select({ active: organizations.is_active, state: organizations.account_lifecycle_state })
+          .from(organizations)
+          .where(eq(organizations.id, candidate.organizationId))
+          .for("update");
+        if (!org?.active || org.state !== "active") return 0;
+        const [grant] = await tx
+          .select()
+          .from(subscriptionGrants)
+          .where(eq(subscriptionGrants.id, candidate.id))
+          .for("update");
+        const now = await readPostLockDatabaseNow(tx);
+        if (!grant || grant.ends_at !== null || grant.revoked_at !== null || grant.starts_at > now)
+          return 0;
+        const plan = resolveSubscriptionPlanDefinition(grant.plan_key, grant.catalog_version);
+        const count = await this.grantAllowanceInTransaction(
+          tx,
+          grant,
+          plan.allowance.amountUsd,
+          now,
+        );
+        if (count)
+          await advanceOrganizationPolicyGeneration(tx, {
+            organizationId: candidate.organizationId,
+            reason: "entitlement",
+            actor: "system:subscription_grant",
+            change: { grantId: grant.id, replenishedPeriods: count },
+          });
+        return count;
+      });
+    }
+    return created;
   }
 
   /**
@@ -396,8 +491,8 @@ export class SubscriptionGrantsRepository {
     // A longer-running grant projection from another family keeps its window.
     if (
       current?.source_grant_id &&
-      current.effective_until !== null &&
-      current.effective_until >= grant.ends_at
+      (current.effective_until === null ||
+        (grant.ends_at !== null && current.effective_until >= grant.ends_at))
     )
       return current;
     return this.writeProjectionInTransaction(tx, grant.organization_id, current, {

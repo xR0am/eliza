@@ -16,7 +16,7 @@ export const subscriptionGrantCodes = pgTable(
       .notNull()
       .default("plus_monthly"),
     catalog_version: text("catalog_version").notNull().default("v1"),
-    duration_days: integer("duration_days").notNull().default(183),
+    duration_days: integer("duration_days").default(183),
     max_redemptions: integer("max_redemptions").notNull(),
     redeemed_count: integer("redeemed_count").notNull().default(0),
     expires_at: timestamp("expires_at", { withTimezone: true }),
@@ -52,7 +52,8 @@ export const subscriptionGrants = pgTable(
     catalog_version: text("catalog_version").notNull(),
     idempotency_key: text("idempotency_key").notNull(),
     starts_at: timestamp("starts_at", { withTimezone: true }).notNull(),
-    ends_at: timestamp("ends_at", { withTimezone: true }).notNull(),
+    /** Null denotes a lifetime grant; revocation remains available. */
+    ends_at: timestamp("ends_at", { withTimezone: true }),
     created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     /** Set once by support revocation; a revoked grant no longer serves. */
     revoked_at: timestamp("revoked_at", { withTimezone: true }),
