@@ -31,6 +31,7 @@ function fixture() {
     inaccessible = false,
     revokeAfterWrite = false,
     tokenLoads = 0,
+    summaryOverride = "",
     accountId = "google-user",
     switchAfterWrite = false;
   const current = async () => ({
@@ -62,6 +63,7 @@ function fixture() {
           : Response.json({
               id: "primary",
               summary: "Personal",
+              summaryOverride,
               primary: true,
               accessRole: "owner",
             });
@@ -99,6 +101,9 @@ function fixture() {
   });
   return {
     tokenLoads: () => tokenLoads,
+    rename: (value: string) => {
+      summaryOverride = value;
+    },
     switchAccountAfterWrite: () => {
       switchAfterWrite = true;
     },
@@ -227,6 +232,13 @@ describe("managed Calendar conditional provider", () => {
     const capabilities = await fixture().provider.capabilities(owner, "primary");
     expect(capabilities.accountEmail).toBe("owner@example.invalid");
     expect(capabilities.calendarLabel).toBe("Personal");
+    const renamed = fixture();
+    renamed.rename("  My calendar  ");
+    expect((await renamed.provider.capabilities(owner, "primary")).calendarLabel).toBe(
+      "My calendar",
+    );
+    renamed.rename("  ");
+    expect((await renamed.provider.capabilities(owner, "primary")).calendarLabel).toBe("Personal");
     const f = fixture(),
       saved = await f.provider.create(owner, "primary", "all-day", {
         ...event,

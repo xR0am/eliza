@@ -363,7 +363,10 @@ export class ManagedCalendarSyncProvider {
       calendarId,
       accountId: grant.accountId,
       accountEmail: grant.accountEmail ?? null,
-      calendarLabel: typeof calendar.summary === "string" ? calendar.summary : calendarId,
+      calendarLabel:
+        (typeof calendar.summaryOverride === "string" ? calendar.summaryOverride.trim() : "") ||
+        (typeof calendar.summary === "string" ? calendar.summary.trim() : "") ||
+        calendarId,
       read: true,
       write:
         grant.capabilities.includes("google.calendar.write") &&
