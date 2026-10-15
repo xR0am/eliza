@@ -1979,22 +1979,47 @@ export class SolanaService extends Service {
       }
 
       logger.log("Using RPC fallback for wallet data (no Birdeye)");
-      const accounts = await this.getTokenAccounts();
+      // Token accounts hold SPL tokens only; native SOL is the account's own
+      // lamports and must be read separately, or a SOL-only wallet shows 0.
+      const [accounts, lamports] = await Promise.all([
+        this.getTokenAccounts(),
+        this.connection.getBalance(publicKey),
+      ]);
+      const solAmount = new BigNumber(lamports).div(LAMPORTS_PER_SOL);
+      const solItems: Item[] =
+        lamports > 0
+          ? [
+              {
+                name: "Solana",
+                address: PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL,
+                symbol: "SOL",
+                decimals: 9,
+                balance: String(lamports),
+                uiAmount: solAmount.toString(),
+                priceUsd: "0",
+                valueUsd: "0",
+                valueSol: solAmount.toString(),
+              },
+            ]
+          : [];
       if (!accounts || accounts.length === 0) {
         logger.log("No token accounts found");
-        const emptyPortfolio: WalletPortfolio = {
+        const solOnlyPortfolio: WalletPortfolio = {
           totalUsd: "0",
-          totalSol: "0",
-          items: [],
+          totalSol: solAmount.toString(),
+          items: solItems,
         };
-        await this.runtime.setCache<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, emptyPortfolio);
+        await this.runtime.setCache<WalletPortfolio>(
+          SOLANA_WALLET_DATA_CACHE_KEY,
+          solOnlyPortfolio
+        );
         this.lastUpdate = now;
-        return emptyPortfolio;
+        return solOnlyPortfolio;
       }
 
       const tokenMetadata = await this.parseTokenAccounts(accounts);
 
-      const items: Item[] = accounts.map((acc) => {
+      const tokenItems: Item[] = accounts.map((acc) => {
         const mint = acc.account.data.parsed.info.mint;
         const metadata = tokenMetadata[mint];
 
@@ -2013,12 +2038,13 @@ export class SolanaService extends Service {
         };
       });
 
-      logger.log(`Fallback mode: Found ${items.length} tokens in wallet`);
+      logger.log(`Fallback mode: Found ${tokenItems.length} tokens in wallet`);
 
       const portfolio: WalletPortfolio = {
         totalUsd: "0",
-        totalSol: "0",
-        items,
+        // Token values are unknown without a price source; SOL is exact.
+        totalSol: solAmount.toString(),
+        items: [...solItems, ...tokenItems],
       };
 
       await this.runtime.setCache<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, portfolio);
