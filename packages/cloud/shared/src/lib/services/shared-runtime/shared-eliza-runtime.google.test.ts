@@ -130,7 +130,14 @@ async function exercise(
     const text = input instanceof Request ? await input.clone().text() : String(init?.body ?? "");
     const body = JSON.parse(text) as {
       messages?: Array<{ role?: string; content?: unknown }>;
-      tools?: Array<{ function?: { name?: string } }>;
+      tools?: Array<{
+        function?: {
+          name?: string;
+          parameters?: {
+            properties?: { replyText?: { type?: string } };
+          };
+        };
+      }>;
     };
     const names = body.tools?.map((t) => t.function?.name) ?? [];
     const system = (body.messages ?? [])
@@ -144,25 +151,36 @@ async function exercise(
     );
     if (publicRead) expect(names).not.toContain("GOOGLE_CONTEXT");
     if (names.includes("HANDLE_RESPONSE"))
-      return model(null, {
-        name: "HANDLE_RESPONSE",
-        args: {
-          shouldRespond: "RESPOND",
-          thought: "Use the requested scoped read.",
-          contexts: [kind === "general" ? "web" : compoundMissing ? "todos" : "general"],
-          intents: [],
-          candidateActionNames:
-            kind === "weather-missing" || ordinary
-              ? []
-              : [compoundMissing ? "TODO" : publicRead ? "WEB_SEARCH" : "GOOGLE_CONTEXT"],
-          requiresTool: kind !== "weather-missing" && !ordinary,
-          replyText: kind === "weather-missing" || ordinary ? currentReply : "",
-          replyEffectStatus: "none",
-          facts: [],
-          relationships: [],
-          addressedTo: [],
-        },
-      });
+      {
+        const responseTool = body.tools?.find(
+          (tool) => tool.function?.name === "HANDLE_RESPONSE",
+        );
+        const replyText = kind === "weather-missing" || ordinary ? currentReply : "";
+        const nativeReplyParts =
+          responseTool?.function?.parameters?.properties?.replyText?.type ===
+          "array";
+        return model(null, {
+          name: "HANDLE_RESPONSE",
+          args: {
+            shouldRespond: "RESPOND",
+            thought: "Use the requested scoped read.",
+            contexts: [kind === "general" ? "web" : compoundMissing ? "todos" : "general"],
+            intents: [],
+            candidateActionNames:
+              kind === "weather-missing" || ordinary
+                ? []
+                : [compoundMissing ? "TODO" : publicRead ? "WEB_SEARCH" : "GOOGLE_CONTEXT"],
+            requiresTool: kind !== "weather-missing" && !ordinary,
+            replyText: nativeReplyParts
+              ? [{ kind: "text", value: replyText }]
+              : replyText,
+            replyEffectStatus: "none",
+            facts: [],
+            relationships: [],
+            addressedTo: [],
+          },
+        });
+      }
     if (names.includes("FACTS_AND_RELATIONSHIPS_VALIDATE"))
       return model(null, {
         name: "FACTS_AND_RELATIONSHIPS_VALIDATE",
