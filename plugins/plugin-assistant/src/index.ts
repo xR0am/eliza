@@ -188,6 +188,8 @@ export type {
   DeferredMessageScheduler,
   DraftRecord,
   DraftRequest,
+  MessageSendContext,
+  MessageDraftContext,
   ListOptions,
   ManageOperation,
   ManageResult,
