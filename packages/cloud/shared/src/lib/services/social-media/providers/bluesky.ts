@@ -396,7 +396,7 @@ export const blueskyProvider: SocialMediaProvider = {
       // receipt: Bluesky may have published, so the outcome stays unknown
       // and the credit is held instead of refunded (the slack/telegram rule).
       const uri = response?.uri;
-      if (typeof uri !== "string" || !uri) {
+      if (typeof uri !== "string" || !uri.trim()) {
         throw new UnknownPostOutcomeError(
           "bluesky",
           new Error("Bluesky response lacks a publication receipt"),

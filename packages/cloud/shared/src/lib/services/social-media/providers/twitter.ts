@@ -318,7 +318,7 @@ export const twitterProvider: SocialMediaProvider = {
       // receipt: X may have published, so the outcome stays unknown and
       // the credit is held instead of refunded (the slack/telegram rule).
       const postId = response?.data?.id;
-      if (typeof postId !== "string" || !postId) {
+      if (typeof postId !== "string" || !postId.trim()) {
         throw new UnknownPostOutcomeError(
           "twitter",
           new Error("X response lacks a publication receipt"),

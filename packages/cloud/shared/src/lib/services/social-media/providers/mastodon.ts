@@ -248,7 +248,7 @@ export const mastodonProvider: SocialMediaProvider = {
     // post id (the slack/telegram rule). This method returns its result
     // directly, so build the held result here.
     const postId = status?.id;
-    if (typeof postId !== "string" || !postId) {
+    if (typeof postId !== "string" || !postId.trim()) {
       return failedPostResult(
         "mastodon",
         new UnknownPostOutcomeError(

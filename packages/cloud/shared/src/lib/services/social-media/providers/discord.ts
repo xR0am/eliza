@@ -232,7 +232,12 @@ export const discordProvider: SocialMediaProvider = {
       // success at an undefined URL (the slack/telegram rule).
       const postId = message?.id;
       const channelId = message?.channel_id;
-      if (typeof postId !== "string" || !postId || typeof channelId !== "string" || !channelId) {
+      if (
+        typeof postId !== "string" ||
+        !postId.trim() ||
+        typeof channelId !== "string" ||
+        !channelId.trim()
+      ) {
         throw new UnknownPostOutcomeError(
           "discord",
           new Error("Discord response lacks a publication receipt"),

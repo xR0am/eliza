@@ -302,7 +302,7 @@ export const linkedinProvider: SocialMediaProvider = {
       // held instead of reporting a success at an undefined URL
       // (the slack/telegram rule).
       const shareId = response?.id || response?.activity;
-      if (typeof shareId !== "string" || !shareId) {
+      if (typeof shareId !== "string" || !shareId.trim()) {
         throw new UnknownPostOutcomeError(
           "linkedin",
           new Error("LinkedIn response lacks a publication receipt"),

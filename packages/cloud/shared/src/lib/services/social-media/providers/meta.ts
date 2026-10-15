@@ -207,7 +207,7 @@ async function createFacebookPost(
     // and the credit is held instead of reporting a success at an
     // undefined URL (the slack/telegram rule).
     const postId = postData?.id;
-    if (typeof postId !== "string" || !postId) {
+    if (typeof postId !== "string" || !postId.trim()) {
       throw new UnknownPostOutcomeError(
         "facebook",
         new Error("Facebook response lacks a publication receipt"),
@@ -316,7 +316,7 @@ async function createInstagramPost(
       // receipt: Instagram may have published, so the outcome stays
       // unknown and the credit is held (the slack/telegram rule).
       const postId = post?.id;
-      if (typeof postId !== "string" || !postId) {
+      if (typeof postId !== "string" || !postId.trim()) {
         throw new UnknownPostOutcomeError(
           "instagram",
           new Error("Instagram response lacks a publication receipt"),
@@ -388,7 +388,7 @@ async function createInstagramPost(
     // receipt: Instagram may have published, so the outcome stays
     // unknown and the credit is held (the slack/telegram rule).
     const postId = post?.id;
-    if (typeof postId !== "string" || !postId) {
+    if (typeof postId !== "string" || !postId.trim()) {
       throw new UnknownPostOutcomeError(
         "instagram",
         new Error("Instagram response lacks a publication receipt"),
