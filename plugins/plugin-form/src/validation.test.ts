@@ -486,6 +486,108 @@ describe("legacy type-handler override (validateField)", () => {
     clearTypeHandlers();
   });
 
+  it("still enforces number min/max under a legacy number override", () => {
+    const builtinNumber = getBuiltinType("number");
+    if (!builtinNumber?.validate)
+      throw new Error("built-in number control is missing");
+    const control: FormControl = {
+      key: "qty",
+      label: "Qty",
+      type: "number",
+      min: 1,
+      max: 10,
+    };
+    clearTypeHandlers();
+    registerTypeHandler("number", {
+      validate: (value) => ({ valid: !Number.isNaN(Number(value)) }),
+    });
+    expect(validateField("500", control, builtinNumber)).toEqual({
+      valid: false,
+      error: "Qty must be at most 10",
+    });
+    expect(validateField(0, control, builtinNumber).valid).toBe(false);
+    expect(validateField("5", control, builtinNumber).valid).toBe(true);
+    // No controlType resolved: the legacy handler still cannot lift bounds.
+    expect(validateField("500", control).valid).toBe(false);
+    clearTypeHandlers();
+  });
+
+  it("reads bounds through the legacy handler's parse", () => {
+    const builtinNumber = getBuiltinType("number");
+    if (!builtinNumber?.validate)
+      throw new Error("built-in number control is missing");
+    const control: FormControl = {
+      key: "amount",
+      label: "Amount",
+      type: "number",
+      max: 100,
+    };
+    const parseLocalized = (value: string) =>
+      Number(value.replace(/\./g, "").replace(",", "."));
+    clearTypeHandlers();
+    registerTypeHandler("number", {
+      validate: (value) => ({
+        valid: Number.isFinite(parseLocalized(String(value))),
+      }),
+      parse: parseLocalized,
+    });
+    // "1.234,5" is 1234.5 in the legacy grammar, which exceeds max.
+    expect(validateField("1.234,5", control, builtinNumber).valid).toBe(false);
+    expect(validateField("12,5", control, builtinNumber).valid).toBe(true);
+    clearTypeHandlers();
+  });
+
+  it("fails closed when a bounded value cannot be read as a number", () => {
+    const builtinNumber = getBuiltinType("number");
+    if (!builtinNumber?.validate)
+      throw new Error("built-in number control is missing");
+    const control: FormControl = {
+      key: "qty",
+      label: "Qty",
+      type: "number",
+      max: 10,
+    };
+    clearTypeHandlers();
+    registerTypeHandler("number", { validate: () => ({ valid: true }) });
+    expect(validateField("lots", control, builtinNumber)).toEqual({
+      valid: false,
+      error: "Qty must be a number",
+    });
+    clearTypeHandlers();
+  });
+
+  it("still enforces select options and date bounds under legacy overrides", () => {
+    const builtinSelect = getBuiltinType("select");
+    const builtinDate = getBuiltinType("date");
+    if (!builtinSelect?.validate || !builtinDate?.validate)
+      throw new Error("built-in select/date control is missing");
+    clearTypeHandlers();
+    registerTypeHandler("select", { validate: () => ({ valid: true }) });
+    registerTypeHandler("date", { validate: () => ({ valid: true }) });
+    const select: FormControl = {
+      key: "plan",
+      label: "Plan",
+      type: "select",
+      options: [{ value: "basic", label: "Basic" }],
+    };
+    expect(validateField("enterprise", select, builtinSelect).valid).toBe(
+      false,
+    );
+    expect(validateField("basic", select, builtinSelect).valid).toBe(true);
+    const date: FormControl = {
+      key: "start",
+      label: "Start",
+      type: "date",
+      max: Date.UTC(2026, 0, 1),
+    };
+    expect(validateField("2027-03-01", date, builtinDate)).toEqual({
+      valid: false,
+      error: "Start is too late",
+    });
+    expect(validateField("2025-03-01", date, builtinDate).valid).toBe(true);
+    clearTypeHandlers();
+  });
+
   it("keeps the built-in switch reachable with no legacy handler", () => {
     const builtinEmail = getBuiltinType("email");
     if (!builtinEmail?.validate)
