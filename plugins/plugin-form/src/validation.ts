@@ -182,7 +182,15 @@ export function validateField(
     }
     // A registered custom type owns its value grammar. Field-level text
     // constraints still apply, but a built-in switch must not override it.
-    if (handler !== controlType || (controlType && !controlType.builtin))
+    // Invariant: getTypeHandler returns the built-in descriptor itself when no
+    // legacy handler is registered, so handler === controlType holds for every
+    // built-in control without an override and the built-in switch below stays
+    // reachable. The explicit !== undefined states the absent-handler case;
+    // handler is already non-null inside this block (handler?.validate passed).
+    if (
+      (handler !== undefined && handler !== controlType) ||
+      (controlType && !controlType.builtin)
+    )
       return validateText(value, control);
   }
   // Type-specific validation

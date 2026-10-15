@@ -18,11 +18,13 @@ import { describe, expect, it } from "vitest";
 import { getBuiltinType } from "./builtins";
 import type { FormControl, ValidationResult } from "./types";
 import {
+  clearTypeHandlers,
   formatValue,
   MAX_CONTROL_PATTERN_INPUT_LENGTH,
   MAX_CONTROL_PATTERN_LENGTH,
   parseBoolean,
   parseValue,
+  registerTypeHandler,
   testControlPattern,
   validateField,
 } from "./validation";
@@ -440,5 +442,62 @@ describe("validateField currency numbers", () => {
     expect(parseValue("-$1,234.50", control)).toBe(-1234.5);
     expect(parseValue("+$5", control)).toBe(5);
     expect(parseValue("$-50", control)).toBe(-50);
+  });
+});
+
+/**
+ * Legacy type-handler override vs the built-in type switch (`validateField`).
+ *
+ * Pins the two invariants that matter when a legacy `registerTypeHandler`
+ * entry shadows a built-in type name:
+ * (a) the legacy handler's grammar owns the decision and the built-in switch
+ *     below the custom-handler block is not reached;
+ * (b) with no legacy handler registered, the built-in switch stays reachable,
+ *     so the early `validateText` return is not a blanket bypass of built-in
+ *     validation.
+ */
+describe("legacy type-handler override (validateField)", () => {
+  const emailControl: FormControl = {
+    key: "email",
+    label: "Email",
+    type: "email",
+  };
+
+  it("honors the legacy grammar and skips the built-in switch", () => {
+    const builtinEmail = getBuiltinType("email");
+    if (!builtinEmail?.validate)
+      throw new Error("built-in email control is missing");
+    clearTypeHandlers();
+    registerTypeHandler("email", {
+      validate: (value) =>
+        String(value).endsWith("@localhost")
+          ? { valid: true }
+          : { valid: false, error: "legacy email grammar" },
+    });
+    // "alice@localhost" fails the built-in email grammar but satisfies the
+    // legacy one: the built-in switch must not override it back to invalid.
+    expect(
+      validateField("alice@localhost", emailControl, builtinEmail).valid,
+    ).toBe(true);
+    // A value the legacy grammar rejects stays rejected.
+    expect(
+      validateField("alice@example.com", emailControl, builtinEmail).valid,
+    ).toBe(false);
+    clearTypeHandlers();
+  });
+
+  it("keeps the built-in switch reachable with no legacy handler", () => {
+    const builtinEmail = getBuiltinType("email");
+    if (!builtinEmail?.validate)
+      throw new Error("built-in email control is missing");
+    clearTypeHandlers();
+    // Satisfies validateText alone, so only the built-in switch rejects it.
+    expect(
+      validateField("not-an-email", emailControl, builtinEmail).valid,
+    ).toBe(false);
+    expect(
+      validateField("alice@example.com", emailControl, builtinEmail).valid,
+    ).toBe(true);
+    clearTypeHandlers();
   });
 });
