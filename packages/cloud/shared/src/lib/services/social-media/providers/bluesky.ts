@@ -19,7 +19,12 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const BLUESKY_SERVICE = "https://bsky.social";
 
@@ -77,7 +82,7 @@ async function createSession(handle: string, appPassword: string): Promise<BskyS
       }),
     async (response) => {
       const json = (await response.json()) as BskySession & { error?: string; message?: string };
-      if (json.error) throw new Error(json.message || json.error);
+      if (json.error) throw new SocialApiRejectionError(json.message || json.error);
       return json;
     },
     { platform: "bluesky", maxRetries: 2 },
@@ -103,7 +108,7 @@ async function bskyApiRequest<T>(
       }),
     async (response) => {
       const json = (await response.json()) as T & { error?: string; message?: string };
-      if (json.error) throw new Error(json.message || json.error);
+      if (json.error) throw new SocialApiRejectionError(json.message || json.error);
       return json;
     },
     { platform: "bluesky", maxRetries: 3, ...retry },

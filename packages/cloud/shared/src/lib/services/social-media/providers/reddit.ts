@@ -13,7 +13,12 @@ import type {
 } from "../../../types/social-media";
 import { extractErrorMessage } from "../../../utils/error-handling";
 import { logger } from "../../../utils/logger";
-import { failedPostResult, type RetryOptions, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  SocialApiRejectionError,
+  withRetry,
+} from "../rate-limit";
 
 const REDDIT_API_BASE = "https://oauth.reddit.com";
 const REDDIT_AUTH_BASE = "https://www.reddit.com/api/v1";
@@ -91,7 +96,7 @@ async function getAccessToken(
         error?: string;
         error_description?: string;
       };
-      if (json.error) throw new Error(json.error_description || json.error);
+      if (json.error) throw new SocialApiRejectionError(json.error_description || json.error);
       return json;
     },
     { platform: "reddit", maxRetries: 2 },
@@ -124,7 +129,7 @@ async function redditApiRequest<T>(
         error?: string;
         error_description?: string;
       };
-      if (json.error) throw new Error(json.error_description || json.error);
+      if (json.error) throw new SocialApiRejectionError(json.error_description || json.error);
       return json;
     },
     { platform: "reddit", maxRetries: 3, ...retry },
