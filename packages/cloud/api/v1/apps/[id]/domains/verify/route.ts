@@ -78,6 +78,19 @@ app.post("/", async (c) => {
       );
     }
 
+    // A verified domain stays verified: the TXT record proves ownership once,
+    // and owners often remove it afterwards. Downgrading it here would stop the
+    // domain resolving and let the stale-unverified cron delete its row.
+    if (md.verified) {
+      return c.json({
+        success: true,
+        domain: md.domain,
+        verified: true,
+        registrar: md.registrar,
+        verifiedAt: md.verifiedAt,
+      });
+    }
+
     const recordName = `_eliza-cloud-verify.${md.domain}`;
     let records: string[][];
     try {
