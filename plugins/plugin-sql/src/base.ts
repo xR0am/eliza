@@ -5234,7 +5234,10 @@ export abstract class BaseDrizzleAdapter extends DatabaseAdapter<DrizzleDatabase
    */
   async getRoomsByWorld(worldId: UUID): Promise<Room[]> {
     return this.withDatabase(async () => {
-      const result = await this.db.select().from(roomTable).where(eq(roomTable.worldId, worldId));
+      const result = await this.db
+        .select()
+        .from(roomTable)
+        .where(and(eq(roomTable.worldId, worldId), eq(roomTable.agentId, this.agentId)));
       const rooms = result.map((room) => ({
         ...room,
         id: room.id as UUID,
