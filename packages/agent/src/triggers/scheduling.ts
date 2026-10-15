@@ -250,7 +250,7 @@ export function normalizeTriggerDraft(params: {
   const instructions =
     (params.input.instructions ?? "").trim() ||
     params.fallback.instructions.trim() ||
-    synthesized.trim();
+    synthesized;
 
   if (!displayName) {
     return { error: "displayName is required" };
