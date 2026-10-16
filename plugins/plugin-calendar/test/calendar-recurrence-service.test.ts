@@ -472,6 +472,33 @@ describe("updateCalendarEvent — instance vs series", () => {
     expect(google.updateEvent).not.toHaveBeenCalled();
   });
 
+  it("series end-only change through a moved occurrence keeps the chosen end time", async () => {
+    // The Jul 8 standup (slot 09:00 New York) was moved to 14:00. Through it
+    // the owner sets only the end: 17:00 for the whole series.
+    const getEvent = google.getEvent.getMockImplementation();
+    google.getEvent.mockImplementation(async (input: { eventId: string }) =>
+      input.eventId === "standup_20260708T130000Z"
+        ? googleWireEvent({
+            id: input.eventId,
+            recurringEventId: "standup-master",
+            start: "2026-07-08T18:00:00.000Z",
+            originalStartTime: "2026-07-08T13:00:00.000Z",
+            etag: '"occurrence-etag"',
+          })
+        : getEvent?.(input),
+    );
+    await calendar.updateCalendarEvent(INTERNAL_URL, {
+      eventId: "standup_20260708T130000Z",
+      endAt: "2026-07-08T21:00:00.000Z",
+      recurrenceScope: "series",
+    });
+    expect(google.updateEvent.mock.calls[0]?.[0]).toMatchObject({
+      eventId: "standup-master",
+      start: "2026-07-01T13:00:00.000Z",
+      end: "2026-07-01T21:00:00.000Z",
+    });
+  });
+
   it("instance scope patches exactly the addressed occurrence", async () => {
     await calendar.updateCalendarEvent(INTERNAL_URL, {
       eventId: "standup_20260708T130000Z",

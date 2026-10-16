@@ -7960,10 +7960,11 @@ export class CalendarService extends Service {
     const shiftMs = args.startAt
       ? wallMs(args.startAt) - wallMs(occurrenceSlot)
       : 0;
-    // The occurrence's own start, not its rule slot: a new end time is read
-    // against the start the owner sees on that occurrence.
+    // A new end time is measured from the start the series lands on: the
+    // new start, or with no new start the occurrence's slot (the master start
+    // is not moved), so the end lands at the time the owner chose.
     const newDurationMs = args.endAt
-      ? Date.parse(args.endAt) - Date.parse(args.startAt ?? occurrence.startAt)
+      ? Date.parse(args.endAt) - Date.parse(args.startAt ?? occurrenceSlot)
       : Date.parse(master.endAt) - Date.parse(master.startAt);
     if (!(newDurationMs > 0)) {
       fail(
