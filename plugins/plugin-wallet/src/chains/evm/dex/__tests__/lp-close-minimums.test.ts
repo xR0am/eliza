@@ -83,6 +83,42 @@ describe("LP close minimums", () => {
     expect(sent).toMatchObject({ amount0Min: 995n, amount1Min: 0n });
   });
 
+  it.each([
+    ["Uniswap V3", () => new UniswapV3LpService(), 1],
+    ["PancakeSwap V3", () => new PancakeSwapV3LpService(), 56],
+  ] as const)("%s reports a reverted decreaseLiquidity as a failed close", async (_name, makeService, chainId) => {
+    const { publicClient, walletClient, simulated } = chainClients([1_000n, 2_000n]);
+    publicClient.waitForTransactionReceipt.mockResolvedValueOnce({
+      status: "reverted",
+      blockNumber: 2n,
+      gasUsed: 3n,
+    });
+    walletClient.writeContract.mockResolvedValueOnce("0xdecrease");
+    const service = makeService();
+    Object.assign(service as object, {
+      getPublicClient: () => publicClient,
+      getWalletClient: () => walletClient,
+      getPositionFromContract: async () => ({ liquidity: 800n }),
+    });
+
+    const result = await service.removeLiquidity({
+      chainId,
+      tokenId: 9n,
+      percentageToRemove: 100,
+      slippageBps: 50,
+      wallet: WALLET,
+    } as never);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/decreaseLiquidity reverted/);
+    expect(result).toMatchObject({ hash: "0xdecrease" });
+    expect(walletClient.writeContract).toHaveBeenCalledTimes(1);
+    const later = simulated.filter(
+      (call) => call.functionName === "collect" || call.functionName === "burn"
+    );
+    expect(later).toEqual([]);
+  });
+
   it("Aerodrome removeLiquidity requires the quoted amounts minus slippage", async () => {
     const { publicClient, walletClient, simulated } = chainClients([3_000n, 4_000n]);
     const service = new AerodromeLpService();

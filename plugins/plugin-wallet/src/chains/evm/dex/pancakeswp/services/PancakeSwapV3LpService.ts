@@ -497,7 +497,23 @@ export class PancakeSwapV3LpService extends Service implements IEvmLpService {
       });
 
       const decreaseHash = await walletClient.writeContract(decreaseRequest);
-      await publicClient.waitForTransactionReceipt({ hash: decreaseHash });
+      const decreaseReceipt = await publicClient.waitForTransactionReceipt({
+        hash: decreaseHash,
+      });
+      // A reverted decrease (for example the slippage minimums above) leaves
+      // the liquidity in the position. Report it instead of collecting fees
+      // and calling the close a success.
+      if (decreaseReceipt.status !== "success") {
+        return {
+          success: false,
+          error: "decreaseLiquidity reverted (slippage limit exceeded?)",
+          transactionId: decreaseHash,
+          hash: decreaseHash,
+          chainId: params.chainId,
+          blockNumber: decreaseReceipt.blockNumber,
+          gasUsed: decreaseReceipt.gasUsed,
+        };
+      }
 
       const collectParams = {
         tokenId: params.tokenId,
