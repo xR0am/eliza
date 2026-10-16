@@ -6,7 +6,11 @@ import { AgentRuntime, type Memory, type UUID } from "@elizaos/core";
 import { SQLiteDatabaseAdapter } from "@elizaos/testing/runtime";
 import { expect, it } from "vitest";
 import { BaseMessageAdapter } from "../adapters/base.ts";
-import { draftConsentDigest, requireSendConsent } from "../send-consent.ts";
+import {
+  draftConsentDigest,
+  pendingSendDraft,
+  requireSendConsent,
+} from "../send-consent.ts";
 import { getDefaultTriageService } from "../triage-service.ts";
 import type { DraftRequest } from "../types.ts";
 import { sendDraftAction } from "./sendDraft.ts";
@@ -76,9 +80,20 @@ it("binds actual draft sending to a later user turn and consumes consent once du
     await sendDraftAction.handler(runtime, first, undefined, options);
     expect(sent).toEqual([]);
     const yes = turn("yes");
+    expect(await pendingSendDraft(runtime, first)).toBeNull();
+    expect(await pendingSendDraft(runtime, yes)).toBe(draft.draftId);
+    expect(
+      await pendingSendDraft(runtime, { ...yes, roomId: randomUUID() as UUID }),
+    ).toBeNull();
+    expect(
+      await pendingSendDraft(runtime, {
+        ...yes,
+        entityId: randomUUID() as UUID,
+      }),
+    ).toBeNull();
     const outcomes = await Promise.all([
-      sendDraftAction.handler(runtime, yes, undefined, options),
-      sendDraftAction.handler(runtime, yes, undefined, options),
+      sendDraftAction.handler(runtime, yes, undefined, { parameters: {} }),
+      sendDraftAction.handler(runtime, yes, undefined, { parameters: {} }),
     ]);
     expect(sent).toEqual([draft.draftId]);
     expect(

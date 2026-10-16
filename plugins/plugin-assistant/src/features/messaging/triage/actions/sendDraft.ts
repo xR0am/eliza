@@ -27,7 +27,11 @@ import type {
   State,
 } from "@elizaos/core";
 import { logger, ModelType, parseKeyValueXml } from "@elizaos/core";
-import { draftConsentDigest, requireSendConsent } from "../send-consent.ts";
+import {
+  draftConsentDigest,
+  pendingSendDraft,
+  requireSendConsent,
+} from "../send-consent.ts";
 import { getSendPolicy } from "../send-policy.ts";
 import { getDefaultTriageService } from "../triage-service.ts";
 import type { DraftRecord, DraftRequest } from "../types.ts";
@@ -267,8 +271,24 @@ export const sendDraftAction: Action = {
     options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult> => {
-    const parsed = parseSendDraftParams(options);
+    let parsed = parseSendDraftParams(options);
     const service = getDefaultTriageService();
+    const params = getParameters(options);
+    if (
+      "error" in parsed &&
+      !["to", "subject", "body", "threadId", "worldId", "channelId"].some(
+        (key) => params[key] !== undefined,
+      )
+    ) {
+      const draftId = await pendingSendDraft(runtime, _message);
+      const pending = draftId ? service.getDraft(runtime, draftId) : null;
+      if (
+        pending &&
+        (params.source === undefined ||
+          normalizeSource(params.source) === pending.source)
+      )
+        parsed = { draftId: pending.draftId };
+    }
     if ("error" in parsed) {
       const draftParsed = parseDraftFollowupParams(
         await outboundDraftOptionsFromMessage(runtime, _message, options),
@@ -321,7 +341,9 @@ export const sendDraftAction: Action = {
         worldId: draftParsed.worldId,
         channelId: draftParsed.channelId,
       });
-      await requireSendConsent(runtime, _message, draftConsentDigest(record));
+      await requireSendConsent(runtime, _message, draftConsentDigest(record), {
+        draftId: record.draftId,
+      });
       const recipients = record.to
         .map((recipient) =>
           recipient.displayName
@@ -361,7 +383,9 @@ export const sendDraftAction: Action = {
     }
 
     const consentDigest = draftConsentDigest(existing);
-    const consent = await requireSendConsent(runtime, _message, consentDigest);
+    const consent = await requireSendConsent(runtime, _message, consentDigest, {
+      draftId: existing.draftId,
+    });
     if (consent === "cancelled")
       return {
         success: false,

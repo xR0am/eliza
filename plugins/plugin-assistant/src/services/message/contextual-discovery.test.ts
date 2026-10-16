@@ -20,7 +20,7 @@ import {
 import { scheduledTaskAction } from "../../../../plugin-personal-assistant/src/actions/scheduled-task.ts";
 import { createHouseholdOperationsAction } from "../../../../plugin-personal-assistant/src/lifeops/household-operations/action.ts";
 import { createResourceCapacityAction } from "../../../../plugin-personal-assistant/src/lifeops/resource-capacity/action.ts";
-import { messageAction } from "../../features/advanced-capabilities/actions/message.ts";
+import { promoteMessageActions } from "../../features/advanced-capabilities/actions/message.ts";
 import { postAction } from "../../features/advanced-capabilities/actions/post.ts";
 import { DEFAULT_CONTEXT_DEFINITIONS } from "../../runtime/default-contexts.ts";
 import { runPlannerLoop } from "../../runtime/planner-loop.ts";
@@ -209,6 +209,8 @@ describe("contextual native discovery", () => {
     ["help with my messages", ["MESSAGE"]],
     ["Help with my messages.", ["MESSAGE"]],
     ["send a message", ["MESSAGE_SEND"]],
+    ["send email", ["MESSAGE_SEND_DRAFT"]],
+    ["compose email", ["MESSAGE_SEND_DRAFT"]],
     ["search messages", ["MESSAGE_SEARCH"]],
     ["search my inbox", ["MESSAGE_SEARCH_INBOX"]],
     ["list inbox", ["MESSAGE_LIST_INBOX"]],
@@ -223,7 +225,7 @@ describe("contextual native discovery", () => {
   ])(
     "retrieves the requested messaging operation for %s",
     (query, expected) => {
-      const actions = promoteSubactionsToActions(messageAction);
+      const actions = promoteMessageActions();
       const result = retrieveContextualPlannerActions({
         actions,
         query,
@@ -247,7 +249,7 @@ describe("contextual native discovery", () => {
     ["search messages", "send a message"],
     ["send a message", "send draft"],
   ])("retains independent outcomes %s and %s", (first, second) => {
-    const actions = promoteSubactionsToActions(messageAction);
+    const actions = promoteMessageActions();
     const result = retrieveContextualPlannerActions({
       actions,
       query: `${first} and ${second}`,
@@ -268,7 +270,7 @@ describe("contextual native discovery", () => {
     ["social_posting", "send a public post", "POST_SEND"],
   ])("keeps %s operation ownership for %s", (context, query, expected) => {
     const actions = [
-      ...promoteSubactionsToActions(messageAction),
+      ...promoteMessageActions(),
       ...promoteSubactionsToActions(postAction),
     ];
     const result = retrieveContextualPlannerActions({
@@ -280,7 +282,7 @@ describe("contextual native discovery", () => {
   });
 
   it("does not substitute a metadata-only umbrella for executable children", () => {
-    const actions = promoteSubactionsToActions(messageAction).map((action) =>
+    const actions = promoteMessageActions().map((action) =>
       action.name === "MESSAGE" ? { ...action, handler: undefined } : action,
     );
     const result = retrieveContextualPlannerActions({
@@ -298,7 +300,7 @@ describe("contextual native discovery", () => {
   });
 
   it("never reconstructs a missing family parent and preserves exact child hints", () => {
-    const actions = promoteSubactionsToActions(messageAction);
+    const actions = promoteMessageActions();
     const child = actions.find(
       (action) => action.name === "MESSAGE_SEND_DRAFT",
     );

@@ -46,6 +46,7 @@ import {
   ModelType,
   markOwnerExclusiveDisclosureUsed,
   OWNER_PRIVATE_DESTINATION_DISCLOSURE_BASIS,
+  promoteSubactionsToActions,
   resolveCanonicalOwnerIdForMessage,
   revalidateOwnerExclusiveDisclosure,
   runWithActionRoutingContext,
@@ -6920,5 +6921,28 @@ export const messageAction: Action = {
     }
   },
 };
+
+/** Both registrations expose the same authored distinction between connector
+ * sends and the owner-reviewed email draft flow. No handler or gate changes.
+ */
+export function promoteMessageActions(): readonly Action[] {
+  return promoteSubactionsToActions(messageAction, {
+    overrides: {
+      send: {
+        description:
+          "Send a direct message through a registered messaging connector. For Gmail or another email inbox, use MESSAGE_SEND_DRAFT to prepare an exact draft and obtain later user confirmation.",
+      },
+      send_draft: {
+        description: sendDraftAction.description,
+        descriptionCompressed: sendDraftAction.descriptionCompressed,
+        similes: [
+          ...(sendDraftAction.similes ?? []),
+          "SEND_EMAIL",
+          "COMPOSE_EMAIL",
+        ],
+      },
+    },
+  });
+}
 
 export default messageAction;
