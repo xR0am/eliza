@@ -1,4 +1,5 @@
 export * from "./calendar.js";
+export * from "./calendar-linked-sync.js";
 export * from "./contracts/agent-backup-capture-v2.js";
 export * from "./contracts/agent-backup-manifest.js";
 export * from "./contracts/agent-backup-manifest-v3.js";

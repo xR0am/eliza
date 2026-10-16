@@ -256,7 +256,14 @@ export function walletFinancialPreview(
       // must see it before confirming; with no recipient the bridge returns
       // funds to the sender on the destination chain.
       const destination = params.recipient ? ` to ${params.recipient}` : "";
-      return `Bridge ${params.amount ?? "?"} ${params.fromToken ?? "?"} from ${params.chain ?? "?"} to ${params.toChain ?? "?"}${destination}${slippage}? Reply yes to submit or no to cancel.`;
+      // A different toToken makes the bridge a swap into that token; the
+      // confirmation key binds it, so the user must see it too.
+      const receive =
+        params.toToken &&
+        params.toToken.toLowerCase() !== (params.fromToken ?? "").toLowerCase()
+          ? ` as ${params.toToken}`
+          : "";
+      return `Bridge ${params.amount ?? "?"} ${params.fromToken ?? "?"} from ${params.chain ?? "?"} to ${params.toChain ?? "?"}${receive}${destination}${slippage}? Reply yes to submit or no to cancel.`;
     }
     case "gov": {
       // The governor is the contract the wallet signs a call to, and the

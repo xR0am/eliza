@@ -234,6 +234,10 @@ import {
   LinkedCalendarRepository,
   type LinkedCalendarSemanticEvent,
 } from "./linked-calendar-sync.js";
+import {
+  createManagedCalendarRead,
+  managedCalendarPlaceholder,
+} from "./managed-calendar-read.js";
 
 type AggregatedCalendarFeedSource = {
   calendar: Pick<
@@ -1341,6 +1345,10 @@ export class CalendarService extends Service {
     "Built-in Eliza, Google, Microsoft, Apple, and guarded ICS calendar feeds, event management, guest free/busy, and next-event context for Eliza agents.";
 
   private readonly repo: CalendarRepository;
+  private readonly managedCalendar = createManagedCalendarRead(
+    process.env,
+    fetch,
+  );
   private gate: CalendarHostGate;
   private microsoftPort: MicrosoftGraphCalendarPort;
   private readonly googleWatch: GoogleCalendarWatchLifecycle;
@@ -1403,6 +1411,9 @@ export class CalendarService extends Service {
           ? [{ email: attendee.email, optional: attendee.optional === true }]
           : [],
       ),
+      ...(event.recurrence?.length
+        ? { recurrence: [...event.recurrence] }
+        : {}),
     };
   }
 
@@ -1429,6 +1440,12 @@ export class CalendarService extends Service {
         };
       },
       applyProviderEvent: async (eventId, providerEvent, expectedRevision) => {
+        if (providerEvent.recurrence?.length)
+          throw new CalendarServiceError(
+            409,
+            "The built-in calendar cannot represent this recurring series. Review the linked event before syncing.",
+            "LINKED_CALENDAR_RECURRENCE_UNSUPPORTED",
+          );
         const existing = await this.resolveElizaCalendarEvent({ eventId });
         if (Number(existing.metadata.version) !== expectedRevision) {
           throw new CalendarServiceError(
@@ -3833,6 +3850,35 @@ export class CalendarService extends Service {
           .map(icsCalendarSummary),
       );
     }
+    if (
+      this.managedCalendar?.acceptsGrantId(request?.grantId) &&
+      side !== "agent" &&
+      (!mode || mode === "cloud_managed")
+    ) {
+      try {
+        const managed = await this.managedCalendar.sources();
+        summaries.push(
+          ...managed.filter(
+            (calendar) =>
+              !request?.grantId || calendar.grantId === request.grantId,
+          ),
+        );
+      } catch (error) {
+        const calendar = managedCalendarPlaceholder(request?.grantId);
+        const sourceError = calendarSourceError(error);
+        this.runtime.reportError("calendar:list-managed-source", error, {
+          source: calendarSourceKey(calendar),
+        });
+        failures.push(
+          calendarSourceHealth({
+            calendar,
+            status: "error",
+            syncedAt: null,
+            error: sourceError,
+          }),
+        );
+      }
+    }
     const preferences = await ensureCalendarFeedIncludes(
       this.runtime,
       summaries.map((summary) => ({
@@ -5546,6 +5592,33 @@ export class CalendarService extends Service {
       calendar: LifeOpsCalendarSummary;
     })[] = [];
     for (const calendar of calendars) {
+      if (this.managedCalendar?.owns(calendar)) {
+        let feed: LifeOpsCalendarFeed;
+        try {
+          feed = await this.managedCalendar.feed(
+            calendar,
+            timeMin,
+            timeMax,
+            timeZone,
+            this.agentId(),
+          );
+        } catch (error) {
+          const sourceError = calendarSourceError(error);
+          this.runtime.reportError("calendar:feed-managed-source", error, {
+            source: calendarSourceKey(calendar),
+            timeMin,
+            timeMax,
+          });
+          feed = this.unavailableCalendarFeed({
+            calendar,
+            timeMin,
+            timeMax,
+            error: sourceError,
+          });
+        }
+        sources.push({ calendar, feed });
+        continue;
+      }
       if (calendar.provider === ELIZA_CALENDAR_PROVIDER) {
         sources.push({
           calendar,
