@@ -3016,6 +3016,12 @@ export class DocumentService extends Service {
 
     logger.info(`Processing ${items.length} character documents items`);
 
+    // Documents the current character sources produce. Character documents
+    // cannot be deleted through the documents API, so ones the source no
+    // longer produces (edited or removed text, changed files) are pruned here.
+    const currentDocumentIds = new Set<UUID>();
+    let everyItemLoaded = true;
+
     const processingPromises = items.map(async (item) => {
       await this.documentProcessingSemaphore.acquire();
       try {
@@ -3025,7 +3031,7 @@ export class DocumentService extends Service {
         }
 
         if (existsSync(trimmedItem) && statSync(trimmedItem).isDirectory()) {
-          await loadDocumentsFromPath(
+          const loaded = await loadDocumentsFromPath(
             this,
             this.runtime.agentId as UUID,
             this.runtime.agentId as UUID,
@@ -3044,11 +3050,13 @@ export class DocumentService extends Service {
               },
             },
           );
+          for (const id of loaded.documentIds) currentDocumentIds.add(id);
+          if (loaded.failed > 0) everyItemLoaded = false;
           return;
         }
 
         if (existsSync(trimmedItem) && statSync(trimmedItem).isFile()) {
-          await addDocumentFromFilePath({
+          const added = await addDocumentFromFilePath({
             service: this,
             agentId: this.runtime.agentId as UUID,
             worldId: this.runtime.agentId as UUID,
@@ -3065,6 +3073,7 @@ export class DocumentService extends Service {
               characterDocumentPath: trimmedItem,
             },
           });
+          currentDocumentIds.add(added.storedDocumentMemoryId);
           return;
         }
 
@@ -3075,6 +3084,7 @@ export class DocumentService extends Service {
           this.runtime.agentId,
           { includeFilename: filename, literalText: true },
         ) as UUID;
+        currentDocumentIds.add(documentId);
 
         if (await this.checkExistingDocument(documentId)) {
           return;
@@ -3120,6 +3130,47 @@ export class DocumentService extends Service {
     });
 
     await Promise.all(processingPromises);
+    // A failed item would otherwise look removed and lose its document.
+    if (everyItemLoaded) {
+      await this.pruneCharacterDocuments(currentDocumentIds);
+    }
+  }
+
+  private async pruneCharacterDocuments(
+    currentDocumentIds: ReadonlySet<UUID>,
+  ): Promise<void> {
+    const stale: Array<{ id: UUID; snapshot: DocumentMutationSnapshot }> = [];
+    for (let offset = 0; ; offset += 500) {
+      const page = await this.runtime.getMemories({
+        tableName: DOCUMENTS_TABLE,
+        agentId: this.runtime.agentId,
+        count: 500,
+        offset,
+      });
+      if (page.length === 0) break;
+      for (const document of page) {
+        const metadata = (document.metadata ?? {}) as Record<string, unknown>;
+        const snapshot = readDocumentMutationSnapshot(document);
+        if (
+          document.id &&
+          snapshot &&
+          metadata.addedFrom === "character" &&
+          !currentDocumentIds.has(document.id as UUID)
+        ) {
+          stale.push({ id: document.id as UUID, snapshot });
+        }
+      }
+    }
+    // The service owns its character documents, as it owns ingestion writes;
+    // the snapshot keeps a document changed since this read from being deleted.
+    for (const { id, snapshot } of stale) {
+      await this.deleteDocumentSnapshotForIngestion(id, snapshot);
+    }
+    if (stale.length > 0) {
+      logger.info(
+        `Removed ${stale.length} character documents the character no longer has`,
+      );
+    }
   }
 
   async updateDocument(options: {

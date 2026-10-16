@@ -375,3 +375,38 @@ describe("DocumentService character document ingestion boot races", () => {
     ).resolves.toEqual([]);
   });
 });
+
+describe("DocumentService character document changes", () => {
+  test("drops the old document when a character's knowledge text changes", async () => {
+    const runtime = await createRealRuntime();
+    runtime.registerModel(
+      ModelType.TEXT_EMBEDDING,
+      async (_runtime, params: { text?: string }) =>
+        embeddingFor(params.text ?? ""),
+      "document-character-ingest-test",
+      1_000,
+    );
+
+    await new DocumentService(runtime).processCharacterDocuments([
+      "Our office is at 1 Main St.",
+    ]);
+    // The character is edited and the agent boots again.
+    await new DocumentService(runtime).processCharacterDocuments([
+      "Our office is at 2 Oak Ave.",
+    ]);
+
+    const documents = await getStoredMemories(runtime, DOCUMENTS_TABLE);
+    expect(documents.map((document) => document.content.text)).toEqual([
+      "Our office is at 2 Oak Ave.",
+    ]);
+    const fragments = await getStoredMemories(
+      runtime,
+      DOCUMENT_FRAGMENTS_TABLE,
+    );
+    expect(
+      fragments.some((fragment) =>
+        fragment.content.text?.includes("1 Main St"),
+      ),
+    ).toBe(false);
+  }, 30_000);
+});
