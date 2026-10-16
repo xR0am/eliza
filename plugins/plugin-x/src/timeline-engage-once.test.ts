@@ -31,7 +31,7 @@ beforeEach(() => {
   logger.error = vi.fn();
 });
 
-it("does not quote the same timeline tweet again after a later action failed", async () => {
+function timelineHarness(actions: string) {
   const memories = new Map<string, Memory>();
   const runtime = {
     agentId: "00000000-0000-0000-0000-0000000000ab" as UUID,
@@ -46,7 +46,7 @@ it("does not quote the same timeline tweet again after a later action failed", a
     ensureWorldExists: vi.fn(async () => undefined),
     ensureConnection: vi.fn(async () => undefined),
     getSetting: vi.fn(() => undefined),
-    useModel: vi.fn(async () => "[QUOTE]\n[REPLY]"),
+    useModel: vi.fn(async () => actions),
   } as unknown as IAgentRuntime;
   const profile = { id: "bot-user", username: "bot" };
   const client = {
@@ -79,6 +79,16 @@ it("does not quote the same timeline tweet again after a later action failed", a
     permanentUrl: "https://x.com/alice/status/1000000000000000777",
   } as unknown as Tweet;
   vi.spyOn(internals, "getTimelineForProfile").mockResolvedValue([tweet]);
+  const runCycles = async (count: number) => {
+    for (let cycle = 0; cycle < count; cycle++) {
+      await timeline.handleTimeline().catch(() => undefined);
+    }
+  };
+  return { internals, runCycles };
+}
+
+it("does not quote the same timeline tweet again after a later action failed", async () => {
+  const { internals, runCycles } = timelineHarness("[QUOTE]\n[REPLY]");
   const quote = vi
     .spyOn(internals, "handleQuoteAction")
     .mockResolvedValue(true);
@@ -86,9 +96,18 @@ it("does not quote the same timeline tweet again after a later action failed", a
     new Error("403: you are not allowed to reply to this post"),
   );
 
-  for (let cycle = 0; cycle < 2; cycle++) {
-    await timeline.handleTimeline().catch(() => undefined);
-  }
+  await runCycles(2);
 
   expect(quote).toHaveBeenCalledTimes(1);
+});
+
+it("retries a timeline tweet when the failed action published nothing", async () => {
+  const { internals, runCycles } = timelineHarness("[QUOTE]");
+  const quote = vi
+    .spyOn(internals, "handleQuoteAction")
+    .mockRejectedValue(new Error("429 Too Many Requests"));
+
+  await runCycles(2);
+
+  expect(quote).toHaveBeenCalledTimes(2);
 });

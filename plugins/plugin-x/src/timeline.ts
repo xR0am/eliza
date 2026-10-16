@@ -492,11 +492,18 @@ Choose any combination of [LIKE], [RETWEET], [QUOTE], and [REPLY] that are appro
         }
         results.push({ tweetId: tweet.id, actionResponse, executedActions });
       } catch (error) {
-        // An earlier action (a like, a quote, a partly posted thread) may
+        // An earlier action (a like, a quote) or a partly posted thread may
         // already be public. Mark the tweet processed so the next cycle does
         // not ask the model again and repeat it; X has no idempotency key for
-        // these writes.
-        await createMemorySafe(this.runtime, tweetMemory, "messages");
+        // these writes. A failure that published nothing is retried.
+        const mayBePublic =
+          executedActions.length > 0 ||
+          (error instanceof ElizaError &&
+            (error.code === "X_THREAD_PARTIALLY_POSTED" ||
+              error.code === "X_POST_RECEIPT_INDETERMINATE"));
+        if (mayBePublic) {
+          await createMemorySafe(this.runtime, tweetMemory, "messages");
+        }
         if (isSessionRotation(error)) throw error;
         // error-policy:J2 The scheduled-loop boundary reports the failed cycle;
         // retain the tweet identity instead of fabricating a partial success.
