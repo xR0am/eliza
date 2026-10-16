@@ -424,6 +424,38 @@ describe("updateCalendarEvent — instance vs series", () => {
     });
   });
 
+  it("series time change through an occurrence keeps the series start date", async () => {
+    // Series: Wednesdays 09:00 New York from Jul 1. "Move all standups to
+    // 3pm" picked on the Jul 8 occurrence.
+    await calendar.updateCalendarEvent(INTERNAL_URL, {
+      eventId: "standup_20260708T130000Z",
+      startAt: "2026-07-08T19:00:00.000Z",
+      endAt: "2026-07-08T19:30:00.000Z",
+      recurrenceScope: "series",
+    });
+    expect(google.updateEvent.mock.calls[0]?.[0]).toMatchObject({
+      eventId: "standup-master",
+      start: "2026-07-01T19:00:00.000Z",
+      end: "2026-07-01T19:30:00.000Z",
+      timeZone: "America/New_York",
+    });
+  });
+
+  it("series day change through an occurrence shifts the series start by the same days", async () => {
+    // "Move all standups to Thursday" picked on the Jul 15 occurrence.
+    await calendar.updateCalendarEvent(INTERNAL_URL, {
+      eventId: "standup_20260715T130000Z",
+      startAt: "2026-07-16T13:00:00.000Z",
+      endAt: "2026-07-16T13:30:00.000Z",
+      recurrenceScope: "series",
+    });
+    expect(google.updateEvent.mock.calls[0]?.[0]).toMatchObject({
+      eventId: "standup-master",
+      start: "2026-07-02T13:00:00.000Z",
+      end: "2026-07-02T13:30:00.000Z",
+    });
+  });
+
   it("instance scope patches exactly the addressed occurrence", async () => {
     await calendar.updateCalendarEvent(INTERNAL_URL, {
       eventId: "standup_20260708T130000Z",

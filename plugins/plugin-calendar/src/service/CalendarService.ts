@@ -6954,6 +6954,39 @@ export class CalendarService extends Service {
         eventId: targetEventId,
       });
     }
+    const requestedStartAt = request.startAt
+      ? normalizeCalendarDateTimeInTimeZone(
+          request.startAt,
+          "startAt",
+          parseTimeZone,
+          "reject",
+        )
+      : undefined;
+    const requestedEndAt = request.endAt
+      ? normalizeCalendarDateTimeInTimeZone(
+          request.endAt,
+          "endAt",
+          parseTimeZone,
+          "reject",
+        )
+      : undefined;
+    // The times are the picked occurrence's new times. Written as-is onto the
+    // master they would move the series start to that occurrence's date and
+    // drop every earlier occurrence, so apply them as a wall-clock shift of
+    // the master's own start instead.
+    const seriesTimes =
+      !allDayRange &&
+      targetEventId !== request.eventId &&
+      (requestedStartAt || requestedEndAt)
+        ? await this.shiftSeriesMasterTimes({
+            grant,
+            calendarId: request.calendarId,
+            occurrenceEventId: request.eventId,
+            masterEventId: targetEventId,
+            startAt: requestedStartAt,
+            endAt: requestedEndAt,
+          })
+        : null;
     const updateEvent = requireGoogleServiceMethod(this.runtime, "updateEvent");
     let googleEvent: GoogleCalendarEvent;
     try {
@@ -6967,26 +7000,12 @@ export class CalendarService extends Service {
           description: request.description,
           location: request.location,
           startAt:
-            allDayRange?.startDate ??
-            (request.startAt
-              ? normalizeCalendarDateTimeInTimeZone(
-                  request.startAt,
-                  "startAt",
-                  parseTimeZone,
-                  "reject",
-                )
-              : undefined),
+            allDayRange?.startDate ?? seriesTimes?.startAt ?? requestedStartAt,
           endAt:
             allDayRange?.endDateExclusive ??
-            (request.endAt
-              ? normalizeCalendarDateTimeInTimeZone(
-                  request.endAt,
-                  "endAt",
-                  parseTimeZone,
-                  "reject",
-                )
-              : undefined),
-          timeZone,
+            seriesTimes?.endAt ??
+            requestedEndAt,
+          timeZone: seriesTimes?.timeZone ?? timeZone,
           attendees:
             request.attendees === undefined
               ? undefined
@@ -7879,6 +7898,80 @@ export class CalendarService extends Service {
    * recurring occurrence: cached instance metadata first, then a provider
    * lookup. An id with no `recurringEventId` already is the master.
    */
+  /**
+   * Map new times for one occurrence onto its series master: the master keeps
+   * its own start date and moves by the same wall-clock shift (so "move all to
+   * 3pm" or "move all to Tuesday" changes every occurrence, earlier ones
+   * included). The new duration applies to the whole series.
+   */
+  private async shiftSeriesMasterTimes(args: {
+    grant: LifeOpsConnectorGrant;
+    calendarId?: string | null;
+    occurrenceEventId: string;
+    masterEventId: string;
+    startAt?: string;
+    endAt?: string;
+  }): Promise<{ startAt: string; endAt: string; timeZone: string }> {
+    const getEvent = requireGoogleServiceMethod(this.runtime, "getEvent");
+    const accountId = accountIdForGrant(args.grant);
+    const calendarId = args.calendarId ?? undefined;
+    const read = async (eventId: string) =>
+      lifeOpsCalendarEventFromGoogle({
+        event: await getEvent({ accountId, calendarId, eventId }),
+        grant: args.grant,
+        agentId: this.agentId(),
+      });
+    const occurrence = await read(args.occurrenceEventId);
+    const master = await read(args.masterEventId);
+    const timeZone = master.timezone ?? occurrence.timezone;
+    if (!timeZone) {
+      fail(
+        502,
+        "Google Calendar did not return the IANA timezone required to move the whole series.",
+        "CALENDAR_RECURRENCE_SERIES_TIMEZONE_MISSING",
+      );
+    }
+    // Wall-clock instant: the zone's local time read as if it were UTC.
+    const wallMs = (iso: string) => {
+      const parts = getZonedDateParts(new Date(iso), timeZone);
+      return Date.UTC(
+        parts.year,
+        parts.month - 1,
+        parts.day,
+        parts.hour,
+        parts.minute,
+        parts.second,
+      );
+    };
+    const fromWallMs = (ms: number) => {
+      const wall = new Date(ms);
+      return buildUtcDateFromLocalParts(timeZone, {
+        year: wall.getUTCFullYear(),
+        month: wall.getUTCMonth() + 1,
+        day: wall.getUTCDate(),
+        hour: wall.getUTCHours(),
+        minute: wall.getUTCMinutes(),
+        second: wall.getUTCSeconds(),
+      }).toISOString();
+    };
+    // Measure the shift from the occurrence's slot in the series, so a moved
+    // exception still maps "all to 3pm" onto 3pm.
+    const occurrenceSlot =
+      recurrenceOriginalStartAtFrom(occurrence) ?? occurrence.startAt;
+    const shiftMs = args.startAt
+      ? wallMs(args.startAt) - wallMs(occurrenceSlot)
+      : 0;
+    const newDurationMs = args.endAt
+      ? Date.parse(args.endAt) - Date.parse(args.startAt ?? occurrence.startAt)
+      : Date.parse(master.endAt) - Date.parse(master.startAt);
+    const masterStart = fromWallMs(wallMs(master.startAt) + shiftMs);
+    return {
+      startAt: masterStart,
+      endAt: new Date(Date.parse(masterStart) + newDurationMs).toISOString(),
+      timeZone,
+    };
+  }
+
   private async resolveSeriesMasterEventId(args: {
     grant: LifeOpsConnectorGrant;
     calendarId?: string | null;
