@@ -474,7 +474,7 @@ export class BirdeyeService extends Service {
     options: GetCacheTimedOptions = {},
   ): Promise<TokenTradeDataSingleResponse | false> {
     const key = `birdeye_tokenTradeData_${chain}_${tokenAddress}_${frames}`;
-    const tsInMs = options.tsInMs ?? CACHE_DEFAULTS.TOKEN_TRADE_DATA_TTL;
+    const tsInMs = options.tsInMs ?? Date.now();
     const notOlderThan =
       options.notOlderThan ?? CACHE_DEFAULTS.TOKEN_TRADE_DATA_TTL;
 
@@ -668,7 +668,7 @@ export class BirdeyeService extends Service {
     options: GetCacheTimedOptions = {},
   ): Promise<TokenSecurityResponse | false> {
     const key = `birdeye_tokenSecurityData_${chain}_${tokenAddress}`;
-    const tsInMs = options.tsInMs ?? CACHE_DEFAULTS.TOKEN_SECURITY_DATA_TTL;
+    const tsInMs = options.tsInMs ?? Date.now();
     const notOlderThan =
       options.notOlderThan ?? CACHE_DEFAULTS.TOKEN_SECURITY_DATA_TTL;
 
