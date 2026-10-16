@@ -46,7 +46,10 @@ import {
 } from "../services/lane-planner.js";
 import type { TaskThreadDto } from "../services/orchestrator-task-mapper.js";
 import { OrchestratorTaskService } from "../services/orchestrator-task-service.js";
-import type { OrchestratorTaskStatus } from "../services/orchestrator-task-types.js";
+import {
+  IN_FLIGHT_TASK_STATUSES,
+  type OrchestratorTaskStatus,
+} from "../services/orchestrator-task-types.js";
 import { resolveTaskSpawnWorkdir } from "../services/project-binding.js";
 import { recordedPromptDurationMs } from "../services/prompt-duration.js";
 import {
@@ -3123,17 +3126,6 @@ function sessionMatchesTaskStatus(
 export const DUPLICATE_SPAWN_FORCE_RE =
   /\b(?:again|another|fresh|new one|restart|retry|redo|re-?run|one more|from scratch)\b/i;
 
-/** Task statuses that mean the work is still in flight (or parked awaiting a
- * verdict/human) — a near-identical new spawn against one of these is a
- * duplicate, not a new request. */
-const IN_FLIGHT_TASK_STATUSES: ReadonlySet<string> = new Set([
-  "open",
-  "active",
-  "validating",
-  "waiting_on_user",
-  "blocked",
-]);
-
 function goalTokenSet(text: string): Set<string> {
   return new Set(wordTokens(text).filter((token) => token.length > 2));
 }
@@ -3197,9 +3189,10 @@ async function findNearDuplicateInFlightWork(args: {
   if (DUPLICATE_SPAWN_FORCE_RE.test(userText)) return undefined;
   try {
     if (taskService && typeof taskService.listTasks === "function") {
-      const tasks = await taskService.listTasks({});
+      const tasks = await taskService.listTasks({
+        statuses: IN_FLIGHT_TASK_STATUSES,
+      });
       for (const task of tasks) {
-        if (!IN_FLIGHT_TASK_STATUSES.has(task.status)) continue;
         const existingText = `${task.title} ${task.originalRequest ?? ""}`;
         if (hasDistinctSlugIdentity(candidateText, existingText)) continue;
         if (

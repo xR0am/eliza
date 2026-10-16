@@ -33,7 +33,8 @@ function fixture() {
     tokenLoads = 0,
     summaryOverride = "",
     accountId = "google-user",
-    switchAfterWrite = false;
+    switchAfterWrite = false,
+    echoOrganizer = false;
   const current = async () => ({
     connectionId: owner.grantId,
     accountId,
@@ -78,7 +79,23 @@ function fixture() {
         expect(body.reminders).toEqual({ useDefault: false });
         if (events.has(body.id)) return Response.json({}, { status: 409 });
         writes++;
-        events.set(body.id, { ...body, etag: '"1"' });
+        events.set(body.id, {
+          ...body,
+          ...(echoOrganizer && body.attendees.length
+            ? {
+                attendees: [
+                  {
+                    email: "owner@example.invalid",
+                    organizer: true,
+                    self: true,
+                    responseStatus: "accepted",
+                  },
+                  ...body.attendees,
+                ],
+              }
+            : {}),
+          etag: '"1"',
+        });
         if (revokeAfterWrite) readOnly = true;
         if (switchAfterWrite) accountId = "another-google-user";
         if (loss) throw Error("Response lost after create");
@@ -103,6 +120,9 @@ function fixture() {
     tokenLoads: () => tokenLoads,
     rename: (value: string) => {
       summaryOverride = value;
+    },
+    echoOrganizer: () => {
+      echoOrganizer = true;
     },
     switchAccountAfterWrite: () => {
       switchAfterWrite = true;
@@ -147,8 +167,26 @@ describe("managed Calendar conditional provider", () => {
     f.events.get(first.eventId)!.summary = "Newer Google edit";
     f.events.get(first.eventId)!.etag = '"2"';
     await expect(f.provider.create(owner, "primary", "operation-1", event)).rejects.toMatchObject({
+      code: "CALENDAR_SYNC_CREATE_CHANGED",
+      outcome: "unknown",
+    });
+    await expect(
+      f.provider.create(owner, "primary", "operation-1", { ...event, title: "Other content" }),
+    ).rejects.toMatchObject({
+      code: "CALENDAR_SYNC_CREATE_CHANGED",
       outcome: "precondition_failed",
     });
+    expect(f.writes()).toBe(1);
+  });
+  test("Google's own organizer attendee echo does not turn an applied create into a failure", async () => {
+    const f = fixture(),
+      guests = { ...event, attendees: [{ email: "guest@example.invalid", optional: false }] };
+    f.echoOrganizer();
+    const created = await f.provider.create(owner, "primary", "organizer-echo", guests);
+    expect(created.event.attendees.map((a) => a.email)).toContain("owner@example.invalid");
+    expect((await f.provider.create(owner, "primary", "organizer-echo", guests)).eventId).toBe(
+      created.eventId,
+    );
     expect(f.writes()).toBe(1);
   });
   test("updates and deletes require the exact current provider revision", async () => {
@@ -349,7 +387,8 @@ describe("managed Calendar conditional provider", () => {
     expect(f.tokenLoads()).toBe(1);
     f.events.get(saved.eventId)!.visibility = "public";
     await expect(f.provider.create(owner, "primary", "key", event)).rejects.toMatchObject({
-      outcome: "precondition_failed",
+      code: "CALENDAR_SYNC_CREATE_CHANGED",
+      outcome: "unknown",
     });
     expect(f.writes()).toBe(1);
   });

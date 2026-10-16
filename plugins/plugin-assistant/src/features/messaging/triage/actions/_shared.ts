@@ -677,6 +677,14 @@ export function parseScheduleDraftSendParams(
         "sendAt is required as an ISO 8601 timestamp or epoch milliseconds",
     };
   }
+  // A time that is already past is sent on the next scheduler tick, so a
+  // misread value (epoch seconds, a bare year, a blank) would send the draft
+  // at once while the action reports it as scheduled.
+  if (sendAtMs <= Date.now()) {
+    return {
+      error: `sendAt must be in the future (got ${new Date(sendAtMs).toISOString()})`,
+    };
+  }
   return { draftId, sendAtMs };
 }
 

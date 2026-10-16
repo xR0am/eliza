@@ -466,7 +466,10 @@ export class PriorityQueue<T> {
 				}
 			}
 			arr.length = 0;
-			arr.push(...kept);
+			// Unbounded queues can exceed the runtime's function argument limit.
+			for (const item of kept) {
+				arr.push(item);
+			}
 			return out;
 		};
 

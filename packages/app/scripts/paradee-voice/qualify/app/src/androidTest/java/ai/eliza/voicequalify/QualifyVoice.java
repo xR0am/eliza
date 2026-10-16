@@ -8,7 +8,7 @@ import java.io.IOException;
 
 /**
  * The only file here that touches the :paradee-voice API. Opens the packaged
- * voice bundle (Paradee GGUF + misaki lexicon, Phonon-2 ASR, Silero VAD)
+ * voice bundle (Paradee GGUF + misaki lexicon, Phonon-2 GGUF, Silero VAD)
  * and exposes synthesis and transcription for the qualify tests.
  */
 final class QualifyVoice implements AutoCloseable {
@@ -50,7 +50,7 @@ final class QualifyVoice implements AutoCloseable {
         return tts.phonemize(text);
     }
 
-    /** 16 kHz mono fp32 in; VAD-gated, so no speech gives "". */
+    /** 16 kHz mono fp32 in; silence behavior is asserted by AsrWerTest. */
     synchronized String transcribe(float[] pcm16k) throws IOException {
         if (asr == null) asr = bundle.openAsr();
         return asr.transcribe(pcm16k);

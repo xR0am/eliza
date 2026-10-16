@@ -12,7 +12,11 @@ import type {
   LifeOpsHealthSleepStage,
   LifeOpsHealthWorkout,
 } from "../contracts/health.js";
-import { buildUtcDateFromLocalParts, getZonedDateParts } from "../util/time.js";
+import {
+  buildUtcDateFromLocalParts,
+  getLocalDateKey,
+  getZonedDateParts,
+} from "../util/time.js";
 import type { StoredHealthConnectorToken } from "./health-oauth.js";
 import { requireHealthProviderSpec } from "./health-provider-registry.js";
 import {
@@ -1238,8 +1242,18 @@ async function syncWithings(
     );
   }
   const measuresBody = getRecord(measuresJson, "body") ?? {};
+  // getmeas dates are epoch seconds; the body's timezone is the user's zone.
+  // Daily summaries group by localDate, so a 07:00 weigh-in in Tokyo belongs
+  // to that Tokyo day, not to the previous UTC day.
+  const measuresTimeZone = validTimeZone(getText(measuresBody, "timezone"));
   for (const group of getArray(measuresBody, "measuregrps")) {
     const measuredAt = isoFromUnixSeconds(getNumber(group, "date"));
+    const measuredLocalDate =
+      measuresTimeZone && measuredAt
+        ? getLocalDateKey(
+            getZonedDateParts(new Date(measuredAt), measuresTimeZone),
+          )
+        : undefined;
     const groupId =
       getText(group, "grpid") ?? getText(group, "date") ?? "measure";
     for (const measure of getArray(group, "measures")) {
@@ -1256,6 +1270,7 @@ async function syncWithings(
             value: mapped.value,
             unit: mapped.unit,
             startAt: measuredAt,
+            localDate: measuredLocalDate,
             sourceExternalId: `${groupId}:withings:${mapped.metric}`,
             metadata: { withingsType: getNumber(measure, "type") },
           }),
@@ -1270,6 +1285,18 @@ async function syncWithings(
     identity: args.token.identity,
     cursor: null,
   };
+}
+
+/** An IANA zone the runtime can format in, or null. */
+function validTimeZone(timeZone: string | null): string | null {
+  if (!timeZone) return null;
+  try {
+    getZonedDateParts(new Date(), timeZone);
+    return timeZone;
+  } catch {
+    // error-policy:J3 an unknown zone falls back to the UTC date, as before.
+    return null;
+  }
 }
 
 function mapWithingsMeasure(

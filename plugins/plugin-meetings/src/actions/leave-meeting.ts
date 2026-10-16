@@ -73,6 +73,8 @@ async function handler(
 export const leaveMeetingAction: Action = {
   name: "LEAVE_MEETING",
   similes: ["EXIT_MEETING", "STOP_MEETING_TRANSCRIPTION"],
+  // Same gate as JOIN_MEETING: the owner's meetings are the owner's.
+  roleGate: { minRole: "OWNER" },
   description:
     "Leave a meeting the notetaker bot is currently attending and finalize its transcript.",
   // The keyword test guards an untargeted leave. A planner call that names the

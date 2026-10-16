@@ -2,6 +2,7 @@ import type { IAgentRuntime, Memory } from "@elizaos/core";
 import {
   __resetDefaultTriageServiceForTests,
   getDefaultTriageService,
+  registerDeferredMessageScheduler,
 } from "@elizaos/plugin-assistant";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagedGmailAdapter } from "../src/inbox/managed-gmail-adapter.ts";
@@ -104,7 +105,7 @@ describe("managed Gmail owner boundary", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       const input = JSON.parse(String(init?.body)).send;
       const receipt = () => ({
-        requestId: id.split(":").at(-1),
+        requestId: (input.id ?? id).split(":").at(-1),
         kind: "send",
         state: accepted ? "succeeded" : "prepared",
         reviewDigest: digest,
@@ -154,6 +155,14 @@ describe("managed Gmail owner boundary", () => {
     });
     expect(Object.hasOwn(draft, "requester")).toBe(false);
     expect(dispatches).toBe(0);
+    // New reviews must not evict an older pending draft or its send receipt binding.
+    for (let index = 0; index < 100; index++) {
+      await service.draftFollowup(runtime, {
+        ...snapshot,
+        subject: `Later review ${index}`,
+        requester,
+      });
+    }
     await expect(
       adapter.sendDraft(runtime, draft.draftId, {
         requester,
@@ -185,6 +194,66 @@ describe("managed Gmail owner boundary", () => {
     __resetDefaultTriageServiceForTests();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
+  });
+  it("refuses to schedule a managed Gmail draft before any durable task is created", async () => {
+    vi.stubEnv(
+      "ELIZA_MANAGED_GMAIL_SEND_BROKER",
+      "http://127.0.0.1:5209/__alpha-owner-gmail",
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const input = JSON.parse(String(init?.body)).send;
+      return Response.json({
+        send: {
+          id: `alpha-gmail-send:${"b".repeat(64)}:${input.requestId}`,
+          reviewDigest: "a".repeat(64),
+          receipt: {
+            requestId: input.requestId,
+            kind: "send",
+            state: "prepared",
+            reviewDigest: "a".repeat(64),
+            providerResult: null,
+          },
+          review: {
+            from: "owner@example.invalid",
+            to: input.to,
+            subject: input.subject,
+            bodyText: input.bodyText,
+          },
+        },
+      });
+    });
+    const runtime = { agentId: "owned-agent" } as IAgentRuntime,
+      requester = {
+        agentId: "owned-agent",
+        entityId: "owner",
+        roomId: "owner-room",
+      } as Memory;
+    const schedule = vi.fn(async () => {
+      throw new Error("durable scheduler must not be reached");
+    });
+    const dispose = registerDeferredMessageScheduler(runtime, { schedule });
+    try {
+      const service = getDefaultTriageService();
+      service.register(new ManagedGmailAdapter());
+      const draft = await service.draftFollowup(runtime, {
+        source: "gmail",
+        to: [{ identifier: "self@example.invalid" }],
+        subject: "QA",
+        body: "Send tomorrow",
+        requester,
+      });
+      const sendAtMs = Date.now() + 86_400_000;
+      // A repeat attempt must hit the same refusal (not "already scheduled"),
+      // proving no schedule was persisted on the draft.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(
+          service.scheduleDraftSend(runtime, draft.draftId, sendAtMs),
+        ).rejects.toMatchObject({ code: "MESSAGE_SCHEDULE_UNSUPPORTED" });
+      }
+      expect(schedule).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
   });
   it("can initialize a second runtime without duplicating or disabling the managed source", async () => {
     const runtime = { agentId: "owned-agent" } as IAgentRuntime;

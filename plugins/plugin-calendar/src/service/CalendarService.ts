@@ -235,7 +235,10 @@ import {
   LinkedCalendarRepository,
   type LinkedCalendarSemanticEvent,
 } from "./linked-calendar-sync.js";
-import { createManagedCalendarRead } from "./managed-calendar-read.js";
+import {
+  createManagedCalendarRead,
+  managedCalendarPlaceholder,
+} from "./managed-calendar-read.js";
 
 type AggregatedCalendarFeedSource = {
   calendar: Pick<
@@ -3849,16 +3852,33 @@ export class CalendarService extends Service {
       );
     }
     if (
-      this.managedCalendar &&
+      this.managedCalendar?.acceptsGrantId(request?.grantId) &&
       side !== "agent" &&
       (!mode || mode === "cloud_managed")
     ) {
-      const managed = await this.managedCalendar.sources();
-      summaries.push(
-        ...managed.filter(
-          (c) => !request?.grantId || c.grantId === request.grantId,
-        ),
-      );
+      try {
+        const managed = await this.managedCalendar.sources();
+        summaries.push(
+          ...managed.filter(
+            (calendar) =>
+              !request?.grantId || calendar.grantId === request.grantId,
+          ),
+        );
+      } catch (error) {
+        const calendar = managedCalendarPlaceholder(request?.grantId);
+        const sourceError = calendarSourceError(error);
+        this.runtime.reportError("calendar:list-managed-source", error, {
+          source: calendarSourceKey(calendar),
+        });
+        failures.push(
+          calendarSourceHealth({
+            calendar,
+            status: "error",
+            syncedAt: null,
+            error: sourceError,
+          }),
+        );
+      }
     }
     const preferences = await ensureCalendarFeedIncludes(
       this.runtime,
@@ -5574,16 +5594,30 @@ export class CalendarService extends Service {
     })[] = [];
     for (const calendar of calendars) {
       if (this.managedCalendar?.owns(calendar)) {
-        sources.push({
-          calendar,
-          feed: await this.managedCalendar.feed(
+        let feed: LifeOpsCalendarFeed;
+        try {
+          feed = await this.managedCalendar.feed(
             calendar,
             timeMin,
             timeMax,
             timeZone,
             this.agentId(),
-          ),
-        });
+          );
+        } catch (error) {
+          const sourceError = calendarSourceError(error);
+          this.runtime.reportError("calendar:feed-managed-source", error, {
+            source: calendarSourceKey(calendar),
+            timeMin,
+            timeMax,
+          });
+          feed = this.unavailableCalendarFeed({
+            calendar,
+            timeMin,
+            timeMax,
+            error: sourceError,
+          });
+        }
+        sources.push({ calendar, feed });
         continue;
       }
       if (calendar.provider === ELIZA_CALENDAR_PROVIDER) {

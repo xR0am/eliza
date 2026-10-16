@@ -9,15 +9,11 @@ import {
 } from "@elizaos/contracts";
 
 export {
-  type LinkedCalendarCheckpointStore,
   type LinkedCalendarEventRecord,
-  type LinkedCalendarLocalPort,
-  type LinkedCalendarLocalSnapshot,
   type LinkedCalendarOperation,
   type LinkedCalendarProviderPort,
   type LinkedCalendarProviderSnapshot,
   type LinkedCalendarReconcileOutcome,
-  LinkedCalendarReconciler,
   type LinkedCalendarSemanticEvent,
   type LinkedCalendarState,
 } from "@elizaos/contracts";
@@ -640,7 +636,10 @@ function googleEventInput(event: LinkedCalendarSemanticEvent) {
       email: attendee.email,
       optional: attendee.optional === true,
     })),
-    recurrence: event.recurrence ? [...event.recurrence] : [],
+    // The built-in Eliza calendar cannot hold recurrence, so an absent local
+    // series must leave Google's RRULE untouched. Sending `[]` would make the
+    // PATCH clear the provider series and delete every future occurrence.
+    ...(event.recurrence?.length ? { recurrence: [...event.recurrence] } : {}),
   };
 }
 

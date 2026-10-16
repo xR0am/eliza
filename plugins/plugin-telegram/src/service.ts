@@ -657,6 +657,24 @@ export class TelegramService extends Service {
     return normalized === DEFAULT_ACCOUNT_ID ? key : `${normalized}:${key}`;
   }
 
+  /** The room id inbound messages for this chat (and topic) are stored under. */
+  private connectorRoomIdForChannel(
+    channelId: string,
+    threadId: string | undefined,
+    accountId: string,
+  ): UUID {
+    const parts = parseTelegramTargetParts(channelId, threadId);
+    return createUniqueUuid(
+      this.runtime,
+      this.scopedTelegramKey(
+        parts.threadId
+          ? `${parts.chatId}-${parts.threadId}`
+          : String(parts.chatId),
+        accountId,
+      ),
+    ) as UUID;
+  }
+
   private knownChatKeyMatchesAccount(
     key: string,
     chat: Chat,
@@ -2820,10 +2838,20 @@ export class TelegramService extends Service {
       target,
       { accountId: (context as AccountScopedConnectorContext).accountId },
     );
-    if (target?.roomId) {
+    // A target named only by channelId (and threadId) is still one chat.
+    const roomId =
+      target?.roomId ??
+      (target?.channelId
+        ? this.connectorRoomIdForChannel(
+            target.channelId,
+            target.threadId,
+            accountId,
+          )
+        : undefined);
+    if (roomId) {
       const memories = await loadAllTelegramRoomMemories(
         context.runtime,
-        target.roomId,
+        roomId,
       );
       const matches = memories.filter((memory) => {
         const metadata = memory.metadata as Record<string, unknown> | undefined;
@@ -2907,15 +2935,7 @@ export class TelegramService extends Service {
     const roomId =
       target.roomId ??
       room?.id ??
-      (createUniqueUuid(
-        this.runtime,
-        this.scopedTelegramKey(
-          parts.threadId
-            ? `${parts.chatId}-${parts.threadId}`
-            : String(parts.chatId),
-          accountId,
-        ),
-      ) as UUID);
+      this.connectorRoomIdForChannel(channelId, target.threadId, accountId);
     const memories = await loadAllTelegramRoomMemories(context.runtime, roomId);
     const recentMessages = memories
       .slice()

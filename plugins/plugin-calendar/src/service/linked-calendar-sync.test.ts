@@ -1174,6 +1174,32 @@ describe("GoogleLinkedCalendarProviderPort", () => {
     });
   });
 
+  it("never clears a provider recurrence when the local event has none", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const google = {
+      async updateEvent(input: Record<string, unknown>) {
+        calls.push(input);
+        return {
+          id: "google-series",
+          calendarId: "primary",
+          title: input.title,
+          start: input.start,
+          end: input.end,
+          recurrence: ["RRULE:FREQ=WEEKLY"],
+          metadata: { etag: '"series-2"' },
+        };
+      },
+    } as unknown as IGoogleWorkspaceService;
+    const port = new GoogleLinkedCalendarProviderPort(google);
+    const updated = await port.update(
+      record({ providerEventId: "google-series", providerEtag: '"series-1"' }),
+      { ...baseEvent, title: "Kept from Eliza" },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toHaveProperty("recurrence");
+    expect(updated.event.recurrence).toEqual(["RRULE:FREQ=WEEKLY"]);
+  });
+
   it("maps provider 410 to an absent snapshot for watch/full-resync reconciliation", async () => {
     const google = {
       async getEvent() {

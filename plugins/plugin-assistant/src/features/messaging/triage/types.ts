@@ -3,6 +3,7 @@ import type {
   Memory,
   ReadRangeUnit,
   ReadView,
+  UUID,
 } from "@elizaos/core";
 /**
  * Cross-platform message triage — shared type contract.
@@ -107,6 +108,8 @@ export interface MessageSendContext extends MessageDraftContext {
 
 export interface DraftRecord {
   draftId: string;
+  /** Runtime agent that prepared this draft. Absent only on legacy scheduled rows. */
+  agentId?: UUID;
   source: MessageSource;
   inReplyToId?: string;
   threadId?: string;
@@ -163,7 +166,17 @@ export interface MessageAdapterCapabilities {
     markRead?: boolean;
     unsubscribe?: boolean;
   };
-  send: { reply?: boolean; new?: boolean; schedule?: boolean };
+  send: {
+    reply?: boolean;
+    new?: boolean;
+    schedule?: boolean;
+    /**
+     * True when delivery must run inside the executing owner request (the
+     * adapter authorizes against a live requester). Such drafts cannot be
+     * handed to the durable deferred-send runner, which fires without one.
+     */
+    requiresLiveRequester?: boolean;
+  };
   worlds: "single" | "multi";
   channels: "explicit" | "implicit" | "none";
 }

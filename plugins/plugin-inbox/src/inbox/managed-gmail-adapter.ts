@@ -74,7 +74,9 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
       manage: this.manager
         ? { archive: true, trash: true, markRead: true }
         : {},
-      send: this.sender ? { new: true } : {},
+      send: this.sender
+        ? { new: true, requiresLiveRequester: true }
+        : { requiresLiveRequester: true },
       worlds: "single" as const,
       channels: "none" as const,
     };
@@ -167,8 +169,6 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
     };
     const prepared = await this.sender.prepare(content);
     await owner(runtime, context?.requester);
-    if (this.drafts.size >= 100)
-      this.drafts.delete(this.drafts.keys().next().value!);
     this.drafts.set(prepared.id, {
       agentId: runtime.agentId,
       entityId: caller.entityId,

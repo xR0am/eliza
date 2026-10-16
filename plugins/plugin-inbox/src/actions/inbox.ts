@@ -106,6 +106,11 @@ export interface InboxItem {
   readonly snippet: string;
   readonly receivedAt: string;
   readonly threadTopic?: string;
+  /**
+   * The conversation this message belongs to, scoped to its account
+   * (`worldId:threadId`); absent when the source has no thread.
+   */
+  readonly threadKey?: string;
   readonly deepLink?: string;
   readonly unread?: boolean;
 }
@@ -210,6 +215,9 @@ function mapMessageRefToInboxItem(ref: MessageRef): InboxItem | null {
     snippet: ref.snippet,
     receivedAt: new Date(ref.receivedAtMs).toISOString(),
     ...(ref.subject ? { threadTopic: ref.subject } : {}),
+    ...(ref.threadId
+      ? { threadKey: `${ref.worldId ?? ""}:${ref.threadId}` }
+      : {}),
     ...(typeof ref.metadata?.htmlLink === "string"
       ? { deepLink: ref.metadata.htmlLink }
       : {}),
@@ -254,13 +262,17 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
         );
       }
       const refs = query
-        ? await service.search(runtime, {
-            sources: [source],
-            requester,
-            content: query,
-            sinceMs: parseSinceMs(since),
-            ...(limit === undefined ? {} : { limit }),
-          })
+        ? await service.search(
+            runtime,
+            {
+              sources: [source],
+              requester,
+              content: query,
+              sinceMs: parseSinceMs(since),
+              ...(limit === undefined ? {} : { limit }),
+            },
+            { probeOverflow: false },
+          )
         : await service.triage(runtime, {
             sources: [source],
             requester,
@@ -350,9 +362,14 @@ function resolvePlatforms(
   return [...seen];
 }
 
+/**
+ * One row per conversation: messages of one thread collapse to the newest. A
+ * subject is not a thread (two senders can both write "Quick question"), so
+ * only the source's own thread id groups messages.
+ */
 function dedupeKey(item: InboxItem): string {
-  if (item.threadTopic && item.threadTopic.length > 0) {
-    return `topic:${item.threadTopic.toLowerCase()}::${item.platform}::${item.channel}`;
+  if (item.threadKey) {
+    return `thread:${item.platform}::${item.threadKey}`;
   }
   return `id:${item.platform}::${item.id}`;
 }
@@ -486,8 +503,13 @@ function fetchScopeSuffix(args: {
  * contract, enriching from the canonical {@link MessageRef} in the core triage
  * store when one exists (full body text, group/DM shape, thread + room ids).
  */
-function toInboundMessage(item: InboxItem): InboundMessage {
-  const ref = getDefaultTriageService().getStore().getMessage(item.id);
+function toInboundMessage(
+  runtime: IAgentRuntime,
+  item: InboxItem,
+): InboundMessage {
+  const ref = getDefaultTriageService()
+    .getStore()
+    .getMessage(item.id, runtime.agentId);
   const timestamp = ref?.receivedAtMs ?? Date.parse(item.receivedAt);
   if (!Number.isFinite(timestamp)) {
     throw new Error(
@@ -645,32 +667,35 @@ function seedMessageRefForEntry(
   const messageId = ensureSourceMessageId(entry);
   const threadId = entry.sourceRoomId ?? entry.sourceMessageId;
   const service = getDefaultTriageService();
-  if (service.getStore().getMessage(messageId)) return;
-  service.getStore().saveMessage({
-    id: messageId,
-    source,
-    externalId: messageId,
-    from: {
-      identifier: entry.sourceEntityId ?? entry.senderName ?? messageId,
-      ...(entry.senderName ? { displayName: entry.senderName } : {}),
+  if (service.getStore().getMessage(messageId, runtime.agentId)) return;
+  service.getStore().saveMessage(
+    {
+      id: messageId,
+      source,
+      externalId: messageId,
+      from: {
+        identifier: entry.sourceEntityId ?? entry.senderName ?? messageId,
+        ...(entry.senderName ? { displayName: entry.senderName } : {}),
+      },
+      to: [{ identifier: runtime.agentId }],
+      snippet: entry.snippet,
+      body: entry.threadContext?.join("\n") ?? entry.snippet,
+      receivedAtMs: inboxReceivedAtMs(entry.createdAt),
+      hasAttachments: false,
+      isRead: false,
+      metadata: {
+        inboxEntryId: entry.id,
+        deepLink: entry.deepLink,
+        triageReasoning: entry.triageReasoning,
+      },
+      ...(threadId ? { threadId } : {}),
+      ...(entry.source === "gmail" ? { subject: entry.channelName } : {}),
+      ...(entry.sourceRoomId
+        ? { worldId: entry.sourceRoomId, channelId: entry.sourceRoomId }
+        : {}),
     },
-    to: [{ identifier: runtime.agentId }],
-    snippet: entry.snippet,
-    body: entry.threadContext?.join("\n") ?? entry.snippet,
-    receivedAtMs: inboxReceivedAtMs(entry.createdAt),
-    hasAttachments: false,
-    isRead: false,
-    metadata: {
-      inboxEntryId: entry.id,
-      deepLink: entry.deepLink,
-      triageReasoning: entry.triageReasoning,
-    },
-    ...(threadId ? { threadId } : {}),
-    ...(entry.source === "gmail" ? { subject: entry.channelName } : {}),
-    ...(entry.sourceRoomId
-      ? { worldId: entry.sourceRoomId, channelId: entry.sourceRoomId }
-      : {}),
-  });
+    runtime.agentId,
+  );
 }
 
 async function replyToEntry(args: {
@@ -838,12 +863,23 @@ export async function executeInboxQueueOperation(args: {
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
       });
-      const alreadyTriaged = await repo.getBySourceMessageIds(
-        merged.map((item) => item.id),
+      const alreadyTriagedByPlatform = new Map<InboxPlatform, Set<string>>();
+      await Promise.all(
+        platforms.map(async (platform) => {
+          const ids = merged
+            .filter((item) => item.platform === platform)
+            .map((item) => item.id);
+          alreadyTriagedByPlatform.set(
+            platform,
+            await repo.getBySourceMessageIds(platform, ids),
+          );
+        }),
       );
       const freshMessages = merged
-        .filter((item) => !alreadyTriaged.has(item.id))
-        .map((item) => toInboundMessage(item));
+        .filter(
+          (item) => !alreadyTriagedByPlatform.get(item.platform)?.has(item.id),
+        )
+        .map((item) => toInboundMessage(args.runtime, item));
       if (freshMessages.length > 0) {
         const service = new InboxService(args.runtime);
         const { triaged } = await service.triage(freshMessages);

@@ -34,6 +34,7 @@ import {
   PANCAKESWAP_V3_POSITION_MANAGER_ABI,
   type PancakeSwapV3FeeTier,
 } from "../types.ts";
+import { minAmountAfterSlippage } from "../../slippage";
 
 const SUPPORTED_CHAIN_IDS = [56, 1, 42161, 8453]; // BSC, Ethereum, Arbitrum, Base
 
@@ -463,12 +464,28 @@ export class PancakeSwapV3LpService extends Service implements IEvmLpService {
 
       const deadline = params.deadline ?? BigInt(Math.floor(Date.now() / 1000) + 1800);
 
-      const decreaseParams = {
+      // Quote what the position returns now, then require at least that much
+      // minus the confirmed slippage. With zero minimums a sandwich around the
+      // close can take the position's value.
+      const quoteParams = {
         tokenId: params.tokenId,
         liquidity: liquidityToRemove,
         amount0Min: 0n,
         amount1Min: 0n,
         deadline,
+      };
+      const { result: quoted } = await publicClient.simulateContract({
+        address: addresses.nonfungiblePositionManager,
+        abi: PANCAKESWAP_V3_POSITION_MANAGER_ABI,
+        functionName: "decreaseLiquidity",
+        args: [quoteParams],
+        account: walletClient.account,
+      });
+      const [quotedAmount0, quotedAmount1] = quoted as readonly [bigint, bigint];
+      const decreaseParams = {
+        ...quoteParams,
+        amount0Min: minAmountAfterSlippage(quotedAmount0, params.slippageBps),
+        amount1Min: minAmountAfterSlippage(quotedAmount1, params.slippageBps),
       };
 
       const { request: decreaseRequest } = await publicClient.simulateContract({
@@ -480,7 +497,23 @@ export class PancakeSwapV3LpService extends Service implements IEvmLpService {
       });
 
       const decreaseHash = await walletClient.writeContract(decreaseRequest);
-      await publicClient.waitForTransactionReceipt({ hash: decreaseHash });
+      const decreaseReceipt = await publicClient.waitForTransactionReceipt({
+        hash: decreaseHash,
+      });
+      // A reverted decrease (for example the slippage minimums above) leaves
+      // the liquidity in the position. Report it instead of collecting fees
+      // and calling the close a success.
+      if (decreaseReceipt.status !== "success") {
+        return {
+          success: false,
+          error: "decreaseLiquidity reverted (slippage limit exceeded?)",
+          transactionId: decreaseHash,
+          hash: decreaseHash,
+          chainId: params.chainId,
+          blockNumber: decreaseReceipt.blockNumber,
+          gasUsed: decreaseReceipt.gasUsed,
+        };
+      }
 
       const collectParams = {
         tokenId: params.tokenId,
