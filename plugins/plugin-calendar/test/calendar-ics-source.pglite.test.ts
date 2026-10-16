@@ -5,7 +5,7 @@
  */
 
 import { PGlite } from "@electric-sql/pglite";
-import type { IAgentRuntime } from "@elizaos/core";
+import { type IAgentRuntime, logger, type Memory } from "@elizaos/core";
 import { SECRETS_SERVICE_TYPE } from "@elizaos/plugin-assistant";
 import { RuntimeMigrator } from "@elizaos/plugin-sql";
 import { drizzle } from "drizzle-orm/pglite";
@@ -20,6 +20,7 @@ import {
 } from "vitest";
 import {
   createCalendarFeedConflictLoader,
+  createConflictDetectAction,
   evaluateCalendarWriteAvailability,
 } from "../src/actions/conflict-detect.js";
 import {
@@ -725,6 +726,68 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     expect(
       await conflictsAt("2026-07-01T14:15:00.000Z", "2026-07-01T14:45:00.000Z"),
     ).toEqual(["School pickup"]);
+  });
+
+  it("scans a subscribed all-day event on the owner's local day", async () => {
+    const source = await createSource();
+    // No X-WR-TIMEZONE, so the parser stores the all-day date with zone UTC.
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:offsite",
+          "DTSTAMP:20260601T000000Z",
+          "DTSTART;VALUE=DATE:20260702",
+          "DTEND;VALUE=DATE:20260703",
+          "SUMMARY:Team offsite",
+          "END:VEVENT",
+          // 18:00 to 19:00 on July 1 in Los Angeles.
+          "BEGIN:VEVENT",
+          "UID:call",
+          "DTSTAMP:20260601T000000Z",
+          "DTSTART:20260702T010000Z",
+          "DTEND:20260702T020000Z",
+          "SUMMARY:Call",
+          "END:VEVENT",
+          // 18:00 to 19:00 on July 2 in Los Angeles.
+          "BEGIN:VEVENT",
+          "UID:dinner",
+          "DTSTAMP:20260601T000000Z",
+          "DTSTART:20260703T010000Z",
+          "DTEND:20260703T020000Z",
+          "SUMMARY:Dinner",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    const action = createConflictDetectAction({
+      authorize: async () => true,
+      resolveTimeZone: async () => "America/Los_Angeles",
+      now: () => new Date("2026-07-01T19:00:00.000Z"),
+    });
+
+    const result = await action.handler(
+      { ...runtime, logger } as IAgentRuntime,
+      {
+        id: "00000000-0000-0000-0000-000000000301",
+        entityId: "00000000-0000-0000-0000-000000000302",
+        roomId: "00000000-0000-0000-0000-000000000303",
+        content: { text: "any conflicts this week?" },
+      } as Memory,
+      undefined,
+      { parameters: { action: "scan_week" } },
+      undefined,
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        conflicts: [
+          { eventA: { title: "Team offsite" }, eventB: { title: "Dinner" } },
+        ],
+      },
+    });
   });
 
   it.each(["ü", "€", "😀"])(
