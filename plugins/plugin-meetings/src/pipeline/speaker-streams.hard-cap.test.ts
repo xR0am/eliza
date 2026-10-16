@@ -57,3 +57,49 @@ it("transcribes a speaker's first 30 s instead of dropping them at the hard cap"
   expect(emitted.length).toBeGreaterThan(1);
   expect(total).toBe(41);
 });
+
+it("keeps the hard-cap transcription when the speaker changes while it is in flight", async () => {
+  let clock = 0;
+  const streams = new SpeakerStreamManager({ now: () => clock });
+  const emitted: string[] = [];
+  let pendingFinal: (() => void) | undefined;
+  streams.onSegmentReady = (key, _name, audio, purpose, generation) => {
+    if (purpose !== "final") {
+      queueMicrotask(() =>
+        streams.handleTranscriptionResult(
+          key,
+          "",
+          undefined,
+          undefined,
+          generation,
+        ),
+      );
+      return;
+    }
+    // Hold the cap submission's result until after the speaker change.
+    pendingFinal = () =>
+      streams.handleTranscriptionResult(
+        key,
+        `speech ${(audio.length / SAMPLE_RATE).toFixed(0)}s`,
+        undefined,
+        undefined,
+        generation,
+      );
+  };
+  streams.onSegmentConfirmed = (event) => emitted.push(event.text);
+  streams.addSpeaker("alice", "Alice");
+
+  for (let second = 0; second < 32 && !pendingFinal; second++) {
+    streams.feedAudio("alice", new Float32Array(SAMPLE_RATE).fill(0.1));
+    clock += 1000;
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+  expect(pendingFinal).toBeDefined();
+
+  // Zoom/Teams speaker change while the cap transcription is in flight.
+  await streams.flushSpeaker("alice");
+  pendingFinal?.();
+  streams.removeAll();
+
+  expect(emitted.some((text) => /^speech 3\ds$/.test(text))).toBe(true);
+});

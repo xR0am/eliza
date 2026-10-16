@@ -93,6 +93,8 @@ interface SpeakerBuffer {
    * emitted and only these samples are dropped; audio fed meanwhile stays.
    */
   capSubmittedSamples: number;
+  /** A flush arrived while the hard-cap submission was in flight. */
+  flushAfterCap: boolean;
   /** Bumped on full reset — stale in-flight results are discarded. */
   generation: number;
   /** Last confirmed text — ASR prompt for context continuity + dedup. */
@@ -160,6 +162,7 @@ export class SpeakerStreamManager {
       lastAudioTimestampMs: now,
       idleSubmitted: false,
       capSubmittedSamples: 0,
+      flushAfterCap: false,
       generation: 0,
       lastConfirmedText: "",
     });
@@ -236,6 +239,10 @@ export class SpeakerStreamManager {
       buffer.lastTranscript = "";
       buffer.confirmCount = 0;
       buffer.lastWords = [];
+      if (buffer.flushAfterCap) {
+        buffer.flushAfterCap = false;
+        void this.flushSpeaker(speakerKey);
+      }
       return;
     }
 
@@ -439,6 +446,13 @@ export class SpeakerStreamManager {
   async flushSpeaker(speakerKey: string): Promise<void> {
     const buffer = this.buffers.get(speakerKey);
     if (!buffer) return;
+
+    // A hard-cap submission carries speech nothing else has transcribed; a
+    // reset now would discard its result as stale. Flush once it lands.
+    if (buffer.inFlight && buffer.capSubmittedSamples > 0) {
+      buffer.flushAfterCap = true;
+      return;
+    }
 
     if (buffer.lastTranscript) {
       this.emitSegment(buffer, buffer.lastTranscript, []);
@@ -684,6 +698,7 @@ export class SpeakerStreamManager {
     buffer.lastAudioTimestampMs = this.now();
     buffer.idleSubmitted = false;
     buffer.capSubmittedSamples = 0;
+    buffer.flushAfterCap = false;
     buffer.generation++;
   }
 }
