@@ -78,6 +78,7 @@ import {
 } from "../../lifeops/sql.js";
 import { inferTimeZoneFromLocationText } from "../../lifeops/time/timezone.js";
 import {
+  addDaysToLocalDate,
   buildUtcDateFromLocalParts,
   getZonedDateParts,
 } from "../../lifeops/time.js";
@@ -202,19 +203,60 @@ function dayOfWeekInTz(date: Date, timeZone: string): number {
   ).getUTCDay();
 }
 
-// All-day events are stored at UTC midnight of their civil dates (see the ICS
-// parser and Google Calendar mapping). They block the owner's local days.
-function localMidnightOfStoredDateMs(iso: string, timeZone: string): number {
-  const date = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  if (!date) return Number.NaN;
+type LocalDate = { year: number; month: number; day: number };
+
+function localDayStartMs(date: LocalDate, timeZone: string): number {
   return buildUtcDateFromLocalParts(timeZone, {
-    year: Number(date[1]),
-    month: Number(date[2]),
-    day: Number(date[3]),
+    ...date,
     hour: 0,
     minute: 0,
     second: 0,
   }).getTime();
+}
+
+// An all-day event blocks the owner's local days. Google and ICS store its
+// civil dates at UTC midnight with an exclusive end, so the ISO prefix is the
+// date. EventKit sends local midnight of the event's zone (the device zone
+// when the event floats) and an end at 23:59:59 of the last day, so an Apple
+// date is read in that zone, as CalendarService and conflict-detect do.
+function allDayBusyBoundsMs(
+  event: LifeOpsCalendarEvent,
+  timeZone: string,
+): { start: number; end: number } {
+  if (event.provider === "apple_calendar") {
+    const startMs = Date.parse(event.startAt);
+    const endMs = Date.parse(event.endAt);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      return { start: Number.NaN, end: Number.NaN };
+    }
+    const eventZone = event.timezone?.trim() || timeZone;
+    const startDate = getZonedDateParts(new Date(startMs), eventZone);
+    const lastDate = getZonedDateParts(
+      new Date(Math.max(startMs, endMs - 1)),
+      eventZone,
+    );
+    return {
+      start: localDayStartMs(startDate, timeZone),
+      end: localDayStartMs(addDaysToLocalDate(lastDate, 1), timeZone),
+    };
+  }
+  const datePrefix = (iso: string): LocalDate | null => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+    return match
+      ? {
+          year: Number(match[1]),
+          month: Number(match[2]),
+          day: Number(match[3]),
+        }
+      : null;
+  };
+  const startDate = datePrefix(event.startAt);
+  const endDate = datePrefix(event.endAt);
+  if (!startDate || !endDate) return { start: Number.NaN, end: Number.NaN };
+  return {
+    start: localDayStartMs(startDate, timeZone),
+    end: localDayStartMs(endDate, timeZone),
+  };
 }
 
 function buildBusyIntervals(
@@ -225,16 +267,12 @@ function buildBusyIntervals(
   const bufferMs = travelBufferMinutes * MS_PER_MINUTE;
   const intervals = events
     .filter((e) => e.status !== "cancelled")
-    .map((e) => ({
-      start:
-        (e.isAllDay
-          ? localMidnightOfStoredDateMs(e.startAt, timeZone)
-          : Date.parse(e.startAt)) - bufferMs,
-      end:
-        (e.isAllDay
-          ? localMidnightOfStoredDateMs(e.endAt, timeZone)
-          : Date.parse(e.endAt)) + bufferMs,
-    }))
+    .map((e) => {
+      const bounds = e.isAllDay
+        ? allDayBusyBoundsMs(e, timeZone)
+        : { start: Date.parse(e.startAt), end: Date.parse(e.endAt) };
+      return { start: bounds.start - bufferMs, end: bounds.end + bufferMs };
+    })
     .filter((i) => Number.isFinite(i.start) && Number.isFinite(i.end))
     .sort((a, b) => a.start - b.start);
 

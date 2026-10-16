@@ -150,6 +150,74 @@ describe("life-ops scheduling-with-others (pure slot logic)", () => {
     ]);
   });
 
+  it.each([
+    {
+      // A floating EventKit all-day event has no zone: the device's midnight.
+      timeZone: "Australia/Sydney",
+      eventZone: null,
+      startAt: "2026-10-14T13:00:00.000Z", // Oct 15 00:00 AEDT
+      endAt: "2026-10-15T12:59:59.000Z", // Oct 15 23:59:59 AEDT
+      windowStart: "2026-10-14T13:00:00.000Z",
+      windowEnd: "2026-10-16T13:00:00.000Z",
+      firstFree: "2026-10-15T22:00:00.000Z", // Oct 16 09:00 AEDT
+    },
+    {
+      timeZone: "Europe/Berlin",
+      eventZone: "Europe/Berlin",
+      startAt: "2026-10-14T22:00:00.000Z", // Oct 15 00:00 CEST
+      endAt: "2026-10-15T21:59:59.000Z", // Oct 15 23:59:59 CEST
+      windowStart: "2026-10-14T22:00:00.000Z",
+      windowEnd: "2026-10-16T22:00:00.000Z",
+      firstFree: "2026-10-16T07:00:00.000Z", // Oct 16 09:00 CEST
+    },
+  ])(
+    "an Apple Calendar all-day event blocks its local day in $timeZone",
+    (row) => {
+      const slots = computeProposedSlots({
+        now: new Date("2026-10-14T00:00:00Z"),
+        windowStart: new Date(row.windowStart),
+        windowEnd: new Date(row.windowEnd),
+        durationMinutes: 30,
+        slotCount: 1,
+        preferences: {
+          timeZone: row.timeZone,
+          preferredStartLocal: "09:00",
+          preferredEndLocal: "17:00",
+          defaultDurationMinutes: 30,
+          travelBufferMinutes: 0,
+          blackoutWindows: [],
+          updatedAt: null,
+        },
+        events: [
+          {
+            id: "offsite",
+            externalId: "offsite",
+            agentId: AGENT_ID,
+            provider: "apple_calendar",
+            side: "owner",
+            calendarId: "home",
+            title: "Offsite",
+            description: "",
+            location: "",
+            status: "confirmed",
+            startAt: row.startAt,
+            endAt: row.endAt,
+            isAllDay: true,
+            timezone: row.eventZone,
+            htmlLink: null,
+            conferenceLink: null,
+            organizer: null,
+            attendees: [],
+            metadata: {},
+            syncedAt: "2026-10-14T00:00:00.000Z",
+            updatedAt: "2026-10-14T00:00:00.000Z",
+          },
+        ],
+      });
+      expect(slots.map((slot) => slot.startAt)).toEqual([row.firstFree]);
+    },
+  );
+
   it("computeProposedSlots returns 3 slots within preferred hours, avoiding busy intervals and blackouts", () => {
     const now = new Date();
     const windowStart = new Date(localIso(1, 0, 0));
