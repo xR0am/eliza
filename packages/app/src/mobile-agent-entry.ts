@@ -23,9 +23,7 @@ installMobileAuthHostBridge();
 const { startNativeManagedGoogleHost } = await import(
   "./runtime/native-managed-google-host"
 );
-const nativeGoogleHost = await startNativeManagedGoogleHost();
-try {
-  await import("@elizaos/agent/bin");
-} finally {
-  await nativeGoogleHost?.close();
-}
+// bin starts its CLI asynchronously. The private server belongs to the resident
+// process, rather than the completion of this module's import.
+await startNativeManagedGoogleHost();
+await import("@elizaos/agent/bin");
