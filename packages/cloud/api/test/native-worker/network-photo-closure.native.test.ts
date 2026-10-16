@@ -1,11 +1,11 @@
 /** Actual Worker/DO storage regression. Root must supply the newly built, qualified artifact. */
 import { expect, test } from "bun:test";
-import { svcSign } from "@elizaos/plugin-network/svc-auth";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { personalSharedAgentId } from "@elizaos/cloud-shared/lib/services/shared-runtime/personal-shared-identity";
 import type { ApprovedRelayPhoto } from "@elizaos/plugin-network/contract";
+import { svcSign } from "@elizaos/plugin-network/svc-auth";
 import { Miniflare } from "miniflare";
 
 const sha = (v: string | Uint8Array) =>
@@ -14,6 +14,41 @@ const userId = "11111111-1111-4111-8111-111111111111";
 const organizationId = "22222222-2222-4222-8222-222222222222";
 const agentId = personalSharedAgentId({ userId, organizationId });
 const activeKey = "network-delivery-active";
+const config = Bun.TOML.parse(
+  await readFile(new URL("../../wrangler.toml", import.meta.url), "utf8"),
+) as {
+  durable_objects: { bindings: Array<{ name: string; class_name: string }> };
+  env: {
+    production: {
+      durable_objects: {
+        bindings: Array<{ name: string; class_name: string }>;
+      };
+    };
+  };
+  exports: Record<string, { type: string; storage: string }>;
+};
+const classes = Object.keys(config.exports).sort();
+expect(classes).toEqual([
+  "AnonymousChatGate",
+  "DoorDashCheckoutGate",
+  "InferenceAdmissionGate",
+  "InferenceRateLimitV2RollbackFloor",
+  "OnboardingSessionCoordinator",
+  "PersonalDeliveryProjection",
+  "PersonalTelegramDelivery",
+  "SharedRuntimeConversation",
+  "TwitterOAuthRefreshCoordinator",
+]);
+const normalBindings = config.env.production.durable_objects.bindings;
+expect(normalBindings).toEqual(config.durable_objects.bindings);
+expect(normalBindings).toHaveLength(8);
+for (const binding of normalBindings) {
+  expect(classes).toContain(binding.class_name);
+  expect(config.exports[binding.class_name]).toEqual({
+    type: "durable-object",
+    storage: "sqlite",
+  });
+}
 
 for (const mode of [
   "prepared",
@@ -62,14 +97,36 @@ for (const mode of [
       text: "Ari sent you a photo.",
       approvedPhotos: [photo],
     };
-    const policy = { phoneNumber: delivery.phoneNumber, project: "eliza-app", platform: "blooio", connectorAccountId: delivery.connectorAccountId,
-      messageIdPrefix: "blooio:eliza-app:", userId, organizationId };
+    const policy = {
+      phoneNumber: delivery.phoneNumber,
+      project: "eliza-app",
+      platform: "blooio",
+      connectorAccountId: delivery.connectorAccountId,
+      messageIdPrefix: "blooio:eliza-app:",
+      userId,
+      organizationId,
+    };
     const serviceSecret = "controlled-photo-receipt-key-".repeat(3);
-    const originalBody = JSON.stringify({ id: delivery.idempotencyKey.slice("network:svc:".length), to: delivery.phoneNumber,
-      text: delivery.text, app: delivery.app, memberId: photo.recipientMemberId, kind: "relay", approvedPhotos: [photo] });
+    const originalBody = JSON.stringify({
+      id: delivery.idempotencyKey.slice("network:svc:".length),
+      to: delivery.phoneNumber,
+      text: delivery.text,
+      app: delivery.app,
+      memberId: photo.recipientMemberId,
+      kind: "relay",
+      approvedPhotos: [photo],
+    });
     const servicePath = "/api/internal/network/deliver/receipt";
-    const trustedNetworkServiceDelivery = { originalBody, path: servicePath, signatureHeaders: await svcSign(serviceSecret, {
-      method: "POST", path: servicePath, id: delivery.idempotencyKey.slice("network:svc:".length), body: originalBody }) };
+    const trustedNetworkServiceDelivery = {
+      originalBody,
+      path: servicePath,
+      signatureHeaders: await svcSign(serviceSecret, {
+        method: "POST",
+        path: servicePath,
+        id: delivery.idempotencyKey.slice("network:svc:".length),
+        body: originalBody,
+      }),
+    };
     const key = "network-delivery:" + sha(delivery.idempotencyKey);
     const hash = sha(
       JSON.stringify([
@@ -106,6 +163,7 @@ for (const mode of [
     const wrapperPath = join(dirname(path), "qa-native-photo-wrapper.mjs");
     const calls: string[] = [];
     const wrapper = `import { SharedRuntimeConversation } from "./qualified-photo-api.mjs";
+export { ${classes.join(", ")} } from "./qualified-photo-api.mjs";
 export class NativePhotoRoom extends SharedRuntimeConversation {
  constructor(state, env) { super(state, env); this.fixtureState = state; }
  async fetch(request) {
@@ -127,12 +185,22 @@ export default { fetch() { return new Response("No public fixture route", {statu
           contents: worker.toString(),
         },
       ],
-      durableObjects: {
-        SHARED_RUNTIME_CONVERSATIONS: {
-          className: "NativePhotoRoom",
-          useSQLite: true,
-        },
-      },
+      // Link all normal namespace/class declarations to this same actual module.
+      // Only Shared uses the existing storage-fixture subclass; other classes
+      // are linked, not exercised as product operations.
+      durableObjects: Object.fromEntries(
+        normalBindings.map((binding) => [
+          binding.name,
+          {
+            className:
+              binding.class_name === "SharedRuntimeConversation"
+                ? "NativePhotoRoom"
+                : binding.class_name,
+            useSQLite: true,
+          },
+        ]),
+      ),
+
       bindings: {
         NETWORK_PERSONAL_CONTINUITY_ENABLED: "true",
         NETWORK_RELAY_ENABLED: "0",

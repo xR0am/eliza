@@ -14,9 +14,9 @@ import {
 import { personalSharedAgentId } from "@elizaos/cloud-shared/lib/services/shared-runtime/personal-shared-identity";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import {
-  parseApprovedRelayPhotos,
   type DeliverRequest,
   type DeliverResponse,
+  parseApprovedRelayPhotos,
 } from "@elizaos/plugin-network/contract";
 import { svcVerify } from "@elizaos/plugin-network/svc-auth";
 import { type Context, Hono } from "hono";
@@ -50,9 +50,36 @@ function parseDeliver(raw: unknown, id: string): DeliverRequest | undefined {
   if (d.approvedPhotos !== undefined) {
     const photos = parseApprovedRelayPhotos(d.approvedPhotos);
     // This public consumer has no QA route-policy authority. Do not fall back to default custody.
-    if (!photos || Object.keys(d).some(k => !["id","to","from","text","app","memberId","channel","kind","approvedPhotos"].includes(k)) || d.kind !== "relay" || d.channel === "twilio" || typeof d.memberId !== "string"
-      || "networkAuthority" in d || "networkParentTurn" in d || "policyReply" in d
-      || photos.some(p => p.app !== d.app || p.recipientMemberId !== d.memberId || `relay:${p.itemId}` !== d.id)) return undefined;
+    if (
+      !photos ||
+      Object.keys(d).some(
+        (k) =>
+          ![
+            "id",
+            "to",
+            "from",
+            "text",
+            "app",
+            "memberId",
+            "channel",
+            "kind",
+            "approvedPhotos",
+          ].includes(k),
+      ) ||
+      d.kind !== "relay" ||
+      d.channel === "twilio" ||
+      typeof d.memberId !== "string" ||
+      "networkAuthority" in d ||
+      "networkParentTurn" in d ||
+      "policyReply" in d ||
+      photos.some(
+        (p) =>
+          p.app !== d.app ||
+          p.recipientMemberId !== d.memberId ||
+          `relay:${p.itemId}` !== d.id,
+      )
+    )
+      return undefined;
     return { ...d, approvedPhotos: photos } as unknown as DeliverRequest;
   }
   return d as unknown as DeliverRequest;
@@ -170,7 +197,9 @@ export async function handleNetworkDelivery(
       platform: delivery.channel ?? "blooio",
       idempotencyKey: `network:svc:${delivery.id}`,
       text: delivery.text,
-      ...(delivery.approvedPhotos ? { approvedPhotos: delivery.approvedPhotos } : {}),
+      ...(delivery.approvedPhotos
+        ? { approvedPhotos: delivery.approvedPhotos }
+        : {}),
     },
     {
       namespace,

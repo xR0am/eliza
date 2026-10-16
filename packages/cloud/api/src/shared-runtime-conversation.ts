@@ -1,4 +1,3 @@
-import { parseApprovedRelayPhotos } from "@elizaos/plugin-network/contract";
 import {
   type NetworkAdmissionEnvelope,
   networkAccountMatchesPolicy,
@@ -22,6 +21,7 @@ import {
 } from "@elizaos/cloud-shared/lib/services/shared-runtime/shared-owner-model-capture-store";
 import { sharedRuntimeConversationRoomId } from "@elizaos/cloud-shared/lib/services/shared-runtime/shared-runtime-storage-identity";
 import { ChannelType } from "@elizaos/core";
+import { parseApprovedRelayPhotos } from "@elizaos/plugin-network/contract";
 
 /**
  * Strongly ordered conversation state for shared-runtime agent turns.
@@ -1685,7 +1685,8 @@ export class SharedRuntimeConversation {
     payload: Extract<ConversationRequest, { operation: "network-delivery" }>,
   ): Promise<Response> {
     const d = payload.delivery;
-    const approvedPhotos = d?.approvedPhotos && parseApprovedRelayPhotos(d.approvedPhotos);
+    const approvedPhotos =
+      d?.approvedPhotos && parseApprovedRelayPhotos(d.approvedPhotos);
     const failure = (error: string, status = 422, retryable = false) =>
       Response.json(
         {
@@ -1707,10 +1708,17 @@ export class SharedRuntimeConversation {
       return failure("network_personal_continuity_disabled", 503);
     if (
       (d?.project !== "network" && d?.project !== "eliza-app") ||
-      (d.approvedPhotos !== undefined && (!approvedPhotos || d.platform !== "blooio"
-        || d.handled || d.inbound || d.compliance || !d.app
-        || "networkAuthority" in d || "networkParentTurn" in d || "policyReply" in d
-        || approvedPhotos.some(p => p.app !== d.app))) ||
+      (d.approvedPhotos !== undefined &&
+        (!approvedPhotos ||
+          d.platform !== "blooio" ||
+          d.handled ||
+          d.inbound ||
+          d.compliance ||
+          !d.app ||
+          "networkAuthority" in d ||
+          "networkParentTurn" in d ||
+          "policyReply" in d ||
+          approvedPhotos.some((p) => p.app !== d.app))) ||
       typeof d.text !== "string" ||
       (d.handled &&
         (typeof d.handled.messageId !== "string" ||
@@ -1882,7 +1890,8 @@ export class SharedRuntimeConversation {
         d.platform !== (original.channel ?? "blooio") ||
         d.app !== original.app ||
         d.text !== original.text ||
-        JSON.stringify(approvedPhotos) !== JSON.stringify(original.approvedPhotos) ||
+        JSON.stringify(approvedPhotos) !==
+          JSON.stringify(original.approvedPhotos) ||
         d.idempotencyKey !== `network:svc:${original.id}` ||
         d.inbound ||
         d.compliance
@@ -1896,7 +1905,7 @@ export class SharedRuntimeConversation {
     }
     if (intent && intent.hash !== hash)
       return failure("delivery_conflict", 409);
-    if (approvedPhotos && (this.env as typeof this.env & { NETWORK_RELAY_ENABLED?: string }).NETWORK_RELAY_ENABLED !== "1") {
+    if (approvedPhotos && this.env.NETWORK_RELAY_ENABLED !== "1") {
       if (!intent) return failure("photo_relay_disabled", 403);
       if (intent.state === "prepared") {
         // Only the never-dispatched state can be finalized without a receipt.
@@ -2103,14 +2112,15 @@ export class SharedRuntimeConversation {
       let response: Response | undefined;
       let receipt: Record<string, unknown> | null = null;
       try {
-        const signed = d.compliance || approvedPhotos
-          ? await svcSign(String(this.env.SERVICE_TURN_SECRET ?? ""), {
-              method: "POST",
-              path,
-              id: intent.providerKey,
-              body: gatewayBody,
-            })
-          : {};
+        const signed =
+          d.compliance || approvedPhotos
+            ? await svcSign(String(this.env.SERVICE_TURN_SECRET ?? ""), {
+                method: "POST",
+                path,
+                id: intent.providerKey,
+                body: gatewayBody,
+              })
+            : {};
         response = await fetch(`${base}${path}`, {
           method: "POST",
           headers: {
@@ -2190,7 +2200,19 @@ export class SharedRuntimeConversation {
             id: `network-delivered:${intent.providerKey}`,
             role: "assistant",
             content: d.text,
-            ...(approvedPhotos ? { relayPhotoRefs: approvedPhotos.map(({photoId,itemId,sha256,bytes,contentType}) => ({photoId,itemId,sha256,bytes,contentType})) } : {}),
+            ...(approvedPhotos
+              ? {
+                  relayPhotoRefs: approvedPhotos.map(
+                    ({ photoId, itemId, sha256, bytes, contentType }) => ({
+                      photoId,
+                      itemId,
+                      sha256,
+                      bytes,
+                      contentType,
+                    }),
+                  ),
+                }
+              : {}),
             createdAt: Date.parse(intent.receipt.acceptedAt),
           },
         ],

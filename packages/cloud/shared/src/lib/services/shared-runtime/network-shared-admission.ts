@@ -1,7 +1,11 @@
 /** Default-off server admission for Network context on the existing Personal ingress.
  * This never authenticates a phone as a Cloud user or grants model-owned effects.
  */
-import { parseApprovedRelayPhotos, type ApprovedRelayPhoto, type NetworkTransport } from "@elizaos/plugin-network/contract";
+import {
+  type ApprovedRelayPhoto,
+  type NetworkTransport,
+  parseApprovedRelayPhotos,
+} from "@elizaos/plugin-network/contract";
 import { z } from "zod";
 
 export interface NetworkIngressScope {
@@ -360,7 +364,9 @@ export async function verifyNetworkHandledEnvelope(
 
 const serviceDeliverySchema = z
   .object({
-    approvedPhotos: z.custom<ApprovedRelayPhoto[]>(v => parseApprovedRelayPhotos(v) !== undefined).optional(),
+    approvedPhotos: z
+      .custom<ApprovedRelayPhoto[]>((v) => parseApprovedRelayPhotos(v) !== undefined)
+      .optional(),
     id: z.string().min(1).max(200),
     to: z.string().regex(/^\+[1-9]\d{6,14}$/u),
     from: z.string().nullable().optional(),
@@ -409,10 +415,20 @@ export async function verifyNetworkServiceDeliveryEnvelope(
   )
     return undefined;
   const photos = parsed.data.approvedPhotos && parseApprovedRelayPhotos(parsed.data.approvedPhotos);
-  if (parsed.data.approvedPhotos !== undefined && (!photos
-    || (bindings.NETWORK_RELAY_ENABLED !== "1" && !envelope.path.endsWith("/receipt"))
-    || parsed.data.kind !== "relay" || parsed.data.channel === "twilio"
-    || photos.some(p => p.app !== parsed.data.app || p.recipientMemberId !== parsed.data.memberId || `relay:${p.itemId}` !== parsed.data.id))) return undefined;
+  if (
+    parsed.data.approvedPhotos !== undefined &&
+    (!photos ||
+      (bindings.NETWORK_RELAY_ENABLED !== "1" && !envelope.path.endsWith("/receipt")) ||
+      parsed.data.kind !== "relay" ||
+      parsed.data.channel === "twilio" ||
+      photos.some(
+        (p) =>
+          p.app !== parsed.data.app ||
+          p.recipientMemberId !== parsed.data.memberId ||
+          `relay:${p.itemId}` !== parsed.data.id,
+      ))
+  )
+    return undefined;
   const { svcVerify } = await import("@elizaos/plugin-network/svc-auth");
   const proof = await svcVerify(bindings.SERVICE_TURN_SECRET, {
     method: "POST",
