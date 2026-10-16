@@ -1,0 +1,94 @@
+/**
+ * A home-timeline engagement is attempted at most once per tweet. When the
+ * quote is already public and a later action fails (for example a reply that
+ * X refuses), the tweet must still be marked processed; otherwise the next
+ * cycle asks the model again and posts the quote a second time. Real
+ * TwitterTimelineClient cycle; the X client, the model and the action
+ * handlers are stubbed.
+ */
+import {
+  type IAgentRuntime,
+  logger,
+  type Memory,
+  type UUID,
+} from "@elizaos/core";
+import { beforeEach, expect, it, vi } from "vitest";
+import type { ClientBase } from "./base";
+import type { Tweet } from "./client";
+import { TwitterTimelineClient } from "./timeline";
+import type { TwitterClientState } from "./types";
+
+type TimelineInternals = {
+  getTimelineForProfile(count: number, profile: unknown): Promise<Tweet[]>;
+  handleQuoteAction(...args: unknown[]): Promise<boolean>;
+  handleReplyAction(...args: unknown[]): Promise<boolean>;
+};
+
+beforeEach(() => {
+  logger.log = vi.fn();
+  logger.info = vi.fn();
+  logger.warn = vi.fn();
+  logger.error = vi.fn();
+});
+
+it("does not quote the same timeline tweet again after a later action failed", async () => {
+  const memories = new Map<string, Memory>();
+  const runtime = {
+    agentId: "00000000-0000-0000-0000-0000000000ab" as UUID,
+    character: { name: "Agent", templates: {} },
+    composeState: vi.fn(async () => ({ values: {}, data: {}, text: "" })),
+    createMemory: vi.fn(async (memory: Memory) => {
+      if (memory.id) memories.set(memory.id, memory);
+      return memory.id;
+    }),
+    getMemoryById: vi.fn(async (id: UUID) => memories.get(id) ?? null),
+    ensureRoomExists: vi.fn(async () => undefined),
+    ensureWorldExists: vi.fn(async () => undefined),
+    ensureConnection: vi.fn(async () => undefined),
+    getSetting: vi.fn(() => undefined),
+    useModel: vi.fn(async () => "[QUOTE]\n[REPLY]"),
+  } as unknown as IAgentRuntime;
+  const profile = { id: "bot-user", username: "bot" };
+  const client = {
+    accountId: "default",
+    runtime,
+    profile,
+    twitterClient: {},
+    withAuthenticatedSession: vi.fn(
+      async (operation: (session: unknown) => Promise<unknown>) =>
+        operation({ profile, revision: 1 }),
+    ),
+    isAuthenticatedSessionCurrent: vi.fn(() => true),
+  } as unknown as ClientBase;
+  const timeline = new TwitterTimelineClient(
+    client,
+    runtime,
+    {} as TwitterClientState,
+  );
+  const internals = timeline as unknown as TimelineInternals;
+  const tweet = {
+    id: "1000000000000000777",
+    userId: "user-1",
+    username: "alice",
+    name: "Alice",
+    conversationId: "1000000000000000777",
+    text: "Replies are limited on this post",
+    timestamp: Date.now(),
+    thread: [],
+    photos: [],
+    permanentUrl: "https://x.com/alice/status/1000000000000000777",
+  } as unknown as Tweet;
+  vi.spyOn(internals, "getTimelineForProfile").mockResolvedValue([tweet]);
+  const quote = vi
+    .spyOn(internals, "handleQuoteAction")
+    .mockResolvedValue(true);
+  vi.spyOn(internals, "handleReplyAction").mockRejectedValue(
+    new Error("403: you are not allowed to reply to this post"),
+  );
+
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await timeline.handleTimeline().catch(() => undefined);
+  }
+
+  expect(quote).toHaveBeenCalledTimes(1);
+});
