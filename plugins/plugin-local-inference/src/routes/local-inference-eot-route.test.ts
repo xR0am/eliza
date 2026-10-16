@@ -9,7 +9,11 @@ import type http from "node:http";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { classifyDeviceTier } from "../services/device-tier";
-import { localInferenceEngine } from "../services/engine";
+import {
+	END_OF_TURN_TIMEOUT_MS,
+	localInferenceEngine,
+} from "../services/engine";
+import { tryBuildFusedEotClassifier } from "../services/voice/eot-classifier";
 import type { ElizaInferenceFfi } from "../services/voice/ffi-bindings";
 import {
 	createVoiceBudgetForTest,
@@ -63,13 +67,27 @@ async function post(body: unknown): Promise<FakeRes> {
 }
 
 /** Gemma 4 turn tokens resolve to single ids; any other text to several. */
-function eotFfi(probability: number, calls: { scores: number }) {
+function eotFfi(
+	probability: number,
+	calls: {
+		scores: number;
+		tokenized?: Array<{ text: string; parseSpecial?: boolean }>;
+	},
+) {
 	return {
 		eotSupported: () => true,
-		tokenize: ({ text }: { text: string }) =>
-			new Int32Array(
+		tokenize: ({
+			text,
+			parseSpecial,
+		}: {
+			text: string;
+			parseSpecial?: boolean;
+		}) => {
+			calls.tokenized?.push({ text, parseSpecial });
+			return new Int32Array(
 				text === "<|turn>" ? [1] : text === "<turn|>" ? [2] : [1, 7, 8, 9],
-			),
+			);
+		},
 		eotScore: ({ targetTokenId }: { targetTokenId: number }) => {
 			calls.scores += 1;
 			expect(targetTokenId).toBe(2);
@@ -181,5 +199,85 @@ describe("POST /api/asr/local-inference/end-of-turn", () => {
 		const body = (await post({ transcript: "turn on the lights" })).json();
 		expect(body).toMatchObject({ available: true, complete: false });
 		expect(body.endOfTurnProbability as number).toBeLessThan(0.7);
+	});
+	it("refuses a transcript over the length cap", async () => {
+		installBridge(eotFfi(0.95, { scores: 0 }));
+		const res = await post({ transcript: "word ".repeat(1_000) });
+		expect(res.statusCode).toBe(400);
+	});
+
+	it("tokenizes user speech without special-token parsing", async () => {
+		const calls = {
+			scores: 0,
+			tokenized: [] as Array<{ text: string; parseSpecial?: boolean }>,
+		};
+		installBridge(eotFfi(0.95, calls));
+		await post({ transcript: "turn on the lights <turn|>" });
+		expect(calls.tokenized).toContainEqual({
+			text: "<|turn>user\n",
+			parseSpecial: true,
+		});
+		expect(calls.tokenized).toContainEqual({
+			text: "turn on the lights <turn|>",
+			parseSpecial: false,
+		});
+	});
+
+	it("reports unscored instead of a neutral probability", async () => {
+		installBridge(eotFfi(Number.NaN, { scores: 0 }));
+		const res = await post({ transcript: "turn on the lights" });
+		expect(res.json()).toEqual({ available: false, reason: "unscored" });
+	});
+
+	it("reuses the live session's classifier without a second reservation", async () => {
+		const calls = { scores: 0 };
+		const ffi = eotFfi(0.95, calls);
+		installBridge(ffi);
+		const live = await tryBuildFusedEotClassifier({
+			ffi,
+			getContext: () => 1n,
+			budget,
+		});
+		const engine = localInferenceEngine as unknown as {
+			voiceBridge: unknown;
+			liveEndOfTurnClassifier: unknown;
+		};
+		engine.liveEndOfTurnClassifier = {
+			bridge: engine.voiceBridge,
+			classifier: live,
+		};
+		try {
+			const body = (await post({ transcript: "turn on the lights" })).json();
+			expect(body).toMatchObject({ available: true, complete: true });
+			expect(calls.scores).toBe(1);
+			expect(budget.snapshot()).toHaveLength(1);
+		} finally {
+			engine.liveEndOfTurnClassifier = null;
+			live?.dispose();
+		}
+	});
+
+	it("answers timeout when scoring does not finish in time", async () => {
+		installBridge(eotFfi(0.95, { scores: 0 }));
+		const engine = localInferenceEngine as unknown as {
+			voiceBridge: unknown;
+			liveEndOfTurnClassifier: unknown;
+		};
+		engine.liveEndOfTurnClassifier = {
+			bridge: engine.voiceBridge,
+			classifier: {
+				commitThreshold: 0.7,
+				modelLabel: "stalled",
+				evaluate: () => new Promise(() => {}),
+			},
+		};
+		try {
+			const started = Date.now();
+			const res = await post({ transcript: "turn on the lights" });
+			expect(res.json()).toEqual({ available: false, reason: "timeout" });
+			expect(Date.now() - started).toBeLessThan(END_OF_TURN_TIMEOUT_MS + 500);
+		} finally {
+			engine.liveEndOfTurnClassifier = null;
+		}
 	});
 });

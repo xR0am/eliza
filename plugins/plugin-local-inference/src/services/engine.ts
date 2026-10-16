@@ -204,12 +204,27 @@ export type EndOfTurnEvaluation =
 	  }
 	| {
 			available: false;
+			/**
+			 * - `voice-not-started`: no voice bridge (local ASR has not armed voice).
+			 * - `ffi-context-unloaded`: the bridge exists but has no loaded fused
+			 *   `libelizainference` text context (Kokoro-only voice, or the text
+			 *   model was unloaded); the scorer needs that context.
+			 * - `scorer-unsupported`: the fused build lacks the v11 EOT symbols.
+			 * - `ram-pressure`: the voice budget cannot hold the scorer context.
+			 * - `unscored`: the model pass produced no finite probability.
+			 * - `timeout`: scoring did not finish within the bound.
+			 */
 			reason:
 				| "voice-not-started"
 				| "ffi-context-unloaded"
 				| "scorer-unsupported"
-				| "ram-pressure";
+				| "ram-pressure"
+				| "unscored"
+				| "timeout";
 	  };
+
+/** Upper bound on one end-of-turn evaluation, classifier build included. */
+export const END_OF_TURN_TIMEOUT_MS = 1_000;
 
 /**
  * Resolve the active Eliza-1 bundle (root dir + tier id) from an
@@ -368,6 +383,11 @@ export class LocalInferenceEngine {
 	private endOfTurnClassifier: {
 		bridge: EngineVoiceBridge;
 		classifier: Promise<CompositeEotClassifier | null>;
+	} | null = null;
+	/** The live voice session's fused EOT classifier, reused by the route. */
+	private liveEndOfTurnClassifier: {
+		bridge: EngineVoiceBridge;
+		classifier: CompositeEotClassifier;
 	} | null = null;
 
 	/**
@@ -1467,6 +1487,16 @@ export class LocalInferenceEngine {
 						},
 					});
 		const semanticEotActive = fusedEot !== null;
+		if (fusedEot) {
+			this.liveEndOfTurnClassifier = { bridge, classifier: fusedEot };
+			// The route's own classifier would hold a second reservation.
+			this.releaseEndOfTurnClassifier();
+		}
+		const clearLiveEndOfTurn = () => {
+			if (this.liveEndOfTurnClassifier?.classifier === fusedEot) {
+				this.liveEndOfTurnClassifier = null;
+			}
+		};
 
 		// The fused-EOT reservation (8 MB voice-budget) is only released via the
 		// `controller.stop` teardown wired at the end of this method. Any await
@@ -1705,6 +1735,7 @@ export class LocalInferenceEngine {
 				void micSource.stop();
 				transcriber.dispose();
 				// Release the fused EOT scorer's voice-budget reservation.
+				clearLiveEndOfTurn();
 				fusedEot?.dispose();
 				wakeWord?.reset();
 				// G5.d: tear down only the per-room barge-in binding. The bridge
@@ -1718,6 +1749,7 @@ export class LocalInferenceEngine {
 			// error-policy:J6 best-effort teardown — release the fused-EOT
 			// reservation before rethrowing so a failed arm does not leak its 8 MB
 			// voice-budget slot (#12895). The original error propagates unchanged.
+			clearLiveEndOfTurn();
 			fusedEot?.dispose();
 			throw err;
 		}
@@ -1911,9 +1943,13 @@ export class LocalInferenceEngine {
 
 	/**
 	 * Score semantic end-of-turn for a partial transcript with the fused EOT
-	 * scorer bound to the active voice bridge. This never starts voice or loads
-	 * a model: when the scorer is not loaded the result is an explicit
-	 * `available: false` with a reason, never a synthetic probability.
+	 * scorer bound to the active voice bridge. It reuses the live voice
+	 * session's classifier when one is running, else holds one of its own per
+	 * bridge. This never starts voice or loads a model: when no score can be
+	 * computed the result is an explicit `available: false` with a reason,
+	 * never a synthetic probability. The scorer's forward pass is a synchronous
+	 * native call, so `END_OF_TURN_TIMEOUT_MS` bounds the wait but cannot
+	 * interrupt a pass already running.
 	 */
 	async evaluateEndOfTurn(transcript: string): Promise<EndOfTurnEvaluation> {
 		const bridge = this.voiceBridge;
@@ -1921,18 +1957,53 @@ export class LocalInferenceEngine {
 		if (!bridge.ffi || bridge.ffiCtx === null) {
 			return { available: false, reason: "ffi-context-unloaded" };
 		}
-		let classifier: CompositeEotClassifier | null;
+		const started = performance.now();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<EndOfTurnEvaluation>((resolve) => {
+			timer = setTimeout(
+				() => resolve({ available: false, reason: "timeout" }),
+				END_OF_TURN_TIMEOUT_MS,
+			);
+		});
 		try {
-			classifier = await this.endOfTurnClassifierFor(bridge);
-		} catch (err) {
-			if (err instanceof VoiceLifecycleError && err.code === "ram-pressure") {
-				return { available: false, reason: "ram-pressure" };
+			return await Promise.race([
+				this.scoreEndOfTurn(bridge, transcript, started),
+				timeout,
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	private async scoreEndOfTurn(
+		bridge: EngineVoiceBridge,
+		transcript: string,
+		started: number,
+	): Promise<EndOfTurnEvaluation> {
+		let classifier: CompositeEotClassifier | null;
+		if (this.liveEndOfTurnClassifier?.bridge === bridge) {
+			classifier = this.liveEndOfTurnClassifier.classifier;
+		} else {
+			try {
+				classifier = await this.endOfTurnClassifierFor(bridge);
+			} catch (err) {
+				if (err instanceof VoiceLifecycleError && err.code === "ram-pressure") {
+					return { available: false, reason: "ram-pressure" };
+				}
+				throw err;
 			}
-			throw err;
 		}
 		if (!classifier) return { available: false, reason: "scorer-unsupported" };
-		const started = performance.now();
-		const signal = await classifier.signal(transcript);
+		const result = await classifier.evaluate(transcript);
+		if (!result.scored) return { available: false, reason: "unscored" };
+		const { turnSignalFromProbability } = await import(
+			"./voice/eot-classifier"
+		);
+		const signal = turnSignalFromProbability({
+			probability: result.probability,
+			transcript,
+			source: result.usedModel ? "eliza-1-drafter" : "heuristic",
+		});
 		return {
 			available: true,
 			endOfTurnProbability: signal.endOfTurnProbability,
@@ -1940,7 +2011,9 @@ export class LocalInferenceEngine {
 			commitThreshold: classifier.commitThreshold,
 			nextSpeaker: signal.nextSpeaker,
 			source: signal.source,
-			model: signal.model ?? null,
+			model: result.usedModel
+				? `${classifier.modelLabel}+heuristic`
+				: "heuristic-v1",
 			latencyMs: performance.now() - started,
 		};
 	}

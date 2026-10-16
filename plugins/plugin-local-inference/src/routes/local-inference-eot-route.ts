@@ -6,9 +6,14 @@
  * ASR transcript here after a short pause. The engine scores it with the
  * fused EOT scorer of the active voice bridge (one causal forward pass over
  * the loaded text model, no extra weights). The route never starts voice or
- * loads a model. When the scorer is not loaded it answers 200 with
- * `{ available: false, reason }`, so the caller keeps its own silence timeout
- * and never receives a synthetic "complete".
+ * loads a model. When no score can be computed it answers 200 with
+ * `{ available: false, reason }` (see `EndOfTurnEvaluation`), so the caller
+ * keeps its own silence timeout and never receives a synthetic "complete".
+ * `ffi-context-unloaded` means a voice bridge exists without a loaded fused
+ * text context (Kokoro-only voice or an unloaded text model).
+ *
+ * A transcript over `END_OF_TURN_MAX_TRANSCRIPT_CHARS` is refused with 400
+ * rather than truncated: an end-of-turn read is for one partial utterance.
  */
 
 import type http from "node:http";
@@ -21,6 +26,7 @@ import {
 } from "./compat-helpers";
 
 export const END_OF_TURN_PATH = "/api/asr/local-inference/end-of-turn";
+export const END_OF_TURN_MAX_TRANSCRIPT_CHARS = 4_096;
 
 export async function handleLocalInferenceEotRoute(
 	req: http.IncomingMessage,
@@ -38,6 +44,12 @@ export async function handleLocalInferenceEotRoute(
 		typeof body.transcript === "string" ? body.transcript.trim() : "";
 	if (!transcript) {
 		sendJson(res, 400, { error: "transcript must be a non-empty string" });
+		return true;
+	}
+	if (transcript.length > END_OF_TURN_MAX_TRANSCRIPT_CHARS) {
+		sendJson(res, 400, {
+			error: `transcript must be at most ${END_OF_TURN_MAX_TRANSCRIPT_CHARS} characters`,
+		});
 		return true;
 	}
 
