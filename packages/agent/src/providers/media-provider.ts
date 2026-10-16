@@ -546,7 +546,15 @@ export class GoogleVideoProvider implements VideoGenerationProvider {
         const text = await pollResponse.text();
         throw new Error(`Google Veo error: ${text}`);
       }
-      operation = (await pollResponse.json()) as VeoOperation;
+      let parsed: VeoOperation;
+      try {
+        parsed = (await pollResponse.json()) as VeoOperation;
+      } catch {
+        // A 200 with an unparseable body (proxy HTML page, truncated response)
+        // is transient: keep polling instead of killing the in-progress generation.
+        continue;
+      }
+      operation = parsed;
       if (operation.error) {
         throw new Error(
           `Google Veo error: ${operation.error.message ?? "operation failed"}`,
