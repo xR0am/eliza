@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+
 const s = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("../mutations/resolve.js", () => ({
   resolveCalendarApproval: s.resolve,
@@ -7,7 +8,9 @@ vi.mock("@elizaos/core", async () => ({
   ...(await import("../../../../packages/core/src/types/effects.js")),
   OWNER_EXCLUSIVE_DISCLOSURE_GATE: {},
 }));
+
 import { calendarReviewAction } from "./calendar-review.js";
+
 const acceptedAt = "2026-10-15T21:05:55.892Z";
 const succeeded = {
   kind: "succeeded",

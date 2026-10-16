@@ -18,7 +18,7 @@ import { parseJSONObjectFromText } from "@elizaos/core/protocol";
 import { createCalendarActionRunner } from "./calendar-handler.js";
 import type { CalendarActionDeps, CalendarModelCallArgs } from "./deps.js";
 
-import {createCalendarMutationApprovalGateway} from "./mutation-approval.js";
+import { createCalendarMutationApprovalGateway } from "./mutation-approval.js";
 
 const standaloneCalendarDeps: CalendarActionDeps = {
   mutationGateway: createCalendarMutationApprovalGateway(),

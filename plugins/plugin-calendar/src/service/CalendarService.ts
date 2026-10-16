@@ -1,4 +1,4 @@
-import {createManagedCalendarMutationPort} from "../mutations/managed.js";
+import { createManagedCalendarMutationPort } from "../mutations/managed.js";
 /**
  * The calendar domain service — the single owner of calendar reads and
  * mutations across Google, Microsoft, Apple, and guarded ICS/webcal sources.
@@ -12,7 +12,6 @@ import {createManagedCalendarMutationPort} from "../mutations/managed.js";
  */
 
 import { createHash } from "node:crypto";
-import { createManagedCalendarRead } from "./managed-calendar-read.js";
 import type {
   CalendarNoteSourceReference,
   CreateLifeOpsCalendarEventAttendee,
@@ -236,6 +235,7 @@ import {
   LinkedCalendarRepository,
   type LinkedCalendarSemanticEvent,
 } from "./linked-calendar-sync.js";
+import { createManagedCalendarRead } from "./managed-calendar-read.js";
 
 type AggregatedCalendarFeedSource = {
   calendar: Pick<
@@ -5890,11 +5890,29 @@ export class CalendarService extends Service {
     const calendarId = normalizeCalendarId(request.calendarId);
     const recurrence = normalizeRecurrence(request.recurrence);
     const range = resolveCalendarEventRange(request, now);
-    const managed=createManagedCalendarMutationPort(process.env,fetch,this.agentId());
-    if(managed?.owns(request.grantId)){
-      if(side && side!=="owner")throw new CalendarServiceError(403,"Select the owner Calendar.","CALENDAR_MANAGED_OWNER_REQUIRED");
-      await managed.capabilities(request.grantId!,calendarId);
-      return {...request,side:"owner",grantId:request.grantId!,calendarId,startAt:range.startAt,endAt:range.endAt,timeZone:range.timeZone,...(recurrence?{recurrence}:{})};
+    const managed = createManagedCalendarMutationPort(
+      process.env,
+      fetch,
+      this.agentId(),
+    );
+    if (request.grantId && managed?.owns(request.grantId)) {
+      if (side && side !== "owner")
+        throw new CalendarServiceError(
+          403,
+          "Select the owner Calendar.",
+          "CALENDAR_MANAGED_OWNER_REQUIRED",
+        );
+      await managed.capabilities(request.grantId, calendarId);
+      return {
+        ...request,
+        side: "owner",
+        grantId: request.grantId,
+        calendarId,
+        startAt: range.startAt,
+        endAt: range.endAt,
+        timeZone: range.timeZone,
+        ...(recurrence ? { recurrence } : {}),
+      };
     }
     if (!request.grantId || isElizaCalendarGrant(request.grantId)) {
       assertCalendarRecordsAllowed();
@@ -7680,11 +7698,29 @@ export class CalendarService extends Service {
       recurrenceScope?: LifeOpsCalendarRecurrenceScope | null;
     },
   ): Promise<LifeOpsCalendarEvent> {
-    const managed=createManagedCalendarMutationPort(process.env,fetch,this.agentId());
-    if(managed?.owns(request.grantId)){
-      if(request.side && request.side!=="owner")throw new CalendarServiceError(403,"Select the owner Calendar.","CALENDAR_MANAGED_OWNER_REQUIRED");
-      if(request.recurrenceScope && request.recurrenceScope!=="instance")throw new CalendarServiceError(409,"Review recurring-series changes in Calendar.","CALENDAR_MANAGED_SERIES_REVIEW_REQUIRED");
-      return managed.target(request.grantId!,normalizeCalendarId(request.calendarId),request.eventId);
+    const managed = createManagedCalendarMutationPort(
+      process.env,
+      fetch,
+      this.agentId(),
+    );
+    if (request.grantId && managed?.owns(request.grantId)) {
+      if (request.side && request.side !== "owner")
+        throw new CalendarServiceError(
+          403,
+          "Select the owner Calendar.",
+          "CALENDAR_MANAGED_OWNER_REQUIRED",
+        );
+      if (request.recurrenceScope && request.recurrenceScope !== "instance")
+        throw new CalendarServiceError(
+          409,
+          "Review recurring-series changes in Calendar.",
+          "CALENDAR_MANAGED_SERIES_REVIEW_REQUIRED",
+        );
+      return managed.target(
+        request.grantId,
+        normalizeCalendarId(request.calendarId),
+        request.eventId,
+      );
     }
     // Composite local identities are not external provider IDs. Reject a
     // dropped/wrong agent prefix (including UI element IDs) instead of sending
