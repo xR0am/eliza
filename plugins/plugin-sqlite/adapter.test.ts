@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   ChannelType,
   compareMemoryIds,
+  type Log,
   type Memory,
   MemoryType,
   ROLE_WRITE_AUDIT_LOG_TYPE,
@@ -2030,4 +2031,69 @@ it("keeps entity name lookups inside the requested agent and honors an explicit 
       limit: 1,
     }),
   ).toHaveLength(1);
+});
+
+it("scopes log reads and mutations to the adapter agent", async () => {
+  const adapter = await open();
+  const otherAgentId = id();
+  const ownRoomId = id();
+  const otherRoomId = id();
+  const otherEntityId = id();
+  const otherLogId = id();
+
+  await adapter.createRooms([
+    { id: ownRoomId, agentId, source: "test", type: ChannelType.DM },
+  ]);
+  await adapter.createLogs([
+    {
+      body: { source: "scope-probe", metadata: { who: "this agent" } },
+      entityId,
+      roomId: ownRoomId,
+      type: "scope-probe",
+    },
+  ]);
+
+  // Simulate a restored file carrying another agent's room and log: the
+  // storage layer accepts the rows, but the adapter must not serve them,
+  // mirroring PostgreSQL's ownedLogRoomCondition.
+  const storage = await adapter.getConnection();
+  await storage.set("rooms", otherRoomId, {
+    id: otherRoomId,
+    agentId: otherAgentId,
+    source: "test",
+    type: ChannelType.DM,
+  });
+  await storage.set("logs", otherLogId, {
+    id: otherLogId,
+    entityId: otherEntityId,
+    roomId: otherRoomId,
+    type: "scope-probe",
+    body: { source: "scope-probe", metadata: { who: "other agent" } },
+    createdAt: new Date(),
+  });
+
+  expect(
+    (await adapter.getLogs({ type: "scope-probe" })).map((log) => log.body),
+  ).toEqual([{ source: "scope-probe", metadata: { who: "this agent" } }]);
+  expect(await adapter.getLogsByIds([otherLogId])).toEqual([]);
+
+  await adapter.updateLogs([
+    { id: otherLogId, updates: { type: "rewritten" } },
+  ]);
+  await adapter.deleteLogs([otherLogId]);
+
+  const survivor = await storage.get<Log>("logs", otherLogId);
+  expect(survivor?.body).toEqual({
+    source: "scope-probe",
+    metadata: { who: "other agent" },
+  });
+  expect(survivor?.type).toBe("scope-probe");
+
+  // The adapter still manages its own logs.
+  const [ownLog] = await adapter.getLogs({ type: "scope-probe" });
+  if (!ownLog?.id) throw new Error("own log missing");
+  await adapter.updateLogs([{ id: ownLog.id, updates: { type: "rewritten" } }]);
+  expect((await adapter.getLogsByIds([ownLog.id]))[0]?.type).toBe("rewritten");
+  await adapter.deleteLogs([ownLog.id]);
+  expect(await adapter.getLogsByIds([ownLog.id])).toEqual([]);
 });
