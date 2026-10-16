@@ -1626,7 +1626,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     if (limit !== undefined)
       readableMemories = readableMemories.slice(0, limit);
 
-    return readableMemories;
+    return params.includeEmbedding === false
+      ? readableMemories.map(({ embedding, ...memory }) => memory)
+      : readableMemories;
   }
 
   async getMemoriesByRoomIds(params: {
