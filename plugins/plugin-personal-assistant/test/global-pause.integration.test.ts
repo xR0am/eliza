@@ -168,4 +168,58 @@ describe("global pause integration", () => {
     expect(emergencyTransitions).toContain("fired");
     expect(emergencyTransitions).not.toContain("skipped");
   });
+
+  it("a recurring task skipped by the pause does not fire that occurrence after the pause", async () => {
+    runtimeResult = await createLifeOpsTestRuntime();
+    const { runtime } = runtimeResult;
+    const repo = new LifeOpsRepository(runtime);
+
+    // Weekly Monday 09:00 reminder, last fired the Monday before the pause.
+    const weekly = await seedScheduledTask(runtime, {
+      taskId: "st_pause_weekly",
+      promptInstructions: "Weekly planning check-in.",
+      trigger: { kind: "cron", expression: "0 9 * * 1", tz: "owner_local" },
+      priority: "medium",
+      respectsGlobalPause: true,
+    });
+    await repo.upsertScheduledTask(runtime.agentId, {
+      ...weekly,
+      state: {
+        ...weekly.state,
+        status: "fired",
+        firedAt: "2026-10-05T09:00:00.000Z",
+      },
+    });
+
+    const pause = createGlobalPauseStore(runtime);
+    await pause.set({
+      startIso: "2026-10-12T08:00:00.000Z",
+      endIso: "2026-10-14T18:00:00.000Z",
+      reason: "vacation",
+    });
+
+    for (const tick of [
+      "2026-10-12T09:01:00.000Z",
+      "2026-10-12T09:02:00.000Z",
+      // After the pause, before the next Monday.
+      "2026-10-14T18:01:00.000Z",
+    ]) {
+      const result = await processDueScheduledTasks({
+        runtime,
+        agentId: runtime.agentId,
+        now: new Date(tick),
+        limit: 10,
+      });
+      expect(result.errors).toEqual([]);
+    }
+
+    const transitions = (
+      await repo.listScheduledTaskLog({
+        agentId: runtime.agentId,
+        taskId: weekly.taskId,
+      })
+    ).map((entry) => entry.transition);
+    expect(transitions.filter((t) => t === "skipped")).toHaveLength(1);
+    expect(transitions).not.toContain("fired");
+  });
 });
