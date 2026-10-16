@@ -90,6 +90,11 @@ export interface DraftRequest {
   metadata?: Record<string, unknown>;
 }
 
+export interface MessageManageContext {
+  /** Trusted executing caller; never accepted from model parameters. */
+  requester?: Memory;
+}
+
 export interface MessageDraftContext {
   /** Trusted executing caller; never parsed from model parameters or saved with a draft. */
   requester?: Memory;
@@ -283,6 +288,7 @@ export interface MessageAdapter {
     runtime: IAgentRuntime,
     messageId: string,
     op: ManageOperation,
+    context?: MessageManageContext,
   ): Promise<ManageResult>;
   createDraft(
     runtime: IAgentRuntime,

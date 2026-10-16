@@ -368,7 +368,7 @@ export class TriageService {
     runtime: IAgentRuntime,
     messageId: string,
     op: ManageOperation,
-    hint?: { source?: MessageSource },
+    hint?: { source?: MessageSource; requester?: Memory },
   ): Promise<ManageResult> {
     const adapter = this.getManageAdapter(messageId, hint);
     if (!adapter) {
@@ -393,7 +393,9 @@ export class TriageService {
         reason: `${adapter.source} adapter does not implement manageMessage`,
       };
     }
-    return adapter.manageMessage(runtime, messageId, op);
+    return adapter.manageMessage(runtime, messageId, op, {
+      requester: hint?.requester,
+    });
   }
 
   async draftReply(

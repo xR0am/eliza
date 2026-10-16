@@ -30,3 +30,14 @@ queries always revalidate the grant instead of returning an older account's cach
 It does not enable send, drafts, or mailbox changes. Without the setting the
 existing connector path is unchanged. Android hosts must supply their own
 qualified broker; a browser host test does not qualify Android.
+
+## Private host mailbox changes
+
+A host can separately set `ELIZA_MANAGED_GMAIL_OPERATION_BROKER` on the same
+authenticated loopback endpoint. This enables the existing MESSAGE action for
+archive, recoverable trash, and read/unread state. The adapter requires the verified
+owner memory, including its turn ID. It derives the same operation ID when a turn
+is replayed. The host must check the current Google mailbox grant, prepare the exact
+message revision, dispatch at most once, and verify the provider receipt and labels.
+An unknown receipt must not be dispatched again. Labels, spam and unsubscribe are
+not enabled by this setting. Native hosts need their own qualified implementation.
