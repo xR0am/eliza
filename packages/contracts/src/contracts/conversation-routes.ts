@@ -81,6 +81,16 @@ export const PostConversationTruncateRequestSchema = z
     ...(value.inclusive !== undefined ? { inclusive: value.inclusive } : {}),
   }));
 
+/**
+ * The part of a stored assistant reply that the user heard before they
+ * interrupted playback. The text must be a prefix of the stored reply.
+ */
+export const PostConversationMessageHeardRequestSchema = z
+  .object({
+    heardText: z.string(),
+  })
+  .strict();
+
 export const PatchConversationRequestSchema = z
   .object({
     title: z.string().optional(),
@@ -132,6 +142,9 @@ export type PostConversationRequest = z.infer<
 >;
 export type PostConversationTruncateRequest = z.infer<
   typeof PostConversationTruncateRequestSchema
+>;
+export type PostConversationMessageHeardRequest = z.infer<
+  typeof PostConversationMessageHeardRequestSchema
 >;
 export type PatchConversationRequest = z.infer<
   typeof PatchConversationRequestSchema

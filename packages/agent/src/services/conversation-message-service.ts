@@ -195,3 +195,68 @@ export async function truncateConversationMessages(
     deletedCount: await deleteConversationMemories(runtime, memoryIds),
   };
 }
+
+/** Compare reply text with whitespace runs collapsed, as speech output does. */
+function spokenComparable(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Keep only the part of a stored assistant reply that the user heard before
+ * they interrupted playback. The heard text must be a prefix of the stored
+ * text, so this can only shorten a reply. Repeating the same request returns
+ * the same result without a second write. The trimmed reply is marked
+ * `interrupted` and `heardTruncated`; later context and history read only the
+ * heard text.
+ */
+export async function recordHeardAssistantMessage(
+  runtime: AgentRuntime,
+  conversation: ConversationMeta,
+  messageId: UUID,
+  heardText: string,
+): Promise<{ text: string; truncated: boolean; changed: boolean }> {
+  const [memory] = await runtime.getMemoriesByIds([messageId], "messages");
+  if (!memory?.id || memory.roomId !== conversation.roomId) {
+    throw conversationMessageNotFound();
+  }
+  if (
+    memory.entityId !== runtime.agentId ||
+    memory.agentId !== runtime.agentId
+  ) {
+    throw Object.assign(
+      new ElizaError("Only assistant replies can record heard text", {
+        code: "CONVERSATION_HEARD_NOT_ASSISTANT",
+      }),
+      { status: 400 },
+    );
+  }
+  const stored =
+    typeof memory.content.text === "string" ? memory.content.text : "";
+  const heard = heardText.trim();
+  const storedComparable = spokenComparable(stored);
+  const heardComparable = spokenComparable(heard);
+  if (!storedComparable.startsWith(heardComparable)) {
+    throw Object.assign(
+      new ElizaError(
+        "Heard text must be a prefix of the stored assistant reply",
+        { code: "CONVERSATION_HEARD_NOT_PREFIX" },
+      ),
+      { status: 409 },
+    );
+  }
+  const alreadyTruncated = memory.content.heardTruncated === true;
+  if (heardComparable === storedComparable) {
+    return { text: stored, truncated: alreadyTruncated, changed: false };
+  }
+  await runtime.updateMemory({
+    ...memory,
+    id: memory.id,
+    content: {
+      ...memory.content,
+      text: heard,
+      interrupted: true,
+      heardTruncated: true,
+    },
+  });
+  return { text: heard, truncated: true, changed: true };
+}
