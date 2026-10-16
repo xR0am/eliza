@@ -248,7 +248,8 @@ export async function buildResolvedClient(
   const resolvedSelection =
     typeof selection === "string" ? { role: selection } : selection;
   if (opts.refresh !== "on-miss" || !getClient(runtime, resolvedSelection)) {
-    await service.refreshAccounts();
+    // Services that only implement `IGitHubService` resolve from their own state.
+    await service.refreshAccounts?.();
   }
   const client = getClient(runtime, resolvedSelection);
   if (!client) {
