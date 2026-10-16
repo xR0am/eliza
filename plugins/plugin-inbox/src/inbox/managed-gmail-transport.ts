@@ -1,5 +1,6 @@
 /** Authenticated bounded loopback transport; the host owns allowed operations. */
 import { ElizaError } from "@elizaos/core";
+
 const MAX_BYTES = 256 * 1024;
 const failure = (message: string) =>
   new ElizaError(message, { code: "MANAGED_GMAIL_HOST_UNAVAILABLE" });
