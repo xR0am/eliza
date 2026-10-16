@@ -208,6 +208,7 @@ export class TwitterPostClient {
     }
 
     this.isPosting = true;
+    let posted = false;
 
     try {
       // Create the timeline room ID for storing the post
@@ -219,7 +220,6 @@ export class TwitterPostClient {
       const worldId = createUniqueUuid(this.runtime, userId) as UUID;
       const roomId = createUniqueUuid(this.runtime, `${userId}-home`) as UUID;
       const username = profile.username;
-      let posted = false;
 
       const callback = createTwitterPostCallback({
         client: this.client,
@@ -246,7 +246,9 @@ export class TwitterPostClient {
       return posted;
     } catch (error) {
       logger.error("Error generating tweet:", errorMessage(error));
-      return false;
+      // A post that is already public counts as posted, so the startup retry
+      // loop does not post another one.
+      return posted;
     } finally {
       this.isPosting = false;
     }
