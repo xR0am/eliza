@@ -842,6 +842,9 @@ export async function applyFirstRunConnectionConfig(
   const normalizedConnection = connection;
 
   delete (config as Record<string, unknown>).connection;
+  // A chat-brain pin (SETTINGS set_backend) is a strict text-provider pin. A
+  // new provider choice replaces it, or the old provider keeps the brain.
+  setEnvValue(config, "ELIZA_BRAIN_PROVIDER", undefined);
   const existingDeploymentTarget = normalizeDeploymentTargetConfig(
     config.deploymentTarget,
   );

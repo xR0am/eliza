@@ -639,7 +639,7 @@ function handleSetBackend(
     // Immediate effect: the runtime's useModel override reads this via getSetting.
     runtime.setSetting?.("ELIZA_BRAIN_PROVIDER", provider);
     return ok(
-      `Chat brain provider set to \`${provider}\`. It takes effect on the next message (it falls back to the default if that provider has no loaded handler).`,
+      `Chat brain provider set to \`${provider}\`. It takes effect on the next message and stays until the AI provider is changed.`,
       { op: "set_backend", axis: "brain", provider },
     );
   }
