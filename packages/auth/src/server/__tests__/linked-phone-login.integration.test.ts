@@ -129,3 +129,48 @@ test("conflicting original and linked phone owners receive no session", async ()
   expect(response.status).toBe(500);
   expect((await response.json()).token).toBeUndefined();
 });
+
+test("a refresh into another tenant applies that tenant's login methods and keeps the session on refusal", async () => {
+  const { tenants, tenantConfigs } = await import("../db/schema");
+  const { userTenants } = await import("../db/schema-auth");
+  const login = await verifyPhone("+14155550199");
+  expect(login.status).toBe(200);
+  const session = (await login.json()) as {
+    refreshToken: string;
+    user: { id: string };
+  };
+  await database.db.insert(tenants).values([
+    {
+      id: "sms-off",
+      name: "SMS off",
+      apiKeyHash: randomBytes(32).toString("hex"),
+    },
+    {
+      id: "not-joined",
+      name: "Not joined",
+      apiKeyHash: randomBytes(32).toString("hex"),
+    },
+  ]);
+  await database.db.insert(tenantConfigs).values({
+    tenantId: "sms-off",
+    authAbuseConfig: { loginMethods: { sms: false } },
+  } as never);
+  await database.db
+    .insert(userTenants)
+    .values({ userId: session.user.id, tenantId: "sms-off", role: "member" });
+
+  const refresh = (tenantId?: string) =>
+    post("/auth/refresh", {
+      refreshToken: session.refreshToken,
+      ...(tenantId ? { tenantId } : {}),
+    });
+
+  const disabled = await refresh("sms-off");
+  expect(disabled.status).toBe(403);
+  expect((await disabled.json()).token).toBeUndefined();
+  const notMember = await refresh("not-joined");
+  expect(notMember.status).toBe(403);
+  // Neither refusal spent or revoked the session.
+  const same = await refresh();
+  expect(same.status).toBe(200);
+});

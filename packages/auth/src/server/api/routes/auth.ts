@@ -339,6 +339,46 @@ function loginMethodProviderKey(providerId: string | undefined): string {
   return providerId?.trim().toLowerCase() ?? "";
 }
 
+/** Session auth methods that map one-to-one onto a tenant login method. */
+const REFRESH_LOGIN_METHODS = new Set<LoginMethodName>([
+  "passkey",
+  "email",
+  "sms",
+  "whatsapp",
+  "totp",
+  "siwe",
+  "siws",
+  "telegram",
+  "farcaster",
+]);
+
+function refreshLoginMethod(authMethod: unknown): LoginMethodName | undefined {
+  return typeof authMethod === "string" &&
+    REFRESH_LOGIN_METHODS.has(authMethod as LoginMethodName)
+    ? (authMethod as LoginMethodName)
+    : undefined;
+}
+
+async function tenantDisablesLoginMethod(
+  tenantId: string,
+  method: LoginMethodName,
+): Promise<boolean> {
+  const loginMethods = (await getTenantAuthAbuseConfig(tenantId)).loginMethods;
+  return loginMethods?.[method] === false;
+}
+
+function withoutTenantMfaClaims(
+  claims: Record<string, unknown>,
+): Record<string, unknown> {
+  const {
+    mfaVerifiedAt: _mfaVerifiedAt,
+    mfaMethod: _mfaMethod,
+    factorEnrollmentVerifiedAt: _factorEnrollmentVerifiedAt,
+    ...rest
+  } = claims;
+  return rest;
+}
+
 async function requireTenantLoginMethodAllowed(
   c: Context,
   tenantId: string | undefined,
@@ -613,7 +653,13 @@ type RefreshRotationResult =
   | { status: "invalid" }
   | { status: "deactivated"; userId: string; tenantId: string }
   | { status: "not_member"; userId: string; tenantId: string }
-  | { status: "revoked"; userId: string; tenantId: string };
+  | { status: "revoked"; userId: string; tenantId: string }
+  | {
+      status: "login_method_disabled";
+      userId: string;
+      tenantId: string;
+      method: LoginMethodName;
+    };
 
 type UsedRefreshTokenRecord = {
   userId?: string;
@@ -771,16 +817,21 @@ async function rotateRefreshTokenInsideTenant(
     }
 
     const targetTenantId = requestedTenantId ?? record.tenantId;
+    const switchesTenant = targetTenantId !== record.tenantId;
     const membership = await authTenantSubject(targetTenantId, record.userId);
     if (!membership?.membership_role) {
-      await tx
-        .delete(refreshTokens)
-        .where(
-          and(
-            eq(refreshTokens.userId, record.userId),
-            eq(refreshTokens.tenantId, record.tenantId),
-          ),
-        );
+      // A refused switch leaves the caller's current session as it was; only
+      // a token whose own tenant dropped the user is spent.
+      if (!switchesTenant) {
+        await tx
+          .delete(refreshTokens)
+          .where(
+            and(
+              eq(refreshTokens.userId, record.userId),
+              eq(refreshTokens.tenantId, record.tenantId),
+            ),
+          );
+      }
       return {
         status: "not_member",
         userId: record.userId,
@@ -807,11 +858,30 @@ async function rotateRefreshTokenInsideTenant(
 
     const walletAddress = user?.walletAddress ?? "";
     const email = user?.email ?? undefined;
-    const sessionClaims =
+    const storedClaims =
       (await readMfaJson<Record<string, unknown>>(
         `refresh:claims:${record.tokenHash}`,
       )) ?? {};
+    // A switch into another tenant is a sign-in to it: that tenant's login
+    // methods apply, checked before anything is spent so a refusal keeps the
+    // current session.
+    if (switchesTenant) {
+      const method = refreshLoginMethod(storedClaims.authMethod);
+      if (method && (await tenantDisablesLoginMethod(targetTenantId, method))) {
+        return {
+          status: "login_method_disabled",
+          userId: record.userId,
+          tenantId: record.tenantId,
+          method,
+        };
+      }
+    }
     await getMfaBackend().delete(`refresh:claims:${record.tokenHash}`);
+    // MFA freshness is scoped to the tenant where it was performed, as on
+    // /user/me/tenants/switch: the switched tenant needs its own step-up.
+    const sessionClaims = switchesTenant
+      ? withoutTenantMfaClaims(storedClaims)
+      : storedClaims;
 
     const newAccessToken = await createSessionToken(
       walletAddress,
@@ -8525,6 +8595,15 @@ auth.post("/refresh", async (c) => {
     return c.json<ApiResponse>(
       { ok: false, error: "Session was revoked. Please sign in again." },
       401,
+    );
+  }
+  if (rotatedRefresh.status === "login_method_disabled") {
+    return c.json<ApiResponse>(
+      {
+        ok: false,
+        error: `${rotatedRefresh.method} login is disabled for this tenant`,
+      },
+      403,
     );
   }
 
