@@ -1261,14 +1261,14 @@ export type RemindersDeps = {
   checkinSource: CheckinSourceService;
 };
 
-// Calendar sync and the built-in calendar give events of every provider a
-// reminder plan, so reminder delivery reads events from all of them.
+// Providers whose events plugin-calendar gives a reminder plan (Google,
+// Microsoft and Apple sync, and the built-in calendar). ICS imports create no
+// plans, so they are not read here.
 const REMINDER_CALENDAR_PROVIDERS = [
   "eliza",
   "google",
   "microsoft",
   "apple_calendar",
-  "ics",
 ] as const satisfies readonly LifeOpsCalendarProvider[];
 
 export class RemindersDomain {
