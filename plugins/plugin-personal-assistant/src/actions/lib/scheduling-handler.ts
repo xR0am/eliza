@@ -266,7 +266,14 @@ function buildBusyIntervals(
 ): Array<{ start: number; end: number }> {
   const bufferMs = travelBufferMinutes * MS_PER_MINUTE;
   const intervals = events
-    .filter((e) => e.status !== "cancelled")
+    // An event shown as "free" (Google/ICS transparency "transparent",
+    // Outlook "free") does not block the owner's time.
+    .filter(
+      (e) =>
+        e.status !== "cancelled" &&
+        e.metadata?.transparency !== "transparent" &&
+        e.metadata?.icsTransparency !== "transparent",
+    )
     .map((e) => {
       const bounds = e.isAllDay
         ? allDayBusyBoundsMs(e, timeZone)

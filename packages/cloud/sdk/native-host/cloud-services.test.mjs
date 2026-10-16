@@ -509,6 +509,61 @@ test("billing confirmation start forwards only the verification purpose to nativ
   assert.equal(handled.length, 2);
 });
 
+test("a sign-in 429 answer carries the reported wait in seconds, and nothing invented", async (t) => {
+  const failures = [
+    Object.assign(new Error("Too many attempts."), {
+      status: 429,
+      retryAfter: 42,
+    }),
+    Object.assign(new Error("Too many attempts."), { status: 429 }),
+    // Only a 429 says how long to wait.
+    Object.assign(new Error("Unavailable."), { status: 503, retryAfter: 9 }),
+  ];
+  const routes = createCloudRoutes({
+    hostPolicy: {
+      ...policy,
+      createNativeCloudAuth: () => ({
+        handle: async () => {
+          throw failures.shift();
+        },
+        cancel: async () => ({ status: "cancelled" }),
+      }),
+    },
+    pendingCredentialStore: { read: async () => null },
+    speechVoice: { voiceId: "voice", modelId: "model" },
+    fetchImpl: async () => {
+      throw Error("Unexpected provider request");
+    },
+  });
+  const server = http.createServer((req, res) =>
+    routes(req, res, new URL(req.url, "http://localhost")),
+  );
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const start = () =>
+    fetch(`http://127.0.0.1:${server.address().port}/cloud/native/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "synthetic@example.com" }),
+    });
+  const waited = await start();
+  assert.equal(waited.status, 429);
+  assert.deepEqual(await waited.json(), {
+    error: "Too many attempts.",
+    retryAfter: 42,
+  });
+  const unsaid = await start();
+  assert.equal(unsaid.status, 429);
+  assert.deepEqual(await unsaid.json(), { error: "Too many attempts." });
+  const unavailable = await start();
+  assert.equal(unavailable.status, 503);
+  assert.deepEqual(await unavailable.json(), { error: "Unavailable." });
+});
+
 test("a service-only host composes CLI login and provider-default voice without billing routes", async (t) => {
   const calls = [];
   const routes = createCloudRoutes({

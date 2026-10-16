@@ -2009,6 +2009,11 @@ export function createCloudRoutes({
             ...(error.code === "VERIFIED_ACCOUNT_REQUIRED"
               ? { code: error.code }
               : {}),
+            // The wait the account service gave, in seconds, so the app can
+            // say how long. Absent when the service did not say.
+            ...(error.status === 429 && Number.isSafeInteger(error.retryAfter)
+              ? { retryAfter: error.retryAfter }
+              : {}),
           });
       }
     }

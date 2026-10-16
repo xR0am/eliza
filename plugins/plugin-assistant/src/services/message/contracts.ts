@@ -73,7 +73,7 @@ export interface StrategyResult {
 export type FailureReplyAttempt =
   | { kind: "text"; value: string }
   | { kind: "noProvider" }
-  | { kind: "creditsExhausted" }
+  | { kind: "creditsExhausted"; rateLimit?: ProviderRateLimit }
   | { kind: "rateLimited"; rateLimit?: ProviderRateLimit }
   | { kind: "authFailed" }
   | { kind: "schemaRejected" };
