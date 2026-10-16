@@ -238,6 +238,7 @@ export async function coordinateSharedLifecycleEvent(
 }
 
 export interface SharedNetworkDelivery {
+  approvedPhotos?: import("@elizaos/plugin-network/contract").ApprovedRelayPhoto[];
   project: "network" | "eliza-app";
   connectorAccountId?: string;
   app?: "ntwrk" | "slop" | "peon" | "friends";

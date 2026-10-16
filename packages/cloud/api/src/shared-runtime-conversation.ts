@@ -1,3 +1,4 @@
+import { parseApprovedRelayPhotos } from "@elizaos/plugin-network/contract";
 import {
   type NetworkAdmissionEnvelope,
   networkAccountMatchesPolicy,
@@ -1684,6 +1685,7 @@ export class SharedRuntimeConversation {
     payload: Extract<ConversationRequest, { operation: "network-delivery" }>,
   ): Promise<Response> {
     const d = payload.delivery;
+    const approvedPhotos = d?.approvedPhotos && parseApprovedRelayPhotos(d.approvedPhotos);
     const failure = (error: string, status = 422, retryable = false) =>
       Response.json(
         {
@@ -1705,6 +1707,10 @@ export class SharedRuntimeConversation {
       return failure("network_personal_continuity_disabled", 503);
     if (
       (d?.project !== "network" && d?.project !== "eliza-app") ||
+      (d.approvedPhotos !== undefined && (!approvedPhotos || d.platform !== "blooio"
+        || d.handled || d.inbound || d.compliance || !d.app
+        || "networkAuthority" in d || "networkParentTurn" in d || "policyReply" in d
+        || approvedPhotos.some(p => p.app !== d.app))) ||
       typeof d.text !== "string" ||
       (d.handled &&
         (typeof d.handled.messageId !== "string" ||
@@ -1789,6 +1795,7 @@ export class SharedRuntimeConversation {
         ...(d.project === "eliza-app"
           ? [d.connectorAccountId, d.inbound?.transport ?? null]
           : []),
+        ...(approvedPhotos ? [["approved-photos", approvedPhotos]] : []),
       ]),
     );
     let intent = await this.state.storage.get<NetworkDeliveryIntent>(key);
@@ -1875,6 +1882,7 @@ export class SharedRuntimeConversation {
         d.platform !== (original.channel ?? "blooio") ||
         d.app !== original.app ||
         d.text !== original.text ||
+        JSON.stringify(approvedPhotos) !== JSON.stringify(original.approvedPhotos) ||
         d.idempotencyKey !== `network:svc:${original.id}` ||
         d.inbound ||
         d.compliance
@@ -1888,6 +1896,36 @@ export class SharedRuntimeConversation {
     }
     if (intent && intent.hash !== hash)
       return failure("delivery_conflict", 409);
+    if (approvedPhotos && (this.env as typeof this.env & { NETWORK_RELAY_ENABLED?: string }).NETWORK_RELAY_ENABLED !== "1") {
+      if (!intent) return failure("photo_relay_disabled", 403);
+      if (intent.state === "prepared") {
+        // Only the never-dispatched state can be finalized without a receipt.
+        // Contradictory dispatch/acceptance markers must remain held, not retried.
+        if (
+          intent.dispatchedAt !== undefined ||
+          intent.receipt ||
+          intent.serviceReceiptPending ||
+          "serviceReceiptExhaustedAt" in intent
+        )
+          return failure("unknown", 202);
+        await this.state.storage.put(key, {
+          ...intent,
+          state: "rejected",
+          refusal: { error: "rejected", retryable: false },
+        });
+        if (
+          (await this.state.storage.get(NETWORK_DELIVERY_ACTIVE_KEY)) === key
+        ) {
+          await this.state.storage.delete(NETWORK_DELIVERY_ACTIVE_KEY);
+          await this.updateAlarmDeadlines(
+            ({ networkDeliveryRetryAt: _due, ...rest }) => rest,
+          );
+        }
+        return failure("photo_relay_disabled", 403);
+      }
+      // Dispatching/unknown/accepted/complete intents keep their existing
+      // receipt-only recovery; closing admission cannot discard an acceptance.
+    }
     if (payload.reconcileOnly && (!intent || intent.state === "prepared"))
       return failure("unknown", 202);
     if (intent?.state === "complete" || intent?.state === "rejected") {
@@ -2054,6 +2092,7 @@ export class SharedRuntimeConversation {
         ...(d.app ? { app: d.app } : {}),
         phoneNumber: d.phoneNumber,
         text: d.text,
+        ...(approvedPhotos ? { approvedPhotos } : {}),
         idempotencyKey: intent.providerKey,
         ...(d.compliance ? { networkCompliance: d.compliance } : {}),
         ...(abandonUnclaimed ? { abandonUnclaimed: true } : {}),
@@ -2064,7 +2103,7 @@ export class SharedRuntimeConversation {
       let response: Response | undefined;
       let receipt: Record<string, unknown> | null = null;
       try {
-        const signed = d.compliance
+        const signed = d.compliance || approvedPhotos
           ? await svcSign(String(this.env.SERVICE_TURN_SECRET ?? ""), {
               method: "POST",
               path,
@@ -2151,6 +2190,7 @@ export class SharedRuntimeConversation {
             id: `network-delivered:${intent.providerKey}`,
             role: "assistant",
             content: d.text,
+            ...(approvedPhotos ? { relayPhotoRefs: approvedPhotos.map(({photoId,itemId,sha256,bytes,contentType}) => ({photoId,itemId,sha256,bytes,contentType})) } : {}),
             createdAt: Date.parse(intent.receipt.acceptedAt),
           },
         ],

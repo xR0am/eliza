@@ -1,7 +1,7 @@
 /** Default-off server admission for Network context on the existing Personal ingress.
  * This never authenticates a phone as a Cloud user or grants model-owned effects.
  */
-import type { NetworkTransport } from "@elizaos/plugin-network/contract";
+import { parseApprovedRelayPhotos, type ApprovedRelayPhoto, type NetworkTransport } from "@elizaos/plugin-network/contract";
 import { z } from "zod";
 
 export interface NetworkIngressScope {
@@ -360,6 +360,7 @@ export async function verifyNetworkHandledEnvelope(
 
 const serviceDeliverySchema = z
   .object({
+    approvedPhotos: z.custom<ApprovedRelayPhoto[]>(v => parseApprovedRelayPhotos(v) !== undefined).optional(),
     id: z.string().min(1).max(200),
     to: z.string().regex(/^\+[1-9]\d{6,14}$/u),
     from: z.string().nullable().optional(),
@@ -376,6 +377,7 @@ export async function verifyNetworkServiceDeliveryEnvelope(
   envelope: NetworkAdmissionEnvelope,
   bindings: {
     SERVICE_TURN_SECRET?: string;
+    NETWORK_RELAY_ENABLED?: string;
     NETWORK_PERSONAL_CONTINUITY_ENABLED?: string;
     NETWORK_OWNED_INGRESS_POLICY?: string;
   },
@@ -406,6 +408,11 @@ export async function verifyNetworkServiceDeliveryEnvelope(
     (parsed.data.channel ?? "blooio") !== policy.platform
   )
     return undefined;
+  const photos = parsed.data.approvedPhotos && parseApprovedRelayPhotos(parsed.data.approvedPhotos);
+  if (parsed.data.approvedPhotos !== undefined && (!photos
+    || (bindings.NETWORK_RELAY_ENABLED !== "1" && !envelope.path.endsWith("/receipt"))
+    || parsed.data.kind !== "relay" || parsed.data.channel === "twilio"
+    || photos.some(p => p.app !== parsed.data.app || p.recipientMemberId !== parsed.data.memberId || `relay:${p.itemId}` !== parsed.data.id))) return undefined;
   const { svcVerify } = await import("@elizaos/plugin-network/svc-auth");
   const proof = await svcVerify(bindings.SERVICE_TURN_SECRET, {
     method: "POST",
@@ -414,5 +421,5 @@ export async function verifyNetworkServiceDeliveryEnvelope(
     body: envelope.originalBody,
   });
   if (!proof.ok || proof.id !== parsed.data.id) return undefined;
-  return { delivery: parsed.data, policy };
+  return { delivery: { ...parsed.data, ...(photos ? { approvedPhotos: photos } : {}) }, policy };
 }

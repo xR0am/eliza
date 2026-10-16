@@ -97,6 +97,14 @@ export interface SharedTurnMessage {
   id?: string;
   role: "system" | "user" | "assistant";
   content: string;
+  /** Accepted selected-photo receipt refs only; never URLs, private scores or access authority. */
+  relayPhotoRefs?: Array<{
+    photoId: string;
+    itemId: string;
+    sha256: string;
+    bytes: number;
+    contentType: string;
+  }>;
   /** Epoch-ms timestamp used by REST chat clients to reconcile persisted turns. */
   createdAt?: number;
   /**
