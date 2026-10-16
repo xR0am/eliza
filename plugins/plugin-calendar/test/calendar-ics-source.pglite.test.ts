@@ -938,6 +938,70 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     ]);
   });
 
+  it("keeps each recurring day-length DURATION at the same local time across DST", async () => {
+    const source = await createSource();
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:weekly-overnight",
+          "DTSTAMP:20261001T080000Z",
+          "DTSTART;TZID=America/New_York:20261024T100000",
+          "DURATION:P1D",
+          "RRULE:FREQ=WEEKLY;COUNT=3",
+          "SUMMARY:Weekly overnight",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-10-20T00:00:00.000Z",
+        timeMax: "2026-11-10T00:00:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(
+      feed.events.map((event) => ({
+        startAt: event.startAt,
+        endAt: event.endAt,
+      })),
+    ).toEqual([
+      {
+        startAt: "2026-10-24T14:00:00.000Z",
+        endAt: "2026-10-25T14:00:00.000Z",
+      },
+      {
+        startAt: "2026-10-31T14:00:00.000Z",
+        endAt: "2026-11-01T15:00:00.000Z",
+      },
+      {
+        startAt: "2026-11-07T15:00:00.000Z",
+        endAt: "2026-11-08T15:00:00.000Z",
+      },
+    ]);
+
+    const overlapping = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-11-01T14:30:00.000Z",
+        timeMax: "2026-11-01T16:00:00.000Z",
+      },
+      new Date(),
+    );
+    expect(overlapping.events).toEqual([
+      expect.objectContaining({
+        startAt: "2026-10-31T14:00:00.000Z",
+        endAt: "2026-11-01T15:00:00.000Z",
+      }),
+    ]);
+  });
+
   it("ignores a spring-forward gap occurrence without consuming COUNT", async () => {
     const source = await createSource();
     await syncBody(
