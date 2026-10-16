@@ -973,6 +973,20 @@ export class TwitterDiscoveryClient {
         // Add delay to avoid rate limits
         await this.delay(3000 + Math.random() * 5000);
       } catch (error) {
+        // Part of the reply or quote may already be public (a thread that
+        // failed after its first post, or a post X accepted without a usable
+        // receipt). Mark the tweet engaged so the next cycle does not post a
+        // new reply or quote under it.
+        if (
+          error instanceof ElizaError &&
+          (error.code === "X_THREAD_PARTIALLY_POSTED" ||
+            error.code === "X_POST_RECEIPT_INDETERMINATE")
+        ) {
+          await this.saveEngagementMemory(
+            scoredTweet.tweet,
+            scoredTweet.engagementType,
+          );
+        }
         if (this.isSessionRotation(error)) throw error;
         const message =
           error instanceof Error
