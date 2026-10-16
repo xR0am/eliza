@@ -73,7 +73,10 @@ app.post("/", async (c) => {
         continue;
       }
 
-      const bytes = new Uint8Array(await object.arrayBuffer());
+      // Native R2 objects always have arrayBuffer; only narrow shims lack it.
+      const bytes = object.arrayBuffer
+        ? new Uint8Array(await object.arrayBuffer())
+        : new TextEncoder().encode(await object.text());
       if (
         !isReadableTextDocument(
           file.filename,
