@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   type IAgentRuntime,
+  isInsufficientCreditsError,
   isRateLimitError,
   MAX_PROVIDER_RATE_LIMIT_RETRY_AFTER_MS,
   providerRateLimitRetryAt,
@@ -15,14 +16,14 @@ import { handleResponseHandler, handleTextSmall } from "../src/models/text";
 let server: Server;
 let baseUrl: string;
 let requests: string[] = [];
-let reply: { headers: Record<string, string>; body: string };
+let reply: { status?: number; headers: Record<string, string>; body: string };
 
 beforeAll(async () => {
   server = createServer((req, res) => {
     requests.push(req.url ?? "");
     req.resume();
     req.on("end", () => {
-      res.writeHead(429, { "content-type": "application/json", ...reply.headers });
+      res.writeHead(reply.status ?? 429, { "content-type": "application/json", ...reply.headers });
       res.end(reply.body);
     });
   });
@@ -179,20 +180,92 @@ describe("Eliza Cloud text 429", () => {
   });
 
   it("reads the org-tier X-RateLimit-Reset header as the reset time", async () => {
+    const resetAt = new Date(Date.now() + 17_000).toISOString();
     reply = {
-      headers: { "Retry-After": "17", "X-RateLimit-Reset": "2026-10-14T00:00:17.000Z" },
+      headers: { "X-RateLimit-Reset": resetAt },
       body: JSON.stringify({
         success: false,
         error: "Too many requests",
         code: "rate_limit_exceeded",
-        retryAfterSeconds: 17,
+        retryAfterSeconds: 99,
+      }),
+    };
+    // The reset came from the header, so its seconds are the time to that
+    // reset, not the body's unrelated retryAfterSeconds.
+    expect(readProviderRateLimit(await failure(routes["/responses"]))).toEqual({
+      kind: "rate_limited",
+      retryAfterMs: 99_000,
+      resetAt,
+      resetAfterSeconds: 17,
+    });
+  });
+
+  it("derives the wait from the reset time when no retry field is sent", async () => {
+    const resetAt = new Date(Date.now() + 5_000).toISOString();
+    reply = { headers: { "X-RateLimit-Reset": resetAt }, body: "{}" };
+    const rateLimit = readProviderRateLimit(await failure(routes["/chat/completions"]));
+    expect(rateLimit).toMatchObject({ kind: "rate_limited", resetAt, resetAfterSeconds: 5 });
+    expect(rateLimit?.retryAfterMs).toBeGreaterThan(4_000);
+    expect(rateLimit?.retryAfterMs).toBeLessThanOrEqual(5_000);
+  });
+
+  it("reports the inference 402 allowance refusal with its reset, without retrying", async () => {
+    const resetsAt = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    reply = {
+      status: 402,
+      headers: {},
+      body: JSON.stringify({
+        error: {
+          message: "Plan allowance is used up for this period. Nothing is purchased automatically.",
+          type: "insufficient_quota",
+          code: "allowance_exhausted",
+          resetsAt,
+        },
+      }),
+    };
+    const error = await failure(routes["/chat/completions"]);
+    expect(requests).toHaveLength(1);
+    expect(isInsufficientCreditsError(error)).toBe(true);
+    expect(isRateLimitError(error)).toBe(false);
+    expect(providerRateLimitRetryAt(error)).toBeUndefined();
+    expect(readProviderRateLimit(error)).toEqual({
+      kind: "rate_limited",
+      retryAfterMs: MAX_PROVIDER_RATE_LIMIT_RETRY_AFTER_MS,
+      scope: "period",
+      resetAt: resetsAt,
+      resetAfterSeconds: 172_800,
+    });
+
+    // A plain credits 402 carries no rate limit.
+    reply = {
+      status: 402,
+      headers: {},
+      body: JSON.stringify({
+        error: {
+          type: "insufficient_quota",
+          code: "insufficient_credits",
+          message: "Insufficient credits",
+        },
+      }),
+    };
+    expect(readProviderRateLimit(await failure(routes["/responses"]))).toBeUndefined();
+  });
+
+  it("drops a reset time without a time zone", async () => {
+    reply = {
+      headers: {},
+      body: JSON.stringify({
+        error: {
+          code: "allowance_exhausted",
+          resetsAt: "2026-11-01T00:00:00",
+          retryAfterSeconds: 10,
+        },
       }),
     };
     expect(readProviderRateLimit(await failure(routes["/responses"]))).toEqual({
       kind: "rate_limited",
-      retryAfterMs: 17_000,
-      resetAt: "2026-10-14T00:00:17.000Z",
-      resetAfterSeconds: 17,
+      retryAfterMs: 10_000,
+      scope: "period",
     });
   });
 
@@ -211,6 +284,7 @@ describe("Eliza Cloud text 429", () => {
       body: planBucketBody({
         retryAfterMs: Number.NaN,
         retryAfterSeconds: -1,
+        retryAt: "soon",
         plan: { id: "pro plan; key=sk-secret" },
         limit: { bucket: "monthly" },
       }),

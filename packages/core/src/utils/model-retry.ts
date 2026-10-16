@@ -241,9 +241,11 @@ export function parseProviderRateLimit(
 	};
 }
 
-const PROVIDER_RESET_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+/** ISO 8601 date-time with an explicit `Z` or numeric offset. */
+const PROVIDER_RESET_AT_PATTERN =
+	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/;
 
-/** Normalize an ISO 8601 reset time; anything else is dropped. */
+/** Normalize an ISO 8601 reset time with a time zone; anything else is dropped. */
 export function parseProviderResetAt(value: unknown): string | undefined {
 	if (typeof value !== "string" || !PROVIDER_RESET_AT_PATTERN.test(value))
 		return undefined;
@@ -255,18 +257,23 @@ export function parseProviderResetAt(value: unknown): string | undefined {
  * Read the typed rate limit a provider attached to its 429 (`rateLimit` on the
  * error node), through SDK and failover wrappers. Prose is never parsed. It is
  * a report for the client, not a retry signal: no caller waits on it.
+ *
+ * A used-up period allowance (`scope: "period"`) is reported from any status,
+ * including a permanent-quota 402, so the client can show when the allowance
+ * resets. `providerRateLimitRetryAt` still rejects it, so nothing retries.
  */
 export function readProviderRateLimit(
 	error: unknown,
 ): ProviderRateLimit | undefined {
 	if (typeof error !== "object" || error === null) return undefined;
-	if (isPermanentQuotaError(error)) return undefined;
+	const permanentQuota = isPermanentQuotaError(error);
 	for (const node of retryEvidenceNodes(error)) {
-		if (nodeStatus(node) !== 429) continue;
 		const rateLimit = parseProviderRateLimit(
 			(node as { rateLimit?: unknown }).rateLimit,
 		);
-		if (rateLimit) return rateLimit;
+		if (!rateLimit) continue;
+		if (rateLimit.scope === "period") return rateLimit;
+		if (!permanentQuota && nodeStatus(node) === 429) return rateLimit;
 	}
 	return undefined;
 }
