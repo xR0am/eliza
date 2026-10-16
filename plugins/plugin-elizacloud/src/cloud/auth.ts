@@ -161,12 +161,25 @@ export async function cloudLogin(
       continue;
     }
 
-    const data = (await pollResponse.json()) as {
+    let data: {
       status: string;
       apiKey?: string;
       keyPrefix?: string;
       expiresAt?: string;
     };
+    try {
+      data = (await pollResponse.json()) as {
+        status: string;
+        apiKey?: string;
+        keyPrefix?: string;
+        expiresAt?: string;
+      };
+    } catch {
+      // A 200 with an unparseable body is a transient failure: keep polling
+      // like the non-OK branch does instead of aborting the login.
+      options.onPollStatus?.("error");
+      continue;
+    }
 
     options.onPollStatus?.(data.status);
 
