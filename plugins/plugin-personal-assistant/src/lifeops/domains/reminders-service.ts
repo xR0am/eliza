@@ -26,6 +26,7 @@ import type {
   CaptureLifeOpsPhoneConsentRequest,
   LifeOpsActivitySignal,
   LifeOpsCalendarEvent,
+  LifeOpsCalendarProvider,
   LifeOpsChannelPolicy,
   LifeOpsCircadianState,
   LifeOpsManualOverrideResult,
@@ -1260,11 +1261,39 @@ export type RemindersDeps = {
   checkinSource: CheckinSourceService;
 };
 
+// Calendar sync and the built-in calendar give events of every provider a
+// reminder plan, so reminder delivery reads events from all of them.
+const REMINDER_CALENDAR_PROVIDERS = [
+  "eliza",
+  "google",
+  "microsoft",
+  "apple_calendar",
+  "ics",
+] as const satisfies readonly LifeOpsCalendarProvider[];
+
 export class RemindersDomain {
   constructor(
     private readonly ctx: LifeOpsContext,
     private readonly deps: RemindersDeps,
   ) {}
+
+  private async listReminderCalendarEvents(
+    timeMin?: string,
+    timeMax?: string,
+  ): Promise<LifeOpsCalendarEvent[]> {
+    const agentId = this.ctx.agentId();
+    const events = await Promise.all(
+      REMINDER_CALENDAR_PROVIDERS.map((provider) =>
+        this.ctx.repository.listCalendarEvents(
+          agentId,
+          provider,
+          timeMin,
+          timeMax,
+        ),
+      ),
+    );
+    return events.flat();
+  }
 
   /**
    * UTC date key of the last successful telemetry rollup+retention run.
@@ -3643,9 +3672,9 @@ export class RemindersDomain {
       });
       return;
     }
-    const event = (
-      await this.ctx.repository.listCalendarEvents(this.ctx.agentId(), "google")
-    ).find((candidate) => candidate.id === args.ownerId);
+    const event = (await this.listReminderCalendarEvents()).find(
+      (candidate) => candidate.id === args.ownerId,
+    );
     if (!event) {
       return;
     }
@@ -3730,12 +3759,9 @@ export class RemindersDomain {
         updatedAt: new Date().toISOString(),
       });
     } else {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === args.ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === args.ownerId,
+      );
       if (!event) {
         return;
       }
@@ -3943,12 +3969,9 @@ export class RemindersDomain {
     args.attempt.reviewStatus = "resolved";
     if (args.resolution === "snoozed") return;
     if (args.ownerType === "calendar_event") {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === args.ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === args.ownerId,
+      );
       if (event) {
         await this.ctx.repository.upsertCalendarEvent({
           ...event,
@@ -4251,10 +4274,7 @@ export class RemindersDomain {
       }
 
       if (reviewAttempt.ownerType === "calendar_event") {
-        calendarEvents ??= await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        );
+        calendarEvents ??= await this.listReminderCalendarEvents();
         const event =
           calendarEvents.find(
             (candidate) => candidate.id === reviewAttempt.ownerId,
@@ -5981,12 +6001,7 @@ export class RemindersDomain {
       OVERVIEW_HORIZON_MINUTES,
     ).toISOString();
     const calendarEvents = includeCalendar
-      ? await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-          now.toISOString(),
-          eventWindowEnd,
-        )
+      ? await this.listReminderCalendarEvents(now.toISOString(), eventWindowEnd)
       : [];
     const eventPlans = await this.ctx.repository.listReminderPlansForOwners(
       this.ctx.agentId(),
@@ -7127,12 +7142,9 @@ export class RemindersDomain {
         },
       );
     } else {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === ownerId,
+      );
       if (!event) {
         fail(404, "life-ops calendar event not found");
       }
