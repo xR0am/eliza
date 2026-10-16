@@ -7978,7 +7978,7 @@ export class CalendarService extends Service {
       !args.replacesRecurrence &&
       wallDay(wallMs(master.startAt) + shiftMs) !==
         wallDay(wallMs(master.startAt)) &&
-      recurrenceLinesFrom(master).some((line) =>
+      (recurrenceLinesFrom(master) ?? []).some((line) =>
         /;(BYDAY|BYMONTHDAY|BYYEARDAY|BYWEEKNO|BYSETPOS)=/i.test(
           `;${line.split(":").pop()}`,
         ),
