@@ -115,6 +115,8 @@ describe("Eliza Cloud text 429", () => {
         retryAfterMs: 2_400,
         planId: "pro",
         scope: "burst",
+        resetAt: "2026-10-14T00:00:02.400Z",
+        resetAfterSeconds: 3,
       });
       // Not a retry hint: the coding planner's wait-and-retry reads
       // `providerRateLimitRetryAt` and must keep failing fast on Cloud 429s.
@@ -123,6 +125,8 @@ describe("Eliza Cloud text 429", () => {
       expect(Object.keys(readProviderRateLimit(error) ?? {}).sort()).toEqual([
         "kind",
         "planId",
+        "resetAfterSeconds",
+        "resetAt",
         "retryAfterMs",
         "scope",
       ]);
@@ -148,6 +152,47 @@ describe("Eliza Cloud text 429", () => {
     expect(readProviderRateLimit(await failure(routes["/responses"]))).toEqual({
       kind: "rate_limited",
       retryAfterMs: 7_000,
+    });
+  });
+
+  it("carries the period-allowance reset time past the wait cap", async () => {
+    reply = {
+      headers: { "Retry-After": "259200" },
+      body: JSON.stringify({
+        error: {
+          code: "allowance_exhausted",
+          service: "inference",
+          resetsAt: "2026-11-01T00:00:00.000Z",
+          retryAfterSeconds: 259_200,
+        },
+      }),
+    };
+    const error = await failure(routes["/chat/completions"]);
+    expect(isRateLimitError(error)).toBe(true);
+    expect(readProviderRateLimit(error)).toEqual({
+      kind: "rate_limited",
+      retryAfterMs: MAX_PROVIDER_RATE_LIMIT_RETRY_AFTER_MS,
+      scope: "period",
+      resetAt: "2026-11-01T00:00:00.000Z",
+      resetAfterSeconds: 259_200,
+    });
+  });
+
+  it("reads the org-tier X-RateLimit-Reset header as the reset time", async () => {
+    reply = {
+      headers: { "Retry-After": "17", "X-RateLimit-Reset": "2026-10-14T00:00:17.000Z" },
+      body: JSON.stringify({
+        success: false,
+        error: "Too many requests",
+        code: "rate_limit_exceeded",
+        retryAfterSeconds: 17,
+      }),
+    };
+    expect(readProviderRateLimit(await failure(routes["/responses"]))).toEqual({
+      kind: "rate_limited",
+      retryAfterMs: 17_000,
+      resetAt: "2026-10-14T00:00:17.000Z",
+      resetAfterSeconds: 17,
     });
   });
 
@@ -178,6 +223,7 @@ describe("Eliza Cloud text 429", () => {
       headers: {},
       body: planBucketBody({
         retryAfterMs: 10 * 60 * 60 * 1000,
+        retryAt: "next month",
         plan: { id: "x".repeat(65) },
         limit: { bucket: "monthly" },
       }),

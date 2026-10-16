@@ -26,6 +26,7 @@ import {
   logger,
   ModelType,
   parseProviderRateLimit,
+  parseProviderResetAt,
   providerRetryAfterMs,
   recordInferenceSpan,
   renderChatMessagesForPrompt,
@@ -539,17 +540,35 @@ export type CloudTextRequestError = Error & {
  * bucket body (`error.retryAfterMs`, `error.retryAfterSeconds`, `error.plan.id`,
  * `error.limit.bucket`), the org tier body (`retryAfterSeconds`), then the
  * `Retry-After-Ms`/`Retry-After` headers. Malformed values are skipped and the
- * wait is capped. This is a report for the client; nothing here waits.
+ * wait is capped. The reset time comes from the period-allowance body
+ * (`error.code: "allowance_exhausted"`, `error.resetsAt`), the plan bucket
+ * body (`error.retryAt`) or the org tier `X-RateLimit-Reset` header, with
+ * the body's uncapped `retryAfterSeconds`. This is a report for the client;
+ * nothing here waits.
  */
 export function readCloudRateLimit(
   response: Response,
-  body: unknown
+  body: unknown,
+  now: number = Date.now()
 ): ProviderRateLimit | undefined {
   if (response.status !== 429) return undefined;
   const record = asRecord(body);
   const errorRecord = recordAt(record, "error");
   const seconds = (value: unknown): unknown =>
     typeof value === "number" ? value * 1000 : undefined;
+  const resetAt = [
+    errorRecord.resetsAt,
+    errorRecord.retryAt,
+    response.headers.get("x-ratelimit-reset"),
+  ]
+    .map(parseProviderResetAt)
+    .find((value) => value !== undefined);
+  const resetAfterSeconds =
+    resetAt === undefined
+      ? undefined
+      : ([errorRecord.retryAfterSeconds, record.retryAfterSeconds].find(
+          (value) => typeof value === "number" && Number.isFinite(value) && value >= 0
+        ) ?? Math.max(0, Math.ceil((Date.parse(resetAt) - now) / 1000)));
   const responseHeaders: Record<string, string> = {};
   for (const name of ["retry-after-ms", "retry-after"]) {
     const value = response.headers.get(name);
@@ -566,7 +585,10 @@ export function readCloudRateLimit(
     kind: "rate_limited",
     retryAfterMs,
     planId: recordAt(errorRecord, "plan").id,
-    scope: recordAt(errorRecord, "limit").bucket,
+    scope:
+      errorRecord.code === "allowance_exhausted" ? "period" : recordAt(errorRecord, "limit").bucket,
+    resetAt,
+    resetAfterSeconds,
   });
 }
 

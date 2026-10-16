@@ -21,16 +21,54 @@ import {
 } from "../../../plugins/plugin-elizacloud/src/models/text.ts";
 import { startApiServer } from "../src/api/server.ts";
 
-const EXPECTED_RATE_LIMIT = {
-  kind: "rate_limited",
-  retryAfterMs: 2_400,
-  planId: "pro",
-  scope: "burst",
+const PLAN_BUCKET = {
+  body: {
+    error: {
+      message: "Too many requests in a short time for this plan.",
+      type: "rate_limit_error",
+      code: "rate_limited",
+      retryAfterSeconds: 3,
+      retryAfterMs: 2_400,
+      plan: { id: "pro" },
+      limit: { bucket: "burst", capacity: 5, refillPerSecond: 1 },
+    },
+  },
+  expected: {
+    kind: "rate_limited",
+    retryAfterMs: 2_400,
+    planId: "pro",
+    scope: "burst",
+  },
 };
 
-it.each(["/messages", "/messages/stream"] as const)(
-  "delivers the Cloud 429 wait on %s",
-  async (route) => {
+// A used-up period allowance: the wait is capped, the reset time is not.
+const PERIOD_ALLOWANCE = {
+  body: {
+    error: {
+      code: "allowance_exhausted",
+      service: "inference",
+      resetsAt: "2026-11-01T00:00:00.000Z",
+      retryAfterSeconds: 259_200,
+      capacity: 1,
+    },
+  },
+  expected: {
+    kind: "rate_limited",
+    retryAfterMs: 60 * 60 * 1000,
+    scope: "period",
+    resetAt: "2026-11-01T00:00:00.000Z",
+    resetAfterSeconds: 259_200,
+  },
+};
+
+it.each([
+  ["/messages", "plan bucket", PLAN_BUCKET],
+  ["/messages/stream", "plan bucket", PLAN_BUCKET],
+  ["/messages", "period allowance", PERIOD_ALLOWANCE],
+  ["/messages/stream", "period allowance", PERIOD_ALLOWANCE],
+] as const)(
+  "delivers the Cloud 429 wait on %s (%s)",
+  async (route, _case, { body: cloudBody, expected: EXPECTED_RATE_LIMIT }) => {
     const directory = await mkdtemp(path.join(tmpdir(), "cloud-rate-limit-"));
     const cloudRequests: string[] = [];
     const cloud = createServer((req, res) => {
@@ -43,19 +81,7 @@ it.each(["/messages", "/messages/stream"] as const)(
           "content-type": "application/json",
           "Retry-After": "3",
         });
-        res.end(
-          JSON.stringify({
-            error: {
-              message: "Too many requests in a short time for this plan.",
-              type: "rate_limit_error",
-              code: "rate_limited",
-              retryAfterSeconds: 3,
-              retryAfterMs: 2_400,
-              plan: { id: "pro" },
-              limit: { bucket: "burst", capacity: 5, refillPerSecond: 1 },
-            },
-          }),
-        );
+        res.end(JSON.stringify(cloudBody));
       });
     });
     await new Promise<void>((resolve) => cloud.listen(0, "127.0.0.1", resolve));
