@@ -140,8 +140,9 @@ function deriveThreadId(
     return message.xConversationId;
   }
   if (channel === "gmail") {
-    const subject = message.channelName.replace(/^Email from\s+/i, "").trim();
-    const normalizedSubject = stripSubjectReplyPrefixes(subject).trim();
+    const normalizedSubject = stripSubjectReplyPrefixes(
+      message.subject ?? "",
+    ).trim();
     const fromKey =
       message.senderEmail?.trim().toLowerCase() ?? message.senderName;
     return `gmail:${fromKey}:${normalizedSubject || externalId}`;
@@ -183,12 +184,7 @@ export function toInboxMessage(
     );
   }
   const receivedAt = receivedDate.toISOString();
-  const subject =
-    channel === "gmail"
-      ? message.channelName.startsWith("Email from ")
-        ? message.channelName.slice("Email from ".length)
-        : message.channelName
-      : null;
+  const subject = channel === "gmail" ? (message.subject ?? null) : null;
 
   // Gmail triage exposes `likelyReplyNeeded`/`isImportant`. X DMs carry real
   // read state (the fetcher maps dm.readAt -> lastSeenAt and dm.repliedAt ->
