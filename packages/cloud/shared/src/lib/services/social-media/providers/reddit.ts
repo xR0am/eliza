@@ -489,14 +489,21 @@ export const redditProvider: SocialMediaProvider = {
           data?: { things: Array<{ data: { id: string } }> };
           errors?: string[][];
         };
-      }>("/api/comment", accessToken, {
-        method: "POST",
-        body: new URLSearchParams({
-          thing_id: fullname,
-          text: content.text,
-          api_type: "json",
-        }),
-      });
+      }>(
+        "/api/comment",
+        accessToken,
+        {
+          method: "POST",
+          body: new URLSearchParams({
+            thing_id: fullname,
+            text: content.text,
+            api_type: "json",
+          }),
+        },
+        // A replay after a timeout or a 5xx publishes the comment twice
+        // (the post create call in this file passes the same flag).
+        { replayUnknownOutcome: false },
+      );
 
       if (response?.json?.errors?.length) {
         return {
