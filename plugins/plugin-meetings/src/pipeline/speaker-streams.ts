@@ -88,6 +88,11 @@ interface SpeakerBuffer {
   lastAudioTimestampMs: number;
   /** Whether a final idle/flush submission was already made. */
   idleSubmitted: boolean;
+  /**
+   * Samples sent in a hard-cap final submission (0 = none). Its result is
+   * emitted and only these samples are dropped; audio fed meanwhile stays.
+   */
+  capSubmittedSamples: number;
   /** Bumped on full reset — stale in-flight results are discarded. */
   generation: number;
   /** Last confirmed text — ASR prompt for context continuity + dedup. */
@@ -154,6 +159,7 @@ export class SpeakerStreamManager {
       sequenceNumber: 0,
       lastAudioTimestampMs: now,
       idleSubmitted: false,
+      capSubmittedSamples: 0,
       generation: 0,
       lastConfirmedText: "",
     });
@@ -215,6 +221,23 @@ export class SpeakerStreamManager {
     if (submitGen !== undefined && submitGen < buffer.generation) return;
 
     buffer.inFlight = false;
+
+    // Hard-cap final submission: emit what it heard, then drop exactly the
+    // submitted audio and keep transcribing whatever arrived since.
+    if (buffer.capSubmittedSamples > 0) {
+      const submitted = buffer.capSubmittedSamples;
+      buffer.capSubmittedSamples = 0;
+      const text = transcript?.trim() ?? "";
+      if (text)
+        this.emitSegment(buffer, text, this.absoluteWords(buffer, segments));
+      buffer.windowStartMs += Math.floor((submitted / this.sampleRate) * 1000);
+      buffer.confirmedSamples = submitted;
+      this.trimBuffer(buffer);
+      buffer.lastTranscript = "";
+      buffer.confirmCount = 0;
+      buffer.lastWords = [];
+      return;
+    }
 
     if (!transcript || transcript.trim().length === 0) {
       if (buffer.idleSubmitted) this.fullReset(buffer);
@@ -506,8 +529,16 @@ export class SpeakerStreamManager {
             `[MeetingPipeline] Hard-cap force-flush for "${buffer.speakerName}" (${totalSec.toFixed(1)}s > ${this.maxBufferDurationSec}s)`,
           );
           this.emitSegment(buffer, buffer.lastTranscript, []);
+          this.fullReset(buffer);
+          return;
         }
-        this.fullReset(buffer);
+        // No interim transcript (cloud ASR transcribes only final windows):
+        // transcribe the window once instead of discarding the speech.
+        logger.debug(
+          `[MeetingPipeline] Hard-cap final submit for "${buffer.speakerName}" (${totalSec.toFixed(1)}s > ${this.maxBufferDurationSec}s)`,
+        );
+        buffer.capSubmittedSamples = this.unconfirmedSamples(buffer);
+        this.submitBuffer(buffer, "final");
         return;
       }
       this.trimBuffer(buffer);
@@ -652,6 +683,7 @@ export class SpeakerStreamManager {
     buffer.windowStartMs = this.now();
     buffer.lastAudioTimestampMs = this.now();
     buffer.idleSubmitted = false;
+    buffer.capSubmittedSamples = 0;
     buffer.generation++;
   }
 }
