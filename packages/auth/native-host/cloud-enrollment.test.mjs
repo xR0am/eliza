@@ -290,10 +290,58 @@ test("wrong attempt, malformed code, resend cooldown and unsupported MFA fail cl
     f.auth.handle("verify", { sessionId: begun.sessionId, code: "123" }),
     { status: 400 },
   );
-  await assert.rejects(start(f), { status: 429 });
+  await assert.rejects(start(f), (error) => {
+    // The host's own resend gate reports the wait it knows.
+    assert.equal(error.status, 429);
+    assert.ok(error.retryAfter > 0 && error.retryAfter <= 60);
+    return true;
+  });
   assert.equal(
     f.calls.filter((x) => x.path.endsWith("/code/verify")).length,
     0,
+  );
+});
+
+test("a 429 carries the account service's Retry-After seconds, and only valid ones", async () => {
+  for (const [header, expected] of [
+    ["37", 37],
+    [" 0 ", 0],
+    [null, undefined],
+    ["soon", undefined],
+    ["-5", undefined],
+    ["1.5", undefined],
+    ["Wed, 21 Oct 2026 07:28:00 GMT", undefined],
+  ]) {
+    const f = fixture({
+      fetch: (path) =>
+        path === "/auth/email/send"
+          ? new Response("{}", {
+              status: 429,
+              headers: header === null ? {} : { "Retry-After": header },
+            })
+          : undefined,
+    });
+    await assert.rejects(start(f), (error) => {
+      assert.equal(error.status, 429, header);
+      assert.equal(error.retryAfter, expected, header);
+      assert.equal(Object.hasOwn(error, "retryAfter"), expected !== undefined);
+      return true;
+    });
+  }
+  // Too many tries at the code: the verify answer carries it the same way.
+  const f = fixture({
+    fetch: (path) =>
+      path === "/auth/email/code/verify"
+        ? new Response("{}", {
+            status: 429,
+            headers: { "Retry-After": "120" },
+          })
+        : undefined,
+  });
+  const begun = await start(f);
+  await assert.rejects(
+    f.auth.handle("verify", { sessionId: begun.sessionId, code: "123456" }),
+    { status: 429, retryAfter: 120 },
   );
 });
 
