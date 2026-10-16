@@ -11,8 +11,8 @@ afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
 });
 function fixture() {
-  const root = fs.mkdtempSync(
-    path.join(os.tmpdir(), "native-google-admission-"),
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "native-google-admission-")),
   );
   roots.push(root);
   const entry = path.join(root, "google-host.mjs");
