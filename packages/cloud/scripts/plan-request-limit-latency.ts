@@ -16,10 +16,19 @@
  * policy transaction, not a production number. The bucket numbers below are
  * benchmark values only; they are not selected limits.
  *
+ * Part 3 times Maps request admission under the same five conditions:
+ * `callMapsRequestAllowance` alone (the gate call) and `admitMapsRequest` end
+ * to end (primary policy read lock, entitlement read, gate call). The
+ * organization is a real subscription-grant subscriber on PGlite. The gate is
+ * the real `MapsRequestAllowanceController` on in-memory Durable Object
+ * storage, called in process: production adds the Worker-to-Durable-Object
+ * hop and the gate's credential revocation read.
+ *
  * Run: bun --conditions=eliza-source packages/cloud/scripts/plan-request-limit-latency.ts
  * Output: test-results/plan-request-limit-latency/results.json
  */
 
+import { mock } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { testOutputPath } from "../../scripts/lib/test-output";
@@ -51,6 +60,24 @@ const BENCH_CONFIG = (planKey: string) => ({
     },
   },
 });
+
+/** In-memory stand-in for Durable Object storage: structured copies, serial transactions. */
+class MemoryDurableStorage {
+  private readonly values = new Map<string, unknown>();
+  async get<T>(key: string): Promise<T | undefined> {
+    const value = this.values.get(key);
+    return value === undefined ? undefined : (structuredClone(value) as T);
+  }
+  async put(key: string | Record<string, unknown>, value?: unknown) {
+    const entries =
+      typeof key === "string" ? [[key, value]] : Object.entries(key);
+    for (const [k, v] of entries)
+      this.values.set(k as string, structuredClone(v));
+  }
+  transaction<T>(run: (tx: MemoryDurableStorage) => Promise<T>): Promise<T> {
+    return run(this);
+  }
+}
 
 interface Summary {
   n: number;
@@ -225,6 +252,54 @@ async function main(): Promise<void> {
     }),
   );
 
+  // Part 3: Maps request admission.
+  const maps = await setupMapsBench(exec);
+  const mapsGate: Record<string, Summary> = {};
+  const mapsAdmission: Record<string, Summary> = {};
+  const measureMaps = async (
+    name: string,
+    options: { allowance?: number; freshGate?: boolean },
+    expected: { gate: number; admission: number },
+    gateRequest: () => MapsBenchRequest = maps.request,
+    org = maps.org,
+  ) => {
+    maps.configure(options);
+    mapsGate[name] = summarize(
+      await time(E2E_ITERATIONS, async () => {
+        const response = await maps.call(gateRequest());
+        if (response.status !== expected.gate)
+          throw new Error(`Maps gate ${name}: ${response.status}`);
+      }),
+    );
+    maps.configure(options);
+    mapsAdmission[name] = summarize(
+      await time(E2E_ITERATIONS, (i) => maps.admit(i, org, expected.admission)),
+    );
+  };
+  await measureMaps("normal", {}, { gate: 200, admission: 200 });
+  // No stored allowance window: the first Maps request of a new gate.
+  await measureMaps(
+    "cache-miss",
+    { freshGate: true },
+    { gate: 200, admission: 200 },
+  );
+  await measureMaps(
+    "exhausted",
+    { allowance: 0 },
+    { gate: 429, admission: 429 },
+  );
+  // The gate refuses a policy window that has ended (503). End to end, the
+  // primary policy read finds no active entitlement and refuses before the
+  // gate (403). PGlite cannot move the clock past a grant, so the ended
+  // entitlement is a revoked grant: the same refusal path.
+  await measureMaps(
+    "expired",
+    {},
+    { gate: 503, admission: 403 },
+    maps.expiredRequest,
+    maps.endedOrg,
+  );
+
   // Billing outage: the database is closed. The limiter stage and a refusal
   // still decide from memory. An admitted request continues to the existing
   // policy transaction, whose outage behavior this change does not alter.
@@ -248,6 +323,21 @@ async function main(): Promise<void> {
     ),
   );
 
+  // Maps billing outage: the gate holds its own count and still answers; end
+  // to end, the primary policy read fails, so admission refuses (no request is
+  // admitted without the policy lock).
+  maps.configure({});
+  mapsGate["billing-outage"] = summarize(
+    await time(E2E_ITERATIONS, async () => {
+      const response = await maps.call(maps.request());
+      if (response.status !== 200)
+        throw new Error(`Maps gate billing-outage: ${response.status}`);
+    }),
+  );
+  mapsAdmission["billing-outage"] = summarize(
+    await time(E2E_ITERATIONS, (i) => maps.admit(i, maps.org, "failed")),
+  );
+
   const result = {
     issue: "https://github.com/AlphaCompute/alphaphone/issues/410",
     measuredAt: new Date().toISOString(),
@@ -261,12 +351,224 @@ async function main(): Promise<void> {
     limiterStage: stage,
     enforceOrgRateLimitPglite: e2e,
     billingOutageRefusalEndToEnd: outageRefusal,
+    mapsNote:
+      "Maps admission has no plan cache and no limiter-off mode: every admission holds the primary policy read lock through the gate call. callMapsRequestAllowance is the gate call alone; admitMapsRequest adds the policy lock. On PGlite the entitlement summary read inside the lock is served from a prior read (one connection), so add entitlementSummaryRead for the full admission. The gate runs in process on in-memory storage without its credential revocation read.",
+    callMapsRequestAllowance: mapsGate,
+    admitMapsRequestPglite: mapsAdmission,
+    entitlementSummaryRead: maps.summaryRead,
   };
   const output = testOutputPath("plan-request-limit-latency", "results.json");
   await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify(result, null, 2));
   console.log(`wrote ${output}`);
+}
+
+type MapsBenchRequest =
+  import("../shared/src/lib/services/maps-request-policy").MapsAllowanceRequest;
+
+/**
+ * A subscription-grant organization on PGlite, plus one whose grant is
+ * revoked, and an in-process Maps gate behind the cloud binding that
+ * `callMapsRequestAllowance` reads.
+ */
+async function setupMapsBench(exec: (query: string) => Promise<void>) {
+  const grants = await import(
+    "../shared/src/db/repositories/subscription-grants"
+  );
+  const { readOrganizationEntitlementSummary } = await import(
+    "../shared/src/lib/services/subscription-entitlement-token"
+  );
+  const { runWithCloudBindingsAsync } = await import(
+    "../shared/src/lib/runtime/cloud-bindings"
+  );
+  const { callMapsRequestAllowance } = await import(
+    "../shared/src/lib/services/inference-admission-gate"
+  );
+  const { MapsRequestAllowanceController } = await import(
+    "../api/src/maps-request-allowance-controller"
+  );
+  const { admitMapsRequest, MapsAdmissionError } = await import(
+    "../api/src/lib/maps-request-admission"
+  );
+  const user = "63000000-0000-4000-8000-00000000a410";
+  const pepper = "maps-latency-pepper-0123456789abcdef";
+  // Grant buckets carry no invoice (production state from migration 0404).
+  await exec(
+    "ALTER TABLE subscription_allowance_periods ALTER COLUMN stripe_invoice_id DROP NOT NULL",
+  );
+  await exec(`INSERT INTO users(id) VALUES ('${user}')`);
+  const subscriber = async (org: string, code: string) => {
+    await exec(`INSERT INTO organizations(id, credit_balance, balance_revision, balance_decrease_revision, settings, is_active, auto_top_up_enabled, account_lifecycle_state)
+      VALUES ('${org}', '0', 1, 0, '{}', true, false, 'active')`);
+    const codeHash = await grants.hashSubscriptionGrantCode(
+      grants.normalizeSubscriptionGrantCode(code) ?? code,
+      pepper,
+    );
+    await exec(`INSERT INTO subscription_grant_codes(code_hash, family, max_redemptions, duration_days, requires_no_paid_plan)
+      VALUES ('${codeHash}', 'alpha_phone', 1, 183, false)`);
+    const { grant } = await grants.subscriptionGrantsRepository.redeem({
+      organizationId: org,
+      userId: user,
+      codeHash,
+      idempotencyKey: `maps-latency-${org}`,
+    });
+    return grant;
+  };
+  const org = "61000000-0000-4000-8000-00000000b410";
+  const endedOrg = "61000000-0000-4000-8000-00000000c410";
+  await subscriber(org, "MAPS-LATE-NCY0-0001");
+  const ended = await subscriber(endedOrg, "MAPS-LATE-NCY0-0002");
+  await grants.subscriptionGrantsRepository.revoke({
+    grantId: ended.id,
+    reason: "latency benchmark: ended entitlement",
+  });
+  const summary = await readOrganizationEntitlementSummary(org);
+  if (summary.plan.status !== "active" || !summary.rateTier)
+    throw new Error("Maps benchmark organization is not an active subscriber");
+  const planKey = summary.rateTier;
+  const summaries = new Map([
+    [org, summary],
+    [endedOrg, await readOrganizationEntitlementSummary(endedOrg)],
+  ]);
+  const summaryRead = summarize(
+    await time(E2E_ITERATIONS, () => readOrganizationEntitlementSummary(org)),
+  );
+  // PGlite has one connection, so the entitlement summary's own transaction
+  // cannot open while admission holds the policy read lock (it waits
+  // forever). Serve the summary read above for the two benchmark
+  // organizations; its cost is reported separately as `entitlementSummaryRead`.
+  mock.module(
+    "../shared/src/lib/services/subscription-entitlement-token",
+    () => ({
+      readOrganizationEntitlementSummary: (
+        organizationId: string,
+        ...rest: [{ allowance?: boolean }?]
+      ) =>
+        summaries.get(organizationId) ??
+        readOrganizationEntitlementSummary(organizationId, ...rest),
+    }),
+  );
+
+  let gateEnv: Record<string, unknown> = {};
+  let freshGate = false;
+  const gates = new Map<string, MemoryDurableStorage>();
+  const binding = {
+    getByName: (name: string) => ({
+      async fetch(request: Request): Promise<Response> {
+        let storage = gates.get(name);
+        if (!storage || freshGate) {
+          storage = new MemoryDurableStorage();
+          gates.set(name, storage);
+        }
+        return new MapsRequestAllowanceController(
+          storage as unknown as DurableObjectStorage,
+          gateEnv,
+          { credential: async () => null },
+        ).handle(new URL(request.url).pathname, await request.json());
+      },
+    }),
+  };
+  const bindings = { INFERENCE_ADMISSION_GATES: binding };
+  process.env.INFERENCE_STRONG_REVOCATION_ENABLED = "true";
+
+  const credential = {
+    kind: "api_key" as const,
+    credentialId: "maps-latency-key",
+    userId: user,
+  };
+  let sequence = 0;
+  const request = (): MapsBenchRequest => ({
+    organizationId: org,
+    requestId: `maps-${++sequence}`,
+    operation: "search",
+    credential: { ...credential, organizationId: org },
+    policy: {
+      generation: "1",
+      planKey,
+      effectiveFrom: new Date(Date.now() - 60_000).toISOString(),
+      effectiveUntil: null,
+      subscriptionFunded: true,
+    },
+  });
+  return {
+    org,
+    endedOrg,
+    summaryRead,
+    request,
+    expiredRequest: (): MapsBenchRequest => {
+      const base = request();
+      return {
+        ...base,
+        policy: {
+          ...base.policy,
+          effectiveUntil: new Date(Date.now() - 1_000).toISOString(),
+        },
+      };
+    },
+    configure(options: { allowance?: number; freshGate?: boolean }) {
+      freshGate = options.freshGate === true;
+      gates.clear();
+      gateEnv = {
+        ELIZA_CLOUD_MAPS_REQUEST_ALLOWANCES: JSON.stringify({
+          selected: true,
+          plans: {
+            [planKey]: {
+              requests: options.allowance ?? 1_000_000_000,
+              windowSeconds: 30 * 86_400,
+            },
+          },
+        }),
+        ELIZA_CLOUD_PLAN_RATE_LIMITS: JSON.stringify({
+          selected: true,
+          plans: {
+            default: {
+              burst: { capacity: 1_000_000, refillPerSecond: 1_000 },
+              sustained: { capacity: 1_000_000, refillPerSecond: 1_000 },
+            },
+          },
+        }),
+      };
+    },
+    call: (value: MapsBenchRequest) =>
+      runWithCloudBindingsAsync(bindings, () =>
+        callMapsRequestAllowance(value),
+      ),
+    /** Admit one request; `expected` is the HTTP status, or "failed" for an untyped failure. */
+    async admit(
+      i: number,
+      organizationId: string,
+      expected: number | "failed",
+    ) {
+      const context = {
+        req: {
+          raw: { signal: new AbortController().signal },
+          header: (name: string) =>
+            name === "Idempotency-Key"
+              ? `maps-admit-${++sequence}-${i}`
+              : undefined,
+        },
+      } as unknown as Parameters<typeof admitMapsRequest>[0];
+      let status: number | "failed" = 200;
+      try {
+        await runWithCloudBindingsAsync(bindings, () =>
+          admitMapsRequest(
+            context,
+            {
+              id: user,
+              organization_id: organizationId,
+              credential: { ...credential },
+            },
+            "search",
+          ),
+        );
+      } catch (error) {
+        status = error instanceof MapsAdmissionError ? error.status : "failed";
+      }
+      if (status !== expected)
+        throw new Error(`admitMapsRequest expected ${expected}, got ${status}`);
+    },
+  };
 }
 
 await main();
