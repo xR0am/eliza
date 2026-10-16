@@ -26,10 +26,28 @@ mock.module("@elizaos/cloud-shared/auth", () => ({
   }),
 }));
 
+const realWorkerDocuments = {
+  ...(await import("../v1/documents/_worker-documents")),
+};
+const storedDocuments: string[] = [];
+mock.module("../v1/documents/_worker-documents", () => ({
+  ...realWorkerDocuments,
+  resolveDocumentScope: async () => ({ agentId: USER, roomId: USER }),
+  createDocumentRecord: async (
+    _user: unknown,
+    _scope: unknown,
+    file: { filename: string },
+  ) => {
+    storedDocuments.push(file.filename);
+    return { id: file.filename };
+  },
+}));
+
 const { Hono } = await import("hono");
 const { default: preUploadRoute } = await import(
   "../v1/documents/pre-upload/route"
 );
+const { default: submitRoute } = await import("../v1/documents/submit/route");
 const { createAccountDeletionProviderAdapters } = await import(
   "../../shared/src/lib/services/account-deletion-provider-adapters"
 );
@@ -41,6 +59,11 @@ function memoryBucket() {
     objects,
     async put(key: string, _value: unknown, options: Stored = {}) {
       objects.set(key, { customMetadata: options.customMetadata });
+    },
+    async get(key: string) {
+      return objects.has(key)
+        ? { text: async () => "%PDF-1.7 \u00e2\u00e3" }
+        : null;
     },
     async delete(key: string) {
       objects.delete(key);
@@ -83,4 +106,44 @@ test("account deletion removes a pre-uploaded document that was never submitted"
   );
 
   expect(bucket.objects.size).toBe(0);
+});
+
+test("submit refuses a pending PDF, deletes its pending blob, and reports a missing file as missing", async () => {
+  const bucket = memoryBucket();
+  const key = `documents-pre-upload/${USER}/report.pdf`;
+  await bucket.put(key, "pdf bytes");
+  const app = new Hono().route("/api/v1/documents/submit", submitRoute);
+  const submit = (blobUrl: string) =>
+    app.request(
+      "/api/v1/documents/submit",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterId: "character-1",
+          files: [
+            {
+              blobUrl,
+              filename: "report.pdf",
+              contentType: "application/pdf",
+              size: 9,
+            },
+          ],
+        }),
+      },
+      { NODE_ENV: "test", RATE_LIMIT_DISABLED: "true", BLOB: bucket },
+    );
+
+  const refused = (await (
+    await submit(`https://blob.example/${key}`)
+  ).json()) as { results: Array<{ status: string; error?: string }> };
+  expect(refused.results[0]?.status).toBe("error");
+  expect(refused.results[0]?.error).toContain("is not a text file");
+  expect(bucket.objects.has(key)).toBe(false);
+  expect(storedDocuments).toEqual([]);
+
+  const missing = (await (
+    await submit(`https://blob.example/documents-pre-upload/${USER}/gone.pdf`)
+  ).json()) as { results: Array<{ error?: string }> };
+  expect(missing.results[0]?.error).toBe("File not found");
 });

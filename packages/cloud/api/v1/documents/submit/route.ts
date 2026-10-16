@@ -62,21 +62,23 @@ app.post("/", async (c) => {
         continue;
       }
 
-      if (!isReadableTextDocument(file.filename, file.contentType)) {
-        results.push({
-          blobUrl: file.blobUrl,
-          status: "error",
-          error: `"${file.filename}" ${UNREADABLE_DOCUMENT_ERROR}`,
-        });
-        continue;
-      }
-
       const object = await c.env.BLOB.get(key);
       if (!object) {
         results.push({
           blobUrl: file.blobUrl,
           status: "error",
           error: "File not found",
+        });
+        continue;
+      }
+
+      if (!isReadableTextDocument(file.filename, file.contentType)) {
+        // The refused upload is never stored, so its pending blob goes too.
+        await deletePendingDocumentBlob(c.env.BLOB, key);
+        results.push({
+          blobUrl: file.blobUrl,
+          status: "error",
+          error: `"${file.filename}" ${UNREADABLE_DOCUMENT_ERROR}`,
         });
         continue;
       }
