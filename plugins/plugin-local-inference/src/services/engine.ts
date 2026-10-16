@@ -58,12 +58,17 @@ import {
 	type EngineVoiceBridgeOptions,
 	VoiceStartupError,
 } from "./voice/engine-bridge";
+import type {
+	CompositeEotClassifier,
+	VoiceTurnSignal,
+} from "./voice/eot-classifier";
 import type { AsrWordTiming } from "./voice/ffi-bindings";
 import { resolveKokoroEngineConfig } from "./voice/kokoro/kokoro-engine-discovery";
 import {
 	readVoiceBackendModeFromEnv,
 	selectVoiceBackend,
 } from "./voice/kokoro/runtime-selection";
+import { VoiceLifecycleError } from "./voice/lifecycle";
 import type { VoicePipelineEvents } from "./voice/pipeline";
 import { type MtpTextRunner, mtpTextRunner } from "./voice/pipeline-impls";
 import {
@@ -178,6 +183,33 @@ export function resolveMaxConcurrentSpeculativeResponses(
 // Re-export of backend.ts's canonical GenerateArgs shape, including the
 // optional `cacheKey` for prefix reuse via the session pool.
 export type GenerateArgs = BackendGenerateArgs;
+
+/**
+ * Result of `LocalInferenceEngine.evaluateEndOfTurn`. `available: false`
+ * means no semantic score was computed; callers must not treat it as a
+ * completed turn.
+ */
+export type EndOfTurnEvaluation =
+	| {
+			available: true;
+			/** P(user turn complete | partial transcript), in [0, 1]. */
+			endOfTurnProbability: number;
+			/** `endOfTurnProbability >= commitThreshold`. */
+			complete: boolean;
+			commitThreshold: number;
+			nextSpeaker: VoiceTurnSignal["nextSpeaker"];
+			source: VoiceTurnSignal["source"];
+			model: string | null;
+			latencyMs: number;
+	  }
+	| {
+			available: false;
+			reason:
+				| "voice-not-started"
+				| "ffi-context-unloaded"
+				| "scorer-unsupported"
+				| "ram-pressure";
+	  };
 
 /**
  * Resolve the active Eliza-1 bundle (root dir + tier id) from an
@@ -329,6 +361,14 @@ export class LocalInferenceEngine {
 	private voiceBridge: EngineVoiceBridge | null = null;
 	private voiceReadyPromise: Promise<EngineVoiceBridge> | null = null;
 	private asrReadyPromise: Promise<EngineVoiceBridge> | null = null;
+	/**
+	 * One fused EOT classifier per voice bridge, built on first use and held
+	 * with its voice-budget reservation until the bridge is torn down.
+	 */
+	private endOfTurnClassifier: {
+		bridge: EngineVoiceBridge;
+		classifier: Promise<CompositeEotClassifier | null>;
+	} | null = null;
 
 	/**
 	 * The general onload/offload coordinator (W10 / J5). One registry per
@@ -577,6 +617,9 @@ export class LocalInferenceEngine {
 			await bridge.disarm();
 			await bridge.settle();
 		} finally {
+			if (this.endOfTurnClassifier?.bridge === bridge) {
+				this.releaseEndOfTurnClassifier();
+			}
 			bridge.dispose();
 			if (this.voiceBridge === bridge) this.voiceBridge = null;
 		}
@@ -1706,6 +1749,9 @@ export class LocalInferenceEngine {
 			await bridge.disarm();
 			await bridge.settle();
 		} finally {
+			if (this.endOfTurnClassifier?.bridge === bridge) {
+				this.releaseEndOfTurnClassifier();
+			}
 			bridge.dispose();
 			if (this.voiceBridge === bridge) this.voiceBridge = null;
 		}
@@ -1861,6 +1907,86 @@ export class LocalInferenceEngine {
 	 */
 	voice(): EngineVoiceBridge | null {
 		return this.voiceBridge;
+	}
+
+	/**
+	 * Score semantic end-of-turn for a partial transcript with the fused EOT
+	 * scorer bound to the active voice bridge. This never starts voice or loads
+	 * a model: when the scorer is not loaded the result is an explicit
+	 * `available: false` with a reason, never a synthetic probability.
+	 */
+	async evaluateEndOfTurn(transcript: string): Promise<EndOfTurnEvaluation> {
+		const bridge = this.voiceBridge;
+		if (!bridge) return { available: false, reason: "voice-not-started" };
+		if (!bridge.ffi || bridge.ffiCtx === null) {
+			return { available: false, reason: "ffi-context-unloaded" };
+		}
+		let classifier: CompositeEotClassifier | null;
+		try {
+			classifier = await this.endOfTurnClassifierFor(bridge);
+		} catch (err) {
+			if (err instanceof VoiceLifecycleError && err.code === "ram-pressure") {
+				return { available: false, reason: "ram-pressure" };
+			}
+			throw err;
+		}
+		if (!classifier) return { available: false, reason: "scorer-unsupported" };
+		const started = performance.now();
+		const signal = await classifier.signal(transcript);
+		return {
+			available: true,
+			endOfTurnProbability: signal.endOfTurnProbability,
+			complete: signal.endOfTurnProbability >= classifier.commitThreshold,
+			commitThreshold: classifier.commitThreshold,
+			nextSpeaker: signal.nextSpeaker,
+			source: signal.source,
+			model: signal.model ?? null,
+			latencyMs: performance.now() - started,
+		};
+	}
+
+	private endOfTurnClassifierFor(
+		bridge: EngineVoiceBridge,
+	): Promise<CompositeEotClassifier | null> {
+		if (this.endOfTurnClassifier?.bridge === bridge) {
+			return this.endOfTurnClassifier.classifier;
+		}
+		this.releaseEndOfTurnClassifier();
+		const ffi = bridge.ffi;
+		const classifier = import("./voice/eot-classifier").then((eotMod) =>
+			ffi
+				? eotMod.tryBuildFusedEotClassifier({
+						ffi,
+						getContext: () => {
+							const ctx = bridge.ffiCtx;
+							if (ctx === null) {
+								throw new VoiceStartupError(
+									"missing-ffi",
+									"[voice] Cannot score end of turn: FFI context is not loaded.",
+								);
+							}
+							return ctx;
+						},
+					})
+				: null,
+		);
+		const entry = { bridge, classifier };
+		this.endOfTurnClassifier = entry;
+		// A failed build (for example RAM pressure) must not be memoized.
+		classifier.catch(() => {
+			if (this.endOfTurnClassifier === entry) this.endOfTurnClassifier = null;
+		});
+		return classifier;
+	}
+
+	private releaseEndOfTurnClassifier(): void {
+		const entry = this.endOfTurnClassifier;
+		if (!entry) return;
+		this.endOfTurnClassifier = null;
+		void entry.classifier.then(
+			(classifier) => classifier?.dispose(),
+			() => undefined,
+		);
 	}
 
 	private requireVoiceBridge(action: string): EngineVoiceBridge {
