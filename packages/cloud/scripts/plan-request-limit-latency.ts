@@ -335,7 +335,9 @@ async function main(): Promise<void> {
     }),
   );
   mapsAdmission["billing-outage"] = summarize(
-    await time(E2E_ITERATIONS, (i) => maps.admit(i, maps.org, "failed")),
+    await time(E2E_ITERATIONS, (i) =>
+      maps.admit(i, maps.org, "database-closed"),
+    ),
   );
 
   const result = {
@@ -364,6 +366,14 @@ async function main(): Promise<void> {
   console.log(`wrote ${output}`);
 }
 
+/**
+ * The policy read's failure in the outage run. After
+ * `closeDatabaseConnectionsForTests` the client opens a new, empty in-memory
+ * database on the next query, so the billing tables are missing: the read
+ * fails as it would against an unavailable billing database.
+ */
+const DATABASE_CLOSED_PATTERN = /relation "organizations" does not exist/;
+
 type MapsBenchRequest =
   import("../shared/src/lib/services/maps-request-policy").MapsAllowanceRequest;
 
@@ -376,9 +386,10 @@ async function setupMapsBench(exec: (query: string) => Promise<void>) {
   const grants = await import(
     "../shared/src/db/repositories/subscription-grants"
   );
-  const { readOrganizationEntitlementSummary } = await import(
+  const entitlementModule = await import(
     "../shared/src/lib/services/subscription-entitlement-token"
   );
+  const { readOrganizationEntitlementSummary } = entitlementModule;
   const { runWithCloudBindingsAsync } = await import(
     "../shared/src/lib/runtime/cloud-bindings"
   );
@@ -441,6 +452,7 @@ async function setupMapsBench(exec: (query: string) => Promise<void>) {
   mock.module(
     "../shared/src/lib/services/subscription-entitlement-token",
     () => ({
+      ...entitlementModule,
       readOrganizationEntitlementSummary: (
         organizationId: string,
         ...rest: [{ allowance?: boolean }?]
@@ -534,11 +546,14 @@ async function setupMapsBench(exec: (query: string) => Promise<void>) {
       runWithCloudBindingsAsync(bindings, () =>
         callMapsRequestAllowance(value),
       ),
-    /** Admit one request; `expected` is the HTTP status, or "failed" for an untyped failure. */
+    /**
+     * Admit one request; `expected` is the HTTP status, or "database-closed"
+     * for the closed-database failure of the policy read.
+     */
     async admit(
       i: number,
       organizationId: string,
-      expected: number | "failed",
+      expected: number | "database-closed",
     ) {
       const context = {
         req: {
@@ -549,7 +564,7 @@ async function setupMapsBench(exec: (query: string) => Promise<void>) {
               : undefined,
         },
       } as unknown as Parameters<typeof admitMapsRequest>[0];
-      let status: number | "failed" = 200;
+      let status: number | string = 200;
       try {
         await runWithCloudBindingsAsync(bindings, () =>
           admitMapsRequest(
@@ -563,7 +578,20 @@ async function setupMapsBench(exec: (query: string) => Promise<void>) {
           ),
         );
       } catch (error) {
-        status = error instanceof MapsAdmissionError ? error.status : "failed";
+        // Drizzle wraps the driver error as `cause` of "Failed query: ...".
+        const cause = error instanceof Error ? error.cause : undefined;
+        const message =
+          cause instanceof Error
+            ? cause.message
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        status =
+          error instanceof MapsAdmissionError
+            ? error.status
+            : DATABASE_CLOSED_PATTERN.test(message)
+              ? "database-closed"
+              : `untyped error: ${message}`;
       }
       if (status !== expected)
         throw new Error(`admitMapsRequest expected ${expected}, got ${status}`);
