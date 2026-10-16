@@ -61,7 +61,7 @@ export function createManagedCalendarRead(
     url.username ||
     url.password ||
     !token ||
-    !/^[a-f0-9]{64}$/.test(token)
+    !/^[A-Za-z0-9_-]{64}$/.test(token)
   )
     throw fail();
   async function call(calendar: object): Promise<Record<string, unknown>> {
