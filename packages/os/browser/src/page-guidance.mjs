@@ -300,6 +300,7 @@ export function pageGuidance(request) {
   };
   const cards = answers.filter((answer) => answer.kind === "card");
   const buttons = answers.filter((answer) => answer.kind !== "card");
+  const offered = [];
   if (cards.length) {
     const list = element("div", "cards");
     for (const answer of cards) {
@@ -310,7 +311,7 @@ export function pageGuidance(request) {
       card.onclick = choose(answer.id);
       list.append(card);
     }
-    label.append(list);
+    offered.push(list);
   }
   if (buttons.length) {
     const list = element("div", "actions");
@@ -320,7 +321,7 @@ export function pageGuidance(request) {
       button.onclick = choose(answer.id);
       list.append(button);
     }
-    label.append(list);
+    offered.push(list);
   }
   // An offer's secondary answer is its decline; other labels keep Dismiss.
   const close = element(
@@ -329,8 +330,9 @@ export function pageGuidance(request) {
     request.action ? "Cancel this action" : "Dismiss guidance",
   );
   close.type = "button";
-  if (request.action || !buttons.some((answer) => answer.kind === "secondary"))
-    label.append(close);
+  close.hidden =
+    !request.action && buttons.some((answer) => answer.kind === "secondary");
+  label.append(...offered, close);
   root.append(ring, label, pointer, tap);
   shadow.adoptedStyleSheets = [style];
   shadow.append(root);
@@ -363,8 +365,21 @@ export function pageGuidance(request) {
     visibleSince = 0,
     appearedAt = 0,
     acted = false,
+    lapsed = false,
     travel = instant ? "done" : "idle",
     travelAt = 0;
+  // The pointer's time is up. The host shows it again only after a fresh
+  // look at the page. Until then a show-only step keeps its words readable,
+  // without the ring, the tail, the cursor or answers.
+  const lapse = () => {
+    lapsed = true;
+    travel = "done";
+    pointer.style.display = "none";
+    ring.hidden = true;
+    tail.hidden = true;
+    for (const list of offered) list.hidden = true;
+    close.hidden = false;
+  };
   const place = (point) => {
     pointer.style.left = `${point[0] - 3}px`;
     pointer.style.top = `${point[1] - 2}px`;
@@ -515,7 +530,7 @@ export function pageGuidance(request) {
       return;
     }
     if (
-      Date.now() >= request.expiresAt ||
+      (request.action && Date.now() >= request.expiresAt) ||
       location.href !== snapshot.url ||
       !host.isConnected ||
       !target.isConnected
@@ -523,6 +538,7 @@ export function pageGuidance(request) {
       state.destroy();
       return;
     }
+    if (!lapsed && Date.now() >= request.expiresAt) lapse();
     if (dirty || state.dismissed) {
       hide();
       frame = requestAnimationFrame(update);
@@ -604,7 +620,7 @@ export function pageGuidance(request) {
       if (position) {
         label.style.left = `${position.x}px`;
         label.style.top = `${position.y}px`;
-        tail.hidden = position.tail === undefined;
+        tail.hidden = position.tail === undefined || lapsed;
         tail.className = position.tail ? "tail up" : "tail";
         tail.style.left = `${Math.max(14, Math.min(rect.left + 28 - position.x, width - 32))}px`;
         const point = [
@@ -639,7 +655,7 @@ export function pageGuidance(request) {
           frame = requestAnimationFrame(update);
           return;
         }
-        ring.hidden = Boolean(request.action);
+        ring.hidden = Boolean(request.action) || lapsed;
         cursor.point = point;
         if (!appearedAt) appearedAt = now;
         if (now - appearedAt >= 250) label.classList.add("shown");
@@ -658,7 +674,7 @@ export function pageGuidance(request) {
         hide();
         // Only the label needs room. A show-only step keeps its ring on the
         // control; an action still needs its label and Cancel.
-        ring.hidden = Boolean(request.action);
+        ring.hidden = Boolean(request.action) || lapsed;
       }
     } else hide();
     frame = requestAnimationFrame(update);

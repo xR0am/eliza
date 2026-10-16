@@ -19,7 +19,13 @@ func boundMeta(data []byte, v int64) *metadata.MetaFiles {
 	return &metadata.MetaFiles{Version: v, Length: int64(len(data)), Hashes: metadata.Hashes{"sha256": h[:]}}
 }
 func publicationFixture(t *testing.T) (*repository, publicationBundle, []byte) {
-	r := fixture(t)
+	return publicationFixtureFrom(t, fixture(t))
+}
+
+// publicationFixtureFrom rebinds r's current role bytes into a strongly linked,
+// re-signed snapshot and timestamp and returns the complete publication bundle.
+func publicationFixtureFrom(t *testing.T, r *repository) (*repository, publicationBundle, []byte) {
+	t.Helper()
 	snapshot, err := metadata.Snapshot().FromBytes(r.files[baseURL+"1.snapshot.json"])
 	if err != nil {
 		t.Fatal(err)
@@ -191,5 +197,24 @@ func TestExportPublicationFixture(t *testing.T) {
 	}
 	if err = os.WriteFile(filepath.Join(dir, "publication-fixture.json"), data, 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublicationGraphRequiresTwoStableApprovals(t *testing.T) {
+	r := fixture(t)
+	rewriteRole(t, r, "1.targets.json", "targets", func(m *metadata.Metadata[metadata.TargetsType]) { stableRole(m).Threshold = 1 })
+	r, b, p := publicationFixtureFrom(t, r)
+	if _, err := checkPublication(t, r, b, p); err == nil || !strings.Contains(err.Error(), "stable channel requires 2 distinct approvals") {
+		t.Fatalf("single-approval Stable publication accepted: %v", err)
+	}
+	r = fixture(t)
+	resignStable(t, r, "stable")
+	r, b, p = publicationFixtureFrom(t, r)
+	if _, err := checkPublication(t, r, b, p); err == nil {
+		t.Fatal("Stable publication with one of two approvals accepted")
+	}
+	r, b, p = publicationFixtureFrom(t, fixture(t))
+	if _, err := checkPublication(t, r, b, p); err != nil {
+		t.Fatalf("two-approval Stable publication rejected: %v", err)
 	}
 }

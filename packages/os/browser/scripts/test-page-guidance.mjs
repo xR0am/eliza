@@ -236,9 +236,73 @@ try {
   await page.setViewport({ width: 1280, height: 800 });
   await settle();
   await page.screenshot({ path: `${output}/desktop.png` });
+  // When the pointer's time ends, its words stay readable: the ring, tail,
+  // answers and action authority end, and Dismiss stays available.
+  const parts = () =>
+    evaluate(
+      `(()=>{const s=globalThis.__elizaPageGuidanceV1;const q=(c)=>s.shadow.querySelector(c);return {visible:s.visible,disposed:s.disposed,text:q('.title').textContent,label:q('.label').hidden,ring:q('.ring').hidden,tail:q('.tail').hidden,answers:q('.actions')?.hidden ?? null,close:q('.close').hidden}})()`,
+    );
+  const lapsed = {
+    visible: true,
+    disposed: false,
+    text: "Use this control when you are ready.",
+    label: false,
+    ring: true,
+    tail: true,
+    answers: null,
+    close: false,
+  };
   await offer("expiry", { expiresAt: Date.now() + 300 });
+  await settle();
+  assert.deepEqual(await parts(), { ...lapsed, ring: false, tail: false });
   await new Promise((resolve) => setTimeout(resolve, 450));
-  assert.equal((await state()).visible, false);
+  assert.deepEqual(await parts(), lapsed);
+  await offer("expiry-offer", {
+    expiresAt: Date.now() + 300,
+    tone: "offer",
+    answerKey: "expiry-answer-key",
+    answers: [
+      { id: "yes", kind: "primary", text: "Yes" },
+      { id: "no", kind: "secondary", text: "Not now" },
+    ],
+  });
+  await settle();
+  assert.deepEqual(await parts(), {
+    ...lapsed,
+    ring: false,
+    tail: false,
+    answers: false,
+    close: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.deepEqual(await parts(), { ...lapsed, answers: true });
+  // A renewal of the same step after a fresh look restores the pointer in place.
+  await offer("expiry-offer", {
+    tone: "offer",
+    answerKey: "renewed-answer-key",
+    answers: [
+      { id: "yes", kind: "primary", text: "Yes" },
+      { id: "no", kind: "secondary", text: "Not now" },
+    ],
+  });
+  await settle();
+  assert.deepEqual(await parts(), {
+    ...lapsed,
+    ring: false,
+    tail: false,
+    answers: false,
+    close: true,
+  });
+  // An action preview ends with its authority.
+  await offer("expiry-action", {
+    expiresAt: Date.now() + 300,
+    action: "click",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(
+    await evaluate("globalThis.__elizaPageGuidanceV1.disposed"),
+    true,
+  );
   assert.equal(
     (await offer("wrong-origin", { origin: "https://other.example" })).reason,
     "invalid-context",
@@ -247,7 +311,9 @@ try {
   await settle();
   await call(pageGuidance, { kind: "hide" });
   assert.equal((await state()).visible, false);
-  cases.push("expiry, origin mismatch and host hide remove guidance");
+  cases.push(
+    "expiry keeps a show-only step's words without ring or answers, renewal restores it in place, an action ends; origin mismatch and host hide remove guidance",
+  );
   // A landscape IME leaves room beside the field, but neither above nor
   // below it. Side placement must shift vertically inside the visible area.
   await page.setViewport({ width: 1280, height: 220 });
@@ -473,7 +539,7 @@ try {
   await page.screenshot({ path: `${output}/offer-cards.png` });
   assert.deepEqual(
     await evaluate(
-      `(()=>{const s=globalThis.__elizaPageGuidanceV1.shadow;const css=(n)=>getComputedStyle(n);const card=s.querySelector('.card');return {cards:s.querySelectorAll('.card').length,value:[css(card.querySelector('.value')).fontSize,css(card.querySelector('.value')).fontWeight],purpose:[css(card.querySelector('.purpose')).fontSize,css(card.querySelector('.purpose')).fontWeight],card:card.getBoundingClientRect().height>=64,secondary:[css(s.querySelector('.secondary')).height,css(s.querySelector('.secondary')).boxShadow],close:!!s.querySelector('.close')}})()`,
+      `(()=>{const s=globalThis.__elizaPageGuidanceV1.shadow;const css=(n)=>getComputedStyle(n);const card=s.querySelector('.card');return {cards:s.querySelectorAll('.card').length,value:[css(card.querySelector('.value')).fontSize,css(card.querySelector('.value')).fontWeight],purpose:[css(card.querySelector('.purpose')).fontSize,css(card.querySelector('.purpose')).fontWeight],card:card.getBoundingClientRect().height>=64,secondary:[css(s.querySelector('.secondary')).height,css(s.querySelector('.secondary')).boxShadow],close:!!s.querySelector('.close:not([hidden])')}})()`,
     ),
     {
       cards: 2,
