@@ -6935,11 +6935,7 @@ export function promoteMessageActions(): readonly Action[] {
       send_draft: {
         description: sendDraftAction.description,
         descriptionCompressed: sendDraftAction.descriptionCompressed,
-        similes: [
-          ...(sendDraftAction.similes ?? []),
-          "SEND_EMAIL",
-          "COMPOSE_EMAIL",
-        ],
+        similes: [...(sendDraftAction.similes ?? []), "SEND_EMAIL"],
       },
     },
   });

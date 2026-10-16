@@ -210,7 +210,7 @@ describe("contextual native discovery", () => {
     ["Help with my messages.", ["MESSAGE"]],
     ["send a message", ["MESSAGE_SEND"]],
     ["send email", ["MESSAGE_SEND_DRAFT"]],
-    ["compose email", ["MESSAGE_SEND_DRAFT"]],
+    ["compose email", ["MESSAGE"]],
     ["search messages", ["MESSAGE_SEARCH"]],
     ["search my inbox", ["MESSAGE_SEARCH_INBOX"]],
     ["list inbox", ["MESSAGE_LIST_INBOX"]],
