@@ -6845,7 +6845,16 @@ export const messageAction: Action = {
   ] as ActionExample[][],
   validate: async (runtime, message, state, options) => {
     refreshDescriptions(messageAction, runtime);
-    const explicitOp = inferOp(paramsFromOptions(options));
+    const parameters = paramsFromOptions(options);
+    const explicitOp = inferOp(parameters);
+    // One local registration read; no connector handshake or provider request.
+    if (
+      normalizeOp(parameters.action) === "send" &&
+      !listMessageConnectors(runtime).some((connector) =>
+        connector.capabilities.includes("send_message"),
+      )
+    )
+      return false;
     if (explicitOp === "list_worlds" || explicitOp === "list_rooms") {
       // Scenario and API callers may invoke an explicit topology read without
       // a model-composed routing state. The handlers still revalidate the

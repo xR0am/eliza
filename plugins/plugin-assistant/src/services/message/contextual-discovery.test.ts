@@ -47,6 +47,64 @@ const sharedCalendarActions = [
 ];
 
 describe("contextual native discovery", () => {
+  it("discovers the reviewed Gmail draft operation when no direct-send connector is registered", async () => {
+    const currentRuntime = new AgentRuntime({
+      character: { name: "Draft routing", bio: [] },
+      logLevel: "fatal",
+    });
+    const currentMessage = { content: { text: "Yes" } } as Memory;
+    const admitted = await collectV5PlannerCandidateActions({
+      runtime: currentRuntime,
+      message: currentMessage,
+      state: { values: {}, data: {}, text: "" },
+      actions: promoteMessageActions(),
+      selectedContexts: ["messaging"],
+      userRoles: ["OWNER"],
+    });
+    expect(admitted.some((action) => action.name === "MESSAGE_SEND")).toBe(
+      false,
+    );
+    const selected = retrieveContextualPlannerActions({
+      actions: admitted,
+      query: "send Gmail email message",
+      contexts: ["messaging"],
+    });
+    expect(selected.actions.map((action) => action.name)).toEqual([
+      "MESSAGE_SEND_DRAFT",
+    ]);
+    expect(selected.actions.map((action) => action.name)).not.toContain(
+      "MESSAGE_SEND",
+    );
+  });
+
+  it("keeps direct sends available when a connector actually supports them", async () => {
+    const connected = new AgentRuntime({
+      character: { name: "Connector routing", bio: [] },
+      logLevel: "fatal",
+    });
+    connected.registerMessageConnector({
+      source: "discord",
+      label: "Discord",
+      capabilities: ["send_message"],
+      supportedTargetKinds: [],
+      contexts: ["messaging"],
+      sendHandler: async () => {
+        throw Error("Discovery must not send");
+      },
+    });
+    const admitted = await collectV5PlannerCandidateActions({
+      runtime: connected,
+      message: { content: { text: "Send a message" } } as Memory,
+      state: { values: {}, data: {}, text: "" },
+      actions: promoteMessageActions(),
+      selectedContexts: ["messaging"],
+      userRoles: ["OWNER"],
+    });
+    expect(admitted.some((action) => action.name === "MESSAGE_SEND")).toBe(
+      true,
+    );
+  });
+
   it("keeps every lifecycle hook out of the catalog and planner while retaining default and explicit PLANNER actions", async () => {
     const currentRuntime = new AgentRuntime({
       character: { name: "Hook visibility", bio: "Test" },
