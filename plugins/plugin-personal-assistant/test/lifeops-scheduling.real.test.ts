@@ -218,6 +218,53 @@ describe("life-ops scheduling-with-others (pure slot logic)", () => {
     },
   );
 
+  it("an event shown as free does not block a slot", () => {
+    const event = (id: string, transparency: string) => ({
+      id,
+      externalId: id,
+      agentId: AGENT_ID,
+      provider: "google" as const,
+      side: "owner" as const,
+      calendarId: "primary",
+      title: id,
+      description: "",
+      location: "",
+      status: "confirmed",
+      startAt: "2026-10-15T13:00:00.000Z",
+      endAt: "2026-10-15T14:00:00.000Z",
+      isAllDay: false,
+      timezone: "America/New_York",
+      htmlLink: null,
+      conferenceLink: null,
+      organizer: null,
+      attendees: [],
+      metadata: { transparency },
+      syncedAt: "2026-10-14T00:00:00.000Z",
+      updatedAt: "2026-10-14T00:00:00.000Z",
+    });
+    const propose = (transparency: string) =>
+      computeProposedSlots({
+        now: new Date("2026-10-15T12:00:00Z"),
+        windowStart: new Date("2026-10-15T13:00:00Z"), // 09:00 New York
+        windowEnd: new Date("2026-10-15T21:00:00Z"),
+        durationMinutes: 30,
+        slotCount: 1,
+        preferences: {
+          timeZone: "America/New_York",
+          preferredStartLocal: "09:00",
+          preferredEndLocal: "17:00",
+          defaultDurationMinutes: 30,
+          travelBufferMinutes: 0,
+          blackoutWindows: [],
+          updatedAt: null,
+        },
+        events: [event("Focus time", transparency)],
+      }).map((slot) => slot.startAt);
+    // A "free" focus block at 09:00 leaves 09:00 open; a busy one does not.
+    expect(propose("transparent")).toEqual(["2026-10-15T13:00:00.000Z"]);
+    expect(propose("opaque")).toEqual(["2026-10-15T14:00:00.000Z"]);
+  });
+
   it("computeProposedSlots returns 3 slots within preferred hours, avoiding busy intervals and blackouts", () => {
     const now = new Date();
     const windowStart = new Date(localIso(1, 0, 0));
