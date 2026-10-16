@@ -57,18 +57,24 @@ app.post("/", async (c) => {
     // A public or template character can be cloned by anyone, but its
     // secrets (API keys, connector tokens) belong to its owner: only the
     // owner's own clone keeps them.
-    const withoutSecrets = (value: unknown): Record<string, unknown> => {
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        return {};
-      const { secrets: _secrets, ...rest } = value as Record<string, unknown>;
-      return rest;
+    // Removes every `secrets` key, at any depth (plugin and provider config
+    // nests its own). Values that are not objects are kept as they are.
+    const withoutSecrets = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(withoutSecrets);
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([key]) => key !== "secrets")
+          .map(([key, entry]) => [key, withoutSecrets(entry)]),
+      );
     };
     const settings = ownsOriginal
       ? original.settings
-      : withoutSecrets(original.settings);
+      : (withoutSecrets(original.settings) as typeof original.settings);
     const characterData = ownsOriginal
       ? original.character_data || {}
-      : withoutSecrets(original.character_data);
+      : ((withoutSecrets(original.character_data) ??
+          {}) as typeof original.character_data);
 
     const clonedCharacter = await charactersService.create(
       {

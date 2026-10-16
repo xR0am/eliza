@@ -192,7 +192,10 @@ beforeAll(async () => {
       is_public: true,
       secrets: { OPENAI_API_KEY: "sk-pub-owner-secret" },
       settings: { secrets: { DISCORD_API_TOKEN: "pub-owner-discord" } },
-      character_data: { secrets: { OPENAI_API_KEY: "sk-pub-owner-secret" } },
+      character_data: {
+        secrets: { OPENAI_API_KEY: "sk-pub-owner-secret" },
+        plugins: { telegram: { secrets: { BOT_TOKEN: "pub-owner-telegram" } } },
+      },
     },
   ]);
   await dbWrite.insert(generations).values({
@@ -241,6 +244,8 @@ test("a clone of another organization's public character carries none of its sec
   ).find((row) => row.name === "Org A public agent with keys (Copy)");
   expect(JSON.stringify(clone)).not.toContain("sk-pub-owner-secret");
   expect(JSON.stringify(clone)).not.toContain("pub-owner-discord");
+  expect(JSON.stringify(clone)).not.toContain("pub-owner-telegram");
+  expect(text).not.toContain("pub-owner-telegram");
 });
 
 test("an ex-member cannot read or change the old organization's agent monetization", async () => {
