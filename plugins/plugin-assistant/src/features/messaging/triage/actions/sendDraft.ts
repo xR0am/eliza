@@ -70,21 +70,22 @@ const OUTBOUND_DRAFT_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "threadId",
-    description: "Optional existing thread identifier.",
+    description:
+      "Existing thread ID returned by the selected message source. Omit for a new email; never use the current conversation ID.",
     required: false,
     schema: { type: "string" as const },
   },
   {
     name: "channelId",
     description:
-      "Platform channel for a new outbound draft. A new discord draft requires it.",
+      "Platform channel ID returned by the selected source. A new discord draft requires it. Omit for Gmail.",
     required: false,
     schema: { type: "string" as const },
   },
   {
     name: "worldId",
     description:
-      "Account or server scope for a new outbound draft: the worldId shown on inbox messages (for gmail, the Google account id). Omit it for the default account.",
+      "Exact account/server scope ID returned by the selected adapter. Omit for the default account. An email address or conversation ID is not a scope ID; never invent one.",
     required: false,
     schema: { type: "string" as const },
   },

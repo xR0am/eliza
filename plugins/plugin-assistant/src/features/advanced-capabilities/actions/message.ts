@@ -6942,6 +6942,7 @@ export function promoteMessageActions(): readonly Action[] {
           "Send a direct message through a registered messaging connector. For Gmail or another email inbox, use MESSAGE_SEND_DRAFT to prepare an exact draft and obtain later user confirmation.",
       },
       send_draft: {
+        parameters: sendDraftAction.parameters,
         description: sendDraftAction.description,
         descriptionCompressed: sendDraftAction.descriptionCompressed,
         similes: [

@@ -47,6 +47,22 @@ const sharedCalendarActions = [
 ];
 
 describe("contextual native discovery", () => {
+  it("exposes the reviewed draft's recipient/body contract instead of direct-message target fields", () => {
+    const action = promoteMessageActions().find(
+      (action) => action.name === "MESSAGE_SEND_DRAFT",
+    );
+    if (!action) throw Error("Draft operation missing");
+    const tool = buildPlannerToolsFromActions([action])[0];
+    expect(tool.parameters?.properties?.to).toMatchObject({
+      type: "array",
+      items: { type: "string" },
+    });
+    expect(tool.parameters?.properties?.body).toMatchObject({ type: "string" });
+    expect(tool.parameters?.properties).not.toHaveProperty("target");
+    expect(tool.parameters?.properties).not.toHaveProperty("channel");
+    expect(tool.parameters?.properties).not.toHaveProperty("platform");
+  });
+
   it("discovers the reviewed Gmail draft operation when no direct-send connector is registered", async () => {
     const currentRuntime = new AgentRuntime({
       character: { name: "Draft routing", bio: [] },
