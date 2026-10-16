@@ -284,4 +284,35 @@ describe("global pause integration", () => {
     ).map((entry) => entry.transition);
     expect(after).toContain("fired");
   });
+
+  it("a one-time task due inside an ended pause still fires after it when no tick ran during the pause", async () => {
+    runtimeResult = await createLifeOpsTestRuntime();
+    const { runtime } = runtimeResult;
+    const repo = new LifeOpsRepository(runtime);
+
+    const once = await seedScheduledTask(runtime, {
+      taskId: "st_pause_once_offline",
+      promptInstructions: "Call the pharmacy.",
+      trigger: { kind: "once", atIso: "2026-05-09T12:00:00.000Z" },
+      priority: "medium",
+      respectsGlobalPause: true,
+    });
+    const pause = createGlobalPauseStore(runtime);
+    await pause.set({
+      startIso: "2026-05-09T11:00:00.000Z",
+      endIso: "2026-05-09T20:00:00.000Z",
+      reason: "vacation",
+    });
+
+    const result = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-05-09T20:01:00.000Z"),
+      limit: 10,
+    });
+    expect(result.errors).toEqual([]);
+
+    const fired = await repo.getScheduledTask(runtime.agentId, once.taskId);
+    expect(fired?.state.status).toBe("fired");
+  });
 });

@@ -1301,13 +1301,15 @@ export function createScheduledTaskRunner(
    * A tick after an ended pause window can still be firing an occurrence
    * that fell inside it (no tick ran during the pause, e.g. the scheduler
    * was offline). That occurrence belongs to the pause, so it is skipped,
-   * not caught up late.
+   * not caught up late. Recurring tasks only: skipping a one-time task is
+   * terminal, so it keeps the late catch-up instead of being lost.
    */
   async function occurredDuringPause(
     task: ScheduledTask,
     pause: { startIso?: string; endIso?: string },
   ): Promise<boolean> {
     if (!pause.startIso || !pause.endIso) return false;
+    if (!isRecurringTrigger(task.trigger)) return false;
     const due = await isScheduledTaskDue(task, {
       now: now(),
       ownerFacts: await deps.ownerFacts(),
