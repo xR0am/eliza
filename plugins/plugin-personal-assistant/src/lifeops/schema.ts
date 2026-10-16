@@ -1557,8 +1557,9 @@ export const lifeSchedulingDeliveryAttempts = appLifeopsPgSchema.table(
  * orphaned execution sessions become terminally ambiguous so restart recovery
  * cannot repeat an event create, update, or deletion.
  */
-import {lifeCalendarMutationAttempts} from "@elizaos/plugin-calendar/mutations/schema";
-export {lifeCalendarMutationAttempts};
+import { lifeCalendarMutationAttempts } from "@elizaos/plugin-calendar/mutations/schema";
+
+export { lifeCalendarMutationAttempts };
 
 /**
  * Durable outbox for one grant-expiry watcher per household access grant.
