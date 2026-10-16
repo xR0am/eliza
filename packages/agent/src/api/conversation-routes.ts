@@ -186,7 +186,6 @@ import {
 } from "./conversation-trace.ts";
 import { deviceRequestCredential } from "./device-action-routes.ts";
 import { resolveHttpAccessContext } from "./http-access-context.ts";
-import { evictOldestConversation } from "./memory-bounds.ts";
 import { generateMessageCorpus, seedMessageCorpus } from "./message-corpus.ts";
 import {
   buildUserMessages,
@@ -3308,7 +3307,6 @@ async function seedConversationMessages(
       updatedAt: new Date(conv.lastMessageAt ?? conv.createdAt).toISOString(),
     });
   }
-  evictOldestConversation(state.conversations, 500);
   logger.info(
     {
       conversations: summary.conversations.length,
@@ -3415,9 +3413,6 @@ async function createConversation(
       return true;
     }
   }
-  // Soft cap: evict the oldest conversation when the map exceeds 500. Runs
-  // only after room setup succeeded so a failed create evicts nothing.
-  evictOldestConversation(state.conversations, 500);
   json(res, { conversation: conv, ...(greeting ? { greeting } : {}) });
   return true;
 }
@@ -3500,7 +3495,6 @@ export async function ensureOwnerConversation(
       }
       throw err;
     }
-    evictOldestConversation(state.conversations, 500);
     state.broadcastWs?.({ type: "conversation-updated", conversation: conv });
     return conv;
   })();
@@ -4203,9 +4197,6 @@ async function importConversation(
         500,
       );
       return true;
-    }
-    if (createdConversation) {
-      evictOldestConversation(state.conversations, 500);
     }
     if (!exactImport && importTasks.length === 0 && !todoSnapshot) {
       // Legacy imports predate source ids. Preserve their room-level

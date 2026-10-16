@@ -1,8 +1,9 @@
 /**
- * The conversation registry evicts the oldest entry past its soft cap while
- * the room and messages stay persisted; route lookups must rebuild an evicted
- * conversation from its room instead of reporting it missing or skipping the
- * delete of its stored data.
+ * Every web conversation stays in the registry: past 500 conversations the
+ * oldest one is still listed and its messages are still searchable. A
+ * conversation missing from the registry while its room and messages are
+ * persisted is rebuilt from its room instead of being reported missing or
+ * skipping the delete of its stored data.
  */
 
 import fs from "node:fs";
@@ -148,7 +149,7 @@ async function createFixture() {
   return { agentId, adapter, adminId, dataDir, runtime, state };
 }
 
-it("restores an evicted conversation so it stays readable and deletable", async () => {
+it("keeps the oldest of 501 conversations listed and searchable, and rebuilds a registry miss", async () => {
   const { agentId, adapter, adminId, dataDir, runtime, state } =
     await createFixture();
   try {
@@ -182,7 +183,23 @@ it("restores an evicted conversation so it stays readable and deletable", async 
       (await call(state, "POST", "/api/conversations", { title: "latest" }))
         .status,
     ).toBe(200);
-    expect(state.conversations.has(first.id)).toBe(false);
+
+    // 501 conversations: the oldest is still listed and searchable.
+    const listed = await call(state, "GET", "/api/conversations");
+    const ids = (
+      listed.payload as { conversations: Array<{ id: string }> }
+    ).conversations.map((conversation) => conversation.id);
+    expect(ids).toHaveLength(501);
+    expect(ids).toContain(first.id);
+    const found = await call(
+      state,
+      "GET",
+      "/api/conversations/messages/search?q=remember",
+    );
+    expect(JSON.stringify(found.payload)).toContain("remember my first chat");
+
+    // A registry miss is rebuilt from the persisted room.
+    state.conversations.delete(first.id);
 
     const messages = await call(
       state,
