@@ -1452,10 +1452,11 @@ async function findOrCreatePhoneUserWithStatus(
     .select()
     .from(users)
     .where(eq(users.walletAddress, phoneSubject));
-  if (
-    (linked && existing && linked.user.id !== existing.id) ||
-    (!linked && !existing && links.length > 0)
-  ) {
+  // Every link and the original phone account must name one user, so neither
+  // channel can sign the number in to a different account.
+  const owners = new Set(links.map((link) => link.user.id));
+  if (existing) owners.add(existing.id);
+  if (owners.size > 1 || (!linked && !existing && links.length > 0)) {
     throw new ElizaError("Phone login identity needs reconciliation", {
       code: "PHONE_IDENTITY_CONFLICT",
     });

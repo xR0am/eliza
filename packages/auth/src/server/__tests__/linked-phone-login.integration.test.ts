@@ -157,3 +157,28 @@ test("a phone linked through SMS gets no second account from WhatsApp login", as
   expect(sms.status).toBe(200);
   expect((await sms.json()).user.id).toBe(owner.id);
 });
+
+test("a phone linked to two users through SMS and WhatsApp signs in to neither", async () => {
+  const { users, accounts } = await import("../db/schema-auth");
+  const phone = "+14155550127";
+  const subject = `phone:${createHash("sha256").update(phone).digest("hex")}`;
+  const [smsOwner, whatsappOwner] = await database.db
+    .insert(users)
+    .values([
+      { email: "split-sms@example.test", emailVerified: true },
+      { email: "split-whatsapp@example.test", emailVerified: true },
+    ])
+    .returning();
+  await database.db.insert(accounts).values([
+    { userId: smsOwner.id, provider: "phone", providerAccountId: subject },
+    {
+      userId: whatsappOwner.id,
+      provider: "whatsapp",
+      providerAccountId: subject,
+    },
+  ]);
+  for (const channel of ["sms", "whatsapp"]) {
+    const response = await verifyPhone(phone, channel);
+    expect((await response.json()).token).toBeUndefined();
+  }
+});
