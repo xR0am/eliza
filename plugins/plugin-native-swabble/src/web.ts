@@ -234,7 +234,7 @@ class WakeWordGate {
       trigger: t.toLowerCase(),
       regex: buildTriggerMatcher(t),
     }));
-    this.minCommandLength = config.minCommandLength ?? 1;
+    this.minCommandLength = normalized.minCommandLength;
     // Note: minPostTriggerGap cannot be enforced - Web Speech API lacks timing data
   }
 
