@@ -143,10 +143,21 @@ test("a PDF upload is refused instead of being stored as undecodable bytes", asy
   );
   expect(pdf.status).toBe(415);
 
+  // A PDF renamed to a text name is still a PDF.
+  const renamed = await upload(
+    new File(["%PDF-1.7\n%\u00e2\u00e3\u00cf\u00d3"], "notes.txt", {
+      type: "text/plain",
+    }),
+  );
+  expect(renamed.status).toBe(415);
+
   const text = await upload(
     new File(["Our office is at 2 Oak Ave."], "notes.md", {
       type: "application/octet-stream",
     }),
   );
   expect(text.status).toBe(200);
+  // Extensionless text with no type (README, Dockerfile) is stored.
+  const readme = await upload(new File(["Read me first."], "README"));
+  expect(readme.status).toBe(200);
 });

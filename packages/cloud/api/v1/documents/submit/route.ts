@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import { deletePendingDocumentBlob } from "../_pending-blob-cleanup";
 import {
   createDocumentRecord,
+  DOCUMENT_SNIFF_BYTES,
   isReadableTextDocument,
   type PendingDocumentFile,
   r2KeyFromBlobUrl,
@@ -72,7 +73,14 @@ app.post("/", async (c) => {
         continue;
       }
 
-      if (!isReadableTextDocument(file.filename, file.contentType)) {
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      if (
+        !isReadableTextDocument(
+          file.filename,
+          file.contentType,
+          bytes.subarray(0, DOCUMENT_SNIFF_BYTES),
+        )
+      ) {
         // The refused upload is never stored, so its pending blob goes too.
         await deletePendingDocumentBlob(c.env.BLOB, key);
         results.push({
@@ -87,7 +95,7 @@ app.post("/", async (c) => {
         filename: file.filename,
         contentType: file.contentType,
         size: file.size,
-        text: await object.text(),
+        text: new TextDecoder().decode(bytes),
       });
       await deletePendingDocumentBlob(c.env.BLOB, key);
       results.push({ blobUrl: file.blobUrl, status: "success", document });

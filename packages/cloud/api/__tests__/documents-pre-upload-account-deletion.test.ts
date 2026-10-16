@@ -62,7 +62,10 @@ function memoryBucket() {
     },
     async get(key: string) {
       return objects.has(key)
-        ? { text: async () => "%PDF-1.7 \u00e2\u00e3" }
+        ? {
+            arrayBuffer: async () =>
+              new TextEncoder().encode("%PDF-1.7 \u00e2\u00e3").buffer,
+          }
         : null;
     },
     async delete(key: string) {
@@ -138,7 +141,7 @@ test("submit refuses a pending PDF, deletes its pending blob, and reports a miss
     await submit(`https://blob.example/${key}`)
   ).json()) as { results: Array<{ status: string; error?: string }> };
   expect(refused.results[0]?.status).toBe("error");
-  expect(refused.results[0]?.error).toContain("is not a text file");
+  expect(refused.results[0]?.error).toContain("cannot be read as text");
   expect(bucket.objects.has(key)).toBe(false);
   expect(storedDocuments).toEqual([]);
 
