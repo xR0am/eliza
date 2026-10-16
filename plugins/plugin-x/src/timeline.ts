@@ -108,6 +108,23 @@ function isSessionRotation(error: unknown): boolean {
   );
 }
 /**
+ * Whether X may already have published part of a failed write. The quote and
+ * reply handlers wrap provider failures, so the partial-thread and
+ * indeterminate-receipt codes are found anywhere along the cause chain.
+ */
+function mayHavePublished(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) {
+    if (
+      e instanceof ElizaError &&
+      (e.code === "X_THREAD_PARTIALLY_POSTED" ||
+        e.code === "X_POST_RECEIPT_INDETERMINATE")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+/**
  * Collect the image URLs that represent a tweet's media. Photos contribute
  * their full image; videos and animated GIFs contribute their preview frame
  * (the v2 timeline only exposes a still preview URL for non-photo media, which
@@ -492,6 +509,13 @@ Choose any combination of [LIKE], [RETWEET], [QUOTE], and [REPLY] that are appro
         }
         results.push({ tweetId: tweet.id, actionResponse, executedActions });
       } catch (error) {
+        // An earlier action (a like, a quote) or a partly posted thread may
+        // already be public. Mark the tweet processed so the next cycle does
+        // not ask the model again and repeat it; X has no idempotency key for
+        // these writes. A failure that published nothing is retried.
+        if (executedActions.length > 0 || mayHavePublished(error)) {
+          await createMemorySafe(this.runtime, tweetMemory, "messages");
+        }
         if (isSessionRotation(error)) throw error;
         // error-policy:J2 The scheduled-loop boundary reports the failed cycle;
         // retain the tweet identity instead of fabricating a partial success.
