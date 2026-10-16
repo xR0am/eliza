@@ -9,11 +9,15 @@ import {
 } from "@elizaos/contracts";
 
 export {
+  type LinkedCalendarCheckpointStore,
   type LinkedCalendarEventRecord,
+  type LinkedCalendarLocalPort,
+  type LinkedCalendarLocalSnapshot,
   type LinkedCalendarOperation,
   type LinkedCalendarProviderPort,
   type LinkedCalendarProviderSnapshot,
   type LinkedCalendarReconcileOutcome,
+  LinkedCalendarReconciler,
   type LinkedCalendarSemanticEvent,
   type LinkedCalendarState,
 } from "@elizaos/contracts";
