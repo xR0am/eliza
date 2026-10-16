@@ -1297,12 +1297,38 @@ export function createScheduledTaskRunner(
     task.state.firedAt = skipped.occurrenceAtIso ?? now().toISOString();
   }
 
+  /**
+   * A tick after an ended pause window can still be firing an occurrence
+   * that fell inside it (no tick ran during the pause, e.g. the scheduler
+   * was offline). That occurrence belongs to the pause, so it is skipped,
+   * not caught up late.
+   */
+  async function occurredDuringPause(
+    task: ScheduledTask,
+    pause: { startIso?: string; endIso?: string },
+  ): Promise<boolean> {
+    if (!pause.startIso || !pause.endIso) return false;
+    const due = await isScheduledTaskDue(task, {
+      now: now(),
+      ownerFacts: await deps.ownerFacts(),
+      anchors: deps.anchors,
+    });
+    if (!due.occurrenceAtIso) return false;
+    const occurrenceMs = Date.parse(due.occurrenceAtIso);
+    return (
+      occurrenceMs >= Date.parse(pause.startIso) &&
+      occurrenceMs < Date.parse(pause.endIso)
+    );
+  }
+
   async function shouldDeferForGlobalPause(
     task: ScheduledTask,
   ): Promise<{ paused: boolean; reason?: string }> {
     if (task.respectsGlobalPause === false) return { paused: false };
     const pause = await deps.globalPause.current(now());
-    if (!pause.active) return { paused: false };
+    if (!pause.active && !(await occurredDuringPause(task, pause))) {
+      return { paused: false };
+    }
     return {
       paused: true,
       reason: pause.reason ? `global_pause: ${pause.reason}` : "global_pause",

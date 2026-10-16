@@ -222,4 +222,66 @@ describe("global pause integration", () => {
     expect(transitions.filter((t) => t === "skipped")).toHaveLength(1);
     expect(transitions).not.toContain("fired");
   });
+
+  it("an occurrence inside the pause does not fire late when no tick ran during the pause", async () => {
+    runtimeResult = await createLifeOpsTestRuntime();
+    const { runtime } = runtimeResult;
+    const repo = new LifeOpsRepository(runtime);
+
+    const weekly = await seedScheduledTask(runtime, {
+      taskId: "st_pause_weekly_offline",
+      promptInstructions: "Weekly planning check-in.",
+      trigger: { kind: "cron", expression: "0 9 * * 1", tz: "owner_local" },
+      priority: "medium",
+      respectsGlobalPause: true,
+    });
+    await repo.upsertScheduledTask(runtime.agentId, {
+      ...weekly,
+      state: {
+        ...weekly.state,
+        status: "fired",
+        firedAt: "2026-10-05T09:00:00.000Z",
+      },
+    });
+
+    const pause = createGlobalPauseStore(runtime);
+    await pause.set({
+      startIso: "2026-10-12T08:00:00.000Z",
+      endIso: "2026-10-14T18:00:00.000Z",
+      reason: "vacation",
+    });
+
+    // The scheduler was offline for the whole pause; the first tick is after it.
+    const result = await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-10-14T18:01:00.000Z"),
+      limit: 10,
+    });
+    expect(result.errors).toEqual([]);
+
+    const transitions = (
+      await repo.listScheduledTaskLog({
+        agentId: runtime.agentId,
+        taskId: weekly.taskId,
+      })
+    ).map((entry) => entry.transition);
+    expect(transitions).toContain("skipped");
+    expect(transitions).not.toContain("fired");
+
+    // The next Monday after the pause still fires.
+    await processDueScheduledTasks({
+      runtime,
+      agentId: runtime.agentId,
+      now: new Date("2026-10-19T09:01:00.000Z"),
+      limit: 10,
+    });
+    const after = (
+      await repo.listScheduledTaskLog({
+        agentId: runtime.agentId,
+        taskId: weekly.taskId,
+      })
+    ).map((entry) => entry.transition);
+    expect(after).toContain("fired");
+  });
 });
