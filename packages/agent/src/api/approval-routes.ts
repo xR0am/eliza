@@ -10,6 +10,8 @@
 import type http from "node:http";
 import {
   PENDING_USER_ACTION_WEIGHT,
+  resolveOwnerEntityIdOrDefault,
+  type IAgentRuntime,
   type PendingUserAction,
   type PendingUserActionOption,
   ServiceType,
@@ -33,6 +35,7 @@ import {
 
 interface ApprovalRouteRuntime {
   agentId?: string;
+  getSetting?: IAgentRuntime["getSetting"];
   getService: (type: string) => unknown;
 }
 
@@ -380,7 +383,14 @@ export async function handleApprovalRoute(
     ...promptActions,
   ]);
 
+  const ownerEntityId =
+    state.runtime?.agentId && typeof state.runtime.getSetting === "function"
+      ? resolveOwnerEntityIdOrDefault(
+          state.runtime as Pick<IAgentRuntime, "agentId" | "getSetting">,
+        )
+      : null;
   helpers.json(res, {
+    ownerEntityId,
     approvals: approvals.map(approvalToDto),
     pending,
     pendingUserActions: pending,

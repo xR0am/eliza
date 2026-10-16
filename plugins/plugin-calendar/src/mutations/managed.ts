@@ -10,6 +10,7 @@ import {
   type CalendarMutationPort,
   type CalendarMutationPreflight,
   CalendarMutationPreflightError,
+  CalendarMutationNotAcceptedError,
 } from "./types.js";
 
 type Payload = Extract<
@@ -169,6 +170,23 @@ export function createManagedCalendarMutationPort(
           },
         }),
       );
+      if (raw.calendarFailure) {
+        const f = object(raw.calendarFailure);
+        if (
+          f.grantId !== preflight.sourceId ||
+          f.calendarId !== preflight.calendarId ||
+          f.accountId !== caps.accountId ||
+          typeof f.code !== "string" ||
+          !/^CALENDAR_SYNC_[A-Z_]{1,80}$/.test(f.code) ||
+          !["not_accepted", "precondition_failed"].includes(String(f.outcome))
+        )
+          throw Error("Invalid Calendar rejection receipt");
+        throw new CalendarMutationNotAcceptedError(
+          f.code,
+          "Calendar change was refused before acceptance.",
+          { outcome: f.outcome },
+        );
+      }
       const e = object(raw.event);
       if (
         e.grantId !== preflight.sourceId ||
