@@ -125,7 +125,12 @@ function normalizeSource(value: unknown): string | undefined {
 async function extractOutboundDraftFromText(
   runtime: IAgentRuntime,
   text: string,
-): Promise<{ source?: string; recipient?: string; body?: string }> {
+): Promise<{
+  source?: string;
+  recipient?: string;
+  subject?: string;
+  body?: string;
+}> {
   if (!text.trim()) return {};
   const prompt = `A user asked the agent to send an outbound message. Extract the parts of the request — this must work in any language, so do not rely on English keywords.
 
@@ -136,6 +141,7 @@ Return ONLY this XML, leaving a field empty when the request does not specify it
 <response>
 <source>the platform/app to send on — one of telegram, discord, whatsapp, imessage, gmail, twitter — or empty</source>
 <recipient>who to send to (a name, @handle, or contact), or empty</recipient>
+<subject>the exact email subject requested by the user, or empty</subject>
 <body>the exact message text to send, or empty</body>
 </response>`;
   const raw = await runtime.useModel(ModelType.TEXT_LARGE, { prompt });
@@ -149,6 +155,7 @@ Return ONLY this XML, leaving a field empty when the request does not specify it
   return {
     source: nonEmptyString(parsed.source),
     recipient: nonEmptyString(parsed.recipient),
+    subject: nonEmptyString(parsed.subject),
     body: nonEmptyString(parsed.body),
   };
 }
@@ -187,6 +194,7 @@ export async function outboundDraftOptionsFromMessage(
 
   const source = paramSource ?? normalizeSource(extracted.source);
   const body = paramBody ?? extracted.body;
+  const subject = nonEmptyString(params.subject) ?? extracted.subject;
   const rawTo = paramTo ?? extracted.recipient;
   const to = Array.isArray(rawTo)
     ? rawTo
@@ -200,6 +208,7 @@ export async function outboundDraftOptionsFromMessage(
       ...params,
       ...(source ? { source } : {}),
       ...(body ? { body } : {}),
+      ...(subject ? { subject } : {}),
       ...(to ? { to } : {}),
     },
   };

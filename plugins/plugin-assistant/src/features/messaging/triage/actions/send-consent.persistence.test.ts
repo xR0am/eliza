@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentRuntime, type Memory, type UUID } from "@elizaos/core";
+import {
+  AgentRuntime,
+  type IAgentRuntime,
+  type Memory,
+  type UUID,
+} from "@elizaos/core";
 import { SQLiteDatabaseAdapter } from "@elizaos/testing/runtime";
 import { expect, it } from "vitest";
 import { BaseMessageAdapter } from "../adapters/base.ts";
@@ -13,7 +18,49 @@ import {
 } from "../send-consent.ts";
 import { getDefaultTriageService } from "../triage-service.ts";
 import type { DraftRequest } from "../types.ts";
-import { sendDraftAction } from "./sendDraft.ts";
+import {
+  outboundDraftOptionsFromMessage,
+  sendDraftAction,
+} from "./sendDraft.ts";
+
+it("retains the requested email subject when natural-language draft fields need extraction", async () => {
+  let calls = 0;
+  const runtime = {
+    useModel: async (_type: unknown, { prompt }: { prompt: string }) => {
+      calls++;
+      expect(prompt).toContain("<subject>");
+      return "<response><source>gmail</source><recipient>qa@example.invalid</recipient><subject>Requested QA subject</subject><body>Exact body.</body></response>";
+    },
+  } as unknown as IAgentRuntime;
+  const message = {
+    content: {
+      text: 'Email qa@example.invalid with subject "Requested QA subject" and body "Exact body."',
+    },
+  } as Memory;
+  const extracted = await outboundDraftOptionsFromMessage(runtime, message, {
+    parameters: {},
+  });
+  expect(extracted?.parameters).toMatchObject({
+    source: "gmail",
+    to: ["qa@example.invalid"],
+    subject: "Requested QA subject",
+    body: "Exact body.",
+  });
+  const structured = {
+    source: "gmail",
+    to: ["qa@example.invalid"],
+    subject: "Structured subject",
+    body: "Structured body.",
+  };
+  expect(
+    (
+      await outboundDraftOptionsFromMessage(runtime, message, {
+        parameters: structured,
+      })
+    )?.parameters,
+  ).toEqual(structured);
+  expect(calls).toBe(1);
+});
 
 it("binds actual draft sending to a later user turn and consumes consent once durably", async () => {
   const directory = await mkdtemp(join(tmpdir(), "message-consent-"));
