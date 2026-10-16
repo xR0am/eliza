@@ -77,11 +77,10 @@ test("account deletion removes a pre-uploaded document that was never submitted"
       deleteObject: async () => undefined,
     },
   });
-  await adapters.primary_object_storage.execute({
-    organizationId: ORG,
-    userId: USER,
-    blob: bucket,
-  } as never);
+  await adapters.primary_object_storage.execute(
+    { organizationId: ORG, userId: USER, blob: bucket } as never,
+    "account-deletion:test:primary_object_storage",
+  );
 
   expect(bucket.objects.size).toBe(0);
 });
