@@ -756,6 +756,32 @@ describe("ensureLocalInferenceHandler", () => {
 		expect(engineState.load).toHaveBeenCalledWith(installed.path, resolved);
 	});
 
+	it("loads the assigned model once for two concurrent first requests", async () => {
+		const installed = {
+			id: "eliza-1-2b",
+			path: "/models/eliza-1-2b.gguf",
+		};
+		assignmentsState.assignments = { TEXT_SMALL: installed.id };
+		registryState.installed = [installed];
+		engineState.hasLoadedModel.mockReturnValue(true);
+		let loadedPath: string | null = null;
+		engineState.currentModelPath.mockImplementation(() => loadedPath);
+		engineState.load.mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			loadedPath = installed.path;
+		});
+		const { registrations, runtime } = makeRuntime();
+
+		await ensureLocalInferenceHandler(runtime);
+		const handler = findRegisteredHandler(registrations, ModelType.TEXT_SMALL);
+		const request = () =>
+			handler(runtime, { messages: [{ role: "user", content: "hello" }] });
+
+		await Promise.all([request(), request()]);
+
+		expect(engineState.load).toHaveBeenCalledTimes(1);
+	});
+
 	it.each([
 		[ModelType.TEXT_SMALL, "TEXT_SMALL"],
 		[ModelType.TEXT_LARGE, "TEXT_LARGE"],
