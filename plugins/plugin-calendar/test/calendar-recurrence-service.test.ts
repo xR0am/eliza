@@ -441,19 +441,35 @@ describe("updateCalendarEvent — instance vs series", () => {
     });
   });
 
-  it("series day change through an occurrence shifts the series start by the same days", async () => {
-    // "Move all standups to Thursday" picked on the Jul 15 occurrence.
-    await calendar.updateCalendarEvent(INTERNAL_URL, {
-      eventId: "standup_20260715T130000Z",
-      startAt: "2026-07-16T13:00:00.000Z",
-      endAt: "2026-07-16T13:30:00.000Z",
-      recurrenceScope: "series",
+  it("refuses a series day change that the rule's BYDAY would contradict", async () => {
+    // Rule: weekly on Wednesdays. "Move all standups to Thursday" without a
+    // new rule would give the series a Thursday start its rule never names.
+    await expect(
+      calendar.updateCalendarEvent(INTERNAL_URL, {
+        eventId: "standup_20260715T130000Z",
+        startAt: "2026-07-16T13:00:00.000Z",
+        endAt: "2026-07-16T13:30:00.000Z",
+        recurrenceScope: "series",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "CALENDAR_RECURRENCE_SERIES_DAY_CHANGE_NEEDS_RULE",
     });
-    expect(google.updateEvent.mock.calls[0]?.[0]).toMatchObject({
-      eventId: "standup-master",
-      start: "2026-07-02T13:00:00.000Z",
-      end: "2026-07-02T13:30:00.000Z",
+    expect(google.updateEvent).not.toHaveBeenCalled();
+  });
+
+  it("refuses a series end time before the occurrence's start", async () => {
+    await expect(
+      calendar.updateCalendarEvent(INTERNAL_URL, {
+        eventId: "standup_20260708T130000Z",
+        endAt: "2026-07-08T12:00:00.000Z",
+        recurrenceScope: "series",
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "CALENDAR_RECURRENCE_SERIES_INVALID_RANGE",
     });
+    expect(google.updateEvent).not.toHaveBeenCalled();
   });
 
   it("instance scope patches exactly the addressed occurrence", async () => {

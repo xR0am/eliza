@@ -6985,6 +6985,7 @@ export class CalendarService extends Service {
             masterEventId: targetEventId,
             startAt: requestedStartAt,
             endAt: requestedEndAt,
+            replacesRecurrence: recurrence !== undefined,
           })
         : null;
     const updateEvent = requireGoogleServiceMethod(this.runtime, "updateEvent");
@@ -7894,15 +7895,12 @@ export class CalendarService extends Service {
   }
 
   /**
-   * Resolve the series master id for an event id that may address a flattened
-   * recurring occurrence: cached instance metadata first, then a provider
-   * lookup. An id with no `recurringEventId` already is the master.
-   */
-  /**
    * Map new times for one occurrence onto its series master: the master keeps
-   * its own start date and moves by the same wall-clock shift (so "move all to
-   * 3pm" or "move all to Tuesday" changes every occurrence, earlier ones
-   * included). The new duration applies to the whole series.
+   * its own start date and moves by the same wall-clock shift, so "move all to
+   * 3pm" changes every occurrence, earlier ones included. The new duration
+   * applies to the whole series. A shift to another day is refused when the
+   * rule pins days (BYDAY etc.) and is not replaced in the same request: the
+   * moved start would no longer match the rule.
    */
   private async shiftSeriesMasterTimes(args: {
     grant: LifeOpsConnectorGrant;
@@ -7911,6 +7909,7 @@ export class CalendarService extends Service {
     masterEventId: string;
     startAt?: string;
     endAt?: string;
+    replacesRecurrence: boolean;
   }): Promise<{ startAt: string; endAt: string; timeZone: string }> {
     const getEvent = requireGoogleServiceMethod(this.runtime, "getEvent");
     const accountId = accountIdForGrant(args.grant);
@@ -7961,9 +7960,36 @@ export class CalendarService extends Service {
     const shiftMs = args.startAt
       ? wallMs(args.startAt) - wallMs(occurrenceSlot)
       : 0;
+    // The occurrence's own start, not its rule slot: a new end time is read
+    // against the start the owner sees on that occurrence.
     const newDurationMs = args.endAt
       ? Date.parse(args.endAt) - Date.parse(args.startAt ?? occurrence.startAt)
       : Date.parse(master.endAt) - Date.parse(master.startAt);
+    if (!(newDurationMs > 0)) {
+      fail(
+        400,
+        "The new end time must be after the occurrence's start.",
+        "CALENDAR_RECURRENCE_SERIES_INVALID_RANGE",
+      );
+    }
+    const dayMs = 24 * 60 * 60 * 1000;
+    const wallDay = (ms: number) => Math.floor(ms / dayMs);
+    if (
+      !args.replacesRecurrence &&
+      wallDay(wallMs(master.startAt) + shiftMs) !==
+        wallDay(wallMs(master.startAt)) &&
+      recurrenceLinesFrom(master).some((line) =>
+        /;(BYDAY|BYMONTHDAY|BYYEARDAY|BYWEEKNO|BYSETPOS)=/i.test(
+          `;${line.split(":").pop()}`,
+        ),
+      )
+    ) {
+      fail(
+        409,
+        "Moving every occurrence of this series to another day needs its recurrence rule changed too (the rule names the days).",
+        "CALENDAR_RECURRENCE_SERIES_DAY_CHANGE_NEEDS_RULE",
+      );
+    }
     const masterStart = fromWallMs(wallMs(master.startAt) + shiftMs);
     return {
       startAt: masterStart,
@@ -7972,6 +7998,11 @@ export class CalendarService extends Service {
     };
   }
 
+  /**
+   * Resolve the series master id for an event id that may address a flattened
+   * recurring occurrence: cached instance metadata first, then a provider
+   * lookup. An id with no `recurringEventId` already is the master.
+   */
   private async resolveSeriesMasterEventId(args: {
     grant: LifeOpsConnectorGrant;
     calendarId?: string | null;
