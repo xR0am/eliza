@@ -682,7 +682,13 @@ export class VideoService extends IVideoService {
               .map((seg) => (typeof seg?.utf8 === "string" ? seg.utf8 : ""))
               .join(""),
           )
-          .join("");
+          .reduce(
+            (text, cue) =>
+              text && cue && !/\s$/.test(text) && !/^\s/.test(cue)
+                ? `${text} ${cue}`
+                : text + cue,
+            "",
+          );
         return normalizeCaptionNewlines(joined);
       } else {
         elizaLogger.log(
