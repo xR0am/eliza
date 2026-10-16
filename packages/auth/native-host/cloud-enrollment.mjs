@@ -3,6 +3,24 @@ import { createNativeAccountMethods } from "./account-methods.mjs";
 
 const fail = (message, status = 400, code) =>
   Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
+/**
+ * A 429 with the wait in whole seconds, when it is known: the service's
+ * `Retry-After` delta-seconds, or this host's own resend gate. An HTTP-date or
+ * a malformed value is left out, so a caller never shows an invented time.
+ */
+const tooMany = (message, seconds) =>
+  Object.assign(
+    fail(message, 429),
+    Number.isSafeInteger(seconds) && seconds >= 0
+      ? { retryAfter: seconds }
+      : {},
+  );
+const retryAfterHeader = (response) => {
+  const value = response.headers?.get?.("retry-after")?.trim();
+  return value && /^\d{1,9}$/.test(value) ? Number(value) : undefined;
+};
+const secondsUntil = (time) =>
+  Math.max(0, Math.ceil((time - Date.now()) / 1000));
 const opaque = () => randomBytes(32).toString("base64url");
 const validTime = (value) =>
   typeof value === "string" &&
@@ -135,12 +153,12 @@ export function createNativeCloudAuth({
     check(ticket);
     if (!response.ok) {
       if (response.status === 429)
-        throw fail(
+        throw tooMany(
           message(
             "error2",
             "Too many attempts. Please wait before trying again.",
           ),
-          429,
+          retryAfterHeader(response),
         );
       if (response.status === 400 || response.status === 401)
         throw fail(
@@ -373,12 +391,12 @@ export function createNativeCloudAuth({
           "billing_not_enrolled",
         );
       if (billingAttempt && Date.now() < billingAttempt.resendAt)
-        throw fail(
+        throw tooMany(
           message(
             "error28",
             "Please wait a minute before requesting another code.",
           ),
-          429,
+          secondsUntil(billingAttempt.resendAt),
         );
       if (
         input.method !== undefined &&
@@ -992,12 +1010,12 @@ export function createNativeCloudAuth({
           )
             throw fail(message("error27", "Enter a valid email address."));
           if (attempt && Date.now() < attempt.resendAt)
-            throw fail(
+            throw tooMany(
               message(
                 "error28",
                 "Please wait a minute before requesting another code.",
               ),
-              429,
+              secondsUntil(attempt.resendAt),
             );
           await config(ticket);
           await beforeStart();
