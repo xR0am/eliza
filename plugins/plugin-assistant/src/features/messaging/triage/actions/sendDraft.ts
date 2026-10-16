@@ -238,7 +238,7 @@ export const sendDraftAction: Action = {
   contexts: ["messaging", "email", "contacts"],
   roleGate: { minRole: "ADMIN" },
   description:
-    "Create or send an owner-scoped outbound message draft. Use this for first-turn requests like 'DM Bob on Discord' and 'email Alice the notes'. The source's adapter must support sending a new message. It previews the exact draft and requires a later affirmative user reply before sending.",
+    "Create or send an owner-scoped outbound message draft. Use this for first-turn requests like 'DM Bob on Discord' and 'email Alice the notes'. The source's adapter must support sending a new message. It previews the exact draft and requires a later affirmative user reply before sending. For a plain later confirmation, omit draftId and message fields: the host resolves and checks the reviewed draft. Never invent an ID or restore history just to find one.",
   descriptionCompressed:
     "outbound draft/send Discord|email|X DM; requires a later user confirmation",
   similes: [
