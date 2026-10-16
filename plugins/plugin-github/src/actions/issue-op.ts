@@ -175,7 +175,9 @@ function parseRequest(
  */
 function missingNames(
   requested: readonly string[] | undefined,
-  applied: ReadonlyArray<string | { name?: string; login?: string } | null>,
+  applied: ReadonlyArray<
+    string | { name?: string | null; login?: string | null } | null
+  >,
 ): string[] {
   const present = new Set(
     applied
