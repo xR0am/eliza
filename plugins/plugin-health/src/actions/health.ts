@@ -397,6 +397,21 @@ function formatConnectorDailySummary(
   return parts.join("\n");
 }
 
+/** The metrics a provider sent samples for on a summary row's day. */
+function reportedConnectorMetrics(
+  summary: LifeOpsHealthSummaryResponse,
+  row: LifeOpsHealthSummaryResponse["summaries"][number],
+): Set<string> {
+  return new Set(
+    summary.samples
+      .filter(
+        (sample) =>
+          sample.provider === row.provider && sample.localDate === row.date,
+      )
+      .map((sample) => sample.metric),
+  );
+}
+
 /**
  * Every provider's connector summary for `date`. Only a request that named no
  * date may read the latest synced day instead; an explicit date with no
@@ -747,7 +762,12 @@ export function createHealthActionRunner(
             healthSummary.summaries.length === 0
               ? `No wearable health data recorded in the last ${days} days.`
               : `Health trend (last ${days} days):\n${healthSummary.summaries
-                  .map((entry) => formatConnectorDailySummary(entry))
+                  .map((entry) =>
+                    formatConnectorDailySummary(
+                      entry,
+                      reportedConnectorMetrics(healthSummary, entry),
+                    ),
+                  )
                   .join("\n\n")}`;
           return respond({
             success: true,
@@ -817,22 +837,13 @@ export function createHealthActionRunner(
           params.date !== undefined,
         );
         const daily = dailyByProvider[0] ?? null;
-        const reportedMetrics = (
-          row: LifeOpsHealthSummaryResponse["summaries"][number],
-        ) =>
-          new Set(
-            healthSummary.samples
-              .filter(
-                (sample) =>
-                  sample.provider === row.provider &&
-                  sample.localDate === row.date,
-              )
-              .map((sample) => sample.metric),
-          );
         const fallback = daily
           ? `Health summary for ${dailyByProvider
               .map((row) =>
-                formatConnectorDailySummary(row, reportedMetrics(row)),
+                formatConnectorDailySummary(
+                  row,
+                  reportedConnectorMetrics(healthSummary, row),
+                ),
               )
               .join("\n\n")}`
           : params.date
