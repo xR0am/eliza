@@ -375,7 +375,16 @@ function resolveWriteDocumentScope({
   return entityId && entityId !== agentId ? "user-private" : "global";
 }
 
-function getCharacterDocumentSources(runtime: IAgentRuntime): string[] {
+/**
+ * A character document source: inline text, or a file/directory the character
+ * declared as a path. Plain strings stay ambiguous (a path when it exists,
+ * inline text otherwise) for characters that list paths as strings.
+ */
+export type CharacterDocumentSource = string | { path: string };
+
+function getCharacterDocumentSources(
+  runtime: IAgentRuntime,
+): CharacterDocumentSource[] {
   const character = runtime.character as {
     documents?: unknown[];
     knowledge?: unknown[];
@@ -385,7 +394,7 @@ function getCharacterDocumentSources(runtime: IAgentRuntime): string[] {
     ...(character.knowledge ?? []),
   ];
   return sources
-    .map((item) => {
+    .map((item): CharacterDocumentSource | null => {
       const itemAny = item as {
         item?: {
           case?: string;
@@ -398,21 +407,39 @@ function getCharacterDocumentSources(runtime: IAgentRuntime): string[] {
         itemAny.item?.case === "path" &&
         typeof itemAny.item.value === "string"
       ) {
-        return itemAny.item.value;
+        return { path: itemAny.item.value };
       }
       if (
         itemAny.item?.case === "directory" &&
         typeof itemAny.item.value === "object" &&
         itemAny.item.value !== null
       ) {
-        return itemAny.item.value.path || itemAny.item.value.directory || null;
+        const directory =
+          itemAny.item.value.path || itemAny.item.value.directory;
+        return directory ? { path: directory } : null;
       }
-      if (typeof itemAny.path === "string") return itemAny.path;
-      if (typeof itemAny.directory === "string") return itemAny.directory;
+      if (typeof itemAny.path === "string") return { path: itemAny.path };
+      if (typeof itemAny.directory === "string") {
+        return { path: itemAny.directory };
+      }
       if (typeof item === "string") return item;
       return null;
     })
-    .filter((item): item is string => item !== null && item.trim().length > 0);
+    .filter(
+      (item): item is CharacterDocumentSource =>
+        item !== null &&
+        (typeof item === "string" ? item : item.path).trim().length > 0,
+    );
+}
+
+/**
+ * True for a single-token string written like a filesystem path (`/x`, `./x`,
+ * `../x`, `~/x`, `C:\x`). Such a string that does not resolve is a missing
+ * file or folder, not inline character text.
+ */
+function looksLikeFilesystemPath(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  return /^(?:\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/])/.test(value);
 }
 
 function describeEmbeddingConfig(config: {
@@ -2997,7 +3024,7 @@ export class DocumentService extends Service {
   }
 
   async processCharacterDocuments(
-    items: string[],
+    items: CharacterDocumentSource[],
     options?: {
       embeddingWaitTimeoutMs?: number;
       embeddingWaitIntervalMs?: number;
@@ -3025,7 +3052,8 @@ export class DocumentService extends Service {
     const processingPromises = items.map(async (item) => {
       await this.documentProcessingSemaphore.acquire();
       try {
-        const trimmedItem = item.trim();
+        const declaredPath = typeof item !== "string";
+        const trimmedItem = (declaredPath ? item.path : item).trim();
         if (trimmedItem.length === 0) {
           return;
         }
@@ -3051,7 +3079,8 @@ export class DocumentService extends Service {
             },
           );
           for (const id of loaded.documentIds) currentDocumentIds.add(id);
-          if (loaded.failed > 0) everyItemLoaded = false;
+          // An empty folder (e.g. a volume not mounted yet) is not a removal.
+          if (loaded.failed > 0 || loaded.total === 0) everyItemLoaded = false;
           return;
         }
 
@@ -3074,6 +3103,17 @@ export class DocumentService extends Service {
             },
           });
           currentDocumentIds.add(added.storedDocumentMemoryId);
+          return;
+        }
+
+        if (declaredPath || looksLikeFilesystemPath(trimmedItem)) {
+          // A missing file or folder (wrong cwd, unmounted volume) is a failed
+          // load: keep the documents it produced before instead of pruning
+          // them, and do not ingest the path itself as inline text.
+          everyItemLoaded = false;
+          logger.warn(
+            `Character document path does not exist: ${trimmedItem}; keeping its existing documents`,
+          );
           return;
         }
 
