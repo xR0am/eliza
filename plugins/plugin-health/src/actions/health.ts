@@ -363,15 +363,25 @@ function formatSummary(summary: {
   return parts.join("\n");
 }
 
+/**
+ * Steps, active minutes and sleep are 0 placeholders in a provider's daily
+ * row when it sent no sample for them (Strava has no steps or sleep), so they
+ * are shown only for metrics the provider reported that day.
+ */
 function formatConnectorDailySummary(
   summary: LifeOpsHealthSummaryResponse["summaries"][number],
+  reportedMetrics: ReadonlySet<string>,
 ): string {
-  const parts = [
-    `${summary.date} (${summary.provider}):`,
-    `- Steps: ${Math.round(summary.steps).toLocaleString()}`,
-    `- Active minutes: ${Math.round(summary.activeMinutes)}`,
-    `- Sleep: ${summary.sleepHours.toFixed(1)}h`,
-  ];
+  const parts = [`${summary.date} (${summary.provider}):`];
+  if (reportedMetrics.has("steps")) {
+    parts.push(`- Steps: ${Math.round(summary.steps).toLocaleString()}`);
+  }
+  if (reportedMetrics.has("active_minutes")) {
+    parts.push(`- Active minutes: ${Math.round(summary.activeMinutes)}`);
+  }
+  if (reportedMetrics.has("sleep_hours")) {
+    parts.push(`- Sleep: ${summary.sleepHours.toFixed(1)}h`);
+  }
   if (summary.heartRateAvg !== null) {
     parts.push(`- Heart rate avg: ${summary.heartRateAvg.toFixed(0)} bpm`);
   }
@@ -388,18 +398,21 @@ function formatConnectorDailySummary(
 }
 
 /**
- * The connector summary for `date`. Only a request that named no date may
- * read the latest synced day instead; an explicit date with no summary is
- * "no data for that day", never another day's numbers.
+ * Every provider's connector summary for `date`. Only a request that named no
+ * date may read the latest synced day instead; an explicit date with no
+ * summary is "no data for that day", never another day's numbers.
  */
-function connectorSummaryForDate(
+function connectorSummariesForDate(
   summary: LifeOpsHealthSummaryResponse,
   date: string,
   explicitDate: boolean,
-): LifeOpsHealthSummaryResponse["summaries"][number] | null {
-  const match = summary.summaries.find((candidate) => candidate.date === date);
-  if (match || explicitDate) return match ?? null;
-  return summary.summaries[0] ?? null;
+): LifeOpsHealthSummaryResponse["summaries"] {
+  const matches = summary.summaries.filter(
+    (candidate) => candidate.date === date,
+  );
+  if (matches.length > 0 || explicitDate) return matches;
+  const latest = summary.summaries[0]?.date;
+  return summary.summaries.filter((candidate) => candidate.date === latest);
 }
 
 export const HEALTH_SIMILES: readonly string[] = [
@@ -798,13 +811,30 @@ export function createHealthActionRunner(
             data: { subaction, metric, points, healthSummary },
           });
         }
-        const daily = connectorSummaryForDate(
+        const dailyByProvider = connectorSummariesForDate(
           healthSummary,
           params.date ?? localTodayKey(timeZone),
           params.date !== undefined,
         );
+        const daily = dailyByProvider[0] ?? null;
+        const reportedMetrics = (
+          row: LifeOpsHealthSummaryResponse["summaries"][number],
+        ) =>
+          new Set(
+            healthSummary.samples
+              .filter(
+                (sample) =>
+                  sample.provider === row.provider &&
+                  sample.localDate === row.date,
+              )
+              .map((sample) => sample.metric),
+          );
         const fallback = daily
-          ? `Health summary for ${formatConnectorDailySummary(daily)}`
+          ? `Health summary for ${dailyByProvider
+              .map((row) =>
+                formatConnectorDailySummary(row, reportedMetrics(row)),
+              )
+              .join("\n\n")}`
           : params.date
             ? `Connected health providers have no daily summary for ${params.date}.`
             : "Connected health providers have not synced daily summaries yet.";
@@ -812,7 +842,10 @@ export function createHealthActionRunner(
           success: true,
           scenario: "health_connector_today",
           fallback,
-          context: { daily },
+          context: {
+            daily,
+            ...(dailyByProvider.length > 1 ? { dailyByProvider } : {}),
+          },
           values: {
             success: true,
             healthConnectedProviders: connectedProviders,
