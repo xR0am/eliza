@@ -71,7 +71,7 @@ export interface SendConsentOptions {
   readonly affirmations?: readonly string[];
 }
 
-/** Recover the preview's reference in the same actor/room after a later turn.
+/** Recover the preview's reference for an affirmative later turn in the same actor/room.
  * The caller must still check the current draft digest and consume consent.
  */
 export async function pendingSendDraft(
@@ -82,6 +82,7 @@ export async function pendingSendDraft(
     !message.id ||
     !message.entityId ||
     !message.roomId ||
+    !isAffirmative(unwrapUserMessageText(message).trim(), {}) ||
     message.entityId === runtime.agentId ||
     typeof message.createdAt !== "number" ||
     !Number.isFinite(message.createdAt)

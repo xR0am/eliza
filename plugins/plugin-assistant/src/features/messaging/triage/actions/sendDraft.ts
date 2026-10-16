@@ -282,22 +282,12 @@ export const sendDraftAction: Action = {
   ): Promise<ActionResult> => {
     let parsed = parseSendDraftParams(options);
     const service = getDefaultTriageService();
-    const params = getParameters(options);
-    if (
-      "error" in parsed &&
-      !["to", "subject", "body", "threadId", "worldId", "channelId"].some(
-        (key) => params[key] !== undefined,
-      )
-    ) {
-      const draftId = await pendingSendDraft(runtime, _message);
-      const pending = draftId ? service.getDraft(runtime, draftId) : null;
-      if (
-        pending &&
-        (params.source === undefined ||
-          normalizeSource(params.source) === pending.source)
-      )
-        parsed = { draftId: pending.draftId };
-    }
+    // A whole-turn affirmation refers to the host's reviewed draft. Planner
+    // parameters cannot redirect it or replace its content. The digest/CAS
+    // confirmation gate below remains the authority to send.
+    const pendingId = await pendingSendDraft(runtime, _message);
+    if (pendingId && service.getDraft(runtime, pendingId))
+      parsed = { draftId: pendingId };
     if ("error" in parsed) {
       const draftParsed = parseDraftFollowupParams(
         await outboundDraftOptionsFromMessage(runtime, _message, options),

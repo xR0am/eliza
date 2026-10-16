@@ -130,6 +130,12 @@ it("binds actual draft sending to a later user turn and consumes consent once du
     expect(await pendingSendDraft(runtime, first)).toBeNull();
     expect(await pendingSendDraft(runtime, yes)).toBe(draft.draftId);
     expect(
+      await pendingSendDraft(runtime, {
+        ...yes,
+        content: { text: "yes, but change the recipient" },
+      }),
+    ).toBeNull();
+    expect(
       await pendingSendDraft(runtime, { ...yes, roomId: randomUUID() as UUID }),
     ).toBeNull();
     expect(
@@ -139,7 +145,15 @@ it("binds actual draft sending to a later user turn and consumes consent once du
       }),
     ).toBeNull();
     const outcomes = await Promise.all([
-      sendDraftAction.handler(runtime, yes, undefined, { parameters: {} }),
+      sendDraftAction.handler(runtime, yes, undefined, {
+        parameters: {
+          draftId: "Original body",
+          source: "gmail",
+          to: ["other@example.invalid"],
+          subject: "Planner replacement",
+          body: "Planner replacement",
+        },
+      }),
       sendDraftAction.handler(runtime, yes, undefined, { parameters: {} }),
     ]);
     expect(sent).toEqual([draft.draftId]);
