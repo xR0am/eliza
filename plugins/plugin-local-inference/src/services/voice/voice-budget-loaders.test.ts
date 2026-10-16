@@ -16,6 +16,7 @@ import {
 	type FfiBackendSession,
 	FfiStreamingBackend,
 } from "../ffi-streaming-backend";
+import { FfiStreamingRunner } from "../ffi-streaming-runner";
 import type { HardwareProbe } from "../types";
 import { tryBuildFusedEotClassifier } from "./eot-classifier";
 import type {
@@ -444,4 +445,96 @@ describe("FfiStreamingBackend budget wire-up", () => {
 		expect(backend.hasLoadedModel()).toBe(false);
 		expect(budget.snapshot()).toHaveLength(0);
 	});
+});
+
+describe("FfiStreamingBackend generation lifecycle", () => {
+	// Each step blocks the thread for 20 ms, like a synchronous FFI decode
+	// step; the reply ends after 100 steps.
+	function blockingBinding(steps: { count: number }) {
+		return {
+			llmStreamSupported: () => true,
+			llmStreamOpen: () => ({}) as never,
+			llmStreamPrefill: () => {},
+			llmStreamNext: () => {
+				const until = Date.now() + 20;
+				while (Date.now() < until) {}
+				steps.count += 1;
+				return {
+					text: "x",
+					tokens: [1],
+					done: steps.count >= 100,
+					drafterDrafted: 0,
+					drafterAccepted: 0,
+				};
+			},
+			llmStreamCancel: () => {},
+			llmStreamClose: () => {},
+		};
+	}
+
+	async function loadedBackend(steps: { count: number }, released: string[]) {
+		const runner = new FfiStreamingRunner(
+			blockingBinding(steps) as never,
+			{} as never,
+		);
+		const backend = new FfiStreamingBackend(
+			{
+				supported: () => true,
+				async acquire(): Promise<FfiBackendSession> {
+					return {
+						binding: {} as FfiBackendSession["binding"],
+						ctx: {} as FfiBackendSession["ctx"],
+						runner: runner as unknown as FfiBackendSession["runner"],
+						tokenize: () => new Int32Array([1]),
+						mtp: null,
+						draftModelPath: null,
+						mmprojPath: null,
+					};
+				},
+				async release(): Promise<void> {
+					released.push(`released after ${steps.count} steps`);
+				},
+			},
+			{},
+		);
+		await backend.load({ modelPath: "/model.gguf" } as unknown as BackendPlan);
+		return backend;
+	}
+
+	it("stops a generation when its signal aborts", async () => {
+		const steps = { count: 0 };
+		const backend = await loadedBackend(steps, []);
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(), 50);
+
+		await expect(
+			backend.generateWithUsage({
+				prompt: "hi",
+				maxTokens: 1000,
+				signal: controller.signal,
+			} as never),
+		).rejects.toThrow("aborted");
+		expect(steps.count).toBeLessThan(100);
+	}, 10_000);
+
+	it("ends running generations before unload releases the session", async () => {
+		const steps = { count: 0 };
+		const released: string[] = [];
+		const backend = await loadedBackend(steps, released);
+		const generation = backend.generateWithUsage({
+			prompt: "hi",
+			maxTokens: 1000,
+		} as never);
+		const outcome = generation.then(
+			() => "completed",
+			() => "stopped",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		await backend.unload();
+
+		expect(await outcome).toBe("stopped");
+		expect(steps.count).toBeLessThan(100);
+		expect(released).toEqual([`released after ${steps.count} steps`]);
+	}, 10_000);
 });

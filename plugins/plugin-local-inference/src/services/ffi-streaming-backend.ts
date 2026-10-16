@@ -131,6 +131,11 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 	/** Voice-budget reservations for the loaded weights (text target +
 	 *  optional separate MTP drafter). Released on unload. */
 	private budgetReservations: BudgetReservation[] = [];
+	/** Generations running on the current session; unload ends them first. */
+	private readonly generations = new Set<{
+		controller: AbortController;
+		settled: Promise<unknown>;
+	}>();
 	private readonly budgetOverride: VoiceBudget | null;
 
 	constructor(
@@ -220,6 +225,14 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 		// guard, wedging the backend until process restart. The finally guarantees
 		// our refs are cleared regardless so a failed release can't leave a stale
 		// "loaded" view either.
+		// The native session must outlive every generation stepping on it:
+		// cancel them and wait for them to stop before the release frees it.
+		for (const generation of this.generations) {
+			generation.controller.abort();
+		}
+		await Promise.all(
+			[...this.generations].map((generation) => generation.settled),
+		);
 		try {
 			await this.runtime.release();
 		} finally {
@@ -267,7 +280,11 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 		const maxTokens =
 			args.maxTokens ??
 			Math.max(1, (loadConfig?.contextSize ?? 32_768) - promptTokens.length);
-		const result = await runner.generateWithUsage({
+		const controller = new AbortController();
+		const signal = args.signal
+			? AbortSignal.any([args.signal, controller.signal])
+			: controller.signal;
+		const run = runner.generateWithUsage({
 			promptTokens,
 			slotId: args.slotId ?? -1,
 			cacheKey: args.cacheKey,
@@ -284,11 +301,19 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 			cacheTypeK: loadConfig?.cacheTypeK,
 			cacheTypeV: loadConfig?.cacheTypeV,
 			contextSize: loadConfig?.contextSize,
-			signal: args.signal,
+			signal,
 			maxTokensPerStep: args.maxTokensPerStep,
 			onTextChunk,
 			onVerifierEvent: args.onVerifierEvent,
 		});
+		const generation = { controller, settled: run.catch(() => undefined) };
+		this.generations.add(generation);
+		let result: Awaited<typeof run>;
+		try {
+			result = await run;
+		} finally {
+			this.generations.delete(generation);
+		}
 		if (result.accepted >= maxTokens) {
 			throw new ElizaError(
 				"Local model output reached the decode boundary before a stop condition",
