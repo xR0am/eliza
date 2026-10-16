@@ -2,9 +2,11 @@
  * A home-timeline engagement is attempted at most once per tweet. When the
  * quote is already public and a later action fails (for example a reply that
  * X refuses), the tweet must still be marked processed; otherwise the next
- * cycle asks the model again and posts the quote a second time. Real
- * TwitterTimelineClient cycle; the X client, the model and the action
- * handlers are stubbed.
+ * cycle asks the model again and posts the quote a second time. The same
+ * holds when a quote or reply thread is only partly posted: the handler wraps
+ * that failure, but the first chunk is already public. Real
+ * TwitterTimelineClient cycle; the X client, the model and (in some cases)
+ * the action handlers are stubbed.
  */
 import {
   type IAgentRuntime,
@@ -31,7 +33,12 @@ beforeEach(() => {
   logger.error = vi.fn();
 });
 
-function timelineHarness(actions: string) {
+const LONG_POST = "thread ".repeat(70).trim();
+
+function timelineHarness(
+  actions: string,
+  twitterClient: Record<string, unknown> = {},
+) {
   const memories = new Map<string, Memory>();
   const runtime = {
     agentId: "00000000-0000-0000-0000-0000000000ab" as UUID,
@@ -46,14 +53,24 @@ function timelineHarness(actions: string) {
     ensureWorldExists: vi.fn(async () => undefined),
     ensureConnection: vi.fn(async () => undefined),
     getSetting: vi.fn(() => undefined),
-    useModel: vi.fn(async () => actions),
+    reportError: vi.fn(),
+    useModel: vi.fn(async (_type: unknown, params: { prompt?: string }) =>
+      params.prompt?.includes("You are responding to this tweet") ||
+      params.prompt?.includes("You are replying to this tweet")
+        ? JSON.stringify({ post: LONG_POST })
+        : actions,
+    ),
   } as unknown as IAgentRuntime;
   const profile = { id: "bot-user", username: "bot" };
   const client = {
     accountId: "default",
     runtime,
     profile,
-    twitterClient: {},
+    twitterClient,
+    requestQueue: {
+      add: vi.fn(async (operation: () => Promise<unknown>) => operation()),
+    },
+    cacheTweet: vi.fn(async () => undefined),
     withAuthenticatedSession: vi.fn(
       async (operation: (session: unknown) => Promise<unknown>) =>
         operation({ profile, revision: 1 }),
@@ -110,4 +127,45 @@ it("retries a timeline tweet when the failed action published nothing", async ()
   await runCycles(2);
 
   expect(quote).toHaveBeenCalledTimes(2);
+});
+
+it("does not quote again after a quote thread was only partly posted", async () => {
+  const sendQuoteTweet = vi.fn(async () => ({
+    data: { id: "2000000000000000001" },
+  }));
+  const sendTweet = vi.fn(async () => {
+    throw new Error("503 Service Unavailable");
+  });
+  const { runCycles } = timelineHarness("[QUOTE]", {
+    sendQuoteTweet,
+    sendTweet,
+  });
+
+  await runCycles(2);
+
+  expect(sendQuoteTweet).toHaveBeenCalledTimes(1);
+});
+
+it("does not quote again after X accepted a quote without a usable receipt", async () => {
+  const sendQuoteTweet = vi.fn(async () => ({ data: {} }));
+  const { runCycles } = timelineHarness("[QUOTE]", { sendQuoteTweet });
+
+  await runCycles(2);
+
+  expect(sendQuoteTweet).toHaveBeenCalledTimes(1);
+});
+
+it("does not reply again after a reply thread was only partly posted", async () => {
+  const sendTweet = vi
+    .fn()
+    .mockResolvedValueOnce({ data: { id: "2000000000000000002" } })
+    .mockRejectedValue(new Error("429 Too Many Requests"));
+  const { runCycles } = timelineHarness("[REPLY]", { sendTweet });
+
+  await runCycles(2);
+
+  const replyStarts = sendTweet.mock.calls.filter(
+    (call) => call[1] === "1000000000000000777",
+  );
+  expect(replyStarts).toHaveLength(1);
 });
