@@ -54,6 +54,21 @@ app.post("/", async (c) => {
     }
 
     const cloneName = body.name || `${original.name} (Copy)`;
+    // A public or template character can be cloned by anyone, but its
+    // secrets (API keys, connector tokens) belong to its owner: only the
+    // owner's own clone keeps them.
+    const withoutSecrets = (value: unknown): Record<string, unknown> => {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return {};
+      const { secrets: _secrets, ...rest } = value as Record<string, unknown>;
+      return rest;
+    };
+    const settings = ownsOriginal
+      ? original.settings
+      : withoutSecrets(original.settings);
+    const characterData = ownsOriginal
+      ? original.character_data || {}
+      : withoutSecrets(original.character_data);
 
     const clonedCharacter = await charactersService.create(
       {
@@ -68,8 +83,8 @@ app.post("/", async (c) => {
         knowledge: original.knowledge,
         plugins: original.plugins,
         style: original.style,
-        settings: original.settings,
-        character_data: original.character_data || {},
+        settings,
+        character_data: characterData,
         avatar_url: original.avatar_url,
         category: original.category,
         tags: original.tags,
