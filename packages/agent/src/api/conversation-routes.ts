@@ -4629,7 +4629,13 @@ async function deleteConversationMessageRoute(
 /**
  * `POST /api/conversations/:id/messages/:messageId/heard` keeps only the part
  * of an assistant reply that the user heard before they interrupted playback.
- * Body: `{ heardText }`, a prefix of the stored reply.
+ *
+ * Body: `{ heardText }`, non-empty. It must be a prefix of either the stored
+ * reply text or its spoken form (`sanitizeSpeechText` from `@elizaos/core`,
+ * the text TTS speaks); whitespace runs compare as one space. A spoken-form
+ * prefix is stored as the matching stored-text prefix, rounded up to the end
+ * of the word. Anything else is 409; nothing can extend the reply.
+ * Response: `{ ok, messageId, text, truncated, changed }`.
  */
 async function recordHeardConversationMessageRoute(
   ctx: ConversationHandlerContext,

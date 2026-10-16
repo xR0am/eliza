@@ -5,9 +5,14 @@
  */
 import {
   type AgentRuntime,
+  buildAccessContext,
   compareMemoryIds,
   ElizaError,
+  MESSAGE_CONTENT_SEGMENT_MAX_BYTES,
   type Memory,
+  messageTextSourceDescriptor,
+  replaceStoredMessageContent,
+  sanitizeSpeechText,
   type UUID,
 } from "@elizaos/core";
 import type { ConversationMeta } from "../api/server-types.ts";
@@ -201,13 +206,108 @@ function spokenComparable(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function heardTextConflict(): Error & { status: number } {
+  return Object.assign(
+    new ElizaError(
+      "Heard text must be a prefix of the stored assistant reply or of its spoken form",
+      { code: "CONVERSATION_HEARD_NOT_PREFIX" },
+    ),
+    { status: 409 },
+  );
+}
+
+/**
+ * Map a heard prefix of the spoken form (`sanitizeSpeechText`, which drops
+ * markdown, URLs, code and stage directions) back to the shortest stored-text
+ * prefix, cut at a word end, whose spoken form starts with it. A heard word
+ * cut mid-way keeps the whole stored word. Returns null when no stored prefix
+ * speaks the heard text.
+ */
+function storedPrefixForSpokenText(
+  stored: string,
+  heardComparable: string,
+): string | null {
+  const cuts: number[] = [];
+  for (let i = 1; i < stored.length; i += 1) {
+    if (/\s/.test(stored[i] ?? "") && !/\s/.test(stored[i - 1] ?? "")) {
+      cuts.push(i);
+    }
+  }
+  cuts.push(stored.length);
+  const spoken = (cut: number) =>
+    spokenComparable(sanitizeSpeechText(stored.slice(0, cut)));
+  // Spoken length grows with the stored prefix, so bisect for the first cut
+  // that speaks at least as much as was heard.
+  let low = 0;
+  let high = cuts.length - 1;
+  if (spoken(cuts[high] ?? 0).length < heardComparable.length) return null;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (spoken(cuts[middle] ?? 0).length >= heardComparable.length) {
+      high = middle;
+    } else {
+      low = middle + 1;
+    }
+  }
+  const cut = cuts[low] ?? stored.length;
+  return spoken(cut).startsWith(heardComparable)
+    ? stored.slice(0, cut).trimEnd()
+    : null;
+}
+
+/**
+ * The complete stored text of a message. Text over the inline limit lives in
+ * content segments; read them page by page at one revision.
+ */
+async function readStoredMessageText(
+  runtime: AgentRuntime,
+  memory: Memory & { id: UUID },
+): Promise<string> {
+  if (typeof memory.content.text === "string") return memory.content.text;
+  if (!messageTextSourceDescriptor(memory.content)) return "";
+  const read = runtime.adapter.readMessageContentRange;
+  if (!read) {
+    throw new ElizaError("Message store cannot read segmented content", {
+      code: "MESSAGE_CONTENT_SEGMENT_STORAGE_UNAVAILABLE",
+      context: { messageId: memory.id },
+    });
+  }
+  const accessContext = await buildAccessContext(runtime, memory);
+  const parts: string[] = [];
+  let offset = 0;
+  let revision: string | undefined;
+  while (true) {
+    const result = await read.call(runtime.adapter, {
+      agentId: runtime.agentId,
+      messageId: memory.id,
+      authorizedRoomId: memory.roomId,
+      accessContext,
+      source: { kind: "message-text" },
+      offset,
+      limit: MESSAGE_CONTENT_SEGMENT_MAX_BYTES,
+      ...(revision ? { expectedRevision: revision } : {}),
+    });
+    if (result.status === "inline") return result.text;
+    if (result.status !== "ok") throw conversationMessageNotFound();
+    revision = result.page.revision;
+    parts.push(result.page.text);
+    if (result.page.end >= result.page.total || result.page.end <= offset) {
+      return parts.join("");
+    }
+    offset = result.page.end;
+  }
+}
+
 /**
  * Keep only the part of a stored assistant reply that the user heard before
- * they interrupted playback. The heard text must be a prefix of the stored
- * text, so this can only shorten a reply. Repeating the same request returns
- * the same result without a second write. The trimmed reply is marked
- * `interrupted` and `heardTruncated`; later context and history read only the
- * heard text.
+ * they interrupted playback. `heardText` must be non-empty and either a prefix
+ * of the stored text or a prefix of its spoken form (`sanitizeSpeechText`);
+ * whitespace runs compare as one space. A spoken-form prefix is stored as the
+ * matching stored-text prefix, so the reply keeps its written form and can
+ * only get shorter. Repeating the same request returns the same result
+ * without a second write. The trimmed reply is marked `interrupted` and
+ * `heardTruncated`, written through the segment-aware content replacement,
+ * and re-embedded so semantic search no longer matches the unheard text.
  */
 export async function recordHeardAssistantMessage(
   runtime: AgentRuntime,
@@ -230,33 +330,57 @@ export async function recordHeardAssistantMessage(
       { status: 400 },
     );
   }
-  const stored =
-    typeof memory.content.text === "string" ? memory.content.text : "";
-  const heard = heardText.trim();
+  const stored = await readStoredMessageText(runtime, {
+    ...memory,
+    id: memory.id,
+  });
   const storedComparable = spokenComparable(stored);
-  const heardComparable = spokenComparable(heard);
-  if (!storedComparable.startsWith(heardComparable)) {
+  const heardComparable = spokenComparable(heardText);
+  if (!heardComparable) {
     throw Object.assign(
-      new ElizaError(
-        "Heard text must be a prefix of the stored assistant reply",
-        { code: "CONVERSATION_HEARD_NOT_PREFIX" },
-      ),
-      { status: 409 },
+      new ElizaError("heardText must not be empty", {
+        code: "CONVERSATION_HEARD_EMPTY",
+      }),
+      { status: 400 },
     );
   }
   const alreadyTruncated = memory.content.heardTruncated === true;
-  if (heardComparable === storedComparable) {
-    return { text: stored, truncated: alreadyTruncated, changed: false };
+  const unchanged = {
+    text: stored,
+    truncated: alreadyTruncated,
+    changed: false,
+  };
+  let text: string;
+  if (storedComparable.startsWith(heardComparable)) {
+    if (heardComparable === storedComparable) return unchanged;
+    text = heardText.trim();
+  } else {
+    const spokenStored = spokenComparable(sanitizeSpeechText(stored));
+    if (heardComparable === spokenStored) return unchanged;
+    const prefix = spokenStored.startsWith(heardComparable)
+      ? storedPrefixForSpokenText(stored, heardComparable)
+      : null;
+    if (prefix === null) throw heardTextConflict();
+    if (spokenComparable(prefix) === storedComparable) return unchanged;
+    text = prefix;
   }
-  await runtime.updateMemory({
-    ...memory,
-    id: memory.id,
-    content: {
-      ...memory.content,
-      text: heard,
-      interrupted: true,
-      heardTruncated: true,
-    },
-  });
-  return { text: heard, truncated: true, changed: true };
+  // The new text is inline; drop the full reply's segment manifest so its
+  // segments are removed.
+  const { messageTextSource: _fullReplySource, ...storedContent } =
+    memory.content;
+  const content = {
+    ...storedContent,
+    text,
+    interrupted: true,
+    heardTruncated: true,
+  };
+  await replaceStoredMessageContent(runtime, memory.id, content);
+  // The stored vector still describes the full reply. Queue a new one for the
+  // heard text; the embedding service overwrites the old vector.
+  const { embedding: _staleEmbedding, ...rest } = memory;
+  await runtime.queueEmbeddingGeneration(
+    { ...rest, id: memory.id, content },
+    "normal",
+  );
+  return { text, truncated: true, changed: true };
 }

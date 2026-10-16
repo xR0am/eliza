@@ -11,8 +11,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   AgentRuntime,
+  collectMessageContentSegmentIds,
   createCharacter,
   type Memory,
+  persistMessageMemory,
+  sanitizeSpeechText,
   stringToUuid,
   type UUID,
 } from "@elizaos/core";
@@ -23,7 +26,7 @@ import {
   PgliteDatabaseAdapter,
   plugin as sqlPlugin,
 } from "@elizaos/plugin-sql";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { recentMessagesProvider } from "../../../plugins/plugin-assistant/src/features/basic-capabilities/providers/recentMessages.ts";
 import type { ConversationRouteState } from "../src/api/conversation-routes.ts";
 import { handleConversationRoutes } from "../src/api/conversation-routes.ts";
@@ -196,6 +199,12 @@ it("keeps only the heard part of an interrupted assistant reply", async () => {
     expect((await call(state, "POST", heardUrl, { text: "x" })).status).toBe(
       400,
     );
+    // Hearing nothing is not a way to wipe the reply.
+    for (const heardText of ["", "   "])
+      expect((await call(state, "POST", heardUrl, { heardText })).status).toBe(
+        400,
+      );
+    const queued = vi.spyOn(runtime, "queueEmbeddingGeneration");
     expect(
       (
         await call(
@@ -232,6 +241,15 @@ it("keeps only the heard part of an interrupted assistant reply", async () => {
     expect(
       (await call(state, "POST", heardUrl, { heardText: FULL_REPLY })).status,
     ).toBe(409);
+
+    // The stale vector of the full reply is replaced: one re-embedding of the
+    // heard text, without the old embedding, for the one write.
+    expect(queued).toHaveBeenCalledTimes(1);
+    expect(queued.mock.calls[0]?.[0]).toMatchObject({
+      id: assistantId,
+      content: { text: heard },
+    });
+    expect(queued.mock.calls[0]?.[0].embedding).toBeUndefined();
 
     const [stored] = await runtime.getMemoriesByIds([assistantId], "messages");
     expect(stored?.content).toMatchObject({
@@ -295,6 +313,99 @@ it("hides messages of another conversation", async () => {
     expect(crossRoom.status).toBe(404);
     const [stored] = await runtime.getMemoriesByIds([assistantId], "messages");
     expect(stored?.content.text).toBe(FULL_REPLY);
+  } finally {
+    await adapter.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+it("maps a heard prefix of the spoken form back to the stored text", async () => {
+  const { agentId, adapter, dataDir, runtime, state } = await createFixture();
+  try {
+    const { conversation } = (
+      await call(state, "POST", "/api/conversations", { title: "spoken" })
+    ).payload as { conversation: { id: string; roomId: UUID } };
+    const reply =
+      "**Your flight** leaves at nine. See [the schedule](https://example.com/s) for the gate (it changes). Boarding closes twenty minutes before departure.";
+    const assistantId = await runtime.createMemory(
+      {
+        entityId: agentId,
+        agentId,
+        roomId: conversation.roomId,
+        content: { text: reply },
+      } as Memory,
+      "messages",
+    );
+    const url = `/api/conversations/${conversation.id}/messages/${assistantId}/heard`;
+    // TTS speaks the sanitized form: no markdown, link target or aside.
+    const spoken = sanitizeSpeechText(reply);
+    expect(spoken).toContain("See the schedule for the gate.");
+    const heard = spoken.slice(0, spoken.indexOf("for the gate") + 3);
+
+    const result = await call(state, "POST", url, { heardText: heard });
+    expect(result.status).toBe(200);
+    expect(result.payload).toMatchObject({ truncated: true, changed: true });
+    // Stored in its written form, cut at the same word.
+    const expected =
+      "**Your flight** leaves at nine. See [the schedule](https://example.com/s) for";
+    expect(result.payload.text).toBe(expected);
+    const [stored] = await runtime.getMemoriesByIds([assistantId], "messages");
+    expect(stored?.content.text).toBe(expected);
+
+    // The full spoken form is not a change; a spoken text that the reply
+    // does not contain is refused.
+    expect(
+      (await call(state, "POST", url, { heardText: "leaves at ten" })).status,
+    ).toBe(409);
+  } finally {
+    await adapter.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+it("trims a reply stored in content segments", async () => {
+  const { agentId, adapter, dataDir, runtime, state } = await createFixture();
+  try {
+    const { conversation } = (
+      await call(state, "POST", "/api/conversations", { title: "long" })
+    ).payload as { conversation: { id: string; roomId: UUID } };
+    const reply = `Start of a long answer. ${"filler words go here ".repeat(5_000)}End.`;
+    expect(Buffer.byteLength(reply)).toBeGreaterThan(64 * 1024);
+    // The message persistence path stores oversized content in segments.
+    const assistantId = await persistMessageMemory(runtime, {
+      id: stringToUuid("heard-long-reply"),
+      entityId: agentId,
+      agentId,
+      roomId: conversation.roomId,
+      content: { text: reply },
+    } as Memory);
+    const [before] = await runtime.getMemoriesByIds([assistantId], "messages");
+    // Stored as a segment manifest, not inline text.
+    expect(before?.content.text).toBeUndefined();
+    expect(before?.content.messageTextSource).toMatchObject({
+      storage: "segments",
+    });
+    const segmentIds = collectMessageContentSegmentIds(
+      assistantId,
+      before?.content ?? {},
+    );
+    const segments = () =>
+      runtime.getMemoriesByIds(segmentIds, "message_content_segments");
+    expect(segmentIds.length).toBeGreaterThan(0);
+    expect(await segments()).toHaveLength(segmentIds.length);
+
+    const result = await call(
+      state,
+      "POST",
+      `/api/conversations/${conversation.id}/messages/${assistantId}/heard`,
+      { heardText: "Start of a long answer. filler words" },
+    );
+    expect(result.status).toBe(200);
+    const [after] = await runtime.getMemoriesByIds([assistantId], "messages");
+    expect(after?.content.text).toBe("Start of a long answer. filler words");
+    expect(JSON.stringify(after?.content)).not.toContain("End.");
+    // The stale segments of the full reply are removed.
+    expect(await segments()).toEqual([]);
   } finally {
     await adapter.close();
     fs.rmSync(dataDir, { recursive: true, force: true });

@@ -83,11 +83,12 @@ export const PostConversationTruncateRequestSchema = z
 
 /**
  * The part of a stored assistant reply that the user heard before they
- * interrupted playback. The text must be a prefix of the stored reply.
+ * interrupted playback: a non-empty prefix of the stored reply text or of its
+ * spoken form (`sanitizeSpeechText`).
  */
 export const PostConversationMessageHeardRequestSchema = z
   .object({
-    heardText: z.string(),
+    heardText: z.string().regex(/\S/, "heardText must not be empty"),
   })
   .strict();
 
