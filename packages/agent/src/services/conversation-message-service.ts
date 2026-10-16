@@ -250,9 +250,57 @@ function storedPrefixForSpokenText(
     }
   }
   const cut = cuts[low] ?? stored.length;
-  return spoken(cut).startsWith(heardComparable)
-    ? stored.slice(0, cut).trimEnd()
-    : null;
+  if (spoken(cut).startsWith(heardComparable)) {
+    return stored.slice(0, cut).trimEnd();
+  }
+
+  // Closing a stage direction or another stripped block can make the spoken
+  // length shrink, so the bisection can land inside text that TTS never says.
+  // Mark every word boundary and sanitize once more. Markers inside stripped
+  // blocks disappear with those blocks; surviving markers map the complete
+  // spoken form back to its source without an O(words * text) prefix scan.
+  let marker = "ElizaSpeechWordBoundary";
+  while (stored.includes(marker)) marker += "X";
+  const markedParts: string[] = [];
+  let previous = 0;
+  for (const [index, sourceCut] of cuts.entries()) {
+    let insertion = sourceCut;
+    while (insertion < stored.length && /\s/.test(stored[insertion] ?? "")) {
+      insertion += 1;
+    }
+    markedParts.push(
+      stored.slice(previous, insertion),
+      ` ${marker}${index.toString(36)} `,
+    );
+    previous = insertion;
+  }
+  markedParts.push(stored.slice(previous));
+
+  const boundaryPattern = new RegExp(`^${marker}([0-9a-z]+)$`);
+  const boundaryLengths = new Map<number, number>();
+  const visibleTokens: string[] = [];
+  let visibleLength = 0;
+  for (const token of sanitizeSpeechText(markedParts.join("")).split(/\s+/)) {
+    const boundary = boundaryPattern.exec(token);
+    if (boundary) {
+      boundaryLengths.set(
+        Number.parseInt(boundary[1] ?? "", 36),
+        visibleLength,
+      );
+      continue;
+    }
+    if (!token) continue;
+    if (visibleLength > 0) visibleLength += 1;
+    visibleLength += token.length;
+    visibleTokens.push(token);
+  }
+  if (visibleTokens.join(" ") !== spoken(cuts.at(-1) ?? 0)) return null;
+  for (const [index, sourceCut] of cuts.entries()) {
+    if ((boundaryLengths.get(index) ?? -1) >= heardComparable.length) {
+      return stored.slice(0, sourceCut).trimEnd();
+    }
+  }
+  return null;
 }
 
 /**
