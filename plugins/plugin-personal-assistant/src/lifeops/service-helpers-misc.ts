@@ -453,7 +453,8 @@ export function buildActiveCalendarEventReminders(
   for (const event of events) {
     const plan = plansByEventId.get(event.id);
     if (!plan) continue;
-    if (event.status === "cancelled") {
+    // All-day events have no start time to remind before.
+    if (event.status === "cancelled" || event.isAllDay) {
       continue;
     }
     const startAt = new Date(event.startAt);

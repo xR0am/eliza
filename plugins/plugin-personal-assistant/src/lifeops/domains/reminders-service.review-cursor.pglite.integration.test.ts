@@ -37,7 +37,10 @@ import {
 import { createLifeOpsTestRuntime } from "../../../test/helpers/runtime.js";
 import * as taskPlans from "../../actions/lib/extract-task-plan.js";
 import { runLifeOperationHandler } from "../../actions/life.js";
-import { createLifeOpsReminderAttempt } from "../repository.js";
+import {
+  createLifeOpsReminderAttempt,
+  createLifeOpsReminderPlan,
+} from "../repository.js";
 import { LifeOpsService } from "../service.js";
 import { decideReminderReviewTransition } from "../service-helpers-reminder.js";
 
@@ -1593,3 +1596,78 @@ it.each(["completed", "snoozed"] as const)(
     }
   },
 );
+
+it("sends the before-start Calendar reminder for a timed event but not an all-day one", async () => {
+  // Google stores an all-day event on Oct 10 at 2026-10-10T00:00Z. A
+  // "30 minutes before" step would fire at 2026-10-09T23:30Z: 19:30 the day
+  // before in New York.
+  const now = new Date("2026-10-09T23:45:00.000Z");
+  const event = (
+    title: string,
+    startAt: string,
+    endAt: string,
+    isAllDay: boolean,
+  ) => ({
+    id: crypto.randomUUID(),
+    externalId: crypto.randomUUID(),
+    agentId: fixture.runtime.agentId,
+    provider: "google" as const,
+    side: "owner" as const,
+    calendarId: "primary",
+    title,
+    description: "",
+    location: "",
+    status: "confirmed",
+    startAt,
+    endAt,
+    isAllDay,
+    timezone: "America/New_York",
+    htmlLink: null,
+    conferenceLink: null,
+    organizer: null,
+    attendees: [],
+    metadata: {},
+    syncedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  const allDay = event(
+    "Company holiday",
+    "2026-10-10T00:00:00.000Z",
+    "2026-10-11T00:00:00.000Z",
+    true,
+  );
+  const timed = event(
+    "Late call",
+    "2026-10-10T00:10:00.000Z",
+    "2026-10-10T01:00:00.000Z",
+    false,
+  );
+  for (const row of [allDay, timed]) {
+    await service.repository.upsertCalendarEvent(row);
+    await service.repository.createReminderPlan(
+      createLifeOpsReminderPlan({
+        agentId: fixture.runtime.agentId,
+        ownerType: "calendar_event",
+        ownerId: row.id,
+        steps: [
+          { channel: "in_app", offsetMinutes: 30, label: "30m before event" },
+        ],
+        mutePolicy: {},
+        quietHours: {},
+      }),
+    );
+  }
+
+  const { attempts } = await service.processReminders({
+    now: now.toISOString(),
+  });
+
+  const owners = attempts
+    .filter((attempt) => attempt.ownerType === "calendar_event")
+    .map((attempt) => attempt.ownerId);
+  expect(owners).toContain(timed.id);
+  expect(owners).not.toContain(allDay.id);
+  // Delivery renders the reminder text with the (rejected) model and falls
+  // back; rendering is outside this check.
+  vi.mocked(fixture.runtime.useModel).mockClear();
+});
