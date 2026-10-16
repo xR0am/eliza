@@ -1678,7 +1678,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const offset = typeof params.offset === "number" ? params.offset : 0;
     let sliced = offset > 0 ? readableMemories.slice(offset) : readableMemories;
     if (params.limit !== undefined) sliced = sliced.slice(0, params.limit);
-    return sliced;
+    return params.includeEmbedding === false
+      ? sliced.map(({ embedding, ...memory }) => memory)
+      : sliced;
   }
 
   async searchMessages(params: {
