@@ -174,6 +174,32 @@ func TestPublicationGraphCommand(t *testing.T) {
 	}
 }
 
+// Writes public bytes of a complete signed publication graph for host
+// publisher tests: the provisioned root, every publication file (Go []byte
+// values encode as base64) and the fixture's qualified time. Ephemeral signing
+// keys stay in memory and are never exported.
+func TestExportPublicationFixture(t *testing.T) {
+	dir := os.Getenv("OTA_PUBLICATION_FIXTURE")
+	if dir == "" {
+		t.Skip("publication fixture export not requested")
+	}
+	r, b, _ := publicationFixture(t)
+	data, err := json.Marshal(struct {
+		Root           []byte            `json:"root"`
+		Files          map[string][]byte `json:"files"`
+		TrustedUpperMs int64             `json:"trustedUpperMs"`
+	}{r.root, b.Files, now.UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "publication-fixture.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPublicationGraphRequiresTwoStableApprovals(t *testing.T) {
 	r := fixture(t)
 	rewriteRole(t, r, "1.targets.json", "targets", func(m *metadata.Metadata[metadata.TargetsType]) { stableRole(m).Threshold = 1 })
