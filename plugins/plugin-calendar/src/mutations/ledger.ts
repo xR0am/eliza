@@ -10,7 +10,6 @@ import type {
   LifeOpsCalendarProvider,
 } from "@elizaos/contracts";
 import { ElizaError, type IAgentRuntime, stableStringify } from "@elizaos/core";
-import type { ApprovalRequest } from "@elizaos/plugin-assistant";
 import {
   executeRawSql,
   executeRawSqlTx,
@@ -22,6 +21,7 @@ import {
   withCalendarTransaction,
 } from "../internal/sql.js";
 import type {
+  CalendarMutationApproval,
   CalendarMutationAttempt,
   CalendarMutationFailure,
   CalendarMutationOperation,
@@ -512,7 +512,7 @@ function rowToAttempt(row: Record<string, unknown>): CalendarMutationAttempt {
 }
 
 function requireCalendarMutationOperation(
-  request: ApprovalRequest,
+  request: CalendarMutationApproval,
 ): CalendarMutationOperation {
   if (
     request.action !== "schedule_event" &&
@@ -540,7 +540,7 @@ function requireCalendarMutationOperation(
 }
 
 export function calendarMutationApprovalSha256(
-  request: ApprovalRequest,
+  request: CalendarMutationApproval,
 ): string {
   requireCalendarMutationOperation(request);
   return calendarMutationApprovalIdentitySha256({
@@ -595,7 +595,7 @@ async function assertPersistedApprovalBindingTx(
   tx: TransactionalDb,
   args: {
     readonly agentId: string;
-    readonly request: ApprovalRequest;
+    readonly request: CalendarMutationApproval;
     readonly approvalSha256: string;
   },
 ): Promise<void> {
@@ -653,7 +653,7 @@ async function prepareTx(
   tx: TransactionalDb,
   args: {
     readonly agentId: string;
-    readonly request: ApprovalRequest;
+    readonly request: CalendarMutationApproval;
     readonly approvalSha256: string;
     readonly operation: CalendarMutationOperation;
   },
@@ -737,7 +737,7 @@ export class CalendarMutationLedger {
   }
 
   async inspect(
-    request: ApprovalRequest,
+    request: CalendarMutationApproval,
   ): Promise<CalendarMutationClaimResult | null> {
     const operation = requireCalendarMutationOperation(request);
     const approvalSha256 = calendarMutationApprovalSha256(request);
@@ -758,7 +758,9 @@ export class CalendarMutationLedger {
     });
   }
 
-  async claim(request: ApprovalRequest): Promise<CalendarMutationClaimResult> {
+  async claim(
+    request: CalendarMutationApproval,
+  ): Promise<CalendarMutationClaimResult> {
     const operation = requireCalendarMutationOperation(request);
     const approvalSha256 = calendarMutationApprovalSha256(request);
     return withCalendarTransaction(this.runtime, async (tx) => {
@@ -832,7 +834,7 @@ export class CalendarMutationLedger {
   }
 
   async invalidate(
-    request: ApprovalRequest,
+    request: CalendarMutationApproval,
     failure: CalendarMutationFailure,
   ): Promise<CalendarMutationClaimResult> {
     const operation = requireCalendarMutationOperation(request);
@@ -892,7 +894,7 @@ export class CalendarMutationLedger {
   }
 
   async recordPreflightRetryable(
-    request: ApprovalRequest,
+    request: CalendarMutationApproval,
     failure: CalendarMutationFailure,
   ): Promise<CalendarMutationAttempt> {
     const operation = requireCalendarMutationOperation(request);

@@ -24,6 +24,18 @@ export type CalendarMutationOperation =
   | "modify_event"
   | "cancel_event";
 
+/** Calendar preserves the complete approval row but only reads Calendar payload fields. */
+export type CalendarMutationApproval = Omit<ApprovalRequest, "payload"> & {
+  readonly payload:
+    | Extract<ApprovalPayload, { action: CalendarMutationOperation }>
+    | {
+        readonly action: Exclude<
+          ApprovalPayload["action"],
+          CalendarMutationOperation
+        >;
+      };
+};
+
 export type CalendarMutationState =
   | "prepared"
   | "executing"
@@ -103,9 +115,11 @@ export interface CalendarMutationPreflight {
 }
 
 export interface CalendarMutationPort {
-  preflight(request: ApprovalRequest): Promise<CalendarMutationPreflight>;
+  preflight(
+    request: CalendarMutationApproval,
+  ): Promise<CalendarMutationPreflight>;
   execute(
-    request: ApprovalRequest,
+    request: CalendarMutationApproval,
     preflight: CalendarMutationPreflight,
   ): Promise<CalendarMutationReceipt>;
 }

@@ -17,7 +17,6 @@ import { ElizaError, type IAgentRuntime } from "@elizaos/core";
 import type {
   ApprovalCalendarAttendeeInput,
   ApprovalPayload,
-  ApprovalRequest,
 } from "@elizaos/plugin-assistant";
 import {
   APPLE_CALENDAR_GRANT_ID,
@@ -43,6 +42,7 @@ import {
   calendarMutationOperationKey,
 } from "./ledger.js";
 import {
+  type CalendarMutationApproval,
   CalendarMutationNotAcceptedError,
   type CalendarMutationPort,
   CalendarMutationPreflightError,
@@ -74,7 +74,9 @@ export type CalendarMutationService = Pick<
   | "reserveTravelBuffer"
 >;
 
-function calendarPayload(request: ApprovalRequest): CalendarMutationPayload {
+function calendarPayload(
+  request: CalendarMutationApproval,
+): CalendarMutationPayload {
   if (
     request.action !== "schedule_event" &&
     request.action !== "modify_event" &&

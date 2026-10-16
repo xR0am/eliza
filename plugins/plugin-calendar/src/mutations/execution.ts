@@ -6,9 +6,9 @@
  */
 import type { IAgentRuntime } from "@elizaos/core";
 import { formatError as safeFormatError } from "@elizaos/core";
-import type { ApprovalRequest } from "@elizaos/plugin-assistant";
 import { CalendarMutationLedger } from "./ledger.js";
 import {
+  type CalendarMutationApproval,
   type CalendarMutationAttempt,
   type CalendarMutationExecutionResult,
   type CalendarMutationFailure,
@@ -100,7 +100,7 @@ function mapStoredAttempt(
 }
 
 function validateReceipt(
-  request: ApprovalRequest,
+  request: CalendarMutationApproval,
   preflight: Awaited<ReturnType<CalendarMutationPort["preflight"]>>,
   receipt: CalendarMutationReceipt,
   agentId: string,
@@ -165,7 +165,7 @@ function validateReceipt(
 
 export async function executeCalendarMutationApproval(args: {
   readonly runtime: IAgentRuntime;
-  readonly request: ApprovalRequest;
+  readonly request: CalendarMutationApproval;
   readonly port: CalendarMutationPort;
 }): Promise<CalendarMutationExecutionResult> {
   const ledger = new CalendarMutationLedger(args.runtime);

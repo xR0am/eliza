@@ -16,8 +16,8 @@ import {
   type ApprovalAction,
   type ApprovalChannel,
   type ApprovalEnqueueInput,
-  type ApprovalEnqueueResult,
   type ApprovalPayload,
+  type ApprovalRequest,
   buildApprovalChoiceText,
   createApprovalQueue,
 } from "@elizaos/plugin-assistant";
@@ -72,8 +72,17 @@ type CalendarSeriesMasterBinding = NonNullable<
 
 interface CalendarApprovalQueue {
   enqueueWithResult(
-    input: ApprovalEnqueueInput,
-  ): Promise<ApprovalEnqueueResult>;
+    input: Omit<ApprovalEnqueueInput, "action" | "payload"> & {
+      readonly action: CalendarApprovalPayload["action"];
+      readonly payload: CalendarApprovalPayload;
+    },
+  ): Promise<{
+    readonly request: Pick<
+      ApprovalRequest,
+      "id" | "idempotencyKey" | "createdAt" | "state" | "reason" | "action"
+    >;
+    readonly reused: boolean;
+  }>;
 }
 
 function approvalSafeLabel(value: string): string {
