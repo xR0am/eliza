@@ -52,8 +52,12 @@ const { memoriesRepository } = await import(
 );
 const { Hono } = await import("hono");
 const { default: documentsRoute } = await import("../v1/documents/route");
+const { default: uploadFileRoute } = await import(
+  "../v1/documents/upload-file/route"
+);
 
 const app = new Hono();
+app.route("/api/v1/documents/upload-file", uploadFileRoute);
 app.route("/api/v1/documents", documentsRoute);
 const workerEnv = { NODE_ENV: "test", RATE_LIMIT_DISABLED: "true" };
 
@@ -111,4 +115,38 @@ test("total is the number of documents in the scope on every page", async () => 
   const tail = await list("?limit=10&offset=345");
   expect(tail.documents).toHaveLength(5);
   expect(tail.total).toBe(DOCUMENTS);
+});
+
+test("a PDF upload is refused instead of being stored as undecodable bytes", async () => {
+  const upload = async (file: File) => {
+    const form = new FormData();
+    form.append("files", file);
+    return app.request(
+      "/api/v1/documents/upload-file",
+      { method: "POST", body: form },
+      workerEnv,
+    );
+  };
+  const pdf = await upload(
+    new File(
+      [
+        new Uint8Array([
+          0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0xe2, 0xe3, 0xcf,
+          0xd3,
+        ]),
+      ],
+      "report.pdf",
+      {
+        type: "application/pdf",
+      },
+    ),
+  );
+  expect(pdf.status).toBe(415);
+
+  const text = await upload(
+    new File(["Our office is at 2 Oak Ave."], "notes.md", {
+      type: "application/octet-stream",
+    }),
+  );
+  expect(text.status).toBe(200);
 });

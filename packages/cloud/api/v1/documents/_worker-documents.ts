@@ -5,6 +5,7 @@ import { memoriesRepository } from "@elizaos/cloud-shared/db/repositories/agents
 import {
   DOCUMENT_CONSTANTS,
   isValidFilename,
+  TEXT_EXTENSIONS_FOR_OCTET_STREAM,
 } from "@elizaos/cloud-shared/lib/constants/documents";
 import { charactersService } from "@elizaos/cloud-shared/lib/services/characters";
 import type {
@@ -305,6 +306,37 @@ async function ensureDocumentStorageGraph(
   `);
 }
 
+const BINARY_DOCUMENT_EXTENSIONS = [".pdf", ".doc", ".docx"];
+const TEXT_CONTENT_TYPES = new Set([
+  "application/json",
+  "application/xml",
+  "application/x-yaml",
+]);
+
+/**
+ * Documents are stored as the file's text. The Worker has no PDF or Word
+ * extractor, so those files would be stored as undecodable bytes and never
+ * match a query.
+ */
+export function isReadableTextDocument(
+  filename: string,
+  contentType: string | undefined,
+): boolean {
+  const dot = filename.lastIndexOf(".");
+  const extension = dot >= 0 ? filename.slice(dot).toLowerCase() : "";
+  if (BINARY_DOCUMENT_EXTENSIONS.includes(extension)) return false;
+  if (
+    (TEXT_EXTENSIONS_FOR_OCTET_STREAM as readonly string[]).includes(extension)
+  ) {
+    return true;
+  }
+  const type = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  return type.startsWith("text/") || TEXT_CONTENT_TYPES.has(type);
+}
+
+export const UNREADABLE_DOCUMENT_ERROR =
+  "is not a text file. Only text documents (.txt, .md, .csv, .json, .yaml, .xml) can be stored; PDF and Word files are not supported.";
+
 export function validateDocumentFiles(files: File[]): Response | null {
   if (files.length === 0) {
     return Response.json(
@@ -340,6 +372,19 @@ export function validateDocumentFiles(files: File[]): Response | null {
         error: `"${oversized.name}" exceeds the 5MB file limit`,
       },
       { status: 413 },
+    );
+  }
+
+  const unreadable = files.find(
+    (file) => !isReadableTextDocument(file.name, file.type),
+  );
+  if (unreadable) {
+    return Response.json(
+      {
+        success: false,
+        error: `"${unreadable.name}" ${UNREADABLE_DOCUMENT_ERROR}`,
+      },
+      { status: 415 },
     );
   }
 

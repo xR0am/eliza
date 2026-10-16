@@ -11,9 +11,11 @@ import { Hono } from "hono";
 import { deletePendingDocumentBlob } from "../_pending-blob-cleanup";
 import {
   createDocumentRecord,
+  isReadableTextDocument,
   type PendingDocumentFile,
   r2KeyFromBlobUrl,
   resolveDocumentScope,
+  UNREADABLE_DOCUMENT_ERROR,
 } from "../_worker-documents";
 
 interface SubmitDocumentsBody {
@@ -56,6 +58,15 @@ app.post("/", async (c) => {
           blobUrl: file.blobUrl,
           status: "error",
           error: "Invalid blobUrl",
+        });
+        continue;
+      }
+
+      if (!isReadableTextDocument(file.filename, file.contentType)) {
+        results.push({
+          blobUrl: file.blobUrl,
+          status: "error",
+          error: `"${file.filename}" ${UNREADABLE_DOCUMENT_ERROR}`,
         });
         continue;
       }
