@@ -17,6 +17,7 @@ import {
   type LifeOpsRelationshipInteraction,
   SELF_ENTITY_ID,
 } from "@elizaos/contracts";
+import { ElizaError } from "@elizaos/core";
 import { foldIdentity } from "../entities/index.js";
 import type { LifeOpsContext } from "../lifeops-context.js";
 import {
@@ -73,6 +74,18 @@ export class RelationshipsDomain {
         confidence: 1,
         suggestedType: "person",
       });
+      if (observed.conflict) {
+        throw new ElizaError(
+          "[RelationshipsDomain] Contact identity matches multiple entities",
+          {
+            code: "LIFEOPS_CONTACT_IDENTITY_CONFLICT",
+            context: {
+              platform: input.primaryChannel,
+              candidateCount: observed.mergedFrom?.length ?? 0,
+            },
+          },
+        );
+      }
       entityId = observed.entity.entityId;
     }
 
