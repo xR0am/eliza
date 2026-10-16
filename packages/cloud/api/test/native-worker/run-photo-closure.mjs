@@ -40,7 +40,92 @@ async function artifact(path) {
   };
 }
 
+const reviewedFiles = [
+  ...new Set([
+    "packages/cloud/api/internal/network/deliver/route.ts",
+    "packages/cloud/api/package.json",
+    "packages/cloud/api/src/shared-runtime-conversation.ts",
+    "packages/cloud/api/test/native-worker/network-photo-closure.native.test.ts",
+    "packages/cloud/api/test/native-worker/run-photo-closure.mjs",
+    "packages/cloud/shared/src/db/schemas/shared-runtime-history.ts",
+    "packages/cloud/shared/src/lib/services/shared-runtime/approved-photo-admission.test.ts",
+    "packages/cloud/shared/src/lib/services/shared-runtime/conversation-coordinator.ts",
+    "packages/cloud/shared/src/lib/services/shared-runtime/network-shared-admission.ts",
+    "packages/cloud/shared/src/lib/services/shared-runtime/run-shared-agent-turn.ts",
+    "packages/cloud/services/gateway-webhook/src/internal-delivery.ts",
+    "packages/cloud/services/gateway-webhook/src/approved-relay-photos.ts",
+    ...gatewayTests,
+    "packages/cloud/api/wrangler.toml",
+    "packages/cloud/api/src/index.ts",
+    "plugins/plugin-network/src/backend/contract.ts",
+    "plugins/plugin-network/src/backend/svc-auth.ts",
+  ]),
+];
+let sourceProvenance;
+async function provenance() {
+  const status = git("status", "--porcelain=v1", "--untracked-files=all");
+  const paths = (...args) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" })
+      .split("\0")
+      .filter(Boolean);
+  const untracked = paths("ls-files", "--others", "--exclude-standard", "-z");
+  const sourceConfigCount = untracked.filter(
+    (path) =>
+      /^(?:packages|plugins|\.github)\//.test(path) &&
+      /\.(?:[cm]?[jt]sx?|jsonc?|toml|ya?ml|sql)$/.test(path),
+  ).length;
+  const expectedInputHashes = Object.fromEntries(
+    reviewedFiles.map((file) => [
+      file,
+      hash(execFileSync("git", ["-C", repo, "show", `HEAD:${file}`])),
+    ]),
+  );
+  return {
+    commit: git("rev-parse", "HEAD"),
+    tree: git("rev-parse", "HEAD^{tree}"),
+    dirty: status.length !== 0,
+    status,
+    trackedDirtyPaths: paths("diff", "--name-only", "-z", "HEAD"),
+    trackedDiffSHA256: hash(
+      execFileSync("git", ["-C", repo, "diff", "--binary", "HEAD"]),
+    ),
+    untrackedCounts: {
+      total: untracked.length,
+      sourceOrConfig: sourceConfigCount,
+      other: untracked.length - sourceConfigCount,
+    },
+    expectedInputHashes,
+    limitation:
+      "Observed after the owning dry-run; reviewed file bytes are checked against HEAD. Other dirty/generated inputs are reported and this is not a clean whole-source build attestation.",
+  };
+}
+async function verifyReviewedInputs() {
+  sourceProvenance.inputHashes = Object.fromEntries(
+    await Promise.all(
+      reviewedFiles.map(async (file) => {
+        const path = resolve(repo, file),
+          info = await lstat(path);
+        if (!info.isFile() || info.isSymbolicLink())
+          throw new Error("Reviewed input is not a regular source file");
+        return [file, hash(await readFile(path))];
+      }),
+    ),
+  );
+  sourceProvenance.mismatchedInputPaths = reviewedFiles.filter(
+    (file) =>
+      sourceProvenance.inputHashes[file] !==
+      sourceProvenance.expectedInputHashes[file],
+  );
+  sourceProvenance.reviewedInputsMatchHEAD =
+    sourceProvenance.mismatchedInputPaths.length === 0 &&
+    git("rev-parse", "HEAD") === sourceProvenance.commit;
+  if (!sourceProvenance.reviewedInputsMatchHEAD)
+    throw new Error("Reviewed source input differs from HEAD");
+}
+
 try {
+  sourceProvenance = await provenance();
+  await verifyReviewedInputs();
   // Normal src/index.ts produces index.js. No injected path or stale QA fallback.
   const entries = (await readdir(output)).filter((name) =>
     /^index\.(?:js|mjs|cjs)$/.test(name),
@@ -72,40 +157,9 @@ try {
     throw new Error(
       "Multipart main module differs from the normal index.js artifact",
     );
-  const status = git("status", "--porcelain=v1", "--untracked-files=all");
-  const files = [
-    "packages/cloud/api/wrangler.toml",
-    "packages/cloud/api/package.json",
-    "packages/cloud/api/src/index.ts",
-    "plugins/plugin-network/src/backend/contract.ts",
-    `packages/cloud/api/${nativeTest}`,
-    "packages/cloud/api/test/native-worker/run-photo-closure.mjs",
-    "packages/cloud/services/gateway-webhook/src/internal-delivery.ts",
-    "packages/cloud/services/gateway-webhook/src/approved-relay-photos.ts",
-    ...gatewayTests,
-  ];
-  const inputHashes = Object.fromEntries(
-    await Promise.all(
-      files.map(async (file) => [
-        file,
-        hash(await readFile(resolve(repo, file))),
-      ]),
-    ),
-  );
   const receipt = {
     state: "QUALIFICATION_RUNNING",
-    source: {
-      commit: git("rev-parse", "HEAD"),
-      tree: git("rev-parse", "HEAD^{tree}"),
-      dirty: status.length !== 0,
-      status,
-      trackedDiffSHA256: hash(
-        execFileSync("git", ["-C", repo, "diff", "--binary", "HEAD"]),
-      ),
-      inputHashes,
-      limitation:
-        "Observed after the owning dry-run; dirty inputs are not a clean committed-source build attestation.",
-    },
+    source: sourceProvenance,
     module: module.proof,
     multipart: bundle.proof,
     mainModule: mainName,
@@ -135,6 +189,7 @@ try {
   }
   try {
     await save();
+    await verifyReviewedInputs();
     run(
       "native",
       [
@@ -152,6 +207,7 @@ try {
         ELIZA_QA_WORKER_SHA256: module.proof.sha256,
       },
     );
+    await verifyReviewedInputs();
     run(
       "gateway",
       [
@@ -164,6 +220,7 @@ try {
       ],
       repo,
     );
+    await verifyReviewedInputs();
     run(
       "startup",
       [
@@ -214,6 +271,13 @@ try {
         sourceCommit: receipt.source.commit,
         sourceTree: receipt.source.tree,
         dirty: receipt.source.dirty,
+        trackedDirtyPaths: receipt.source.trackedDirtyPaths,
+        trackedDiffSHA256: receipt.source.trackedDiffSHA256,
+        untrackedCounts: receipt.source.untrackedCounts,
+        reviewedInputsMatchHEAD: receipt.source.reviewedInputsMatchHEAD,
+        inputHashes: receipt.source.inputHashes,
+        mismatchedInputPaths: receipt.source.mismatchedInputPaths,
+        sourceLimitation: receipt.source.limitation,
         moduleSHA256: receipt.module.sha256,
         multipartSHA256: receipt.multipart.sha256,
         startupProfileSHA256: receipt.startupProfile?.sha256 ?? null,
@@ -235,6 +299,13 @@ try {
       state: "QUALIFICATION_PREFLIGHT_FAILED",
       sourceCommit,
       sourceTree,
+      trackedDirtyPaths: sourceProvenance?.trackedDirtyPaths ?? [],
+      trackedDiffSHA256: sourceProvenance?.trackedDiffSHA256 ?? null,
+      untrackedCounts: sourceProvenance?.untrackedCounts ?? null,
+      reviewedInputsMatchHEAD:
+        sourceProvenance?.reviewedInputsMatchHEAD ?? false,
+      inputHashes: sourceProvenance?.inputHashes ?? {},
+      mismatchedInputPaths: sourceProvenance?.mismatchedInputPaths ?? [],
       moduleSHA256: null,
       multipartSHA256: null,
       results: {},
