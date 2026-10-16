@@ -315,4 +315,56 @@ describe("global pause integration", () => {
     const fired = await repo.getScheduledTask(runtime.agentId, once.taskId);
     expect(fired?.state.status).toBe("fired");
   });
+
+  it("a one-minute task fires again on the first tick after an ended pause when no tick ran during it", async () => {
+    runtimeResult = await createLifeOpsTestRuntime();
+    const { runtime } = runtimeResult;
+    const repo = new LifeOpsRepository(runtime);
+
+    const minutely = await seedScheduledTask(runtime, {
+      taskId: "st_pause_minutely_offline",
+      promptInstructions: "Minute check.",
+      trigger: { kind: "interval", everyMinutes: 1 },
+      priority: "low",
+      respectsGlobalPause: true,
+    });
+    await repo.upsertScheduledTask(runtime.agentId, {
+      ...minutely,
+      state: {
+        ...minutely.state,
+        status: "fired",
+        firedAt: "2026-10-12T10:00:00.000Z",
+      },
+    });
+    const pause = createGlobalPauseStore(runtime);
+    await pause.set({
+      startIso: "2026-10-12T10:00:00.000Z",
+      endIso: "2026-10-12T10:30:00.000Z",
+      reason: "focus",
+    });
+
+    for (const tick of [
+      "2026-10-12T10:31:00.000Z",
+      "2026-10-12T10:32:00.000Z",
+    ]) {
+      const result = await processDueScheduledTasks({
+        runtime,
+        agentId: runtime.agentId,
+        now: new Date(tick),
+        limit: 10,
+      });
+      expect(result.errors).toEqual([]);
+    }
+
+    const transitions = (
+      await repo.listScheduledTaskLog({
+        agentId: runtime.agentId,
+        taskId: minutely.taskId,
+      })
+    ).map((entry) => entry.transition);
+    expect(transitions.filter((t) => t === "skipped")).toHaveLength(1);
+    expect(transitions.filter((t) => t === "fired")).toHaveLength(1);
+    const task = await repo.getScheduledTask(runtime.agentId, minutely.taskId);
+    expect(task?.state.status).toBe("fired");
+  });
 });

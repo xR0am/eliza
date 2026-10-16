@@ -1323,17 +1323,19 @@ export function createScheduledTaskRunner(
     );
   }
 
-  async function shouldDeferForGlobalPause(
-    task: ScheduledTask,
-  ): Promise<{ paused: boolean; reason?: string }> {
+  async function shouldDeferForGlobalPause(task: ScheduledTask): Promise<{
+    paused: boolean;
+    reason?: string;
+    endedPauseEndIso?: string;
+  }> {
     if (task.respectsGlobalPause === false) return { paused: false };
     const pause = await deps.globalPause.current(now());
-    if (!pause.active && !(await occurredDuringPause(task, pause))) {
-      return { paused: false };
-    }
+    const ended = !pause.active && (await occurredDuringPause(task, pause));
+    if (!pause.active && !ended) return { paused: false };
     return {
       paused: true,
       reason: pause.reason ? `global_pause: ${pause.reason}` : "global_pause",
+      ...(ended ? { endedPauseEndIso: pause.endIso } : {}),
     };
   }
 
@@ -2606,7 +2608,15 @@ export function createScheduledTaskRunner(
     // Global-pause check.
     const pause = await shouldDeferForGlobalPause(task);
     if (pause.paused) {
-      await useUpRecurringOccurrence(task);
+      if (pause.endedPauseEndIso) {
+        // Retire every occurrence inside the ended window in one step; the
+        // next one counted from here is the first at or after the pause end.
+        task.state.firedAt = new Date(
+          Date.parse(pause.endedPauseEndIso) - 1,
+        ).toISOString();
+      } else {
+        await useUpRecurringOccurrence(task);
+      }
       task.state.status = "skipped";
       task.state.lastDecisionLog = pause.reason ?? "global_pause";
       if (!(await persist(task))) return { kind: "raced", taskId };
