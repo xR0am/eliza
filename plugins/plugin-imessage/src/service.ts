@@ -456,6 +456,24 @@ function filterMemoriesByQuery(memories: Memory[], query: string, limit?: number
   return limit === undefined ? matches : matches.slice(0, limit);
 }
 
+async function readIMessageConnectorMessages(
+  service: Pick<IIMessageService, "getMessages">,
+  options: IMessageListMessagesOptions,
+  accountId: string,
+  chatId: string | null
+): Promise<IMessageMessage[]> {
+  try {
+    return await service.getMessages(options);
+  } catch (cause) {
+    throw new ElizaError("iMessage history could not be read", {
+      code: "IMESSAGE_HISTORY_READ_FAILED",
+      cause,
+      context: { accountId, ...(chatId ? { chatId } : {}) },
+      severity: "ephemeral",
+    });
+  }
+}
+
 function publicIMessageToMemory(
   runtime: IAgentRuntime,
   message: IMessageMessage,
@@ -983,9 +1001,12 @@ export class IMessageService extends Service implements IIMessageService {
           readTargetAccountId(target) ?? readContextAccountId(context)
         );
         const chatId = target ? await resolveIMessageChatId(context.runtime, target) : null;
-        const platformMessages = await service
-          .getMessages({ ...(chatId ? { chatId } : {}), limit })
-          .catch(() => []);
+        const platformMessages = await readIMessageConnectorMessages(
+          service,
+          { ...(chatId ? { chatId } : {}), limit },
+          accountId,
+          chatId
+        );
         if (platformMessages.length > 0) {
           const roomId =
             target?.roomId ??
@@ -1015,9 +1036,12 @@ export class IMessageService extends Service implements IIMessageService {
         // Search the whole chat, then keep `limit` matches (as the Slack,
         // Discord and Google Chat connectors do): limiting the read first
         // searched only the newest `limit` messages.
-        const platformMessages = await service
-          .getMessages({ ...(chatId ? { chatId } : {}) })
-          .catch(() => []);
+        const platformMessages = await readIMessageConnectorMessages(
+          service,
+          { ...(chatId ? { chatId } : {}) },
+          accountId,
+          chatId
+        );
         const roomId =
           target?.roomId ??
           (createUniqueUuid(context.runtime, chatId ?? "imessage-read:recent") as UUID);
