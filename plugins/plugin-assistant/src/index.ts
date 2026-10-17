@@ -193,7 +193,10 @@ export type {
   ManageResult,
   MessageAdapter,
   MessageAdapterCapabilities,
+  MessageDraftContext,
+  MessageManageContext,
   MessageRef,
+  MessageSendContext,
   MessageSource,
   ReadMessageControl,
   ReadMessageRequest,
@@ -287,6 +290,7 @@ export {
   DeviceActionService,
   type DeviceCredential,
   deviceProposalDigest,
+  getDeviceActionTurn,
   setDeviceReadReplyConversation,
   withDeviceActionTurn,
 } from "./services/device-actions/service.ts";

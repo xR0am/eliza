@@ -167,7 +167,22 @@ const getSpeechRecognition = (): SpeechRecognitionCtor | null =>
   (window as SpeechRecognitionWindow).webkitSpeechRecognition ||
   null;
 
-function normalizeConfig(config: SwabbleConfig): SwabbleConfig {
+/**
+ * Accept a positive finite minCommandLength (floored to an integer); anything
+ * else is rejected as `undefined` so callers choose the fallback.
+ */
+function parseMinCommandLength(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+type NormalizedSwabbleConfig = SwabbleConfig & {
+  minCommandLength: number;
+  sampleRate: number;
+};
+
+function normalizeConfig(config: SwabbleConfig): NormalizedSwabbleConfig {
   if (!config || !Array.isArray(config.triggers)) {
     throw new Error("Swabble config requires a triggers array");
   }
@@ -178,12 +193,7 @@ function normalizeConfig(config: SwabbleConfig): SwabbleConfig {
   if (triggers.length === 0) {
     throw new Error("Swabble config requires at least one non-empty trigger");
   }
-  const minCommandLength =
-    typeof config.minCommandLength === "number" &&
-    Number.isFinite(config.minCommandLength) &&
-    config.minCommandLength > 0
-      ? Math.floor(config.minCommandLength)
-      : 1;
+  const minCommandLength = parseMinCommandLength(config.minCommandLength) ?? 1;
   const sampleRate =
     typeof config.sampleRate === "number" &&
     Number.isFinite(config.sampleRate) &&
@@ -234,7 +244,7 @@ class WakeWordGate {
       trigger: t.toLowerCase(),
       regex: buildTriggerMatcher(t),
     }));
-    this.minCommandLength = config.minCommandLength ?? 1;
+    this.minCommandLength = normalized.minCommandLength;
     // Note: minPostTriggerGap cannot be enforced - Web Speech API lacks timing data
   }
 
@@ -247,12 +257,9 @@ class WakeWordGate {
         regex: buildTriggerMatcher(t),
       }));
     }
-    if (
-      typeof config.minCommandLength === "number" &&
-      Number.isFinite(config.minCommandLength) &&
-      config.minCommandLength > 0
-    ) {
-      this.minCommandLength = Math.floor(config.minCommandLength);
+    const minCommandLength = parseMinCommandLength(config.minCommandLength);
+    if (minCommandLength !== undefined) {
+      this.minCommandLength = minCommandLength;
     }
   }
 

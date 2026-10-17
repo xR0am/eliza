@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
+  fstatSync,
   fsyncSync,
+  ftruncateSync,
   openSync,
   readFileSync,
   renameSync,
@@ -16,11 +18,28 @@ import { BillHostError } from "./errors.mjs";
  * a process exit does not lose the provider reference or the attempt.
  */
 function outcomeJournal(path) {
+  let needsRecovery = false;
   const append = (entry) => {
+    if (needsRecovery)
+      throw new BillHostError("Outcome journal requires restart recovery");
     const fd = openSync(path, "a", 0o600);
     try {
-      writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-      fsyncSync(fd);
+      const previousLength = fstatSync(fd).size;
+      try {
+        writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+        fsyncSync(fd);
+      } catch (error) {
+        // Do not let a later record turn this incomplete append into a corrupt line.
+        needsRecovery = true;
+        try {
+          ftruncateSync(fd, previousLength);
+          fsyncSync(fd);
+          needsRecovery = false;
+        } catch {
+          // Existing startup recovery must run before another append is allowed.
+        }
+        throw error;
+      }
     } finally {
       closeSync(fd);
     }

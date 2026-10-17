@@ -81,7 +81,10 @@ import { PermissionRegistry } from "../services/permissions-registry.ts";
 import { NotificationPushService } from "../services/push/notification-push-service.ts";
 import { resolveDefaultAgentWorkspaceDir } from "../shared/workspace-resolution.ts";
 import { registerTriggerTaskWorker } from "../triggers/runtime.ts";
-import { setCustomActionsRuntime } from "./custom-actions.ts";
+import {
+  registerSavedCustomActions,
+  setCustomActionsRuntime,
+} from "./custom-actions.ts";
 import { preparePluginForSelectedDatabase } from "./database-selection.ts";
 import { registerErrorEscalation } from "./error-escalation.ts";
 import { LogsRetentionService } from "./logs-retention-service.ts";
@@ -157,6 +160,7 @@ export function createElizaPlugin(config?: ElizaPluginConfig): Plugin {
       registerTriggerTaskWorker(runtime);
       registerErrorEscalation(runtime);
       setCustomActionsRuntime(runtime);
+      registerSavedCustomActions();
       // Media store: persist inline data: URLs out of context/history, and
       // sweep orphaned files daily. The serving route is declared below.
       registerMediaPipelineHook(runtime);

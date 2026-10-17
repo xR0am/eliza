@@ -44,8 +44,6 @@ export interface WalletPortfolioType {
 
 import {
   AccountLayout,
-  createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
   ExtensionType,
   getAssociatedTokenAddressSync,
   getExtensionData,
@@ -83,6 +81,7 @@ import { SOLANA_SERVICE_NAME, SOLANA_WALLET_DATA_CACHE_KEY } from "./constants";
 import { parseSolanaTokenBaseUnits, SOLANA_SWAP_AMOUNT_INVALID } from "./exact-base-units";
 import { fetchJupiterJson, resolveJupiterApiBaseUrl } from "./jupiter-api";
 import { getWalletKey } from "./keypairUtils";
+import { buildSplTransferInstructions } from "./spl-transfer";
 import type {
   BirdeyePriceResponse,
   BirdeyeWalletTokenListResponse,
@@ -640,10 +639,8 @@ export class SolanaService extends Service {
     const dryRun = params.dryRun === true || params.mode === "prepare";
     const isSolTransfer = tokenAddress === null;
     const mintPubkey = isSolTransfer ? null : new PublicKey(tokenAddress);
-    const atomicAmount = this.toAtomicAmount(
-      amount,
-      mintPubkey === null ? 9 : await this.getTokenDecimalsForTransfer(mintPubkey)
-    );
+    const decimals = mintPubkey === null ? 9 : await this.getTokenDecimalsForTransfer(mintPubkey);
+    const atomicAmount = this.toAtomicAmount(amount, decimals);
     const senderKeypair = await this.getWalletKeypair();
 
     const instructions: TransactionInstruction[] = [];
@@ -657,23 +654,15 @@ export class SolanaService extends Service {
         })
       );
     } else {
-      const senderATA = getAssociatedTokenAddressSync(mintPubkey, senderKeypair.publicKey);
-      const recipientATA = getAssociatedTokenAddressSync(mintPubkey, recipientPubkey);
-
-      const recipientATAInfo = await this.connection.getAccountInfo(recipientATA);
-      if (!recipientATAInfo) {
-        instructions.push(
-          createAssociatedTokenAccountInstruction(
-            senderKeypair.publicKey,
-            recipientATA,
-            recipientPubkey,
-            mintPubkey
-          )
-        );
-      }
-
       instructions.push(
-        createTransferInstruction(senderATA, recipientATA, senderKeypair.publicKey, atomicAmount)
+        ...(await buildSplTransferInstructions(
+          this.connection,
+          mintPubkey,
+          senderKeypair.publicKey,
+          recipientPubkey,
+          atomicAmount,
+          decimals
+        ))
       );
     }
 
@@ -1979,22 +1968,47 @@ export class SolanaService extends Service {
       }
 
       logger.log("Using RPC fallback for wallet data (no Birdeye)");
-      const accounts = await this.getTokenAccounts();
+      // Token accounts hold SPL tokens only; native SOL is the account's own
+      // lamports and must be read separately, or a SOL-only wallet shows 0.
+      const [accounts, lamports] = await Promise.all([
+        this.getTokenAccounts(),
+        this.connection.getBalance(publicKey),
+      ]);
+      const solAmount = new BigNumber(lamports).div(LAMPORTS_PER_SOL);
+      const solItems: Item[] =
+        lamports > 0
+          ? [
+              {
+                name: "Solana",
+                address: PROVIDER_CONFIG.TOKEN_ADDRESSES.SOL,
+                symbol: "SOL",
+                decimals: 9,
+                balance: String(lamports),
+                uiAmount: solAmount.toString(),
+                priceUsd: "0",
+                valueUsd: "0",
+                valueSol: solAmount.toString(),
+              },
+            ]
+          : [];
       if (!accounts || accounts.length === 0) {
         logger.log("No token accounts found");
-        const emptyPortfolio: WalletPortfolio = {
+        const solOnlyPortfolio: WalletPortfolio = {
           totalUsd: "0",
-          totalSol: "0",
-          items: [],
+          totalSol: solAmount.toString(),
+          items: solItems,
         };
-        await this.runtime.setCache<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, emptyPortfolio);
+        await this.runtime.setCache<WalletPortfolio>(
+          SOLANA_WALLET_DATA_CACHE_KEY,
+          solOnlyPortfolio
+        );
         this.lastUpdate = now;
-        return emptyPortfolio;
+        return solOnlyPortfolio;
       }
 
       const tokenMetadata = await this.parseTokenAccounts(accounts);
 
-      const items: Item[] = accounts.map((acc) => {
+      const tokenItems: Item[] = accounts.map((acc) => {
         const mint = acc.account.data.parsed.info.mint;
         const metadata = tokenMetadata[mint];
 
@@ -2013,12 +2027,13 @@ export class SolanaService extends Service {
         };
       });
 
-      logger.log(`Fallback mode: Found ${items.length} tokens in wallet`);
+      logger.log(`Fallback mode: Found ${tokenItems.length} tokens in wallet`);
 
       const portfolio: WalletPortfolio = {
         totalUsd: "0",
-        totalSol: "0",
-        items,
+        // Token values are unknown without a price source; SOL is exact.
+        totalSol: solAmount.toString(),
+        items: [...solItems, ...tokenItems],
       };
 
       await this.runtime.setCache<WalletPortfolio>(SOLANA_WALLET_DATA_CACHE_KEY, portfolio);

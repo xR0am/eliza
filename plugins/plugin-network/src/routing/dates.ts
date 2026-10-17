@@ -172,6 +172,20 @@ export function parseDateExpr(expr: string, now: Date): Date | null {
   if (m[5]) return nextDayOfMonth(Number(m[5]), today);
   if (m[6]) return nextDayOfMonth(Number(m[6]), today);
   if (m[8]) {
+    // "Friday, October 30", "Monday the 26th", "Thursday 10/29": the date
+    // after the weekday names the day. Without this the weekday alone won and
+    // the window ended on the next Friday, a week or more early.
+    const after = rest.replace(/^,?\s+/, "");
+    const dated = after !== rest ? DATE_EXPR.exec(after) : null;
+    if (
+      dated?.index === 0 &&
+      ((dated[1] && dated[2]) ||
+        (dated[3] && dated[4]) ||
+        dated[5] ||
+        dated[6] ||
+        (dated[10] && dated[11]))
+    )
+      return parseDateExpr(after, now);
     const w = WEEKDAYS.indexOf(m[8].slice(0, 3).toLowerCase());
     return nextWeekday(w, today, Boolean(m[7]));
   }
@@ -196,10 +210,33 @@ const iso = (d: Date | null) => (d ? d.toISOString() : null);
 const END = String.raw`(?:until|till|til|'til|thru|through|back\s+(?:on|by|in)?|by)`;
 
 /**
+ * The start a member states for a stay ("from Monday", "starting December
+ * 1st", "on Nov 10"): a start word directly followed by a date.
+ */
+function statedStart(t: string, now: Date): Date | null {
+  for (const m of t.matchAll(
+    /\b(?:from|starting|beginning|on)\s+(?:on\s+)?(?:the\s+)?/g,
+  )) {
+    const rest = t.slice(m.index + m[0].length);
+    if (DATE_EXPR.exec(rest)?.index !== 0) continue;
+    const d = parseDateExpr(rest, now);
+    if (d) return d;
+  }
+  return null;
+}
+
+/**
  * Resolves a {from, until} window from the member's own words, or nulls when no
  * supported pattern is present. Callers prefer this over model-proposed dates.
+ * A stated duration ("for two weeks") counts from the start the member states
+ * ("starting Monday"), else from `start` (the caller's window start), else
+ * from today.
  */
-export function resolveWindow(text: string, now: Date): DateWindow {
+export function resolveWindow(
+  text: string,
+  now: Date,
+  start?: Date,
+): DateWindow {
   const t = text.toLowerCase().replace(/[’]/g, "'");
   const today = startOfDay(now);
   const out: DateWindow = { from: null, until: null };
@@ -230,29 +267,34 @@ export function resolveWindow(text: string, now: Date): DateWindow {
     );
   if (dur?.[1]) {
     const n = /^\d+$/.test(dur[1]) ? Number(dur[1]) : (NUMBERS[dur[1]] ?? 1);
+    const stated = statedStart(t, now);
+    const base = stated ?? start ?? today;
     const until =
       dur[2] === "day"
-        ? addDays(today, n)
+        ? addDays(base, n)
         : dur[2] === "week"
-          ? addDays(today, 7 * n)
+          ? addDays(base, 7 * n)
           : (() => {
               // Clamp to the last day of the target month: Date.UTC rolls a
               // non-existent day (Jan 31 + 1 month = Feb 31) into the next
               // month (Mar 3). Same rollover class fixed in nextMonthDay
               // (#34651).
-              const target = today.getUTCMonth() + n;
+              const target = base.getUTCMonth() + n;
               const lastDay = day(
-                today.getUTCFullYear(),
+                base.getUTCFullYear(),
                 target + 1,
                 0,
               ).getUTCDate();
-              return day(
-                today.getUTCFullYear(),
-                target,
-                Math.min(today.getUTCDate(), lastDay),
+              return addDays(
+                day(
+                  base.getUTCFullYear(),
+                  target,
+                  Math.min(base.getUTCDate(), lastDay),
+                ),
+                (base.getTime() - startOfDay(base).getTime()) / 86_400_000,
               );
             })();
-    return { from: null, until: iso(until) };
+    return { from: iso(stated), until: iso(until) };
   }
   if (/\b(?:all\s+)?next\s+week\b/.test(t)) {
     const nextMonday = addDays(today, (8 - today.getUTCDay()) % 7 || 7);

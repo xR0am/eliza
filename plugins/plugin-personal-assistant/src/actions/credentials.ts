@@ -70,12 +70,12 @@ const examples: ActionExample[][] = [
   [
     {
       name: "{{name1}}",
-      content: { text: "Yes, trust notion.so for autofill going forward." },
+      content: { text: "Trust mybank.example for autofill going forward." },
     },
     {
       name: "{{agentName}}",
       content: {
-        text: "Added notion.so to the autofill whitelist.",
+        text: "Add mybank.example to the autofill whitelist? Reply yes to confirm or no to cancel.",
         actions: [ACTION_NAME],
       },
     },

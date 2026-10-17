@@ -717,6 +717,7 @@ async function executeBrowserWaitForUrl(
   params: BrowserActionParameters | undefined,
   messageText: string,
   callback: HandlerCallback | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<ReturnType<NonNullable<Action["handler"]>>> {
   const pattern = (params?.pattern ?? "").trim();
   if (!pattern) {
@@ -786,6 +787,7 @@ async function executeBrowserWaitForUrl(
       emitStatus: async (text) => {
         await callback?.({ text });
       },
+      signal,
     },
   );
 
@@ -892,7 +894,13 @@ export const browserAction: Action = {
     }
 
     if (subaction === "wait-for-url") {
-      return executeBrowserWaitForUrl(runtime, params, messageText, callback);
+      return executeBrowserWaitForUrl(
+        runtime,
+        params,
+        messageText,
+        callback,
+        (options as HandlerOptions | undefined)?.abortSignal,
+      );
     }
 
     // A wait treats url as a condition ("tab URL contains"), so a URL quoted
@@ -1341,8 +1349,9 @@ export const browserAction: Action = {
     },
     {
       name: "replace",
-      subactions: ["fill", "clear", "type", "realistic_fill", "realistic_type"],
-      description: "For realistic-fill: replace existing input, not append.",
+      subactions: ["realistic_type"],
+      description:
+        "realistic_type only: replace the existing value instead of appending. fill and realistic_fill always replace; type always appends.",
       required: false,
       schema: { type: "boolean" as const },
     },

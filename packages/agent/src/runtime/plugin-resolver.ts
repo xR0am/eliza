@@ -33,7 +33,7 @@ import {
   isMobilePlatform,
   type PluginInstallRecord,
 } from "@elizaos/host/protocol";
-import { saveElizaConfig } from "../config/config.ts";
+import { loadElizaConfig, saveElizaConfig } from "../config/config.ts";
 import {
   isDevCloudConfigAuthorityView,
   resolveDevCloudEnvAuthority,
@@ -110,6 +110,7 @@ const RUNTIME_APP_PLUGIN_SUBPATHS = new Set([
   "@elizaos/plugin-inbox",
   "@elizaos/plugin-personal-assistant",
   "@elizaos/plugin-native-phone",
+  "@elizaos/plugin-maps",
   "@elizaos/plugin-notes",
   "@elizaos/plugin-knowledge",
   "@elizaos/plugin-native-wifi",
@@ -2511,6 +2512,22 @@ function projectRoutingOnlyPlugin(plugin: Plugin): Plugin {
   };
 }
 
+/**
+ * Save only the repaired install records. The boot config passed to
+ * resolvePlugins holds vault-resolved secrets in `env`, so saving it would
+ * write them to disk in plaintext; the on-disk copy keeps its vault refs.
+ * @internal Exported for testing.
+ */
+export function persistRepairedInstallRecords(
+  pluginNames: Iterable<string>,
+): void {
+  const durable = loadElizaConfig();
+  for (const pluginName of pluginNames) {
+    repairBrokenInstallRecord(durable, pluginName);
+  }
+  saveElizaConfig(durable);
+}
+
 export async function resolvePlugins(
   config: ElizaConfig,
   opts?: {
@@ -3248,7 +3265,7 @@ export async function resolvePlugins(
       return plugins;
     }
     try {
-      saveElizaConfig(config);
+      persistRepairedInstallRecords(repairedInstallRecords);
       logger.info(
         `[eliza] Repaired ${repairedInstallRecords.size} plugin install record(s): ${Array.from(repairedInstallRecords).join(", ")}`,
       );

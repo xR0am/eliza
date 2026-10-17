@@ -649,7 +649,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const entity of entities) {
       const id = (entity.id ?? randomUUID()) as UUID;
-      await this.storage.set(COLLECTIONS.ENTITIES, id, { ...entity, id });
+      // Components live in their own collection, never in the entity row.
+      const { components: _components, ...row } = entity;
+      await this.storage.set(COLLECTIONS.ENTITIES, id, { ...row, id });
       ids.push(id);
     }
     return ids;
@@ -662,20 +664,37 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         COLLECTIONS.ENTITIES,
         entity.id,
       );
-      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, {
+      const { components: _components, ...row } = {
         ...(existing ?? {}),
         ...entity,
-      });
+      };
+      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, row);
     }
   }
 
   async getEntitiesByIds(entityIds: UUID[]): Promise<Entity[]> {
+    const entities = await this.loadEntityRows(entityIds);
+    await this.attachComponents(entities);
+    return entities;
+  }
+
+  private async loadEntityRows(entityIds: UUID[]): Promise<Entity[]> {
     const entities: Entity[] = [];
     for (const id of entityIds) {
       const entity = await this.storage.get<Entity>(COLLECTIONS.ENTITIES, id);
       if (entity) entities.push(entity);
     }
     return entities;
+  }
+
+  /** plugin-sql left-joins components; [] when the entity has none. */
+  private async attachComponents(entities: Entity[]): Promise<void> {
+    const components = await this.getComponentsForEntities(
+      entities.flatMap((entity) => (entity.id ? [entity.id] : [])),
+    );
+    for (const entity of entities) {
+      entity.components = components.filter((c) => c.entityId === entity.id);
+    }
   }
 
   async updateEntities(entities: Entity[]): Promise<void> {
@@ -686,10 +705,8 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         entity.id,
       );
       if (!existing) continue;
-      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, {
-        ...existing,
-        ...entity,
-      });
+      const { components: _components, ...row } = { ...existing, ...entity };
+      await this.storage.set(COLLECTIONS.ENTITIES, entity.id, row);
     }
   }
 
@@ -744,17 +761,12 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       const entityIds = [
         ...new Set(participants.map((p) => p.entityId)),
       ] as UUID[];
-      const entities = await this.getEntitiesByIds(entityIds);
-
+      const entities = await this.loadEntityRows(entityIds);
       if (includeComponents) {
-        for (const entity of entities) {
-          if (!entity.id) continue;
-          const components = await this.getComponentsForEntities([entity.id]);
-          (entity as Entity & { components?: Component[] }).components =
-            components;
-        }
+        await this.attachComponents(entities);
+      } else {
+        for (const entity of entities) entity.components = undefined;
       }
-
       result.push({ roomId, entities });
     }
     return result;
@@ -880,7 +892,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
               params.agentId ? component.agentId === params.agentId : true,
           )
         : (matchedComponentsByEntity.get(entity.id) ?? []);
-      if (components.length > 0) {
+      if (params.includeAllComponents || hasComponentQuery) {
         entity.components = components;
       } else {
         delete entity.components;
@@ -1614,7 +1626,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     if (limit !== undefined)
       readableMemories = readableMemories.slice(0, limit);
 
-    return readableMemories;
+    return params.includeEmbedding === false
+      ? readableMemories.map(({ embedding, ...memory }) => memory)
+      : readableMemories;
   }
 
   async getMemoriesByRoomIds(params: {
@@ -1664,7 +1678,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const offset = typeof params.offset === "number" ? params.offset : 0;
     let sliced = offset > 0 ? readableMemories.slice(offset) : readableMemories;
     if (params.limit !== undefined) sliced = sliced.slice(0, params.limit);
-    return sliced;
+    return params.includeEmbedding === false
+      ? sliced.map(({ embedding, ...memory }) => memory)
+      : sliced;
   }
 
   async searchMessages(params: {
@@ -1874,6 +1890,11 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       }
       for (const removedId of removedIds)
         await this.vectorIndex.remove(removedId);
+      for (const segment of storedSegments) {
+        if (segment.id && segment.embedding && segment.embedding.length > 0) {
+          await this.vectorIndex.add(segment.id, segment.embedding);
+        }
+      }
       return {
         status: params.mode === "create" ? "created" : "updated",
         parent: toMemory(storedParent),
@@ -3011,6 +3032,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const room of rooms) {
       const id = room.id as UUID;
+      const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, id);
+      // plugin-sql inserts with onConflictDoNothing, so an existing row is
+      // never overwritten — in particular not another agent's room.
+      if (existing && !this.roomIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.ROOMS, id, { ...room, id });
       ids.push(id);
     }
@@ -3021,6 +3046,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     for (const room of rooms) {
       const id = room.id as UUID;
       const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, id);
+      // A stored row for another agent is not an upsert target: overwriting it
+      // would rewrite that agent's room, the same agent_id predicate
+      // plugin-sql's updateRoom applies.
+      if (existing && !this.roomIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.ROOMS, id, {
         ...(existing ?? {}),
         ...room,
@@ -3033,7 +3062,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     for (const room of rooms) {
       if (!room.id) continue;
       const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, room.id);
-      if (!existing) continue;
+      if (!existing || !this.roomIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.ROOMS, room.id, {
         ...existing,
         ...room,
@@ -3043,7 +3072,19 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
 
   async deleteRooms(roomIds: UUID[]): Promise<void> {
     if (roomIds.length === 0) return;
-    const set = new Set(roomIds);
+    // Only rooms this adapter owns are deletable. The cascade below removes
+    // memories, participants, components and logs keyed by room_id, so
+    // deleting another agent's room would destroy its history as well. A
+    // missing room row cannot authorize that cascade either: a restored or
+    // copied file can hold an orphaned memory for another agent under an id
+    // with no room row, so an absent parent fails closed like a foreign one.
+    const owned: UUID[] = [];
+    for (const roomId of roomIds) {
+      const room = await this.storage.get<Room>(COLLECTIONS.ROOMS, roomId);
+      if (room && this.roomIsVisibleToOwner(room)) owned.push(roomId);
+    }
+    if (owned.length === 0) return;
+    const set = new Set(owned);
     const memories = await this.storage.getWhere<StoredMemory>(
       COLLECTIONS.MEMORIES,
       (m) => set.has(m.roomId as UUID),
@@ -3051,7 +3092,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const memoryIds = memories
       .map((memory) => memory.id)
       .filter((id): id is UUID => id !== undefined);
-    for (const id of roomIds) {
+    for (const id of owned) {
       await this.storage.delete(COLLECTIONS.ROOMS, id);
     }
     // Cascade as plugin-sql's room FKs do (participants, memories,
@@ -3286,6 +3327,16 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   ): Promise<UUID[]> {
     const ids: UUID[] = [];
     for (const rel of relationships) {
+      // One edge per (source, target, agent), as the plugin-sql unique key: an
+      // existing edge is kept and no id is returned for it.
+      const existing = await this.storage.getWhere<StoredRelationship>(
+        COLLECTIONS.RELATIONSHIPS,
+        (r) =>
+          r.sourceEntityId === rel.sourceEntityId &&
+          r.targetEntityId === rel.targetEntityId &&
+          (r.agentId ?? this.agentId) === this.agentId,
+      );
+      if (existing.length > 0) continue;
       const id = randomUUID() as UUID;
       const stored: StoredRelationship = {
         id,
@@ -3479,15 +3530,14 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   }
 
   async deleteCaches(keys: string[]): Promise<boolean> {
-    let removed = false;
+    // Storage failures throw, so reaching the end means every delete
+    // succeeded — including no-ops that matched no rows. Report success to
+    // match the pg adapter, whose deleteCache returns true on any successful
+    // DELETE regardless of row count.
     for (const key of keys) {
-      const ok = await this.storage.delete(
-        COLLECTIONS.CACHE,
-        this.cacheStorageKey(key),
-      );
-      if (ok) removed = true;
+      await this.storage.delete(COLLECTIONS.CACHE, this.cacheStorageKey(key));
     }
-    return removed;
+    return true;
   }
 
   // ── Task CRUD ─────────────────────────────────────────────────────────

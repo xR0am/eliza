@@ -45,7 +45,11 @@ import { TwitterInteractionClient } from "../interactions";
 import { TwitterPostClient } from "../post";
 import { TwitterTimelineClient } from "../timeline";
 import type { ITwitterClient, TwitterClientState } from "../types";
-import { splitTweetContent, splitXDirectMessageContent } from "../utils";
+import {
+  fetchMediaData,
+  splitTweetContent,
+  splitXDirectMessageContent,
+} from "../utils";
 import { normalizeXReceiptId } from "../utils/provider-receipt";
 import { getSetting } from "../utils/settings";
 import { getEpochMs } from "../utils/time";
@@ -372,6 +376,24 @@ export class TwitterClientInstance implements ITwitterClient {
       );
     }
   }
+}
+
+/**
+ * Whether `conversationId` belongs to a stored X group DM room of this
+ * account. The DM poller stores each conversation's room under
+ * `x-dm:<accountId>:<conversationId>`; a group room's channelId is the group
+ * conversation id, which looks like a user id.
+ */
+async function isStoredXGroupDmRoom(
+  runtime: IAgentRuntime,
+  accountId: string,
+  conversationId: string,
+): Promise<boolean> {
+  if (!/^\d+$/.test(conversationId)) return false;
+  const room = await runtime.getRoom(
+    createUniqueUuid(runtime, `x-dm:${accountId}:${conversationId}`),
+  );
+  return room?.type === ChannelType.GROUP;
 }
 
 export class XService extends Service {
@@ -752,7 +774,7 @@ export class XService extends Service {
   }
 
   async handleSendMessage(
-    _runtime: IAgentRuntime,
+    runtime: IAgentRuntime,
     target: TargetInfo,
     content: Content,
   ): Promise<void> {
@@ -794,6 +816,22 @@ export class XService extends Service {
           { code: "X_DM_CONVERSATION_NOT_OWNED", context: { accountId } },
         );
       }
+      // A stored group DM room's channelId is the group conversation id, a
+      // single number that is not a user: send into the conversation.
+      if (
+        conversationRecipient === undefined &&
+        candidate !== undefined &&
+        candidate === target.channelId &&
+        (await isStoredXGroupDmRoom(runtime, accountId, candidate))
+      ) {
+        await this.sendXDirectMessage(
+          base,
+          session,
+          { conversationId: candidate },
+          text,
+        );
+        return;
+      }
       const recipient =
         conversationRecipient ??
         (await this.resolveDmRecipient(candidate, base));
@@ -802,12 +840,17 @@ export class XService extends Service {
           "X DM connector requires a resolvable recipient user id.",
         );
       }
-      await this.sendXDirectMessage(base, session, recipient, text);
+      await this.sendXDirectMessage(
+        base,
+        session,
+        { participantId: recipient },
+        text,
+      );
     });
   }
 
   async sendDirectMessageForAccount(
-    accountId: string,
+    accountId: string | undefined,
     params: { participantId: string; text: string },
   ): Promise<{
     ok: true;
@@ -830,7 +873,12 @@ export class XService extends Service {
           "X DM connector requires a resolvable recipient user id.",
         );
       }
-      return this.sendXDirectMessage(base, session, recipient, text);
+      return this.sendXDirectMessage(
+        base,
+        session,
+        { participantId: recipient },
+        text,
+      );
     });
     return {
       ok: true,
@@ -841,7 +889,7 @@ export class XService extends Service {
   }
 
   async fetchDirectMessagesForAccount(
-    accountId: string,
+    accountId: string | undefined,
     params: { participantId?: string; limit?: number } = {},
   ): Promise<Memory[]> {
     const runtime = this.runtime;
@@ -862,6 +910,7 @@ export class XService extends Service {
       {
         runtime,
         source: "x",
+        ...(accountId ? { accountId } : {}),
         target,
       } as MessageConnectorQueryContext,
       {
@@ -898,6 +947,14 @@ export class XService extends Service {
         runtime,
         `x:${accountId}:feed:${profile.id}`,
       );
+      const media = content.attachments?.length
+        ? (
+            await fetchMediaData(
+              content.attachments,
+              runtime.fetch ?? undefined,
+            )
+          ).map(({ data, mediaType }) => ({ data, type: mediaType }))
+        : [];
       const chunks = splitTweetContent(text, X_MAX_POST_LENGTH);
       const memories: Memory[] = [];
       let inReplyTo = replyToTweetId;
@@ -911,6 +968,7 @@ export class XService extends Service {
             text: chunk,
             ...(inReplyTo ? { inReplyTo } : {}),
             ...(index === 0 && quotedPostId ? { quotedPostId } : {}),
+            ...(index === 0 && media.length > 0 ? { media } : {}),
           },
           profile,
         );
@@ -1209,11 +1267,15 @@ export class XService extends Service {
     // empty inbox.
     const messages = await this.listRecentDirectMessages(accountId);
 
-    // A conversation with the target includes the account's own replies, so
-    // match on the authenticated conversation pair, not only the sender.
+    // A stored room targets the provider conversation id, while a resolved
+    // user target names the authenticated one-to-one counterpart. Accept both
+    // forms so group rooms and the account's own replies remain readable.
     const matches = messages
       .filter(
-        (message) => !targetUserId || dmCounterpartId(message) === targetUserId,
+        (message) =>
+          !targetUserId ||
+          message.conversationId === targetUserId ||
+          dmCounterpartId(message) === targetUserId,
       )
       .map((message) =>
         this.buildXDirectMessageMemory(
@@ -1358,15 +1420,20 @@ export class XService extends Service {
   private async sendXDirectMessage(
     base: ClientBase,
     session: AuthenticatedTwitterSession,
-    recipient: string,
+    to: { participantId: string } | { conversationId: string },
     text: string,
   ): Promise<{ messageId: string | null; messageIds: string[] }> {
     const messageIds: string[] = [];
     for (const chunk of splitXDirectMessageContent(text)) {
       this.assertDmSessionCurrent(base, session);
-      const result = await session.client.v2.sendDmToParticipant(recipient, {
-        text: chunk,
-      });
+      const result =
+        "conversationId" in to
+          ? await session.client.v2.sendDmInConversation(to.conversationId, {
+              text: chunk,
+            })
+          : await session.client.v2.sendDmToParticipant(to.participantId, {
+              text: chunk,
+            });
       const messageId = normalizeXReceiptId(result.dm_event_id);
       if (messageId) messageIds.push(messageId);
     }
@@ -1537,9 +1604,12 @@ export class XService extends Service {
     const authorId = post.userId || "unknown";
     const createdAt = post.createdAt;
     const isOwn = Boolean(post.ownUserId && authorId === post.ownUserId);
+    // Ids and authors use the same keys as the live mention and timeline paths
+    // (createUniqueUuid of the X user id and post id), so a fetched post is the
+    // stored one and its author is the known entity.
     const entityId = isOwn
       ? runtime.agentId
-      : createUniqueUuid(runtime, `x:user:${authorId}`);
+      : createUniqueUuid(runtime, authorId);
     const roomId =
       post.roomId ??
       createUniqueUuid(
@@ -1551,7 +1621,7 @@ export class XService extends Service {
       : `https://x.com/i/web/status/${post.id}`;
 
     return {
-      id: createUniqueUuid(runtime, `x:post:${post.id}`),
+      id: createUniqueUuid(runtime, post.id),
       agentId: runtime.agentId,
       entityId,
       roomId,
@@ -1562,7 +1632,7 @@ export class XService extends Service {
         url,
         channelType: ChannelType.FEED,
         ...(post.inReplyTo
-          ? { inReplyTo: createUniqueUuid(runtime, `x:post:${post.inReplyTo}`) }
+          ? { inReplyTo: createUniqueUuid(runtime, post.inReplyTo) }
           : {}),
       },
       metadata: {
@@ -1617,19 +1687,22 @@ export class XService extends Service {
       target?.roomId ??
       createUniqueUuid(
         runtime,
-        counterpartId
-          ? `x:${normalizedAccountId}:dm:${counterpartId}`
-          : `x:${normalizedAccountId}:dm-conversation:${message.conversationId ?? message.id}`,
+        // Same room, memory and author keys as the live DM poller.
+        message.conversationId
+          ? `x-dm:${normalizedAccountId}:${message.conversationId}`
+          : counterpartId
+            ? `x:${normalizedAccountId}:dm:${counterpartId}`
+            : `x:${normalizedAccountId}:dm-conversation:${message.id}`,
       );
     // `senderId` is an X user id, never the agent's UUID; the account's own
     // DMs are the ones listRecentDirectMessages marked as not inbound.
     const fromAccount = message.isInbound === false;
     const entityId = fromAccount
       ? runtime.agentId
-      : createUniqueUuid(runtime, `x:user:${senderId}`);
+      : createUniqueUuid(runtime, senderId);
 
     return {
-      id: createUniqueUuid(runtime, `x:dm:${message.id}`),
+      id: createUniqueUuid(runtime, `x-dm:${message.id}`),
       agentId: runtime.agentId,
       entityId,
       roomId,

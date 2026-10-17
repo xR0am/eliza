@@ -1356,7 +1356,7 @@ export class OrchestratorTaskService extends Service {
     if (!shouldAutoVerifyGoal()) return;
     const docs = await this.store.listTaskDocuments({
       includeArchived: false,
-      status: "validating",
+      statuses: ["validating"],
     });
     if (docs.length === 0) return;
     const localScope = await getVerifierProcessScope();
@@ -3903,9 +3903,11 @@ export class OrchestratorTaskService extends Service {
       !TERMINAL_TASK_STATUSES.has(doc.task.status);
     const nextMetadata = { ...doc.task.metadata };
     delete nextMetadata.pausedWithActiveWork;
+    // Keep `pausedWithActiveWork` until the fresh sub-agent is spawned: if the
+    // spawn fails, a retried resume must still re-engage instead of a no-op.
     const updated = await this.store.updateTask(taskId, {
       paused: false,
-      metadata: nextMetadata,
+      ...(shouldReEngage ? {} : { metadata: nextMetadata }),
     });
     if (!updated) return null;
     // If the task was parked when paused, re-seed the in-memory order from its
@@ -3939,6 +3941,11 @@ export class OrchestratorTaskService extends Service {
         completionRole: "coordinator",
         task: "Resume this task from its current durable context. Reinspect the task timeline and any partial work, then continue until the goal is met or you are blocked.",
       });
+      const spawned = await this.store.getTask(taskId);
+      if (spawned) {
+        const { pausedWithActiveWork: _, ...metadata } = spawned.task.metadata;
+        await this.store.updateTask(taskId, { metadata });
+      }
     }
     return this.getTask(taskId);
   }
@@ -7030,7 +7037,7 @@ export class OrchestratorTaskService extends Service {
       const acp = this.acp();
       const docs = await this.store.listTaskDocuments({
         includeArchived: false,
-        status: "active",
+        statuses: ["active"],
       });
       for (const candidate of docs) {
         // The bulk snapshot is candidate discovery only. A session may attach
@@ -7241,7 +7248,7 @@ export class OrchestratorTaskService extends Service {
    * mid-queue resumes deterministically. Scans `open` tasks for a queued
    * admission record and seeds `admissionQueue` in current priority order. */
   private async rebuildAdmissionQueueFromStore(): Promise<void> {
-    const open = await this.store.listTasks({ status: "open" });
+    const open = await this.store.listTasks({ statuses: ["open"] });
     const entries: QueueEntry[] = [];
     for (const task of open) {
       const admission = OrchestratorTaskService.admissionOf(task);
@@ -7466,12 +7473,24 @@ export class OrchestratorTaskService extends Service {
           continue;
         }
         // error-policy:J7 the dispatch of a parked task failed for a non-cap
-        // reason (bad workdir, transport error). Report it so the agent/owner
-        // sees the parked task did not launch; do not silently drop or re-park
-        // forever (that would spin the reconcile tick).
+        // reason (bad workdir, transport error). Its admission record is gone,
+        // so nothing retries it: mark the task failed with the reason so the
+        // owner sees it did not launch, instead of leaving it `open` forever.
+        // Re-parking would spin the reconcile tick on the same error.
         this.runtime.reportError("OrchestratorTask.drainAdmissionQueue", err, {
           taskId: head.taskId,
         });
+        await this.store.addEvent({
+          id: randomUUID(),
+          taskId: head.taskId,
+          eventType: "task_failed",
+          summary: "Queued sub-agent could not be started; task marked failed.",
+          data: { message: err instanceof Error ? err.message : String(err) },
+          timestamp: Date.now(),
+          createdAt: nowIso(),
+        });
+        await this.advanceTaskStatus(head.taskId, "unrecoverable");
+        this.emitChange(head.taskId);
       }
     }
   }

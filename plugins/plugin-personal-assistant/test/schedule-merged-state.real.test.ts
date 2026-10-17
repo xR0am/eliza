@@ -4,7 +4,8 @@
  * DB-backed runtime.
  */
 import type { AgentRuntime } from "@elizaos/core";
-import { describe, expect, it } from "vitest";
+import { createLifeOpsSleepEpisode } from "@elizaos/plugin-health";
+import { describe, expect, it, vi } from "vitest";
 import { createRealTestRuntime } from "../../../packages/app/test/helpers/real-runtime.ts";
 import { resolveDefaultTimeZone } from "../src/lifeops/defaults.js";
 import { resolveOwnerFactStore } from "../src/lifeops/owner/fact-store.js";
@@ -70,6 +71,62 @@ async function seedScheduleTelemetry(service: LifeOpsService): Promise<void> {
     onBattery: false,
     metadata: {},
   });
+}
+
+// One observed night (23:30 -> 07:30 UTC) and a day of activity up to 22:50
+// put tonight's bedtime target at 23:30 on the wake's sleep-day.
+async function seedBedtimeEveningTelemetry(fixture: Fixture): Promise<void> {
+  await resolveOwnerFactStore(fixture.runtime).update(
+    { timezone: "UTC" },
+    { source: "profile_save", recordedAt: new Date().toISOString() },
+  );
+  await fixture.service.recordScreenTimeEvent({
+    source: "app",
+    identifier: "com.test.evening",
+    displayName: "Evening",
+    startAt: "2026-04-18T18:00:00.000Z",
+    endAt: "2026-04-18T23:30:00.000Z",
+    durationSeconds: 5.5 * 60 * 60,
+    metadata: {},
+  });
+  await fixture.service.captureActivitySignal({
+    source: "mobile_device",
+    platform: "mobile_app",
+    state: "locked",
+    observedAt: "2026-04-18T23:35:00.000Z",
+    idleState: "locked",
+    idleTimeSeconds: 0,
+    onBattery: false,
+    metadata: {},
+  });
+  await fixture.service.recordScreenTimeEvent({
+    source: "app",
+    identifier: "com.test.day",
+    displayName: "Day",
+    startAt: "2026-04-19T07:30:00.000Z",
+    endAt: "2026-04-19T22:50:00.000Z",
+    durationSeconds: (15 * 60 + 20) * 60,
+    metadata: {},
+  });
+}
+
+// Runs the scheduler tick 35 and then 25 minutes before that target and
+// returns the `occurredAt` of every bedtime.imminent the runtime emitted.
+async function collectBedtimeImminentAcrossTicks(
+  fixture: Fixture,
+): Promise<unknown[]> {
+  const occurredAt: unknown[] = [];
+  fixture.runtime.registerEvent("lifeops.bedtime.imminent", async (payload) => {
+    occurredAt.push((payload as { occurredAt?: unknown }).occurredAt);
+  });
+  await fixture.service.processScheduledWork({
+    now: "2026-04-19T22:55:00.000Z",
+  });
+  expect(occurredAt).toEqual([]);
+  await fixture.service.processScheduledWork({
+    now: "2026-04-19T23:05:00.000Z",
+  });
+  return occurredAt;
 }
 
 function buildCloudState(
@@ -328,6 +385,120 @@ describe("merged schedule state", () => {
       if (previousDeviceKind === undefined)
         delete process.env.ELIZA_DEVICE_KIND;
       else process.env.ELIZA_DEVICE_KIND = previousDeviceKind;
+    }
+  });
+
+  it("emits bedtime.imminent when a scheduler tick crosses into the 30-minute window", async () => {
+    const fixture = await createFixture("lifeops-bedtime-imminent-agent");
+    try {
+      await seedBedtimeEveningTelemetry(fixture);
+
+      expect(await collectBedtimeImminentAcrossTicks(fixture)).toEqual([
+        "2026-04-19T23:30:00.000Z",
+      ]);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("emits bedtime.imminent for a regular owner who is winding down", async () => {
+    const fixture = await createFixture("lifeops-bedtime-imminent-regular");
+    try {
+      await seedBedtimeEveningTelemetry(fixture);
+      // A week of 23:30 -> 07:30 nights gives a very regular baseline, so the
+      // target is the projected bedtime and the evening state is winding_down.
+      for (let day = 12; day <= 18; day += 1) {
+        await fixture.service.repository.upsertSleepEpisode(
+          createLifeOpsSleepEpisode({
+            agentId: String(fixture.runtime.agentId),
+            startAt: `2026-04-${day}T23:30:00.000Z`,
+            endAt: `2026-04-${day + 1}T07:30:00.000Z`,
+            source: "activity_gap",
+            confidence: 0.9,
+            cycleType: "overnight",
+            sealed: true,
+            evidence: [],
+          }),
+        );
+      }
+
+      expect(await collectBedtimeImminentAcrossTicks(fixture)).toEqual([
+        "2026-04-19T23:30:00.000Z",
+      ]);
+      const state = await fixture.service.repository.getScheduleMergedState(
+        String(fixture.runtime.agentId),
+        "local",
+        "UTC",
+      );
+      expect(state?.circadianState).toBe("winding_down");
+      expect(state?.relativeTime.bedtimeTargetSource).toBe("typical_sleep");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("does not resend a night reminder when later activity moves the adaptive night window", async () => {
+    const fixture = await createFixture("lifeops-adaptive-night-resend");
+    // Freeze only Date so the definition is created on the test's day.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-20T21:30:00.000Z"));
+    try {
+      await resolveOwnerFactStore(fixture.runtime).update(
+        { timezone: "UTC" },
+        { source: "profile_save", recordedAt: new Date().toISOString() },
+      );
+      // No observed nights: the adaptive night window starts one hour after
+      // today's last activity.
+      await fixture.service.recordScreenTimeEvent({
+        source: "app",
+        identifier: "com.test.day",
+        displayName: "Day",
+        startAt: "2026-04-20T07:30:00.000Z",
+        endAt: "2026-04-20T21:00:00.000Z",
+        durationSeconds: 13.5 * 60 * 60,
+        metadata: {},
+      });
+      const created = await fixture.service.createDefinition({
+        title: "Take night pills",
+        kind: "habit",
+        cadence: { kind: "daily", windows: ["night"] },
+        timezone: "UTC",
+        reminderPlan: {
+          steps: [{ channel: "in_app", offsetMinutes: 0, label: "Night" }],
+        },
+      });
+      const delivered = async () =>
+        (
+          await fixture.service.repository.listReminderAttempts(
+            String(fixture.runtime.agentId),
+          )
+        ).filter((attempt) => attempt.planId === created.reminderPlan?.id);
+
+      vi.setSystemTime(new Date("2026-04-20T22:05:00.000Z"));
+      await fixture.service.processScheduledWork({
+        now: "2026-04-20T22:05:00.000Z",
+      });
+      expect(await delivered()).toHaveLength(1);
+
+      // The owner keeps using the computer until 22:40; once the 30-minute
+      // policy cache expires the night window moves to 23:40.
+      await fixture.service.recordScreenTimeEvent({
+        source: "app",
+        identifier: "com.test.late",
+        displayName: "Late",
+        startAt: "2026-04-20T21:00:00.000Z",
+        endAt: "2026-04-20T22:40:00.000Z",
+        durationSeconds: 100 * 60,
+        metadata: {},
+      });
+      vi.setSystemTime(new Date("2026-04-20T23:45:00.000Z"));
+      await fixture.service.processScheduledWork({
+        now: "2026-04-20T23:45:00.000Z",
+      });
+      expect(await delivered()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      await fixture.cleanup();
     }
   });
 

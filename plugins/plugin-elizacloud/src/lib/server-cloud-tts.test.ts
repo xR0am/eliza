@@ -20,7 +20,8 @@ import { handleCloudTtsPreviewRoute } from "./server-cloud-tts";
 import { test } from "vitest";
 import { type LogEntry } from "@elizaos/core";
 import { vi } from "vitest";
-import type http from "node:http";
+import http from "node:http";
+import { EventEmitter, once } from "node:events";
 // The logger freezes its level at module init and the repo test setup defaults
 // LOG_LEVEL to "error", which would gate the info-level tts lines (and their
 // listener delivery) off. vi.hoisted runs before the imports above evaluate,
@@ -44,15 +45,20 @@ let upstreamResponse: () => Response = () => new Response(new Uint8Array([73, 68
     status: 200,
     headers: { "content-type": "audio/mpeg" },
 });
+function evented<T extends object>(value:T):T & EventEmitter {
+    Object.setPrototypeOf(value, EventEmitter.prototype);
+    EventEmitter.call(value);
+    return value as T & EventEmitter;
+}
 function fakeReq(body: string, headers: Record<string, string> = {}): http.IncomingMessage {
     const chunks = [Buffer.from(body)];
-    return {
+    return evented({
         headers,
         async *[Symbol.asyncIterator]() {
             for (const chunk of chunks)
                 yield chunk;
         },
-    } as unknown as http.IncomingMessage;
+    }) as unknown as http.IncomingMessage;
 }
 /**
  * Models the bare agent server after `attachJsonBodyIfPresent`
@@ -61,7 +67,7 @@ function fakeReq(body: string, headers: Record<string, string> = {}): http.Incom
  * underlying stream is drained (iterating it yields zero bytes). #16348.
  */
 function fakeReqPreParsed(parsed: Record<string, unknown>, headers: Record<string, string> = {}): http.IncomingMessage {
-    return {
+    return evented({
         headers,
         body: parsed,
         rawBody: JSON.stringify(parsed),
@@ -69,7 +75,7 @@ function fakeReqPreParsed(parsed: Record<string, unknown>, headers: Record<strin
         async *[Symbol.asyncIterator]() {
             // no chunks
         },
-    } as unknown as http.IncomingMessage;
+    }) as unknown as http.IncomingMessage;
 }
 function fakeRes(): {
     res: http.ServerResponse;
@@ -84,7 +90,7 @@ function fakeRes(): {
         headers: {} as Record<string, string>,
         body: null as Buffer | string | null,
     };
-    const res = {
+    const res = evented({
         headersSent: false,
         set statusCode(code: number) {
             state.statusCode = code;
@@ -98,7 +104,7 @@ function fakeRes(): {
         end(payload?: Buffer | string) {
             state.body = payload ?? null;
         },
-    } as unknown as http.ServerResponse;
+    }) as unknown as http.ServerResponse;
     return { res, state };
 }
 beforeEach(() => {
@@ -437,5 +443,76 @@ describe("ELIZA_TTS_DEBUG tracing on /api/tts/cloud", () => {
         await handleCloudTtsPreviewRoute(fakeReq(JSON.stringify({ text: "silent run" })), res);
         expect(state.statusCode).toBe(200);
         expect(ttsLines()).toHaveLength(0);
+    });
+});
+
+
+describe("Cloud speech evidence and client lifecycle", () => {
+    test.each(["tts", "stt"] as const)("forwards actual %s provider, timing and trace headers only", async (kind) => {
+        upstreamResponse = () => new Response(kind === "tts" ? new Uint8Array([73,68,51]) : JSON.stringify({transcript:"synthetic transcript"}), {headers:{
+            [`X-Eliza-${kind.toUpperCase()}-Provider`]:"cartesia",
+            "Server-Timing":"synthesis;dur=12", "X-Eliza-Trace-Id":"test-trace",
+            "X-Request-Id":"test-request", "CF-Ray":"test-ray",
+            "Set-Cookie":"private=not-forwarded", "Authorization":"Bearer not-forwarded",
+            "X-Eliza-Speech-Provider":"untrusted-normalized-header",
+        }});
+        const {res,state}=fakeRes();
+        await (kind === "tts" ? handleCloudTtsPreviewRoute(fakeReq(JSON.stringify({text:"synthetic speech"})),res) : handleCloudSttRoute(fakeReq("synthetic audio",{"content-type":"audio/wav"}),res));
+        expect(state.statusCode).toBe(200);
+        expect(state.headers["x-eliza-speech-provider"]).toBe("cartesia");
+        expect(state.headers["x-eliza-speech-route"]).toBe("cloud");
+        expect(state.headers["server-timing"]).toBe("synthesis;dur=12");
+        expect(state.headers["x-eliza-trace-id"]).toBe("test-trace");
+        expect(state.headers["x-request-id"]).toBe("test-request");
+        expect(state.headers["cf-ray"]).toBe("test-ray");
+        expect(state.headers["set-cookie"]).toBeUndefined();
+        expect(state.headers.authorization).toBeUndefined();
+    });
+    test.each(["tts", "stt"] as const)("missing actual %s provider remains unverified", async(kind)=>{
+        upstreamResponse=()=>new Response(kind === "tts" ? new Uint8Array([73,68,51]) : JSON.stringify({transcript:"synthetic transcript"}),{headers:{"X-Eliza-Speech-Provider":"cartesia"}});
+        const {res,state}=fakeRes();
+        await (kind === "tts" ? handleCloudTtsPreviewRoute(fakeReq(JSON.stringify({text:"synthetic speech"})),res) : handleCloudSttRoute(fakeReq("synthetic audio",{"content-type":"audio/wav"}),res));
+        expect(state.headers["x-eliza-speech-route"]).toBe("cloud");
+        expect(state.headers["x-eliza-speech-provider"]).toBeUndefined();
+    });
+    async function proxy(kind:"tts"|"stt") {
+        let finish!:()=>void, fail!:(error:unknown)=>void, requestClosed!:()=>void, responseClosed!:()=>void;
+        const finished=new Promise<void>((resolve,reject)=>{finish=resolve;fail=reject});
+        const requestComplete=new Promise<void>(resolve=>{requestClosed=resolve});
+        const disconnected=new Promise<void>(resolve=>{responseClosed=resolve});
+        const server=http.createServer((req,res)=>{
+            req.once("close",requestClosed);res.once("close",responseClosed);
+            void (kind === "tts" ? handleCloudTtsPreviewRoute(req,res) : handleCloudSttRoute(req,res)).then(()=>finish(),fail);
+        });
+        server.listen(0,"127.0.0.1");await once(server,"listening");
+        const address=server.address();if(!address||typeof address==="string")throw Error("Fixture port missing");
+        let receive!:(value:{status:number;body:Buffer})=>void;
+        const received=new Promise<{status:number;body:Buffer}>(resolve=>{receive=resolve});
+        const client=http.request({host:"127.0.0.1",port:address.port,method:"POST",headers:{"Content-Type":kind === "tts" ? "application/json" : "audio/wav"}},res=>{const chunks:Buffer[]=[];res.on("data",chunk=>chunks.push(chunk));res.on("end",()=>receive({status:res.statusCode??0,body:Buffer.concat(chunks)}));});
+        client.on("error",()=>{});
+        client.end(kind === "tts" ? JSON.stringify({text:"synthetic speech"}) : "synthetic audio");
+        return {client,received,finished,requestComplete,disconnected,close:async()=>{client.destroy();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
+    }
+    test.each(["tts", "stt"] as const)("%s client disconnect cancels an in-flight upstream without retry",async(kind)=>{
+        let entered!:()=>void, rejectFetch!:(reason:unknown)=>void;const started=new Promise<void>(resolve=>{entered=resolve});let signal:AbortSignal|undefined,calls=0;
+        globalThis.fetch=(async(_input,init)=>{calls++;signal=init?.signal??undefined;entered();return new Promise<Response>((_resolve,reject)=>{rejectFetch=reject;signal?.addEventListener("abort",()=>reject(signal?.reason),{once:true});});}) as typeof fetch;
+        const active=await proxy(kind);
+        try{await started;active.client.destroy();await active.disconnected;expect(signal?.aborted).toBe(true);expect(calls).toBe(1);}
+        finally{rejectFetch(Error("fixture cleanup"));await active.finished;await active.close();}
+    });
+    test.each(["tts", "stt"] as const)("%s normal request EOF does not cancel the upstream or successful response",async(kind)=>{
+        let entered!:()=>void,release!:(response:Response)=>void;const started=new Promise<void>(resolve=>{entered=resolve});let signal:AbortSignal|undefined;
+        globalThis.fetch=(async(_input,init)=>{signal=init?.signal??undefined;entered();return new Promise<Response>(resolve=>{release=resolve});}) as typeof fetch;
+        const active=await proxy(kind);
+        try{await started;await active.requestComplete;expect(signal?.aborted).toBe(false);release(new Response(kind === "tts"?new Uint8Array([73,68,51]):JSON.stringify({transcript:"synthetic transcript"})));expect((await active.received).status).toBe(200);await active.finished;expect(signal?.aborted).toBe(false);}
+        finally{release(new Response("fixture cleanup"));await active.finished;await active.close();}
+    });
+    test("disconnect interrupts warming backoff without another paid attempt",async()=>{
+        vi.useFakeTimers();upstreamResponse=()=>Response.json({error:{code:"auth_cache_warming",retryAfter:3}},{status:503});
+        const req=fakeReq(JSON.stringify({text:"synthetic speech"})),{res}=fakeRes();
+        const pending=handleCloudTtsPreviewRoute(req,res);
+        await vi.advanceTimersByTimeAsync(10);expect(upstream.length).toBe(1);
+        res.emit("close");await vi.runAllTimersAsync();await pending;
+        expect(upstream.length).toBe(1);
     });
 });

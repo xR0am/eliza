@@ -657,6 +657,24 @@ export class TelegramService extends Service {
     return normalized === DEFAULT_ACCOUNT_ID ? key : `${normalized}:${key}`;
   }
 
+  /** The room id inbound messages for this chat (and topic) are stored under. */
+  private connectorRoomIdForChannel(
+    channelId: string,
+    threadId: string | undefined,
+    accountId: string,
+  ): UUID {
+    const parts = parseTelegramTargetParts(channelId, threadId);
+    return createUniqueUuid(
+      this.runtime,
+      this.scopedTelegramKey(
+        parts.threadId
+          ? `${parts.chatId}-${parts.threadId}`
+          : String(parts.chatId),
+        accountId,
+      ),
+    ) as UUID;
+  }
+
   private knownChatKeyMatchesAccount(
     key: string,
     chat: Chat,
@@ -2646,7 +2664,8 @@ export class TelegramService extends Service {
     params: MessageConnectorCreateThreadParams,
   ): Promise<ThreadHandle> {
     const target = params.target as AccountScopedTargetInfo;
-    const accountId = target.accountId ?? this.defaultAccountId;
+    // Same account choice as send, edit and react: the room's bot owns the chat.
+    const accountId = await this.resolveAccountIdForTarget(runtime, target);
     const bot = this.getAccountState(accountId)?.bot ?? this.bot;
     if (!bot) {
       throw new Error("Telegram bot is not available — cannot create thread");
@@ -2675,11 +2694,11 @@ export class TelegramService extends Service {
 
   /** Post `params.content` into a forum topic created by createConnectorThread. */
   public async postToConnectorThread(
-    _runtime: IAgentRuntime,
+    runtime: IAgentRuntime,
     params: MessageConnectorPostToThreadParams,
   ): Promise<Memory | undefined> {
     const target = params.target as AccountScopedTargetInfo;
-    const accountId = target.accountId ?? this.defaultAccountId;
+    const accountId = await this.resolveAccountIdForTarget(runtime, target);
     const bot = this.getAccountState(accountId)?.bot ?? this.bot;
     if (!bot) {
       throw new Error("Telegram bot is not available — cannot post to thread");
@@ -2819,10 +2838,20 @@ export class TelegramService extends Service {
       target,
       { accountId: (context as AccountScopedConnectorContext).accountId },
     );
-    if (target?.roomId) {
+    // A target named only by channelId (and threadId) is still one chat.
+    const roomId =
+      target?.roomId ??
+      (target?.channelId
+        ? this.connectorRoomIdForChannel(
+            target.channelId,
+            target.threadId,
+            accountId,
+          )
+        : undefined);
+    if (roomId) {
       const memories = await loadAllTelegramRoomMemories(
         context.runtime,
-        target.roomId,
+        roomId,
       );
       const matches = memories.filter((memory) => {
         const metadata = memory.metadata as Record<string, unknown> | undefined;
@@ -2906,15 +2935,7 @@ export class TelegramService extends Service {
     const roomId =
       target.roomId ??
       room?.id ??
-      (createUniqueUuid(
-        this.runtime,
-        this.scopedTelegramKey(
-          parts.threadId
-            ? `${parts.chatId}-${parts.threadId}`
-            : String(parts.chatId),
-          accountId,
-        ),
-      ) as UUID);
+      this.connectorRoomIdForChannel(channelId, target.threadId, accountId);
     const memories = await loadAllTelegramRoomMemories(context.runtime, roomId);
     const recentMessages = memories
       .slice()
@@ -3022,12 +3043,14 @@ export class TelegramService extends Service {
         const state = normalizedAccountId
           ? serviceInstance.getAccountState(normalizedAccountId)
           : serviceInstance.getDefaultAccountState();
-        const sendHandler = async (
+        // Forward the delivery receipt: a handler that returns nothing reports
+        // "unknown" acceptance, and reminders then re-send on every tick.
+        const sendHandler = (
           handlerRuntime: IAgentRuntime,
           target: TargetInfo,
           content: Content,
-        ): Promise<Memory | undefined> => {
-          await serviceInstance.handleSendMessage(
+        ): SendHandlerResult =>
+          serviceInstance.handleSendMessage(
             handlerRuntime,
             normalizedAccountId &&
               !(target as AccountScopedTargetInfo).accountId
@@ -3035,8 +3058,6 @@ export class TelegramService extends Service {
               : target,
             content,
           );
-          return undefined;
-        };
         const withContextAccount = (
           context: MessageConnectorQueryContext,
         ): MessageConnectorQueryContext =>
@@ -3443,10 +3464,36 @@ export class TelegramService extends Service {
         text,
         threadId,
       );
-      // Telegram's editMessageText returns the edited Message; the orchestrator
-      // only needs the call to succeed for compact-edit mode, so no Memory is
-      // synthesized here (the original send already produced one).
-      return undefined;
+      // Return the stored message with the new text, so the caller updates the
+      // agent's memory of it like the Slack and Discord edits do.
+      const storedId = messageManager.messageMemoryId(chatId, params.messageId);
+      let stored: Memory | null;
+      try {
+        stored = await runtime.getMemoryById(storedId);
+      } catch (error) {
+        // error-policy:J4 the Telegram edit already happened; a failed lookup
+        // of the stored copy is reported, not turned into a failed edit.
+        runtime.reportError("telegram:edit-stored-copy", error, {
+          chatId,
+          messageId: params.messageId,
+        });
+        return undefined;
+      }
+      if (!stored) {
+        // A message sent before this agent stored it (or by another client)
+        // has no stored copy to update; the platform edit still happened.
+        logger.debug(
+          {
+            src: "plugin:telegram",
+            chatId,
+            messageId: params.messageId,
+            storedId,
+          },
+          "Edited Telegram message has no stored copy to update",
+        );
+        return undefined;
+      }
+      return { ...stored, content: { ...stored.content, text } };
     });
   }
 

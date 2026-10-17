@@ -261,6 +261,7 @@ export class NotesStore {
   async stop(): Promise<void> {
     if (this.stopped) return;
     await this.shared.writeBarrier;
+    if (this.stopped) return;
     this.stopped = true;
     this.shared.references -= 1;
     if (this.shared.references > 0) return;

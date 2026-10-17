@@ -1,8 +1,9 @@
 /**
- * The conversation registry evicts the oldest entry past its soft cap while
- * the room and messages stay persisted; route lookups must rebuild an evicted
- * conversation from its room instead of reporting it missing or skipping the
- * delete of its stored data.
+ * Every web conversation stays in the registry: past 500 conversations the
+ * oldest one is still listed and its messages are still searchable. A
+ * conversation missing from the registry while its room and messages are
+ * persisted is rebuilt from its room instead of being reported missing or
+ * skipping the delete of its stored data.
  */
 
 import fs from "node:fs";
@@ -148,7 +149,7 @@ async function createFixture() {
   return { agentId, adapter, adminId, dataDir, runtime, state };
 }
 
-it("restores an evicted conversation so it stays readable and deletable", async () => {
+it("keeps the oldest of 501 conversations listed and searchable, and rebuilds a registry miss", async () => {
   const { agentId, adapter, adminId, dataDir, runtime, state } =
     await createFixture();
   try {
@@ -182,7 +183,23 @@ it("restores an evicted conversation so it stays readable and deletable", async 
       (await call(state, "POST", "/api/conversations", { title: "latest" }))
         .status,
     ).toBe(200);
-    expect(state.conversations.has(first.id)).toBe(false);
+
+    // 501 conversations: the oldest is still listed and searchable.
+    const listed = await call(state, "GET", "/api/conversations");
+    const ids = (
+      listed.payload as { conversations: Array<{ id: string }> }
+    ).conversations.map((conversation) => conversation.id);
+    expect(ids).toHaveLength(501);
+    expect(ids).toContain(first.id);
+    const found = await call(
+      state,
+      "GET",
+      "/api/conversations/messages/search?q=remember",
+    );
+    expect(JSON.stringify(found.payload)).toContain("remember my first chat");
+
+    // A registry miss is rebuilt from the persisted room.
+    state.conversations.delete(first.id);
 
     const messages = await call(
       state,
@@ -213,7 +230,7 @@ it("restores an evicted conversation so it stays readable and deletable", async 
   }
 }, 120_000);
 
-it("does not restore a conversation from a room outside the web-chat world", async () => {
+it("does not restore a conversation from a room that is not a web chat", async () => {
   const { adapter, dataDir, runtime, state } = await createFixture();
   try {
     const convId = "not-a-web-chat";
@@ -237,6 +254,33 @@ it("does not restore a conversation from a room outside the web-chat world", asy
 
     expect(messages.status).toBe(404);
     expect(state.conversations.size).toBe(0);
+  } finally {
+    await adapter.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+it("restores a conversation of the same agent id from the world of an earlier name", async () => {
+  const { adapter, dataDir, runtime, state } = await createFixture();
+  try {
+    const created = await call(state, "POST", "/api/conversations", {
+      title: "Chat before the rename",
+    });
+    const { conversation } = created.payload as {
+      conversation: { id: string; roomId: UUID };
+    };
+    runtime.character.name = "Renamed Agent";
+    state.conversations.clear();
+
+    expect(await restoreConversationsFromDb(runtime, state)).toBe(1);
+    expect(state.conversations.get(conversation.id)?.roomId).toBe(
+      conversation.roomId,
+    );
+    state.conversations.clear();
+    expect(
+      (await restoreConversationFromDb(runtime, state, conversation.id))
+        ?.roomId,
+    ).toBe(conversation.roomId);
   } finally {
     await adapter.close();
     fs.rmSync(dataDir, { recursive: true, force: true });

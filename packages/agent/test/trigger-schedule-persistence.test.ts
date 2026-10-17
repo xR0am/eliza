@@ -10,7 +10,7 @@ import {
   type UUID,
 } from "@elizaos/core";
 import { createTestRuntime } from "@elizaos/testing/runtime";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { runPlannerLoop } from "../../../plugins/plugin-assistant/src/runtime/planner-loop.ts";
 import {
   handleTriggerRoutes,
@@ -271,6 +271,14 @@ it.each([
     expectedType: "interval",
     expectedInterval: 7_200_000,
   },
+  {
+    // The planner echoes the first fire as a delay beside the interval.
+    triggerType: "interval",
+    intervalMs: 7_200_000,
+    delayMinutes: 120,
+    expectedType: "interval",
+    expectedInterval: 7_200_000,
+  },
   { delayMinutes: 2, expectedType: "once" },
   { intervalMs: 300_000, expectedType: "interval", expectedInterval: 300_000 },
   { cronExpression: "0 9 * * *", expectedType: "cron" },
@@ -313,13 +321,24 @@ it.each([
 );
 
 it.each<{ label: string; schedule: JsonObject }>([
-  { label: "alone", schedule: { triggerType: "interval" } },
   {
-    label: "over a cron",
+    label: "triggerType=interval alone when intervalMs is absent",
+    schedule: { triggerType: "interval" },
+  },
+  {
+    label: "triggerType=interval over a cron when intervalMs is absent",
     schedule: { triggerType: "interval", cronExpression: "0 9 * * *" },
   },
+  {
+    label: "intervalMs with a delay and no triggerType",
+    schedule: { intervalMs: 7_200_000, delayMinutes: 120 },
+  },
+  {
+    label: "intervalMs with scheduledAtIso and no triggerType",
+    schedule: { intervalMs: 7_200_000, scheduledAtIso: "2099-01-01T09:00:00Z" },
+  },
 ])(
-  "refuses triggerType=interval $label when intervalMs is absent",
+  "refuses a trigger create with $label and writes no trigger task",
   async ({ schedule }) => {
     const before = await fixture.runtime.getTasks({ tags: ["trigger"] });
     const result = await triggerAction.handler(
@@ -423,6 +442,174 @@ it("updates a trigger by the triggerId create returned and refuses fields it can
   }
 });
 
+it("reads a once time with no offset in the user's zone on create and update", async () => {
+  // Asia/Kolkata is UTC+05:30 all year, so the expected instant does not
+  // depend on the zone of the host that runs this test.
+  const message = {
+    entityId: fixture.runtime.agentId,
+    agentId: fixture.runtime.agentId,
+    roomId: randomUUID() as UUID,
+    content: {
+      text: "Remind me to call mom.",
+      metadata: { uiTimeZone: "Asia/Kolkata" },
+    },
+  } as Memory;
+  const created = await triggerAction.handler(
+    fixture.runtime,
+    message,
+    undefined,
+    {
+      parameters: {
+        action: "create",
+        instructions: "Remind the user to call mom.",
+        scheduledAtIso: "2099-01-15T09:00:00",
+      },
+    },
+  );
+  if (!created?.success) throw new Error(created?.text ?? "create failed");
+  const { taskId } = created.data as { taskId: UUID };
+  try {
+    const stored = await fixture.runtime.getTask(taskId);
+    expect(stored && readTriggerConfig(stored)).toMatchObject({
+      triggerType: "once",
+      scheduledAtIso: "2099-01-15T03:30:00.000Z",
+      nextRunAtMs: Date.parse("2099-01-15T03:30:00.000Z"),
+    });
+    const update = (scheduledAtIso: string) =>
+      triggerAction.handler(fixture.runtime, message, undefined, {
+        parameters: { action: "update", taskId, scheduledAtIso },
+      });
+    const moved = await update("2099-01-16T18:15");
+    expect(moved, moved?.text).toMatchObject({ success: true });
+    const afterLocal = await fixture.runtime.getTask(taskId);
+    expect(afterLocal && readTriggerConfig(afterLocal)?.scheduledAtIso).toBe(
+      "2099-01-16T12:45:00.000Z",
+    );
+    // An explicit offset is an instant already and is stored as given.
+    const pinned = await update("2099-01-17T09:00:00-08:00");
+    expect(pinned, pinned?.text).toMatchObject({ success: true });
+    const afterPinned = await fixture.runtime.getTask(taskId);
+    expect(afterPinned && readTriggerConfig(afterPinned)).toMatchObject({
+      scheduledAtIso: "2099-01-17T09:00:00-08:00",
+      nextRunAtMs: Date.parse("2099-01-17T17:00:00.000Z"),
+    });
+  } finally {
+    await fixture.runtime.deleteTask(taskId);
+  }
+});
+it("sets a second relative reminder asked later, and replays only an immediate retry", async () => {
+  const message = {
+    entityId: fixture.runtime.agentId,
+    agentId: fixture.runtime.agentId,
+    roomId: randomUUID() as UUID,
+    content: { text: "Remind me in 1 hour to move the laundry." },
+  } as Memory;
+  const remindInAnHour = () =>
+    triggerAction.handler(fixture.runtime, message, undefined, {
+      parameters: {
+        action: "create",
+        instructions: "Remind the user to move the laundry.",
+        delayMinutes: 60,
+      },
+    });
+  const fireTimes = async () =>
+    (await fixture.runtime.getTasks({ tags: [...TRIGGER_TASK_TAGS] }))
+      .map((task) => readTriggerConfig(task))
+      .filter(
+        (cfg) => cfg?.instructions === "Remind the user to move the laundry.",
+      )
+      .map((cfg) => cfg?.scheduledAtIso)
+      .sort();
+  const start = Date.now();
+  const createdIds: UUID[] = [];
+  try {
+    const first = await remindInAnHour();
+    expect(first, first?.text).toMatchObject({ success: true });
+    createdIds.push(
+      (first?.data as { taskId: UUID } | undefined)?.taskId as UUID,
+    );
+
+    // A planner retry of the same call a moment later is the same reminder.
+    const retry = await remindInAnHour();
+    expect(retry?.text).toBe("Already set — you're covered.");
+    expect(await fireTimes()).toHaveLength(1);
+
+    // Editing instructions must preserve relative-delay retry identity.
+    for (const instructions of [
+      "Remind the user to move the laundry into the dryer.",
+      "Remind the user to move the laundry.",
+    ]) {
+      const updated = await triggerAction.handler(
+        fixture.runtime,
+        message,
+        undefined,
+        {
+          parameters: { action: "update", taskId: createdIds[0], instructions },
+        },
+      );
+      expect(updated, updated?.text).toMatchObject({ success: true });
+      const repeated = await triggerAction.handler(
+        fixture.runtime,
+        message,
+        undefined,
+        {
+          parameters: { action: "create", instructions, delayMinutes: 60 },
+        },
+      );
+      expect(repeated).toMatchObject({
+        success: true,
+        data: { duplicateTaskId: createdIds[0] },
+      });
+    }
+
+    // The same words 40 minutes later ask for a reminder 40 minutes later.
+    vi.spyOn(Date, "now").mockReturnValue(start + 40 * 60_000);
+    const later = await remindInAnHour();
+    vi.restoreAllMocks();
+    expect(later, later?.text).toMatchObject({ success: true });
+    expect(later?.text).not.toBe("Already set — you're covered.");
+    createdIds.push(
+      (later?.data as { taskId: UUID } | undefined)?.taskId as UUID,
+    );
+    const times = (await fireTimes()).map((iso) => Date.parse(iso ?? ""));
+    expect(times).toHaveLength(2);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(39 * 60_000);
+
+    // Moving a relative reminder to an explicit time must retire its old
+    // delay identity, so a create for the new time replays that same task.
+    const scheduledAtIso = new Date(start + 2 * 60 * 60_000).toISOString();
+    const moved = await triggerAction.handler(
+      fixture.runtime,
+      message,
+      undefined,
+      {
+        parameters: { action: "update", taskId: createdIds[0], scheduledAtIso },
+      },
+    );
+    expect(moved, moved?.text).toMatchObject({ success: true });
+    const movedTask = await fixture.runtime.getTask(createdIds[0]);
+    expect(movedTask && readTriggerConfig(movedTask)?.delayMs).toBeUndefined();
+    const repeated = await triggerAction.handler(
+      fixture.runtime,
+      message,
+      undefined,
+      {
+        parameters: {
+          action: "create",
+          instructions: "Remind the user to move the laundry.",
+          scheduledAtIso,
+        },
+      },
+    );
+    expect(repeated).toMatchObject({
+      success: true,
+      data: { duplicateTaskId: createdIds[0] },
+    });
+  } finally {
+    vi.restoreAllMocks();
+    for (const id of createdIds) if (id) await fixture.runtime.deleteTask(id);
+  }
+});
 it("persists the timezone through pause and re-enable and schedules in that zone", async () => {
   const triggerId = randomUUID() as UUID;
   const normalized = normalizeTriggerDraft({
@@ -661,6 +848,50 @@ it.each([
     }
   },
 );
+
+it("keeps an interval trigger's next run when an edit leaves the interval", async () => {
+  const displayName = `Weekly report ${randomUUID()}`;
+  const week = 7 * 24 * 60 * 60 * 1000;
+  const created = await requestTrigger("POST", "/api/triggers", {
+    kind: "prompt",
+    displayName,
+    instructions: "Send the weekly report.",
+    triggerType: "interval",
+    intervalMs: week,
+    enabled: true,
+  });
+  expect(created.status).toBe(201);
+  const saved = (await fixture.runtime.getTasks({ tags: ["trigger"] })).find(
+    (task) => readTriggerConfig(task)?.displayName === displayName,
+  );
+  if (!saved?.id) throw new Error("Created interval task missing");
+  const taskId = saved.id;
+  const nextRunBefore = readTriggerConfig(saved)?.nextRunAtMs;
+  const anchorBefore = (saved.metadata as { updatedAt?: number }).updatedAt;
+  try {
+    // Six days later the owner only renames it; the form sends the full
+    // schedule back unchanged.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 24 * 60 * 60 * 1000);
+    const renamed = await requestTrigger("PUT", `/api/triggers/${taskId}`, {
+      displayName: `${displayName} (renamed)`,
+      triggerType: "interval",
+      intervalMs: week,
+    });
+    vi.restoreAllMocks();
+    expect(renamed.status).toBe(200);
+    const after = await fixture.runtime.getTask(taskId);
+    expect(after && readTriggerConfig(after)).toMatchObject({
+      displayName: `${displayName} (renamed)`,
+      nextRunAtMs: nextRunBefore,
+    });
+    expect(
+      (after?.metadata as { updatedAt?: number } | undefined)?.updatedAt,
+    ).toBe(anchorBefore);
+  } finally {
+    vi.restoreAllMocks();
+    await fixture.runtime.deleteTask(taskId);
+  }
+});
 
 const onceUpdates: { enabled: boolean; body: JsonObject; status: number }[] = [
   {

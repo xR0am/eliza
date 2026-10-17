@@ -10,7 +10,14 @@
     "dist",
     "native-host/*.mjs",
     "native-host/*.patch",
-    "!native-host/*.test.mjs"
+    "native-host/task-sqlcipher/driver.c",
+    "native-host/task-sqlcipher/writer-lease.h",
+    "native-host/task-sqlcipher/build.mjs",
+    "native-host/task-sqlcipher/sources.json",
+    "native-host/task-sqlcipher/exports.map",
+    "native-host/task-sqlcipher/README.md",
+    "!native-host/*.test.mjs",
+    "native-host/android/**/*.java"
   ],
   "exports": {
     ".": {
@@ -18,6 +25,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./blooio-transport": {
+      "eliza-source": "./src/blooio-transport.ts",
+      "types": "./dist/blooio-transport.d.ts",
+      "import": "./dist/blooio-transport.js",
+      "default": "./dist/blooio-transport.js"
     },
     "./protocol": {
       "eliza-source": "./src/protocol.ts",

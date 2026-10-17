@@ -947,7 +947,12 @@ function tenantUserCsvRow(
       const raw =
         field instanceof Date ? field.toISOString() : String(field ?? "");
       const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-      if (safe.includes(",") || safe.includes('"') || safe.includes("\n")) {
+      if (
+        safe.includes(",") ||
+        safe.includes('"') ||
+        safe.includes("\n") ||
+        safe.includes("\r")
+      ) {
         return `"${safe.replace(/"/g, '""')}"`;
       }
       return safe;
@@ -1140,14 +1145,15 @@ async function lockTenantOwnerLifecycle(
 
 function clampLimit(value: string | null, fallback = 50): number {
   const parsed = value ? Number(value) : fallback;
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), 100);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, 100);
 }
 
 function parseBoundedOffset(value: string | null): number {
   const parsed = value ? Number(value) : 0;
-  if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  return Math.min(Math.floor(parsed), 100_000);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
+  // Do not clamp large valid offsets: a ceiling repeats earlier pages.
+  return parsed;
 }
 
 function escapeLikePattern(value: string): string {

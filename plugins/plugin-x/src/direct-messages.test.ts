@@ -5,6 +5,7 @@
  * poll against an in-memory cache and a recorded DM transport.
  */
 import {
+  ChannelType,
   type Content,
   type HandlerCallback,
   type IAgentRuntime,
@@ -28,6 +29,7 @@ const SETTLED_KEY = `${STATE_PREFIX}/dm_settled/${EVENT_ID}`;
 function createHarness(
   reply: string,
   sendDmToParticipant: ReturnType<typeof vi.fn>,
+  groupConversationId?: string,
 ) {
   const cache = new Map<string, unknown>([[CURSOR_KEY, "100"]]);
   const createMemory = vi.fn(async (_memory: Memory) => undefined);
@@ -65,7 +67,8 @@ function createHarness(
           {
             id: EVENT_ID,
             sender_id: SENDER_ID,
-            dm_conversation_id: `${SENDER_ID}-${OWN_USER_ID}`,
+            dm_conversation_id:
+              groupConversationId ?? `${SENDER_ID}-${OWN_USER_ID}`,
             text: "tell me everything",
             event_type: "MessageCreate",
           },
@@ -76,7 +79,7 @@ function createHarness(
         done: true,
       })),
       sendDmToParticipant,
-      sendDmInConversation: vi.fn(),
+      sendDmInConversation: vi.fn(async () => ({ dm_event_id: "301" })),
     },
   };
   const client = {
@@ -102,7 +105,14 @@ function createHarness(
     await dm.start();
     await dm.stop();
   };
-  return { cache, createMemory, handleMessage, pollOnce, runtime };
+  return {
+    cache,
+    createMemory,
+    handleMessage,
+    pollOnce,
+    runtime,
+    sendDmInConversation: apiClient.v2.sendDmInConversation,
+  };
 }
 
 function rejection(status: number): Error {
@@ -164,6 +174,28 @@ describe("X DM auto-reply over the per-message length limit", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(SENDER_ID, { text: reply });
     expect(cache.get(SETTLED_KEY)).toBe("delivered:301");
+  });
+
+  it("stores a group DM reply with the group channel type", async () => {
+    const sendToParticipant = vi.fn();
+    const groupConversationId = "123456789012345";
+    const { createMemory, pollOnce, sendDmInConversation } = createHarness(
+      "group reply",
+      sendToParticipant,
+      groupConversationId,
+    );
+
+    await pollOnce();
+
+    expect(sendToParticipant).not.toHaveBeenCalled();
+    expect(sendDmInConversation).toHaveBeenCalledWith(groupConversationId, {
+      text: "group reply",
+    });
+    const responseMemory = createMemory.mock.calls
+      .map(([memory]) => memory)
+      .find((memory) => memory.metadata?.fromBot === true);
+    expect(responseMemory?.content.channelType).toBe(ChannelType.GROUP);
+    expect(responseMemory?.metadata?.chatType).toBe(ChannelType.GROUP);
   });
 
   it("keeps the no-replay marker when a later part is rejected, so accepted parts are not resent", async () => {

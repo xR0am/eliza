@@ -13,9 +13,11 @@
  * definition / occurrence / reminder / calendar / activity-signal graph, so
  * they remain LifeOps mixin methods in PA.
  *
- * Two PA-owned concerns are taken as injected hooks rather than reimplemented:
- *   - `recordAudit` — audit events persist into PA's shared `app_lifeops` audit
- *     store; goal creates/updates/deletes record there exactly as before.
+ * PA-owned concerns are taken as injected hooks rather than reimplemented:
+ *   - `recordAudit` — with PA, audit events persist into PA's shared
+ *     `app_lifeops` audit store; without PA, into `app_goals`.
+ *   - `releaseGoalReferences` — PA clears its task definitions' references to
+ *     a deleted goal; without PA there are none.
  *   - `normalizeOwnership` — ownership normalization carries PA's domain /
  *     subject rules and resolves the owner-entity / agent identity; it stays
  *     PA-owned and is passed in.
@@ -90,13 +92,20 @@ const GOAL_SIMILARITY_STOP_WORDS = new Set([
   "goals",
 ]);
 
+// One Han, kana or Hangul character carries a syllable or word, so it counts
+// twice toward the length floor: 매일 and 毎朝 pass, a lone 犬 does not.
+const CJK_SCRIPT_CHAR =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+
 function tokenizeGoalText(text: string | null | undefined): string[] {
   const raw = typeof text === "string" ? text : "";
   return raw
     .toLowerCase()
-    .split(/[^a-z0-9]+/u)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(
-      (token) => token.length >= 3 && !GOAL_SIMILARITY_STOP_WORDS.has(token),
+      (token) =>
+        token.length + (token.match(CJK_SCRIPT_CHAR)?.length ?? 0) >= 3 &&
+        !GOAL_SIMILARITY_STOP_WORDS.has(token),
     );
 }
 
@@ -204,6 +213,8 @@ export interface GoalsServiceDependencies {
   recordAudit: GoalsRecordAudit;
   normalizeOwnership: GoalsNormalizeOwnership;
   checkinSync?: () => GoalsCheckinSync | null;
+  /** Clear references to a goal that is being deleted from the host's tables. */
+  releaseGoalReferences?: (goalId: string) => Promise<void>;
 }
 
 export class GoalsService {
@@ -211,6 +222,7 @@ export class GoalsService {
   private readonly recordAudit: GoalsRecordAudit;
   private readonly normalizeOwnership: GoalsNormalizeOwnership;
   private readonly resolveCheckinSync: () => GoalsCheckinSync | null;
+  private readonly releaseGoalReferences?: (goalId: string) => Promise<void>;
 
   constructor(
     private readonly runtime: IAgentRuntime,
@@ -220,6 +232,7 @@ export class GoalsService {
     this.recordAudit = deps.recordAudit;
     this.normalizeOwnership = deps.normalizeOwnership;
     this.resolveCheckinSync = deps.checkinSync ?? (() => null);
+    this.releaseGoalReferences = deps.releaseGoalReferences;
   }
 
   private agentId(): string {
@@ -243,6 +256,7 @@ export class GoalsService {
     if (!goal) {
       fail(404, "life-ops goal not found");
     }
+    await this.releaseGoalReferences?.(goalId);
     await this.repository.deleteGoal(this.agentId(), goalId);
     await this.recordAudit(
       "goal_deleted",

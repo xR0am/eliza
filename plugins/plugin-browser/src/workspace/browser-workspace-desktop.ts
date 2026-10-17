@@ -208,6 +208,12 @@ export function createDesktopBrowserWorkspaceCommandScript(
     if (!left || !right) return false;
     return exact ? left === right : left.includes(right);
   };
+  const innerTextMatches = (matches) =>
+    matches.filter(
+      (element) =>
+        element.matches("a, button, input, textarea, select, option, [role='button']") ||
+        !matches.some((other) => other !== element && element.contains(other))
+    );
   const selectorFor = (element) => {
     if (!element) return "";
     if (element.id) return "#" + element.id.replace(/[^a-zA-Z0-9_-]/g, "\\\\$&");
@@ -296,7 +302,7 @@ export function createDesktopBrowserWorkspaceCommandScript(
     const elements = Array.from(document.querySelectorAll(
       "a, button, input, textarea, select, option, label, h1, h2, h3, [role='button'], [data-testid]"
     ));
-    for (const element of elements) {
+    const matches = elements.filter((element) => {
       const haystacks = [
         element.textContent,
         element.getAttribute?.("aria-label"),
@@ -308,11 +314,30 @@ export function createDesktopBrowserWorkspaceCommandScript(
         .map((value) => normalize(value))
         .filter(Boolean)
         .map((value) => value.toLowerCase());
-      if (haystacks.some((value) => value.includes(needle))) {
-        return element;
-      }
-    }
-    return null;
+      return haystacks.some((value) => value.includes(needle));
+    });
+    return innerTextMatches(matches)[0] ?? null;
+  };
+  const findAllByText = (wanted, exact = false) => {
+    const needle = normalize(wanted).toLowerCase();
+    if (!needle) return [];
+    const elements = Array.from(document.querySelectorAll(
+      "a, button, input, textarea, select, option, label, h1, h2, h3, [role='button'], [data-testid]"
+    ));
+    return innerTextMatches(elements.filter((element) => {
+      const haystacks = [
+        element.textContent,
+        element.getAttribute?.("aria-label"),
+        element.getAttribute?.("placeholder"),
+        element.getAttribute?.("title"),
+        element.getAttribute?.("name"),
+        element.value,
+      ]
+        .map((value) => normalize(value))
+        .filter(Boolean)
+        .map((value) => value.toLowerCase());
+      return haystacks.some((value) => exact ? value === needle : value.includes(needle));
+    }));
   };
   const findByLabel = (wanted, exact = false) => {
     const labels = Array.from(document.querySelectorAll("label"));
@@ -328,6 +353,24 @@ export function createDesktopBrowserWorkspaceCommandScript(
     }
     return null;
   };
+  const findAllByLabel = (wanted, exact = false) => {
+    const found = [];
+    const labels = Array.from(document.querySelectorAll("label"));
+    for (const label of labels) {
+      if (!textMatches(label.textContent, wanted, exact)) continue;
+      const forId = label.getAttribute("for");
+      if (forId) {
+        const explicit = document.getElementById(forId);
+        if (explicit) {
+          found.push(explicit);
+          continue;
+        }
+      }
+      const nested = label.querySelector("input, textarea, select, button");
+      if (nested) found.push(nested);
+    }
+    return [...new Set(found)];
+  };
   const findByRole = (role, name, exact = false) => {
     const candidates = Array.from(
       document.querySelectorAll(
@@ -342,6 +385,25 @@ export function createDesktopBrowserWorkspaceCommandScript(
       }
     }
     return null;
+  };
+  const findAllByRole = (role, name, exact = false) => {
+    const found = [];
+    const candidates = Array.from(
+      document.querySelectorAll(
+        "a, button, input, textarea, select, option, form, h1, h2, h3, h4, h5, h6, [role], [data-testid]"
+      )
+    );
+    for (const candidate of candidates) {
+      if (nativeRole(candidate) !== role.trim().toLowerCase()) continue;
+      if (!name) {
+        found.push(candidate);
+        continue;
+      }
+      if (searchTexts(candidate).some((value) => textMatches(value, name, exact))) {
+        found.push(candidate);
+      }
+    }
+    return found;
   };
   const trimQuoted = (value) => {
     const trimmed = String(value || "").trim();
@@ -484,10 +546,80 @@ export function createDesktopBrowserWorkspaceCommandScript(
         return null;
     }
   };
+  const findAllSemantic = (targetCommand = command) => {
+    switch (targetCommand.findBy) {
+      case "alt":
+        return targetCommand.text
+          ? Array.from(document.querySelectorAll("[alt]")).filter((element) =>
+              textMatches(
+                element.getAttribute("alt"),
+                targetCommand.text,
+                targetCommand.exact
+              )
+            )
+          : [];
+      case "first":
+        return targetCommand.selector
+          ? [queryOne(targetCommand.selector)].filter(Boolean)
+          : [];
+      case "label":
+        return targetCommand.text
+          ? findAllByLabel(targetCommand.text, targetCommand.exact)
+          : [];
+      case "last":
+        return targetCommand.selector
+          ? [queryAll(targetCommand.selector).at(-1)].filter(Boolean)
+          : [];
+      case "nth":
+        return targetCommand.selector && Number.isInteger(targetCommand.index)
+          ? [queryAll(targetCommand.selector).at(targetCommand.index)].filter(Boolean)
+          : [];
+      case "placeholder":
+        return targetCommand.text
+          ? Array.from(document.querySelectorAll("[placeholder]")).filter((element) =>
+              textMatches(
+                element.getAttribute("placeholder"),
+                targetCommand.text,
+                targetCommand.exact
+              )
+            )
+          : [];
+      case "role":
+        return targetCommand.role
+          ? findAllByRole(
+              targetCommand.role,
+              targetCommand.name,
+              targetCommand.exact
+            )
+          : [];
+      case "testid":
+        return targetCommand.text
+          ? Array.from(document.querySelectorAll("[data-testid]")).filter(
+              (element) => element.getAttribute("data-testid") === targetCommand.text
+            )
+          : [];
+      case "text":
+        return targetCommand.text ? findAllByText(targetCommand.text, targetCommand.exact) : [];
+      case "title":
+        return Array.from(document.querySelectorAll("[title]")).filter((element) =>
+          textMatches(
+            element.getAttribute("title"),
+            targetCommand.text,
+            targetCommand.exact
+          )
+        );
+      default:
+        return [];
+    }
+  };
   const findTarget = () => {
     if (command.selector) {
       const selectorChain = normalizeSelectorSyntax(command.selector)
-        .split(/s*>>s*/)
+        // NOTE: this script is built inside a template literal. The whitespace
+        // class in the split pattern needs a double backslash in this source
+        // so the generated page script sees a single-backslash whitespace
+        // class. A lone letter s here would match literal s characters.
+        .split(/\\s*>>\\s*/)
         .map((segment) => segment.trim())
         .filter(Boolean);
       if (selectorChain.length > 1) {
@@ -771,7 +903,10 @@ export function createDesktopBrowserWorkspaceCommandScript(
     if (command.getMode === "count") {
       if (!command.selector) throw new Error("count requires selector");
       const semantic = mergeSelectorCommand(command.selector);
-      return semantic ? Number(Boolean(findSemantic(semantic))) : queryAll(command.selector).length;
+      if (semantic && semantic.findBy) return findAllSemantic(semantic).length;
+      const cssSelector =
+        semantic && semantic.selector ? semantic.selector : command.selector;
+      return queryAll(cssSelector).length;
     }
     const element = findTarget();
     if (!element) throw new Error("Target element was not found.");
@@ -1094,20 +1229,26 @@ export function createDesktopBrowserWorkspaceUtilityScript(
         "a, button, input, textarea, select, option, label, h1, h2, h3, [role='button'], [data-testid]"
       )
     );
+    const matches = candidates.filter((element) => {
+      const haystacks = [
+        element.textContent,
+        element.getAttribute("aria-label"),
+        element.getAttribute("placeholder"),
+        element.getAttribute("title"),
+        element.getAttribute("name"),
+        element.value
+      ]
+        .map((value) => normalize(value).toLowerCase())
+        .filter(Boolean);
+      return haystacks.some((value) => value.includes(wanted));
+    });
+    // Keep the link or button inside a matching wrapper (see the command script).
     return (
-      candidates.find((element) => {
-        const haystacks = [
-          element.textContent,
-          element.getAttribute("aria-label"),
-          element.getAttribute("placeholder"),
-          element.getAttribute("title"),
-          element.getAttribute("name"),
-          element.value
-        ]
-          .map((value) => normalize(value).toLowerCase())
-          .filter(Boolean);
-        return haystacks.some((value) => value.includes(wanted));
-      }) || null
+      matches.find(
+        (element) =>
+          element.matches("a, button, input, textarea, select, option, [role='button']") ||
+          !matches.some((other) => other !== element && element.contains(other))
+      ) || null
     );
   };
   const resolveTarget = () => {

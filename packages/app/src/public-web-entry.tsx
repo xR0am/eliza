@@ -23,7 +23,7 @@ import { seedPublicWebBootConfig } from "./public-web-boot-config";
 import { registerViewServiceWorker } from "./sw-registration";
 
 const ManagedCloudPage = lazy(() => loadManagedCloudPage());
-// The Network home page (DRAFT copy); only in builds with VITE_NETWORK_HOME=1.
+// The Network home page (founder-approved copy); only in builds with VITE_NETWORK_HOME=1.
 const NetworkHomePage = NETWORK_HOME_ENABLED
   ? lazy(() => import("./network-home/NetworkHomePage"))
   : null;

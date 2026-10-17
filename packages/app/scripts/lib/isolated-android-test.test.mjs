@@ -63,12 +63,19 @@ if(args.includes('remove-user')){state.userExists=false;publishFixtureState(file
 
 if(args[0]==='emu')console.log('owned-test-fixture\\nOK');
 if(args.includes('ro.kernel.qemu'))console.log('1');
+if(args.includes('ro.product.device'))console.log(mode==='cuttlefish-wrong-device'?'physical':'vsoc_x86_64');
+if(args.includes('sys.boot_completed'))console.log(mode==='cuttlefish-booting'?'0':'1');
+if(args.includes('ro.build.fingerprint'))console.log(state.replaced?'Other/image/device:16/test':'Example/fixture/vsoc_x86_64:16/test');
+if(args.includes('ro.serialno'))console.log('CUTTLEFISHCVD01');
+if(args.includes('/proc/sys/kernel/random/boot_id'))console.log(state.rebooted?'22222222-2222-2222-2222-222222222222':'11111111-1111-1111-1111-111111111111');
+if(args.includes('get-role-holders'))console.log(state.browser||'org.stock.browser');
+
 if(args.includes('ro.product.cpu.abi'))console.log('x86_64');
 if(args.includes('getenforce'))console.log(mode==='permissive'?'Permissive':'Enforcing');
 if(args.includes('packages')&&mode==='appeared'){state.reads=(state.reads||0)+1;if(state.reads===2)state.packages.push('org.example.consumer');publishFixtureState(file,state);}
 if(args.includes('packages')&&!args.includes('--uid'))console.log(state.packages.map(p=>'package:'+p).join('\\n'));
 if(args.includes('resolve-activity'))console.log(args.includes('-p')?'org.stock.home/.Home':state.home);
-if(args[0]==='install'){const id=args.at(-1).includes('companion.apk')?'org.example.companion':args.at(-1).includes('test.apk')?'org.example.consumer.test':'org.example.consumer';state.packages=[...new Set([...state.packages,id])];(state.files??={})[id]=file+'.'+id+'.apk';fs.copyFileSync(args.at(-1),state.files[id]);publishFixtureState(file,state);if(mode==='install-failure'&&id.endsWith('.test'))process.exit(1);console.log('Success');}
+if(args[0]==='install'){if(mode==='install-unacknowledged-absent')process.exit(1);const id=args.at(-1).includes('companion.apk')?'org.example.companion':args.at(-1).includes('test.apk')?'org.example.consumer.test':'org.example.consumer';state.packages=[...new Set([...state.packages,id])];(state.files??={})[id]=file+'.'+id+'.apk';fs.copyFileSync(args.at(-1),state.files[id]);publishFixtureState(file,state);if(mode==='install-failure'&&id.endsWith('.test'))process.exit(1);console.log('Success');}
 if(args.slice(0,3).join(' ')==='shell pm path')console.log('package:/data/'+args.at(-1)+'.apk');
 if(args[0]==='pull'){const id=args[1].slice('/data/'.length,-4);fs.copyFileSync(state.files[id],args[2]);}
 
@@ -108,6 +115,10 @@ if(args.includes('instrument')){
   console.log('OK ('+cases.length+' tests)'+String.fromCharCode(10)+'INSTRUMENTATION_CODE: -1');return;
  }
  if(mode==='home-change'){state.home='other/.Home';publishFixtureState(file,state);}
+ if(mode==='cuttlefish-replaced'){state.replaced=true;publishFixtureState(file,state);}
+ if(mode==='cuttlefish-rebooted'){state.rebooted=true;publishFixtureState(file,state);}
+ if(mode==='cuttlefish-browser-change'){state.browser='other.browser';publishFixtureState(file,state);}
+
  console.log('INSTRUMENTATION_STATUS: class=org.example.consumer.Probe\\nINSTRUMENTATION_STATUS: test=probe\\nINSTRUMENTATION_STATUS: numtests=1\\nINSTRUMENTATION_STATUS_CODE: 1');
  if(mode!=='partial')console.log('INSTRUMENTATION_STATUS: class=org.example.consumer.Probe\\nINSTRUMENTATION_STATUS: test=probe\\nINSTRUMENTATION_STATUS: numtests=1\\nINSTRUMENTATION_STATUS_CODE: 0');
  console.log('OK (1 test)\\nINSTRUMENTATION_CODE: -1');
@@ -207,10 +218,40 @@ for (const mode of [
     const report = JSON.parse(
       fs.readFileSync(path.join(f.options.directory, "verification.json")),
     );
-    assert.equal(report.cleaned, mode !== "cleanup-failure");
+    assert.equal(
+      report.cleaned,
+      !["cleanup-failure", "install-failure"].includes(mode),
+    );
     assert.equal(report.homeUnchanged, mode !== "home-change");
     if (mode === "cleanup-failure") assert.ok(report.cleanupErrors.length > 0);
+    if (mode === "install-failure") {
+      assert.equal(report.cleanupDeferred, true);
+      assert.equal(
+        report.unacknowledgedInstalls[0].packageName,
+        "org.example.consumer.test",
+      );
+      assert.ok(!f.commands().some((c) => c[0] === "uninstall"));
+    }
   });
+test("an unacknowledged install is not clean even when no package is visible yet", async (t) => {
+  const f = fixture(t, "install-unacknowledged-absent");
+  await assert.rejects(runIsolatedAndroidTest(f.options));
+  const report = JSON.parse(
+    fs.readFileSync(path.join(f.options.directory, "verification.json")),
+  );
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.state)).packages, []);
+  assert.equal(report.cleaned, false);
+  assert.equal(report.cleanupDeferred, true);
+  assert.deepEqual(report.unacknowledgedInstalls, [
+    {
+      packageName: "org.example.consumer",
+      expectedSha256: createHash("sha256")
+        .update(fs.readFileSync(f.options.variants[0].apk))
+        .digest("hex"),
+    },
+  ]);
+  assert.ok(!f.commands().some((c) => c[0] === "uninstall"));
+});
 test("callback failure cleans owned packages and releases the device lease", async (t) => {
   const f = fixture(t);
   await assert.rejects(
@@ -1436,4 +1477,95 @@ test("the harness owns interruption nonce and rejects malformed controls before 
     f.commands().filter((args) => args.includes("instrument")).length,
     1,
   );
+});
+
+const cuttlefishOptions = (options) => ({
+  ...options,
+  serial: "127.0.0.1:6520",
+  expectedAvdName: undefined,
+  expectedCuttlefish: {
+    callerOwned: true,
+    serialNumber: "CUTTLEFISHCVD01",
+    fingerprint: "Example/fixture/vsoc_x86_64:16/test",
+  },
+});
+test("explicit owned Cuttlefish runs both variants with unchanged roles", async (t) => {
+  const f = fixture(t);
+  const report = await runIsolatedAndroidTest(cuttlefishOptions(f.options));
+  assert.equal(report.cleaned, true);
+  assert.equal(report.browserUnchanged, true);
+  assert.equal(report.homeUnchanged, true);
+  assert.equal(report.variants.length, 2);
+  assert.equal(
+    f.commands().some((c) => c[0] === "emu"),
+    false,
+  );
+});
+for (const mode of ["cuttlefish-wrong-device", "cuttlefish-booting"])
+  test(`${mode} is rejected without installation`, async (t) => {
+    const f = fixture(t, mode);
+    await assert.rejects(runIsolatedAndroidTest(cuttlefishOptions(f.options)));
+    assert.equal(
+      f.commands().some((c) => ["install", "uninstall"].includes(c[0])),
+      false,
+    );
+  });
+for (const field of ["callerOwned", "serialNumber", "fingerprint"])
+  test(`Cuttlefish rejects mismatched ${field}`, async (t) => {
+    const f = fixture(t);
+    const options = cuttlefishOptions(f.options);
+    options.expectedCuttlefish[field] =
+      field === "callerOwned" ? false : "wrong";
+    await assert.rejects(runIsolatedAndroidTest(options));
+    assert.equal(
+      f.commands().some((c) => c[0] === "install"),
+      false,
+    );
+  });
+for (const mode of ["cuttlefish-replaced", "cuttlefish-rebooted"])
+  test(`${mode} retains packages and defers cleanup`, async (t) => {
+    const f = fixture(t, mode);
+    await assert.rejects(runIsolatedAndroidTest(cuttlefishOptions(f.options)));
+    const report = JSON.parse(
+      fs.readFileSync(path.join(f.options.directory, "verification.json")),
+    );
+    assert.equal(report.cleaned, false);
+    assert.equal(report.cleanupDeferred, true);
+    assert.equal(
+      f
+        .commands()
+        .some((c) => c[0] === "uninstall" || c.includes("force-stop")),
+      false,
+    );
+  });
+test("Cuttlefish browser role drift fails qualification", async (t) => {
+  const f = fixture(t, "cuttlefish-browser-change");
+  await assert.rejects(
+    runIsolatedAndroidTest(cuttlefishOptions(f.options)),
+    /Default browser changed/,
+  );
+  const report = JSON.parse(
+    fs.readFileSync(path.join(f.options.directory, "verification.json")),
+  );
+  assert.equal(report.browserUnchanged, false);
+});
+
+test("Cuttlefish and AVD profiles cannot be mixed", async (t) => {
+  const f = fixture(t);
+  const options = cuttlefishOptions(f.options);
+  options.expectedAvdName = "owned-test-fixture";
+  await assert.rejects(
+    runIsolatedAndroidTest(options),
+    /Choose AVD or Cuttlefish/,
+  );
+  assert.equal(f.commands().length, 0);
+});
+test("Cuttlefish rejects non-loopback endpoints and secondary users", async (t) => {
+  const f = fixture(t);
+  for (const overrides of [{ serial: "10.0.0.1:6520" }, { androidUser: 10 }]) {
+    await assert.rejects(
+      runIsolatedAndroidTest({ ...cuttlefishOptions(f.options), ...overrides }),
+    );
+  }
+  assert.equal(f.commands().length, 0);
 });

@@ -483,7 +483,11 @@ export class AgentManager {
           ? `${agentId}:${source}:${connectorAccountId ?? "default"}:${connectorChatId}`
           : `${agentId}:${userId}`;
       const roomId = stringToUuid(sourceRoomKey);
-      const worldId = stringToUuid(`server:${process.env.SERVER_NAME}`);
+      // World ids are a global key and world reads are agent-scoped, so a
+      // server-wide id shared by every agent in this pod would collide.
+      const worldId = stringToUuid(
+        `server:${process.env.SERVER_NAME}:${agentId}`,
+      );
       const userName = resolveUserName(userId, metadata);
       const connMeta = buildConnectionMetadata(metadata);
       const chatType = metadata?.chatType?.toLowerCase();
@@ -551,8 +555,12 @@ export class AgentManager {
       }
 
       let response = "";
+      const mediaUrls: string[] = [];
       await messageService.handleMessage(rt, mem, async (content) => {
         if (content?.text) response += content.text;
+        for (const attachment of content?.attachments ?? []) {
+          if (attachment.url) mediaUrls.push(attachment.url);
+        }
         return [];
       });
 
@@ -565,7 +573,7 @@ export class AgentManager {
       // agent reply and was actually SENT to platform adapters, and (via the
       // removed `?.`) it also masked a structural pipeline failure. Genuine
       // structural failures now throw above.
-      return response;
+      return { response, mediaUrls };
     } finally {
       this.inFlight--;
     }
