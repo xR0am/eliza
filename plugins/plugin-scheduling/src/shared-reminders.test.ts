@@ -181,9 +181,9 @@ it("keeps an interval reminder's next time when only its text changes", async ()
     newReminderText: "Drink a full glass of water",
   });
   expect(updated?.success, JSON.stringify(updated)).toBe(true);
-  const replacementId = (updated?.data?.task as ScheduledTask).taskId;
+  const updatedTask = updated?.data?.task as ScheduledTask;
   const replacement = (await runner.list()).find(
-    (entry) => entry.taskId === replacementId,
+    (entry) => entry.taskId === updatedTask.taskId,
   ) as ScheduledTask;
 
   const dueAt = (iso: string) =>
