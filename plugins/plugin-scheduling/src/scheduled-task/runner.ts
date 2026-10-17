@@ -2609,11 +2609,32 @@ export function createScheduledTaskRunner(
     const pause = await shouldDeferForGlobalPause(task);
     if (pause.paused) {
       if (pause.endedPauseEndIso) {
-        // Retire every occurrence inside the ended window in one step; the
-        // next one counted from here is the first at or after the pause end.
-        task.state.firedAt = new Date(
-          Date.parse(pause.endedPauseEndIso) - 1,
-        ).toISOString();
+        const endMs = Date.parse(pause.endedPauseEndIso);
+        if (
+          task.trigger.kind === "interval" &&
+          Number.isFinite(task.trigger.everyMinutes) &&
+          task.trigger.everyMinutes > 0
+        ) {
+          // Interval due is firedAt + everyMinutes, so parking at end - 1ms
+          // would drop the occurrence exactly at the pause end and shift the
+          // phase forever. Advance whole intervals from the last firedAt to
+          // the first occurrence at or after the pause end, then park one
+          // interval before it so that occurrence fires and the phase keeps.
+          const intervalMs = task.trigger.everyMinutes * 60_000;
+          const lastFireMs = Date.parse(task.state.firedAt ?? "");
+          const baseMs = Number.isFinite(lastFireMs) ? lastFireMs : endMs;
+          const steps = Math.max(
+            1,
+            Math.ceil((endMs - baseMs) / intervalMs),
+          );
+          task.state.firedAt = new Date(
+            baseMs + (steps - 1) * intervalMs,
+          ).toISOString();
+        } else {
+          // Retire every occurrence inside the ended window in one step; the
+          // next one counted from here is the first at or after the pause end.
+          task.state.firedAt = new Date(endMs - 1).toISOString();
+        }
       } else {
         await useUpRecurringOccurrence(task);
       }
