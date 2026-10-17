@@ -1671,3 +1671,58 @@ it("sends the before-start Calendar reminder for a timed event but not an all-da
   // back; rendering is outside this check.
   vi.mocked(fixture.runtime.useModel).mockClear();
 });
+
+it("sends the before-start reminder for built-in, Outlook and Apple calendar events", async () => {
+  const now = new Date("2026-10-12T14:45:00.000Z");
+  const providers = ["eliza", "microsoft", "apple_calendar"] as const;
+  const events = providers.map((provider) => ({
+    id: crypto.randomUUID(),
+    externalId: crypto.randomUUID(),
+    agentId: fixture.runtime.agentId,
+    provider,
+    side: "owner" as const,
+    calendarId: "primary",
+    title: `Dentist (${provider})`,
+    description: "",
+    location: "",
+    status: "confirmed",
+    startAt: "2026-10-12T15:10:00.000Z",
+    endAt: "2026-10-12T16:00:00.000Z",
+    isAllDay: false,
+    timezone: "UTC",
+    htmlLink: null,
+    conferenceLink: null,
+    organizer: null,
+    attendees: [],
+    metadata: {},
+    syncedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  }));
+  for (const row of events) {
+    await service.repository.upsertCalendarEvent(row);
+    await service.repository.createReminderPlan(
+      createLifeOpsReminderPlan({
+        agentId: fixture.runtime.agentId,
+        ownerType: "calendar_event",
+        ownerId: row.id,
+        steps: [
+          { channel: "in_app", offsetMinutes: 30, label: "30m before event" },
+        ],
+        mutePolicy: {},
+        quietHours: {},
+      }),
+    );
+  }
+
+  const { attempts } = await service.processReminders({
+    now: now.toISOString(),
+  });
+
+  const owners = attempts
+    .filter((attempt) => attempt.ownerType === "calendar_event")
+    .map((attempt) => attempt.ownerId);
+  expect(
+    events.filter((row) => !owners.includes(row.id)).map((row) => row.provider),
+  ).toEqual([]);
+  vi.mocked(fixture.runtime.useModel).mockClear();
+});

@@ -17,6 +17,7 @@ const ORG_B = "33333333-3333-4333-8333-333333333333";
 const USER_X = "44444444-4444-4444-8444-444444444444";
 const CHAR = "55555555-5555-4555-8555-555555555555";
 const PUB = "66666666-6666-4666-8666-666666666666";
+const PUB_WITH_SECRETS = "88888888-8888-4888-8888-888888888888";
 const GEN = "77777777-7777-4777-8777-777777777777";
 
 function caller(organizationId: string) {
@@ -182,6 +183,20 @@ beforeAll(async () => {
       settings: {},
       character_data: {},
     },
+    {
+      id: PUB_WITH_SECRETS,
+      organization_id: ORG_A,
+      user_id: USER_X,
+      name: "Org A public agent with keys",
+      bio: ["org A"],
+      is_public: true,
+      secrets: { OPENAI_API_KEY: "sk-pub-owner-secret" },
+      settings: { secrets: { DISCORD_API_TOKEN: "pub-owner-discord" } },
+      character_data: {
+        secrets: { OPENAI_API_KEY: "sk-pub-owner-secret" },
+        plugins: { telegram: { secrets: { BOT_TOKEN: "pub-owner-telegram" } } },
+      },
+    },
   ]);
   await dbWrite.insert(generations).values({
     id: GEN,
@@ -208,6 +223,29 @@ test("an ex-member cannot clone the old organization's private character", async
   );
   expect(response.status).toBe(404);
   expect(await response.text()).not.toContain("sk-org-a-secret");
+});
+
+test("a clone of another organization's public character carries none of its secrets", async () => {
+  const response = await app.request(
+    `/api/my-agents/characters/${PUB_WITH_SECRETS}/clone`,
+    json("POST", {}),
+    env,
+  );
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  expect(text).not.toContain("sk-pub-owner-secret");
+  expect(text).not.toContain("pub-owner-discord");
+  const { userCharacters } = schema;
+  const clone = (
+    await dbWrite
+      .select()
+      .from(userCharacters)
+      .where(eq(userCharacters.organization_id, ORG_B))
+  ).find((row) => row.name === "Org A public agent with keys (Copy)");
+  expect(JSON.stringify(clone)).not.toContain("sk-pub-owner-secret");
+  expect(JSON.stringify(clone)).not.toContain("pub-owner-discord");
+  expect(JSON.stringify(clone)).not.toContain("pub-owner-telegram");
+  expect(text).not.toContain("pub-owner-telegram");
 });
 
 test("an ex-member cannot read or change the old organization's agent monetization", async () => {

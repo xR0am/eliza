@@ -25,6 +25,9 @@ export interface CloudLoginOptions {
 }
 
 const DEFAULT_CLOUD_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_CONSECUTIVE_POLL_PARSE_FAILURES = 5;
+const INVALID_POLL_RESPONSE_MESSAGE =
+  "Eliza Cloud returned invalid login poll responses";
 
 function isRedirectResponse(response: Response): boolean {
   return response.status >= 300 && response.status < 400;
@@ -118,6 +121,8 @@ export async function cloudLogin(
   options.onBrowserUrl?.(browserUrl);
 
   const deadline = Date.now() + timeoutMs;
+  let consecutivePollParseFailures = 0;
+  let lastPollParseError: unknown;
 
   while (Date.now() < deadline) {
     const remainingBeforeSleep = deadline - Date.now();
@@ -161,12 +166,36 @@ export async function cloudLogin(
       continue;
     }
 
-    const data = (await pollResponse.json()) as {
+    let data: {
       status: string;
       apiKey?: string;
       keyPrefix?: string;
       expiresAt?: string;
     };
+    try {
+      data = (await pollResponse.json()) as {
+        status: string;
+        apiKey?: string;
+        keyPrefix?: string;
+        expiresAt?: string;
+      };
+    } catch (err) {
+      // error-policy:J2 a 200 with an unparseable body may be transient, so
+      // keep polling — but record it so a persistent upstream failure (e.g. a
+      // proxy returning HTML) surfaces as itself, not as a false timeout.
+      consecutivePollParseFailures += 1;
+      lastPollParseError = err;
+      logger.warn(
+        `[cloud-auth] Login poll returned an unparseable body (HTTP ${pollResponse.status}, content-type: ${pollResponse.headers.get("content-type") ?? "none"}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      options.onPollStatus?.("error");
+      if (consecutivePollParseFailures >= MAX_CONSECUTIVE_POLL_PARSE_FAILURES) {
+        throw new Error(INVALID_POLL_RESPONSE_MESSAGE, { cause: err });
+      }
+      continue;
+    }
+    consecutivePollParseFailures = 0;
+    lastPollParseError = undefined;
 
     options.onPollStatus?.(data.status);
 
@@ -184,6 +213,12 @@ export async function cloudLogin(
         "Auth session was completed but the API key was already retrieved. Please try logging in again.",
       );
     }
+  }
+
+  if (lastPollParseError !== undefined) {
+    throw new Error(INVALID_POLL_RESPONSE_MESSAGE, {
+      cause: lastPollParseError,
+    });
   }
 
   throw new Error(

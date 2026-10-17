@@ -670,7 +670,7 @@ export async function fetchListTweets(
 
   try {
     const response = await client.v2.listTweets(listId, {
-      max_results: Math.min(maxTweets, 100),
+      max_results: maxResultsFor(maxTweets, X_USER_TWEETS_MIN_RESULTS),
       "tweet.fields": [
         "id",
         "text",
@@ -940,7 +940,7 @@ export async function fetchLikedTweets(
 
   try {
     const response = await client.v2.userLikedTweets(userId, {
-      max_results: Math.min(maxTweets, 100),
+      max_results: maxResultsFor(maxTweets, X_USER_TWEETS_MIN_RESULTS),
       "tweet.fields": [
         "id",
         "text",

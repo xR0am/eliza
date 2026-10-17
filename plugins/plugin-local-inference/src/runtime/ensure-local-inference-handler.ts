@@ -309,7 +309,27 @@ export async function hasLocalTextModelAvailable(
  * garbage (a BERT model forced to autoregress), so we fail loudly with an
  * actionable message instead. See elizaOS/eliza#7687.
  */
-async function ensureAssignedModelLoaded(
+let assignedModelLoads: Promise<unknown> = Promise.resolve();
+
+/**
+ * One check-and-load at a time. Without this, two requests that both find
+ * no model resident (first use, or after an idle unload) both start a load:
+ * the backend refuses the second ("acquire() called with a live session") and
+ * that turn fails, or a different slot's load unloads the model serving the
+ * first. A queued caller re-checks once the earlier load has finished.
+ */
+function ensureAssignedModelLoaded(
+	loader: LocalInferenceLoader | null,
+	slot: AgentModelSlot,
+): Promise<void> {
+	const run = assignedModelLoads.then(() =>
+		ensureAssignedModelLoadedNow(loader, slot),
+	);
+	assignedModelLoads = run.catch(() => undefined);
+	return run;
+}
+
+async function ensureAssignedModelLoadedNow(
 	loader: LocalInferenceLoader | null,
 	slot: AgentModelSlot,
 ): Promise<void> {

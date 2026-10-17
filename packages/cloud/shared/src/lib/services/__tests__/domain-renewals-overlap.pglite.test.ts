@@ -27,6 +27,8 @@ const domain = {
 };
 const registrarCalls: string[] = [];
 let registrarFails = false;
+let registrarExpiry: Date | null = null;
+const recordedExpiries: Date[] = [];
 
 const realLifecycle = { ...(await import("../account-lifecycle-authority")) };
 const realManagedDomains = { ...(await import("../managed-domains")) };
@@ -39,7 +41,9 @@ mock.module("../managed-domains", () => ({
   ...realManagedDomains,
   managedDomainsService: {
     listCloudflareRenewalsDue: async () => [domain],
-    recordRenewal: async () => undefined,
+    recordRenewal: async (_id: string, expiresAt: Date) => {
+      recordedExpiries.push(expiresAt);
+    },
     setAutoRenew: async () => undefined,
   },
 }));
@@ -49,7 +53,11 @@ mock.module("../cloudflare-registrar", () => ({
     renewDomain: async (name: string) => {
       registrarCalls.push(name);
       if (registrarFails) throw new Error("registrar unavailable");
-      return { expiresAt: new Date(EXPIRES_AT.getTime() + 365 * 86_400_000).toISOString() };
+      return {
+        expiresAt: (
+          registrarExpiry ?? new Date(EXPIRES_AT.getTime() + 365 * 86_400_000)
+        ).toISOString(),
+      };
     },
     setDomainAutoRenew: async () => undefined,
   },
@@ -180,4 +188,20 @@ test("a period refunded after a registrar failure is charged again on the next r
     [ORG],
   );
   expect(Number(balance.rows[0]?.credit_balance)).toBeCloseTo(85, 6);
+});
+
+test("a renewal records the paid period while Cloudflare still shows the old expiry", async () => {
+  await pg().query("DELETE FROM credit_transactions WHERE organization_id=$1", [ORG]);
+  await pg().query("UPDATE organizations SET credit_balance='100' WHERE id=$1", [ORG]);
+  domain.expiresAt = new Date(EXPIRES_AT.getTime() + 120_000); // a new period
+  // Cloudflare renews near expiry, so right after auto-renew is turned on its
+  // registration still reports the current expiry.
+  registrarExpiry = domain.expiresAt;
+  recordedExpiries.length = 0;
+  const run = await processDomainRenewals();
+  registrarExpiry = null;
+
+  expect(run.results.map((r) => r.outcome)).toEqual(["renewed"]);
+  expect(recordedExpiries).toHaveLength(1);
+  expect(recordedExpiries[0]?.getTime()).toBeGreaterThan(domain.expiresAt.getTime());
 });

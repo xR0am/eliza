@@ -9,7 +9,11 @@
 import { createHash } from "node:crypto";
 import { ElizaError } from "@elizaos/core";
 import { normalizeCalendarDateTimeInTimeZone } from "../internal/calendar-normalize.js";
-import { addDaysToLocalDate, getZonedDateParts } from "../internal/time.js";
+import {
+  addDaysToLocalDate,
+  getZonedDateParts,
+  type ZonedDateParts,
+} from "../internal/time.js";
 import type {
   IcsAttendee,
   IcsParsedCalendar,
@@ -575,6 +579,92 @@ function endFromDuration(
   };
 }
 
+function parsedStartAt(
+  startAt: string,
+  timezone: string,
+  isAllDay: boolean,
+): ParsedDateValue {
+  const instant = new Date(startAt);
+  if (!Number.isFinite(instant.getTime())) {
+    throw new Error("ICS occurrence start is not a valid instant.");
+  }
+  const zone = isAllDay ? "UTC" : timezone;
+  const parts = getZonedDateParts(instant, zone);
+  return {
+    instant: instant.toISOString(),
+    isDate: isAllDay,
+    timezone,
+    localDate: {
+      year: parts.year,
+      month: parts.month,
+      day: parts.day,
+    },
+  };
+}
+
+/** Apply a validated RFC 5545 duration to one recurring occurrence. */
+export function endAtFromIcsDuration(args: {
+  startAt: string;
+  timezone: string;
+  isAllDay: boolean;
+  duration: string;
+}): string {
+  return endFromDuration(
+    parsedStartAt(args.startAt, args.timezone, args.isAllDay),
+    args.duration,
+  ).instant;
+}
+
+/**
+ * Find an inclusive recurrence-search boundary for an event that can still
+ * overlap `endAt` after a nominal RFC 5545 duration. This is the inverse of
+ * {@link endAtFromIcsDuration}: exact units move on the timeline, then nominal
+ * days move by civil date in the event zone.
+ */
+export function startAtBeforeIcsDurationEnd(args: {
+  endAt: string;
+  timezone: string;
+  isAllDay: boolean;
+  duration: string;
+}): string {
+  const duration = parseDuration(args.duration);
+  let boundary = new Date(args.endAt);
+  if (!Number.isFinite(boundary.getTime())) {
+    throw new Error("ICS recurrence boundary is not a valid instant.");
+  }
+  boundary = new Date(boundary.getTime() - duration.exactMs);
+  if (duration.days === 0) return boundary.toISOString();
+
+  const zone = args.isAllDay ? "UTC" : args.timezone;
+  const clock = getZonedDateParts(boundary, zone);
+  const localDate = addDaysToLocalDate(clock, -duration.days);
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  const resolved = normalizeCalendarDateTimeInTimeZone(
+    `${pad(localDate.year, 4)}-${pad(localDate.month)}-${pad(localDate.day)}T${pad(clock.hour % 24)}:${pad(clock.minute)}:${pad(clock.second)}`,
+    "recurrence range start",
+    zone,
+  );
+  if (!resolved)
+    throw new Error("ICS recurrence boundary could not be resolved.");
+  // A boundary wall time inside a DST gap resolves forward by the gap size.
+  // Step back by that shift so the boundary stays at or before the earliest
+  // start that can still overlap; callers filter each occurrence exactly.
+  const resolvedClock = getZonedDateParts(new Date(resolved), zone);
+  const wallMs = (parts: ZonedDateParts) =>
+    Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour % 24,
+      parts.minute,
+      parts.second,
+    );
+  const gapShiftMs = wallMs(resolvedClock) - wallMs({ ...clock, ...localDate });
+  return gapShiftMs > 0
+    ? new Date(Date.parse(resolved) - gapShiftMs).toISOString()
+    : resolved;
+}
+
 function addOneLocalDay(
   start: ParsedDateValue,
   field: string,
@@ -732,6 +822,7 @@ function parseEvent(
     status: propertyValue(component, "STATUS")?.toLowerCase() ?? "confirmed",
     startAt: start.instant,
     endAt: end.instant,
+    duration,
     isAllDay: start.isDate,
     timezone: start.timezone,
     url: propertyValue(component, "URL"),

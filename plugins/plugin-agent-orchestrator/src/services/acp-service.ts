@@ -3264,6 +3264,15 @@ export class AcpService extends Service {
     if (
       ["stopped", "errored", "completed", "cancelled"].includes(session.status)
     ) {
+      // A cancelled or failed native task keeps its status, but nothing else
+      // closes its agent subprocess.
+      await this.stopNativeClient(sessionId).catch((err: unknown) => {
+        // error-policy:J6 best-effort teardown, as for closeSession below.
+        this.log("warn", "initial task agent close failed", {
+          sessionId,
+          error: errorMessage(err),
+        });
+      });
       return;
     }
     await this.closeSession(sessionId).catch((err: unknown) => {

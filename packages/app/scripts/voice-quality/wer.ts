@@ -169,14 +169,23 @@ function numbersToDigits(words: string[]): string[] {
   return out;
 }
 
+/** Strip thousands separators, including chained ones ("1,000,000" -> "1000000"). */
+function stripThousandsSeparators(text: string): string {
+  let current = text;
+  for (;;) {
+    const next = current.replace(/(\d),(\d{3})/g, "$1$2");
+    if (next === current) return current;
+    current = next;
+  }
+}
+
 /** Normalized word list for WER. */
 export function normalizeWords(text: string): string[] {
-  const folded = text
+  const folded = stripThousandsSeparators(text)
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[’'`]/g, "")
-    .replace(/(\d),(\d{3})/g, "$1$2")
     .replace(/%/g, " percent ")
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, " ")
