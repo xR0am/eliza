@@ -452,23 +452,23 @@ describe("McpService HTTP transport recovery", () => {
     const { port } = httpServer.address() as AddressInfo;
     try {
       const runtime = createSQLiteTestRuntime({
-        character: {
-          name: "mcp-http-test",
-          bio: "MCP HTTP recovery regression",
-          settings: {
-            mcp: {
-              servers: {
-                remote: { type: "streamable-http", url: `http://127.0.0.1:${port}/mcp` },
-              },
-            },
-          },
-        },
+        character: { name: "mcp-http-test", bio: "MCP HTTP recovery regression" },
         logLevel: "fatal",
       });
       runtimes.push(runtime);
       await runtime.initialize();
       await runtime.registerService(McpService);
       const service = (await runtime.getServiceLoadPromise("mcp")) as McpService;
+      // Config validation rightly refuses loopback URLs, so connect the local
+      // test server through the service's own connection path directly.
+      await (
+        service as unknown as {
+          initializeConnection(name: string, config: Record<string, string>): Promise<void>;
+        }
+      ).initializeConnection("remote", {
+        type: "streamable-http",
+        url: `http://127.0.0.1:${port}/mcp`,
+      });
       expect((await service.callTool("remote", "echo")).content[0]).toMatchObject({ text: "ok" });
 
       failNext = true;
