@@ -2998,6 +2998,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const room of rooms) {
       const id = room.id as UUID;
+      const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, id);
+      // plugin-sql inserts with onConflictDoNothing, so an existing row is
+      // never overwritten — in particular not another agent's room.
+      if (existing && !this.roomIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.ROOMS, id, { ...room, id });
       ids.push(id);
     }
@@ -3008,6 +3012,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     for (const room of rooms) {
       const id = room.id as UUID;
       const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, id);
+      // A stored row for another agent is not an upsert target: overwriting it
+      // would rewrite that agent's room, the same agent_id predicate
+      // plugin-sql's updateRoom applies.
+      if (existing && !this.roomIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.ROOMS, id, {
         ...(existing ?? {}),
         ...room,
@@ -3020,7 +3028,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     for (const room of rooms) {
       if (!room.id) continue;
       const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, room.id);
-      if (!existing) continue;
+      if (!existing || !this.roomIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.ROOMS, room.id, {
         ...existing,
         ...room,
@@ -3030,7 +3038,19 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
 
   async deleteRooms(roomIds: UUID[]): Promise<void> {
     if (roomIds.length === 0) return;
-    const set = new Set(roomIds);
+    // Only rooms this adapter owns are deletable. The cascade below removes
+    // memories, participants, components and logs keyed by room_id, so
+    // deleting another agent's room would destroy its history as well. A
+    // missing room row cannot authorize that cascade either: a restored or
+    // copied file can hold an orphaned memory for another agent under an id
+    // with no room row, so an absent parent fails closed like a foreign one.
+    const owned: UUID[] = [];
+    for (const roomId of roomIds) {
+      const room = await this.storage.get<Room>(COLLECTIONS.ROOMS, roomId);
+      if (room && this.roomIsVisibleToOwner(room)) owned.push(roomId);
+    }
+    if (owned.length === 0) return;
+    const set = new Set(owned);
     const memories = await this.storage.getWhere<StoredMemory>(
       COLLECTIONS.MEMORIES,
       (m) => set.has(m.roomId as UUID),
@@ -3038,7 +3058,7 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const memoryIds = memories
       .map((memory) => memory.id)
       .filter((id): id is UUID => id !== undefined);
-    for (const id of roomIds) {
+    for (const id of owned) {
       await this.storage.delete(COLLECTIONS.ROOMS, id);
     }
     // Cascade as plugin-sql's room FKs do (participants, memories,
