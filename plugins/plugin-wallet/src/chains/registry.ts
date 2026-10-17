@@ -41,6 +41,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import { type Address, type Chain, encodeFunctionData, parseAbi } from "viem";
 import * as viemChains from "viem/chains";
 import type { WalletBackendService } from "../services/wallet-backend-service.js";
@@ -1013,9 +1014,69 @@ async function executeSolanaTransfer(
   }).compileToV0Message();
   const transaction = new VersionedTransaction(message);
   transaction.sign([senderKeypair]);
-  const signature = await connection.sendTransaction(transaction, {
-    skipPreflight: false,
-  });
+
+  // Send the transaction. ANY error from sendTransaction leaves the broadcast
+  // status uncertain — including SendTransactionError. Per @solana/web3.js
+  // v1.98.4 src/connection.ts, the SendTransactionError "action" is derived
+  // from the skipPreflight option (not the actual failure cause), and the
+  // field is private. With skipPreflight: false, a "Simulation failed" message
+  // does NOT prove the tx was never broadcast; it may be an RPC node error.
+  // The only safe handling: do NOT throw (which would invite a retry and risk
+  // duplicate spend). Return unconfirmed with the signature derived from the
+  // signed transaction for manual verification.
+  //
+  // Definitive failures (safe to throw/retry) are limited to:
+  // - Errors before sendTransaction is called (tx never created)
+  // - confirmation.value.err from confirmTransaction (on-chain failure proven)
+  let signature: string;
+  let sendUncertain = false;
+  try {
+    signature = await connection.sendTransaction(transaction, {
+      skipPreflight: false,
+    });
+  } catch {
+    // Broadcast status uncertain. Derive signature for explorer lookup.
+    // Do NOT claim "not found on explorer" means "definitely not broadcast".
+    sendUncertain = true;
+    signature = bs58.encode(transaction.signatures[0]);
+  }
+
+  // Distinguish: confirmed on-chain, explicitly failed on-chain, or uncertain.
+  // An explicit on-chain failure (confirmation.value.err) is safe to retry.
+  // An uncertain result must NOT be reported as success nor retried
+  // automatically, because the transaction may have landed and a new transfer
+  // would duplicate the spend. The signature is preserved so the user can
+  // check the explorer. Even if the explorer shows "not found", do NOT treat
+  // it as proof of non-broadcast — keep the no-auto-retry guidance.
+  let confirmationStatus: "confirmed" | "unconfirmed" = sendUncertain
+    ? "unconfirmed"
+    : "confirmed";
+  let explicitFailure: Error | null = null;
+  if (!sendUncertain) {
+    try {
+      const confirmation = await connection.confirmTransaction(
+        {
+          signature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        },
+        "confirmed",
+      );
+      if (confirmation.value.err) {
+        explicitFailure = new Error(
+          `Solana transfer failed on-chain: ${JSON.stringify(confirmation.value.err)}`,
+        );
+        throw explicitFailure;
+      }
+    } catch (error) {
+      // Re-throw explicit on-chain failures (safe to retry); anything else
+      // (timeout, RPC error) leaves the outcome uncertain.
+      if (error === explicitFailure) {
+        throw error;
+      }
+      confirmationStatus = "unconfirmed";
+    }
+  }
 
   return {
     status: "submitted",
@@ -1029,6 +1090,10 @@ async function executeSolanaTransfer(
     to: params.recipient,
     amount: params.amount,
     fromToken: tokenMint,
+    metadata: {
+      confirmationStatus,
+      ...(sendUncertain ? { sendUncertain: true } : {}),
+    },
   };
 }
 
