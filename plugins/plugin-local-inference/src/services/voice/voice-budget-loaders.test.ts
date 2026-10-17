@@ -583,4 +583,55 @@ describe("FfiStreamingBackend generation lifecycle", () => {
 		expect(released).toEqual(["released after 0 steps"]);
 		expect(backend.hasLoadedModel()).toBe(false);
 	});
+
+	it("serializes overlapping model loads", async () => {
+		const acquireResolvers: Array<() => void> = [];
+		let acquiresInFlight = 0;
+		let maxAcquiresInFlight = 0;
+		let releases = 0;
+		const backend = new FfiStreamingBackend({
+			supported: () => true,
+			async acquire(): Promise<FfiBackendSession> {
+				acquiresInFlight += 1;
+				maxAcquiresInFlight = Math.max(maxAcquiresInFlight, acquiresInFlight);
+				await new Promise<void>((resolve) => acquireResolvers.push(resolve));
+				acquiresInFlight -= 1;
+				return {
+					binding: {} as FfiBackendSession["binding"],
+					ctx: {} as FfiBackendSession["ctx"],
+					runner: {} as FfiBackendSession["runner"],
+					tokenize: () => new Int32Array(),
+					mtp: null,
+					draftModelPath: null,
+					mmprojPath: null,
+				};
+			},
+			async release(): Promise<void> {
+				releases += 1;
+			},
+		});
+
+		const first = backend.load({
+			modelPath: "/first.gguf",
+		} as unknown as BackendPlan);
+		const second = backend.load({
+			modelPath: "/second.gguf",
+		} as unknown as BackendPlan);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const acquiresBeforeFirstSettled = acquireResolvers.length;
+
+		acquireResolvers[0]?.();
+		await first;
+		while (acquireResolvers.length < 2) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		acquireResolvers[1]?.();
+		await second;
+
+		expect(acquiresBeforeFirstSettled).toBe(1);
+		expect(maxAcquiresInFlight).toBe(1);
+		expect(releases).toBe(1);
+		expect(backend.currentModelPath()).toBe("/second.gguf");
+		await backend.unload();
+	});
 });
