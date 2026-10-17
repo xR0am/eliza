@@ -110,6 +110,16 @@ const BLOOIO_RECEIPT_CLEANUP_TASK_NAME = "IMESSAGE_BLOOIO_RECEIPT_CLEANUP";
 export const BLOOIO_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const BLOOIO_RECEIPT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
+class IMessageInboundPersistenceRetryError extends ElizaError {
+  constructor(rowId: number, cause: unknown) {
+    super("Inbound iMessage could not be persisted; retry the chat database row", {
+      code: "IMESSAGE_INBOUND_PERSIST_FAILED",
+      cause,
+      context: { rowId },
+    });
+  }
+}
+
 interface BlooioDispatchReceipt {
   version: 1;
   acceptedAt: number;
@@ -2200,6 +2210,7 @@ export class IMessageService extends Service implements IIMessageService {
 
     // Cap batch size to 50 to keep per-tick latency bounded on busy
     // inboxes. If traffic exceeds that, subsequent ticks catch up.
+    const cursorBeforeBatch = this.lastRowId;
     const batch = this.chatDb.fetchNewMessages(this.lastRowId, 50);
     if (batch.length === 0) {
       return;
@@ -2222,7 +2233,7 @@ export class IMessageService extends Service implements IIMessageService {
       `[imessage][poll-start] fetched=${batch.length} cursor advanced to ${this.lastRowId}`
     );
 
-    for (const row of batch) {
+    for (const [index, row] of batch.entries()) {
       // Skip outbound messages — the agent sent these itself via AppleScript,
       // we don't want it reacting to its own output.
       if (row.isFromMe) {
@@ -2287,6 +2298,14 @@ export class IMessageService extends Service implements IIMessageService {
             error instanceof Error ? error.message : String(error)
           }`
         );
+        if (error instanceof IMessageInboundPersistenceRetryError) {
+          // Default-off ingestion has no outbound effect before persistence.
+          // Roll back only to the row before this one and stop the batch so the
+          // next tick retries it without replaying already completed rows.
+          this.lastRowId =
+            index === 0 ? cursorBeforeBatch : (batch[index - 1]?.rowId ?? cursorBeforeBatch);
+          return;
+        }
       }
     }
     logger.debug(`[imessage][poll-end] done. lastRowId=${this.lastRowId}`);
@@ -2670,23 +2689,25 @@ export class IMessageService extends Service implements IIMessageService {
       return [responseMemory];
     };
 
-    // Emit the plugin-namespaced event for any iMessage-specific listeners
-    // (kept for backwards compatibility with pre-fix code) and the generic
-    // core event so anything subscribed to EventType.MESSAGE_RECEIVED sees it.
-    this.runtime.emitEvent(IMessageEventTypes.MESSAGE_RECEIVED, {
-      runtime: this.runtime,
-      message: memory,
-      source: "imessage",
-      accountId,
-      callback,
-    } as EventPayload);
-    this.runtime.emitEvent(EventType.MESSAGE_RECEIVED, {
-      runtime: this.runtime,
-      message: memory,
-      source: "imessage",
-      accountId,
-      callback,
-    } as EventPayload);
+    const emitReceivedEvents = (): void => {
+      // Keep the plugin event for pre-fix listeners and the generic core event
+      // for every runtime listener. Default-off ingestion calls this only after
+      // its durable write succeeds, so a retry cannot duplicate these events.
+      this.runtime?.emitEvent(IMessageEventTypes.MESSAGE_RECEIVED, {
+        runtime: this.runtime,
+        message: memory,
+        source: "imessage",
+        accountId,
+        callback,
+      } as EventPayload);
+      this.runtime?.emitEvent(EventType.MESSAGE_RECEIVED, {
+        runtime: this.runtime,
+        message: memory,
+        source: "imessage",
+        accountId,
+        callback,
+      } as EventPayload);
+    };
 
     // Inbound messages are always ingested + emitted above. The agent only
     // auto-generates a reply when IMESSAGE_AUTO_REPLY is explicitly enabled —
@@ -2697,17 +2718,20 @@ export class IMessageService extends Service implements IIMessageService {
       try {
         await this.runtime.createMemory(memory, "messages");
       } catch (err) {
-        logger.warn(
-          `[imessage] Failed to persist inbound memory for ROWID=${row.rowId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
+        const failure = new IMessageInboundPersistenceRetryError(row.rowId, err);
+        this.runtime.reportError("IMessageService.inboundPersistence", failure, {
+          rowId: row.rowId,
+        });
+        throw failure;
       }
+      emitReceivedEvents();
       logger.debug(
         "[imessage] Auto-reply disabled (IMESSAGE_AUTO_REPLY=false); message ingested without response"
       );
       return;
     }
+
+    emitReceivedEvents();
 
     // Route through the message service — this is what actually triggers
     // the agent's decision pipeline (shouldRespond → generate → callback).

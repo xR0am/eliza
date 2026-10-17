@@ -122,6 +122,78 @@ describe("native Messages inbound attachments", () => {
       await rm(fixtureDir, { recursive: true, force: true });
     }
   });
+
+  it("retries a default-off inbound message after transient persistence failure", async () => {
+    const row: ChatDbMessage = {
+      rowId: 44,
+      guid: "message-guid-retry-44",
+      text: "keep this message",
+      kind: "text",
+      handle: "+15551234567",
+      chatId: "iMessage;-;+15551234567",
+      chatType: "direct",
+      displayName: null,
+      timestamp: 1_700_000_000_000,
+      isFromMe: false,
+      service: "iMessage",
+      isSent: true,
+      isDelivered: true,
+      isRead: false,
+      dateRead: 0,
+      dateEdited: 0,
+      dateRetracted: 0,
+      replyToGuid: null,
+      reaction: null,
+      attachments: [],
+    };
+    const fetchNewMessages = vi.fn((sinceRowId: number) => (sinceRowId < row.rowId ? [row] : []));
+    const createMemory = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary database outage"))
+      .mockResolvedValue(undefined);
+    const emitted: string[] = [];
+    const runtime = {
+      agentId: "00000000-0000-0000-0000-000000000001",
+      getSetting: vi.fn(() => undefined),
+      getService: vi.fn(() => null),
+      emitEvent: vi.fn((type: string) => emitted.push(type)),
+      ensureConnection: vi.fn(async () => {}),
+      createMemory,
+      reportError: vi.fn(() => {}),
+    } as unknown as IAgentRuntime;
+    const service = new IMessageService(runtime);
+    const internal = service as unknown as {
+      chatDb: Pick<ChatDbReader, "fetchNewMessages">;
+      lastRowId: number;
+      contactsLoadAttempted: boolean;
+      settings: IMessageSettings;
+      pollForNewMessagesInner(): Promise<void>;
+    };
+    internal.chatDb = { fetchNewMessages };
+    internal.lastRowId = 0;
+    internal.contactsLoadAttempted = true;
+    internal.settings = {
+      pollIntervalMs: 0,
+      heartbeatIntervalMs: 60_000,
+      dmPolicy: "open",
+      groupPolicy: "allowlist",
+      allowFrom: [],
+      enabled: true,
+    };
+
+    await internal.pollForNewMessagesInner();
+
+    expect(internal.lastRowId).toBe(0);
+    expect(emitted).not.toContain("MESSAGE_RECEIVED");
+
+    await internal.pollForNewMessagesInner();
+
+    expect(fetchNewMessages).toHaveBeenNthCalledWith(1, 0, 50);
+    expect(fetchNewMessages).toHaveBeenNthCalledWith(2, 0, 50);
+    expect(createMemory).toHaveBeenCalledTimes(2);
+    expect(internal.lastRowId).toBe(44);
+    expect(emitted.filter((type) => type === "MESSAGE_RECEIVED")).toHaveLength(1);
+  });
 });
 
 describe("Blooio inbound attachments", () => {
