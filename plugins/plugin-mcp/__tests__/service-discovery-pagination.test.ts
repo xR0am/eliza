@@ -10,6 +10,7 @@ import {
   stringToUuid,
 } from "@elizaos/core";
 import { createSQLiteTestRuntime } from "@elizaos/testing/runtime";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -459,8 +460,17 @@ describe("McpService HTTP transport recovery", () => {
       await runtime.initialize();
       await runtime.registerService(McpService);
       const service = (await runtime.getServiceLoadPromise("mcp")) as McpService;
-      // Config validation rightly refuses loopback URLs, so connect the local
-      // test server through the service's own connection path directly.
+      // The SSRF guard rightly refuses loopback URLs, so this test builds an
+      // unguarded transport to the local server and enters the service's own
+      // connection path directly. Error handling and reconnect stay real.
+      vi.spyOn(
+        service as unknown as {
+          buildHttpClientTransport(name: string, config: { url: string }): Promise<unknown>;
+        },
+        "buildHttpClientTransport"
+      ).mockImplementation(
+        async (_name, config) => new StreamableHTTPClientTransport(new URL(config.url))
+      );
       await (
         service as unknown as {
           initializeConnection(name: string, config: Record<string, string>): Promise<void>;
