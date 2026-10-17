@@ -979,9 +979,10 @@ export class MessageManager {
         // Add a basic attachment even if documentInfo is null
         attachments.push({
           id: document.file_id,
-          url: "",
+          url: telegramFileRefUrl(document.file_id),
           title: `Document: ${document.file_name || "Unknown Document"}`,
           source: "Document",
+          contentType: contentTypeForMime(document.mime_type),
           description: `Document: ${document.file_name || "Unknown Document"}`,
           text: `Document: ${document.file_name || "Unknown Document"}\nSize: ${document.file_size || 0} bytes\nType: ${document.mime_type || "unknown"}`,
         });
