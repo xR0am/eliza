@@ -62,6 +62,8 @@ export interface InboundMessage {
   threadMessages?: string[];
 
   // Gmail-specific (passed through from lifeops triage)
+  /** Email subject line. */
+  subject?: string;
   gmailMessageId?: string;
   gmailIsImportant?: boolean;
   gmailLikelyReplyNeeded?: boolean;

@@ -396,6 +396,7 @@ export function createMapsRoute(
           "unsupported_region",
           "unsupported_mode",
           "no_route",
+          "provider_unavailable",
           "provider_invalid_response",
         ].includes(error.code)
       )

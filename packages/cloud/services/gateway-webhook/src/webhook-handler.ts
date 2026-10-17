@@ -1290,16 +1290,22 @@ async function processMessage(
   const reauth = deps.reacquireAuthHeader ?? reacquireAuthHeader;
   const authHeader = getAuthHeader();
 
+  // A link code proves the sender owns the eliza.app session only when the
+  // platform identity is attested by a platform-owned connector. A per-agent
+  // route is verified with the tenant's own connector secrets, so the tenant
+  // can sign any sender id: never confirm a link from one.
+  const linkConfirmationAllowed = explicitAgentId === undefined;
   // Shared proof-bearing links precede intake; legacy Network keeps intake first.
-  const linkAttempt = isNetworkProject(project)
-    ? undefined
-    : await tryConfirmIdentityLink(
-        { redis, cloudBaseUrl, getAuthHeader },
-        adapter.platform,
-        event.senderId,
-        event.senderName,
-        event.text,
-      );
+  const linkAttempt =
+    isNetworkProject(project) || !linkConfirmationAllowed
+      ? undefined
+      : await tryConfirmIdentityLink(
+          { redis, cloudBaseUrl, getAuthHeader },
+          adapter.platform,
+          event.senderId,
+          event.senderName,
+          event.text,
+        );
   // The Network takeover: a direct message goes to the Network service's
   // deterministic loop first (routing, STOP/HELP/START, join, onboarding).
   // A handled turn is answered here with no model call; an open turn carries
@@ -1515,13 +1521,15 @@ async function processMessage(
   // the challenge as ordinary agent text.
   const resolvedLinkAttempt =
     linkAttempt ??
-    (await tryConfirmIdentityLink(
-      { redis, cloudBaseUrl, getAuthHeader },
-      adapter.platform,
-      event.senderId,
-      event.senderName,
-      event.text,
-    ));
+    (!linkConfirmationAllowed
+      ? { handled: false }
+      : await tryConfirmIdentityLink(
+          { redis, cloudBaseUrl, getAuthHeader },
+          adapter.platform,
+          event.senderId,
+          event.senderName,
+          event.text,
+        ));
   if (resolvedLinkAttempt.handled && resolvedLinkAttempt.reply) {
     await sendReplyWithRequiredReceipt(
       adapter,

@@ -1678,7 +1678,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const offset = typeof params.offset === "number" ? params.offset : 0;
     let sliced = offset > 0 ? readableMemories.slice(offset) : readableMemories;
     if (params.limit !== undefined) sliced = sliced.slice(0, params.limit);
-    return sliced;
+    return params.includeEmbedding === false
+      ? sliced.map(({ embedding, ...memory }) => memory)
+      : sliced;
   }
 
   async searchMessages(params: {
@@ -3271,6 +3273,16 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   ): Promise<UUID[]> {
     const ids: UUID[] = [];
     for (const rel of relationships) {
+      // One edge per (source, target, agent), as the plugin-sql unique key: an
+      // existing edge is kept and no id is returned for it.
+      const existing = await this.storage.getWhere<StoredRelationship>(
+        COLLECTIONS.RELATIONSHIPS,
+        (r) =>
+          r.sourceEntityId === rel.sourceEntityId &&
+          r.targetEntityId === rel.targetEntityId &&
+          (r.agentId ?? this.agentId) === this.agentId,
+      );
+      if (existing.length > 0) continue;
       const id = randomUUID() as UUID;
       const stored: StoredRelationship = {
         id,
