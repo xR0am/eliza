@@ -33,7 +33,7 @@ import { splitXDirectMessageContent } from "./utils";
 import { resolveCloudApiKeyForXEndpoint } from "./utils/cloud-credential-boundary";
 import {
   isExplicitTwitterRejection,
-  isTransientTwitterRejection,
+  isPermanentTwitterRejection,
 } from "./utils/error-handler";
 import { createMemorySafe, reconcileTwitterWorld } from "./utils/memory";
 import { normalizeXReceiptId } from "./utils/provider-receipt";
@@ -567,17 +567,18 @@ export class TwitterDirectMessageClient {
               });
         } catch (error) {
           // error-policy:J2 explicit HTTP rejection proves X did not accept
-          // this part. With no earlier part accepted, reopen the event when a
-          // retry can succeed; a permanent refusal settles it so the cursor
-          // moves past it instead of retrying it ahead of every later DM.
+          // this part. With no earlier part accepted, a refusal tied to this
+          // recipient settles the event so the cursor moves past it; any other
+          // rejection (auth, 402 credits, 403 app access, rate limits) reopens
+          // it so it resumes once the operator fixes the app or account.
           // Transport failures, and any failure after an earlier part was
           // accepted, retain the no-replay tombstone.
           deliveryError = error;
           if (partsAccepted === 0 && isExplicitTwitterRejection(error)) {
-            if (isTransientTwitterRejection(error)) {
-              await this.runtime.deleteCache(settledKey);
-            } else {
+            if (isPermanentTwitterRejection(error)) {
               await this.runtime.setCache(settledKey, "rejected");
+            } else {
+              await this.runtime.deleteCache(settledKey);
             }
           } else {
             await this.runtime.setCache(settledKey, "indeterminate");

@@ -54,7 +54,7 @@ import {
 } from "./utils";
 import {
   isExplicitTwitterRejection,
-  isTransientTwitterRejection,
+  isPermanentTwitterRejection,
 } from "./utils/error-handler";
 import { describeTweetPhotos } from "./utils/image-descriptions";
 import {
@@ -1322,14 +1322,15 @@ ${tweet.text}`;
       } catch (error) {
         deliveryError = error;
         // error-policy:J2 nothing reached X, or X explicitly refused the first
-        // chunk: reopen the mention when a retry can succeed. A permanent
-        // refusal settles it so later mentions are not held behind it. Any
-        // other failure keeps the tombstone.
+        // chunk: reopen the mention. A refusal X ties to this conversation
+        // settles it so later mentions are not held behind it; app- or
+        // account-level refusals reopen it. Any other failure keeps the
+        // tombstone.
         const refusedFirstChunk =
           postRequests === 1 && isExplicitTwitterRejection(error);
         if (
           postRequests === 0 ||
-          (refusedFirstChunk && isTransientTwitterRejection(error))
+          (refusedFirstChunk && !isPermanentTwitterRejection(error))
         ) {
           await this.runtime.deleteCache(settledKey);
         } else if (refusedFirstChunk) {
