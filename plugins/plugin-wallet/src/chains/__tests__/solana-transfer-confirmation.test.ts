@@ -290,17 +290,18 @@ describe("Solana transfer confirmation states", () => {
     }
   });
 
-  it("SOL transfer: sendTransaction simulation failure -> unconfirmed (not definitive)", async () => {
-    // Per @solana/web3.js v1.98.4, SendTransactionError's "action" is derived
-    // from the skipPreflight option, not the actual failure cause. With
-    // skipPreflight: false, a "Simulation failed" message does NOT prove the
-    // tx was never broadcast. Treat as unconfirmed, not as definitive failure.
+  it("SOL transfer: sendTransaction simulation failure -> ok:false (RPC rejected)", async () => {
+    // SendTransactionError means the RPC answered with an error (the node
+    // processed the request). With skipPreflight: false this includes
+    // preflight/simulation rejections where the node does NOT broadcast.
+    // Definitive failure: must be reported as failure, not as "submitted".
     const { SendTransactionError } = await import("@solana/web3.js");
     mockSendTransaction.mockRejectedValue(
       new SendTransactionError({
         action: "simulate",
         signature: "",
-        transactionMessage: "Transaction simulation failed: insufficient funds",
+        transactionMessage:
+          "Transaction simulation failed: Attempt to debit an account but found no record of a prior credit.",
         logs: [],
       }),
     );
@@ -313,16 +314,14 @@ describe("Solana transfer confirmation states", () => {
       ...createTransferParams(),
     });
 
-    // NOT a definitive failure: return unconfirmed to block auto-retry
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const metadata = result.result.metadata as {
-        confirmationStatus?: string;
-        sendUncertain?: boolean;
-      };
-      expect(metadata?.confirmationStatus).toBe("unconfirmed");
-      expect(metadata?.sendUncertain).toBe(true);
+    // Definitive failure: ok must be false, with the RPC reason preserved.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("EXECUTION_FAILED");
+      expect(result.detail).toContain("Transaction simulation failed");
     }
+    // confirmTransaction must NOT have been called (no signature from RPC).
+    expect(mockConfirmTransaction).not.toHaveBeenCalled();
   });
 
   it("SOL transfer: RPC node unhealthy -> unconfirmed (not definitive)", async () => {

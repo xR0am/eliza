@@ -36,6 +36,7 @@ import {
   Connection,
   LAMPORTS_PER_SOL,
   PublicKey,
+  SendTransactionError,
   SystemProgram,
   type TransactionInstruction,
   TransactionMessage,
@@ -1015,27 +1016,37 @@ async function executeSolanaTransfer(
   const transaction = new VersionedTransaction(message);
   transaction.sign([senderKeypair]);
 
-  // Send the transaction. ANY error from sendTransaction leaves the broadcast
-  // status uncertain — including SendTransactionError. Per @solana/web3.js
-  // v1.98.4 src/connection.ts, the SendTransactionError "action" is derived
-  // from the skipPreflight option (not the actual failure cause), and the
-  // field is private. With skipPreflight: false, a "Simulation failed" message
-  // does NOT prove the tx was never broadcast; it may be an RPC node error.
-  // The only safe handling: do NOT throw (which would invite a retry and risk
-  // duplicate spend). Return unconfirmed with the signature derived from the
-  // signed transaction for manual verification.
+  // Send the transaction. Two cases:
   //
-  // Definitive failures (safe to throw/retry) are limited to:
-  // - Errors before sendTransaction is called (tx never created)
-  // - confirmation.value.err from confirmTransaction (on-chain failure proven)
+  // 1. SendTransactionError: the RPC answered with an error (JSON-RPC error
+  //    response). The node processed the request. With skipPreflight: false,
+  //    this includes preflight/simulation rejections (e.g. insufficient
+  //    funds), where the node does NOT broadcast. This is a definitive
+  //    failure: rethrow so the EXECUTION_FAILED path reports the reason
+  //    (and logs via getLogs()). A retry is safe.
+  //
+  //    Note: per @solana/web3.js v1.98.4, the error's "action" field is set
+  //    from the skipPreflight option, not the real cause, and the field is
+  //    private. We do not read it; the error *type* (RPC answered vs not)
+  //    is the signal.
+  //
+  // 2. Any other error (network failure, timeout, response loss): no answer
+  //    arrived, so the broadcast status is truly uncertain — the tx may have
+  //    landed. Do NOT throw (which would invite a retry and risk duplicate
+  //    spend). Return unconfirmed with the signature derived from the signed
+  //    transaction for manual verification.
   let signature: string;
   let sendUncertain = false;
   try {
     signature = await connection.sendTransaction(transaction, {
       skipPreflight: false,
     });
-  } catch {
-    // Broadcast status uncertain. Derive signature for explorer lookup.
+  } catch (error) {
+    if (error instanceof SendTransactionError) {
+      // RPC explicitly rejected the transaction. Definitive failure.
+      throw error;
+    }
+    // Uncertain: no RPC answer. Derive signature for explorer lookup.
     // Do NOT claim "not found on explorer" means "definitely not broadcast".
     sendUncertain = true;
     signature = bs58.encode(transaction.signatures[0]);
