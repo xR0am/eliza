@@ -95,6 +95,32 @@ describe("cloudLogin poll response parsing", () => {
     expect((error as Error).cause).toBeInstanceOf(SyntaxError);
   });
 
+  it("rejects parsed poll bodies that do not match the login contract", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+
+    for (const body of [
+      null,
+      {},
+      {
+        status: "authenticated",
+        apiKey: { not: "a string" },
+        keyPrefix: 7,
+        expiresAt: 42,
+      },
+    ]) {
+      mockFetch([() => json(body)]);
+
+      const error = await cloudLogin({
+        baseUrl: BASE_URL,
+        pollIntervalMs: 1,
+      }).catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("Eliza Cloud returned invalid login poll responses");
+      expect((error as Error).cause).toBeInstanceOf(TypeError);
+    }
+  });
+
   it("reports the parse failure instead of a timeout when the deadline hits first", async () => {
     vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     // The second unparseable poll only resolves after the deadline, so the
