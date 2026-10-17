@@ -19,6 +19,7 @@
 
 import {
   type AgentRuntime,
+  getConnectorAccountManager,
   ModelType,
   type ModelTypeName,
   type Plugin,
@@ -38,7 +39,10 @@ import {
   lifeInboxTriageExamples,
 } from "../src/db/schema.ts";
 import { curateEmailCandidates } from "../src/inbox/email-curation.ts";
-import type { InboxGmailGateway } from "../src/inbox/google-gmail-seam.ts";
+import {
+  createInboxGmailGateway,
+  type InboxGmailGateway,
+} from "../src/inbox/google-gmail-seam.ts";
 import { InboxService } from "../src/inbox/service.ts";
 import type { InboundMessage } from "../src/inbox/types.ts";
 import { InboxUnsubscribeRepository } from "../src/inbox/unsubscribe-repository.ts";
@@ -186,6 +190,30 @@ describe("InboxService + InboxRepository — real PGLite", () => {
     );
     // High-urgency item sorts ahead of medium/low in the unresolved queue.
     expect(queue[0]?.urgency).toBe("high");
+  });
+
+  it("rejects a send-only Google account before Gmail subscription search", async () => {
+    const manager = getConnectorAccountManager(runtime);
+    await manager.upsertAccount("google", {
+      provider: "google",
+      id: "send-only-google-account",
+      role: "OWNER",
+      purpose: ["messaging"],
+      accessGate: "owner_binding",
+      status: "connected",
+      displayHandle: "send-only@example.test",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      metadata: {
+        isDefault: true,
+        grantedScopes: ["https://www.googleapis.com/auth/gmail.send"],
+      },
+    });
+
+    const gmail = createInboxGmailGateway(runtime, runtime.agentId);
+    await expect(gmail.requireGmailGrant()).rejects.toThrow(
+      "Google Gmail triage access has not been granted.",
+    );
   });
 
   it("refuses a combined unsubscribe before any effect when Gmail manage access is absent", async () => {
