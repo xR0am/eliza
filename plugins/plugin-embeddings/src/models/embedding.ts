@@ -267,7 +267,9 @@ async function requestEmbeddingsFromEndpoint(
  *
  * The runtime boot dimension-probe calls this with `null` purely to learn the
  * vector length (it reads `.length`), so a correctly-sized marker vector is the
- * only legitimate synthetic return — every real failure throws.
+ * only legitimate synthetic return — every real failure throws. The probe pins
+ * the first provider that answers it, so without an endpoint the probe throws
+ * too and the runtime moves on to the next provider.
  */
 export async function handleTextEmbedding(
   runtime: IAgentRuntime,
@@ -278,6 +280,7 @@ export async function handleTextEmbedding(
 
   const text = extractText(params);
   if (text === null) {
+    requireBaseURL(runtime);
     logger.debug("[Embeddings] Returning init-probe vector");
     const probe = new Array(embeddingDimension).fill(0);
     probe[0] = 0.1;
