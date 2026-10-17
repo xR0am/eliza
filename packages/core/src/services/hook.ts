@@ -13,12 +13,8 @@
  * - Integration with runtime event system
  */
 
-import {
-	accessSync,
-	constants as fsConstants,
-	statSync,
-} from "node:fs";
-import { delimiter as pathDelimiter, join as joinPath } from "node:path";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { join as joinPath, delimiter as pathDelimiter } from "node:path";
 import type { EventPayload } from "../types/events";
 import { EventType } from "../types/events";
 import type {
