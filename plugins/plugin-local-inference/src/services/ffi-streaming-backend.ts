@@ -140,6 +140,9 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 	 *  generateWithUsage refuses new work so nothing starts on a session
 	 *  that is about to be released. */
 	private unloading = false;
+	/** The one release operation for the current session. Concurrent lifecycle
+	 *  callers share it so the native context is never released twice. */
+	private unloadPromise: Promise<void> | null = null;
 	private readonly budgetOverride: VoiceBudget | null;
 
 	constructor(
@@ -221,7 +224,16 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 		this.budgetReservations = [];
 	}
 
-	async unload(): Promise<void> {
+	unload(): Promise<void> {
+		if (this.unloadPromise) return this.unloadPromise;
+		const operation = this.releaseCurrentSession();
+		this.unloadPromise = operation.finally(() => {
+			this.unloadPromise = null;
+		});
+		return this.unloadPromise;
+	}
+
+	private async releaseCurrentSession(): Promise<void> {
 		// Await the native release BEFORE nulling our refs. If we null first and
 		// release() throws (a raw bun:ffi free can reject), this.session would be
 		// null while the runtime still holds a live session — the next load()

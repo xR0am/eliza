@@ -572,4 +572,15 @@ describe("FfiStreamingBackend generation lifecycle", () => {
 		expect(steps.count - stepsWhenRefused).toBeLessThanOrEqual(1);
 		expect(backend.hasLoadedModel()).toBe(false);
 	}, 10_000);
+
+	it("releases one native session once when unload callers overlap", async () => {
+		const steps = { count: 0 };
+		const released: string[] = [];
+		const backend = await loadedBackend(steps, released);
+
+		await Promise.all([backend.unload(), backend.unload()]);
+
+		expect(released).toEqual(["released after 0 steps"]);
+		expect(backend.hasLoadedModel()).toBe(false);
+	});
 });
