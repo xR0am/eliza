@@ -112,6 +112,7 @@ import {
   getSessionById,
   saveAutofillData,
   saveSubmission,
+  deleteSession as storageDeleteSession,
   getActiveSession as storageGetActiveSession,
   getAllActiveSessions as storageGetAllActiveSessions,
   getStashedSessions as storageGetStashedSessions,
@@ -1386,9 +1387,15 @@ export class FormService extends Service {
   }
 
   /**
-   * Restore a stashed session
+   * Restore a stashed session. Pass `roomId` to restore it into the room the
+   * user is talking in: the session is looked up by room, so a form left in
+   * its original room would get no context and no extracted answers here.
    */
-  async restore(sessionId: string, entityId: UUID): Promise<FormSession> {
+  async restore(
+    sessionId: string,
+    entityId: UUID,
+    roomId?: UUID,
+  ): Promise<FormSession> {
     const session = await getSessionById(this.runtime, entityId, sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
@@ -1398,14 +1405,23 @@ export class FormService extends Service {
       throw new Error(`Session is not stashed: ${session.status}`);
     }
 
-    // Check for existing active session in the same room
+    const targetRoomId = roomId ?? session.roomId;
+
+    // Check for existing active session in the target room
     const existing = await storageGetActiveSession(
       this.runtime,
       entityId,
-      session.roomId,
+      targetRoomId,
     );
     if (existing && existing.id !== sessionId) {
       throw new Error(`Active session already exists in room: ${existing.id}`);
+    }
+
+    if (targetRoomId !== session.roomId) {
+      // The storage key includes the room, so drop the old row before saving
+      // under the new room.
+      await storageDeleteSession(this.runtime, session);
+      session.roomId = targetRoomId;
     }
 
     session.status = "active";

@@ -124,9 +124,9 @@ export function walletFinancialPendingKey(
     ["chain", (params.chain ?? "").toLowerCase()],
     ["toChain", (params.toChain ?? "").toLowerCase()],
     ["amount", params.amount ?? ""],
-    ["recipient", (params.recipient ?? "").toLowerCase()],
-    ["fromToken", (params.fromToken ?? "").toLowerCase()],
-    ["toToken", (params.toToken ?? "").toLowerCase()],
+    ["recipient", addressKey(params.recipient)],
+    ["fromToken", addressKey(params.fromToken)],
+    ["toToken", addressKey(params.toToken)],
     [
       "slippageBps",
       params.slippageBps === undefined ? "" : String(params.slippageBps),
@@ -191,6 +191,13 @@ export function walletFinancialPendingKey(
 // identically. The unstated default is not a single chain-agnostic number
 // (EVM swaps escalate 1% -> 1.5% -> 2%, bridges hold 1%, Solana uses dynamic
 // slippage), so it is labeled rather than numbered.
+// EVM hex addresses are case-insensitive; Solana base58 addresses are not, so
+// two case variants are different accounts and must not share a key.
+function addressKey(value: string | undefined): string {
+  const text = value ?? "";
+  return /^0x/i.test(text) ? text.toLowerCase() : text;
+}
+
 function slippagePreviewClause(slippageBps: number | undefined): string {
   if (slippageBps === undefined) {
     return " with default slippage";
@@ -289,9 +296,9 @@ export function walletFinancialPreview(
       return `Governance ${params.op ?? "operation"}${proposal}${support}${targets}${values}${calldatas}${description} at governor ${params.governor ?? "?"} on ${chainLabel}? Reply yes to submit or no to cancel.`;
     }
     case "pump_fun_buy":
-      return `Buy ${params.amount ?? "?"} SOL of ${params.toToken ?? "the selected pump.fun token"} through pump.fun on ${chainLabel}? Reply yes to submit or no to cancel.`;
+      return `Buy ${params.amount ?? "?"} SOL of ${params.toToken ?? "the selected pump.fun token"} through pump.fun on ${chainLabel}${slippage}? Reply yes to submit or no to cancel.`;
     case "open":
-      return `Open a liquidity position in pool ${params.pool ?? "?"}${pairClause}${dexClause} on ${chainLabel}${feeClause}${rangeClause} with ${params.amount ?? "?"}? Reply yes to submit or no to cancel.`;
+      return `Open a liquidity position in pool ${params.pool ?? "?"}${pairClause}${dexClause} on ${chainLabel}${feeClause}${rangeClause} with ${params.amount ?? "?"}${slippage}? Reply yes to submit or no to cancel.`;
     case "close":
     case "reposition": {
       const poolClause = params.pool ? ` in pool ${params.pool}` : "";
@@ -300,7 +307,7 @@ export function walletFinancialPreview(
         params.subaction === "reposition"
           ? `${dexClause}${feeClause}${rangeClause}`
           : dexClause;
-      return `${verb} liquidity position ${params.position ?? "?"}${poolClause}${pairClause}${repositionExtras} on ${chainLabel}? Reply yes to submit or no to cancel.`;
+      return `${verb} liquidity position ${params.position ?? "?"}${poolClause}${pairClause}${repositionExtras} on ${chainLabel}${slippage}? Reply yes to submit or no to cancel.`;
     }
     default:
       return `Submit wallet ${params.subaction} on ${chainLabel}? Reply yes to confirm or no to cancel.`;

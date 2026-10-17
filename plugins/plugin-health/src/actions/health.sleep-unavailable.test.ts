@@ -191,6 +191,94 @@ describe("HEALTH today/trend sleep-unavailable reporting", () => {
   });
 });
 
+describe("HEALTH today on the connector path", () => {
+  it("shows every provider's day and no 0 placeholders for metrics a provider did not send", async () => {
+    const day = "2026-05-10";
+    const sample = (
+      provider: "strava" | "withings",
+      metric: string,
+      value: number,
+    ) => ({
+      id: `${provider}-${metric}`,
+      agentId: "agent",
+      provider,
+      grantId: `${provider}-grant`,
+      metric,
+      value,
+      unit: "",
+      startAt: `${day}T00:00:00.000Z`,
+      endAt: `${day}T23:59:59.000Z`,
+      localDate: day,
+      sourceExternalId: `${provider}-${metric}`,
+      metadata: {},
+      createdAt: `${day}T23:59:59.000Z`,
+      updatedAt: `${day}T23:59:59.000Z`,
+    });
+    const row = (provider: "strava" | "withings") => ({
+      date: day,
+      provider,
+      steps: 0,
+      activeMinutes: 0,
+      sleepHours: 0,
+      calories: null,
+      distanceMeters: null,
+      heartRateAvg: null,
+      restingHeartRate: null,
+      hrvMs: null,
+      sleepScore: null,
+      readinessScore: null,
+      weightKg: null,
+      bloodPressureSystolic: null,
+      bloodPressureDiastolic: null,
+      bloodOxygenPercent: null,
+    });
+    const harness = buildHarness({
+      async getHealthDailySummary() {
+        throw new Error("the bridge is not used on the connector path");
+      },
+      async getHealthTrend() {
+        return [];
+      },
+      async getHealthConnectorStatus() {
+        return { available: false, backend: "none" };
+      },
+      async getHealthSummary() {
+        return {
+          ...emptyConnectorSummary(),
+          providers: [
+            { provider: "strava", connected: true },
+            { provider: "withings", connected: true },
+          ],
+          summaries: [
+            { ...row("strava"), activeMinutes: 45, distanceMeters: 20_000 },
+            { ...row("withings"), steps: 8000, sleepHours: 7.2, weightKg: 80 },
+          ],
+          samples: [
+            sample("strava", "active_minutes", 45),
+            sample("strava", "distance_meters", 20_000),
+            sample("withings", "steps", 8000),
+            sample("withings", "sleep_hours", 7.2),
+            sample("withings", "weight_kg", 80),
+          ],
+        } as unknown as LifeOpsHealthSummaryResponse;
+      },
+      async getHealthDataPoints() {
+        return [];
+      },
+    });
+
+    await harness.runOnce("today", { date: day });
+
+    const reply = harness.rendered[0];
+    expect(reply.fallback).toContain("- Steps: 8,000");
+    expect(reply.fallback).toContain("- Sleep: 7.2h");
+    expect(reply.fallback).toContain("- Weight: 80.0 kg");
+    expect(reply.fallback).toContain("- Distance: 20.00 km");
+    expect(reply.fallback).not.toContain("- Steps: 0");
+    expect(reply.fallback).not.toContain("- Sleep: 0.0h");
+  });
+});
+
 describe("HEALTH by_metric on the connector path", () => {
   it("reports each provider's total instead of adding providers together", async () => {
     // A Fitbit day total includes the run Strava also reports.
