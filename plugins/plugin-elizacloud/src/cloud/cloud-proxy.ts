@@ -3,7 +3,11 @@
  * Routes chat/status calls through the ElizaCloudClient to the remote sandbox.
  */
 
-import type { ChatChannelType, ElizaCloudClient } from "./bridge-client.js";
+import {
+  CloudBridgeError,
+  type ChatChannelType,
+  type ElizaCloudClient,
+} from "./bridge-client.js";
 
 export class CloudRuntimeProxy {
   constructor(
@@ -29,6 +33,7 @@ export class CloudRuntimeProxy {
     roomId = "web-chat",
     channelType: ChatChannelType = "DM",
   ): AsyncGenerator<string> {
+    let receivedReplyText = false;
     for await (const event of this.client.sendMessageStream(
       this.agentId,
       text,
@@ -36,8 +41,12 @@ export class CloudRuntimeProxy {
       channelType,
     )) {
       if (event.type === "chunk" && typeof event.data.text === "string") {
+        if (event.data.text.length > 0) receivedReplyText = true;
         yield event.data.text;
       }
+    }
+    if (!receivedReplyText) {
+      throw new CloudBridgeError("Cloud stream ended without reply text");
     }
   }
 
