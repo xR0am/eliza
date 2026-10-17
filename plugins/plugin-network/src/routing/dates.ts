@@ -175,7 +175,10 @@ export function parseDateExpr(expr: string, now: Date): Date | null {
     // "Friday, October 30", "Monday the 26th", "Thursday 10/29": the date
     // after the weekday names the day. Without this the weekday alone won and
     // the window ended on the next Friday, a week or more early.
-    const after = rest.replace(/^,?\s+/, "");
+    // Tolerate comma-spacing variants: "Friday,October 30" (no space) and
+    // "Friday , October 30" (space before comma) as well as the canonical
+    // "Friday, October 30".
+    const after = rest.replace(/^\s*,?\s*/, "");
     const dated = after !== rest ? DATE_EXPR.exec(after) : null;
     if (
       dated?.index === 0 &&
