@@ -23,19 +23,79 @@ export {
   MCP_TOOL_SCHEMA_UNBOUNDED,
 } from "./schema-budget.js";
 
+/** Balanced `{...}` regions in `text`, in the order their `{` appears. Braces
+ * written in prose, in a JSON5 string, or in a JSON5 comment do not change the
+ * depth, so they never end a region early. */
+function* balancedObjects(text: string): Generator<string> {
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let quote: string | undefined;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (quote) {
+        if (character === "\\") index += 1;
+        else if (character === quote) quote = undefined;
+        continue;
+      }
+      if (character === '"' || character === "'") quote = character;
+      else if (character === "/" && text[index + 1] === "/") {
+        const newline = text.indexOf("\n", index);
+        if (newline === -1) break;
+        index = newline;
+      } else if (character === "/" && text[index + 1] === "*") {
+        const end = text.indexOf("*/", index + 2);
+        if (end === -1) break;
+        index = end + 1;
+      } else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          yield text.slice(start, index + 1);
+          break;
+        }
+      }
+    }
+  }
+}
+
+/** Model text is untrusted and small; a brace-per-byte reply must not make the
+ * candidate scan quadratic. */
+const MAX_OBJECT_CANDIDATES = 64;
+
 export function parseJSON<T>(input: string): T {
-  let cleanedInput = input.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
+  const cleanedInput = input.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
 
   const firstBrace = cleanedInput.indexOf("{");
   const lastBrace = cleanedInput.lastIndexOf("}");
 
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error("No valid JSON object found in input");
+  // A model reply can carry prose on both sides of its arguments. The whole
+  // first-brace..last-brace range is tried first, so every input that parsed
+  // before parses the same way; when that prose itself contains a brace, each
+  // balanced object region is tried in turn.
+  const candidates: string[] = [];
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(cleanedInput.substring(firstBrace, lastBrace + 1));
+    for (const candidate of balancedObjects(cleanedInput)) {
+      if (candidates.length >= MAX_OBJECT_CANDIDATES) break;
+      if (candidate !== candidates[0]) candidates.push(candidate);
+    }
   }
 
-  cleanedInput = cleanedInput.substring(firstBrace, lastBrace + 1);
+  let failure: string | undefined;
+  for (const candidate of candidates) {
+    try {
+      return JSON5.parse(candidate) as T;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+  }
 
-  return JSON5.parse(cleanedInput) as T;
+  throw new Error(
+    failure
+      ? `No valid JSON object found in input: ${failure}`
+      : "No valid JSON object found in input"
+  );
 }
 
 interface AjvErrorLike {
