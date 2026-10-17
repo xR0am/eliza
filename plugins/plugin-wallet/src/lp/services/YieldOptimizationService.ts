@@ -356,8 +356,7 @@ export class YieldOptimizationService
               estimatedCostToMoveLamports: costDetails.costSolLamports,
               estimatedCostToMoveUsd: costDetails.costUsd,
               netGainPercent:
-                idlePoolYield * 100 -
-                ((costDetails.costUsd || 0) / 1000) * 100,
+                idlePoolYield * 100 - ((costDetails.costUsd || 0) / 1000) * 100,
               reason: `Deploy idle assets to ${pool.displayName || pool.id} with APR of ${(idlePoolYield * 100).toFixed(2)}%`,
               actions: costDetails.steps.filter(
                 (s) => !s.toLowerCase().includes("withdraw"),
