@@ -10,6 +10,8 @@ import { ChannelType, TaskService } from "@elizaos/core";
 import { executeSql } from "@elizaos/plugin-sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLifeOpsTestRuntime } from "../../test/helpers/runtime.js";
+import { contactEdgeId } from "../lifeops/relationships/mapping.js";
+import { LifeOpsRepository } from "../lifeops/repository.js";
 import { LifeOpsService } from "../lifeops/service.js";
 import { entityAction } from "./entity.js";
 
@@ -57,6 +59,18 @@ async function runLogInteraction(params: Record<string, unknown>) {
   )) as {
     success: boolean;
     data?: { error?: string; interaction?: { relationshipId: string } };
+  };
+}
+
+async function runCreate(params: Record<string, unknown>) {
+  return (await entityAction.handler(
+    fixture.runtime,
+    ownerMessage("add this contact"),
+    undefined,
+    { parameters: { action: "create", ...params } },
+  )) as {
+    success: boolean;
+    data?: { error?: string; relationship?: { id: string } };
   };
 }
 
@@ -148,5 +162,61 @@ describe("ENTITY log_interaction writes the real interaction row only for one id
     const rows = await readInteractionRows();
     expect(rows).toHaveLength(2);
     expect(rows[1]?.relationship_id).toBe(annJonesId);
+  });
+});
+
+describe("ENTITY create fails closed on an ambiguous contact identity", () => {
+  it("does not change either person or add an edge", async () => {
+    const repo = new LifeOpsRepository(fixture.runtime);
+    const entityStore = await repo.entityStore(fixture.runtime.agentId);
+    const addedAt = "2026-05-01T10:00:00.000Z";
+    for (const [entityId, preferredName] of [
+      ["ent-ambiguous-ann", "Ann"],
+      ["ent-ambiguous-bob", "Bob"],
+    ]) {
+      await entityStore.upsert({
+        entityId,
+        type: "person",
+        preferredName,
+        identities: [
+          {
+            platform: "telegram",
+            handle: "@shared_handle",
+            verified: true,
+            confidence: 1,
+            addedAt,
+            addedVia: "import",
+            evidence: ["existing-contact"],
+          },
+        ],
+        tags: ["existing"],
+        visibility: "owner_agent_admin",
+        state: {},
+      });
+    }
+
+    const result = await runCreate({
+      name: "New Contact",
+      channel: "telegram",
+      handle: "@shared_handle",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.data?.error).toBe("LIFEOPS_CONTACT_IDENTITY_CONFLICT");
+    expect((await entityStore.get("ent-ambiguous-ann"))?.preferredName).toBe(
+      "Ann",
+    );
+    expect((await entityStore.get("ent-ambiguous-bob"))?.preferredName).toBe(
+      "Bob",
+    );
+    const relationshipStore = await repo.relationshipStore(
+      fixture.runtime.agentId,
+    );
+    expect(
+      await relationshipStore.get(contactEdgeId("ent-ambiguous-ann")),
+    ).toBeNull();
+    expect(
+      await relationshipStore.get(contactEdgeId("ent-ambiguous-bob")),
+    ).toBeNull();
   });
 });

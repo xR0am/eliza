@@ -774,24 +774,26 @@ export async function handleCharacterRoutes(
 
   if (method === "GET" && pathname === "/api/character") {
     const runtime = state.runtime;
+    if (!runtime) {
+      error(res, "Agent runtime not available. Start the agent first.", 503);
+      return true;
+    }
     const merged: Record<string, unknown> = {};
-    if (runtime) {
-      const character = runtime.character;
-      if (character.name) merged.name = character.name;
-      if (character.username) merged.username = character.username;
-      if (character.bio) merged.bio = character.bio;
-      if (character.system) merged.system = character.system;
-      if (character.adjectives) merged.adjectives = character.adjectives;
-      if (Array.isArray((character as { topics?: string[] }).topics)) {
-        merged.topics = (character as { topics?: string[] }).topics;
-      }
-      if (character.style) merged.style = character.style;
-      if (character.messageExamples) {
-        merged.messageExamples = character.messageExamples;
-      }
-      if (character.postExamples) {
-        merged.postExamples = character.postExamples;
-      }
+    const character = runtime.character;
+    if (character.name) merged.name = character.name;
+    if (character.username) merged.username = character.username;
+    if (character.bio) merged.bio = character.bio;
+    if (character.system) merged.system = character.system;
+    if (character.adjectives) merged.adjectives = character.adjectives;
+    if (Array.isArray((character as { topics?: string[] }).topics)) {
+      merged.topics = (character as { topics?: string[] }).topics;
+    }
+    if (character.style) merged.style = character.style;
+    if (character.messageExamples) {
+      merged.messageExamples = character.messageExamples;
+    }
+    if (character.postExamples) {
+      merged.postExamples = character.postExamples;
     }
 
     json(res, { character: merged, agentName: state.agentName });
@@ -799,6 +801,12 @@ export async function handleCharacterRoutes(
   }
 
   if (method === "PUT" && pathname === "/api/character") {
+    // A stopped agent has no live character to change, and its saved config
+    // is rebuilt on start: answering ok here would drop the edit silently.
+    if (!state.runtime) {
+      error(res, "Agent runtime not available. Start the agent first.", 503);
+      return true;
+    }
     const body = await readJsonBody<Record<string, unknown>>(req, res);
     if (!body) return true;
 

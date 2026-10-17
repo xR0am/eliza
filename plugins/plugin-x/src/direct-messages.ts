@@ -605,7 +605,13 @@ export class TwitterDirectMessageClient {
         agentId: this.runtime.agentId,
         entityId: this.runtime.agentId,
         roomId,
-        content: { ...response, text, source: "x", inReplyTo: memoryId },
+        content: {
+          ...response,
+          text,
+          source: "x",
+          channelType,
+          inReplyTo: memoryId,
+        },
         metadata: {
           type: "message",
           source: "x",
@@ -614,7 +620,7 @@ export class TwitterDirectMessageClient {
           fromBot: true,
           fromId: this.runtime.agentId,
           sourceId: this.runtime.agentId,
-          chatType: ChannelType.DM,
+          chatType: channelType,
           messageIdFull: sentId,
           twitter: {
             accountId: this.client.accountId,

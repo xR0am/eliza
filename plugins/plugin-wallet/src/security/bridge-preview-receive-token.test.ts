@@ -53,3 +53,64 @@ describe("bridge confirmation", () => {
     expect(prompts.size).toBe(2);
   });
 });
+
+describe("pump.fun and liquidity confirmations", () => {
+  it.each([
+    {
+      subaction: "pump_fun_buy",
+      chain: "pumpfun",
+      amount: "1",
+      toToken: "Mint1111111111111111111111111111111111111111",
+    },
+    {
+      subaction: "open",
+      chain: "evm",
+      chainId: 8453,
+      pool: "0xpool",
+      amount: "1",
+    },
+    {
+      subaction: "close",
+      chain: "evm",
+      chainId: 8453,
+      position: "123",
+      dex: "uniswap",
+    },
+    {
+      subaction: "reposition",
+      chain: "evm",
+      chainId: 8453,
+      position: "123",
+      dex: "uniswap",
+    },
+  ])("shows the bound slippage for $subaction", (params) => {
+    const prompts = new Set(
+      [undefined, 50, 10_000].map((slippageBps) =>
+        walletFinancialPreview({ ...params, slippageBps } as never),
+      ),
+    );
+    expect(prompts.size).toBe(3);
+  });
+});
+
+describe("Solana address confirmation key", () => {
+  it("does not let a base58 case variant match the confirmed recipient", () => {
+    const transfer = {
+      subaction: "transfer",
+      chain: "solana",
+      amount: "5",
+      fromToken: "SOL",
+    } as const;
+    expect(
+      walletFinancialPendingKey({
+        ...transfer,
+        recipient: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      } as never),
+    ).not.toBe(
+      walletFinancialPendingKey({
+        ...transfer,
+        recipient: "9wzdxwbbmkg8ztbnmquxvqrayrzzdsgydlvl9zytawwm",
+      } as never),
+    );
+  });
+});

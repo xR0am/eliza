@@ -15,6 +15,7 @@
 import {
   LIFEOPS_MESSAGE_CHANNELS,
   type LifeOpsMessageChannel,
+  type LifeOpsRelationship,
 } from "@elizaos/contracts";
 import type {
   Action,
@@ -742,18 +743,39 @@ export const entityAction: Action & {
           data: { subaction, error: "INVALID_CHANNEL" },
         });
       }
-      const rel = await service.upsertRelationship({
-        name,
-        primaryChannel: channel,
-        primaryHandle: handle,
-        email: params.email ?? null,
-        phone: params.phone ?? null,
-        notes: params.notes ?? "",
-        tags: [],
-        relationshipType: "contact",
-        lastContactedAt: null,
-        metadata: {},
-      });
+      let rel: LifeOpsRelationship;
+      try {
+        rel = await service.upsertRelationship({
+          name,
+          primaryChannel: channel,
+          primaryHandle: handle,
+          email: params.email ?? null,
+          phone: params.phone ?? null,
+          notes: params.notes ?? "",
+          tags: [],
+          relationshipType: "contact",
+          lastContactedAt: null,
+          metadata: {},
+        });
+      } catch (error) {
+        if (
+          !(error instanceof ElizaError) ||
+          error.code !== "LIFEOPS_CONTACT_IDENTITY_CONFLICT"
+        ) {
+          throw error;
+        }
+        return respond({
+          success: false,
+          scenario: "relationship_add_identity_conflict",
+          fallback:
+            "I found more than one person with that contact handle. Tell me which existing contact you mean.",
+          context: { channel },
+          data: {
+            subaction,
+            error: "LIFEOPS_CONTACT_IDENTITY_CONFLICT",
+          },
+        });
+      }
       return respond({
         success: true,
         scenario: "relationship_add_contact",

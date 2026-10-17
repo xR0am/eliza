@@ -26,6 +26,7 @@ import type {
   CaptureLifeOpsPhoneConsentRequest,
   LifeOpsActivitySignal,
   LifeOpsCalendarEvent,
+  LifeOpsCalendarProvider,
   LifeOpsChannelPolicy,
   LifeOpsCircadianState,
   LifeOpsManualOverrideResult,
@@ -1141,6 +1142,14 @@ function collectNearbyReminderTitles(args: {
   return titles;
 }
 
+function ownerDeclinedEvent(event: LifeOpsCalendarEvent): boolean {
+  return event.attendees.some(
+    (attendee) =>
+      attendee.self &&
+      attendee.responseStatus?.trim().toLowerCase() === "declined",
+  );
+}
+
 function buildActiveCalendarEventReminders(
   events: Array<{
     id: string;
@@ -1260,11 +1269,39 @@ export type RemindersDeps = {
   checkinSource: CheckinSourceService;
 };
 
+// Providers whose events plugin-calendar gives a reminder plan (Google,
+// Microsoft and Apple sync, and the built-in calendar). ICS imports create no
+// plans, so they are not read here.
+const REMINDER_CALENDAR_PROVIDERS = [
+  "eliza",
+  "google",
+  "microsoft",
+  "apple_calendar",
+] as const satisfies readonly LifeOpsCalendarProvider[];
+
 export class RemindersDomain {
   constructor(
     private readonly ctx: LifeOpsContext,
     private readonly deps: RemindersDeps,
   ) {}
+
+  private async listReminderCalendarEvents(
+    timeMin?: string,
+    timeMax?: string,
+  ): Promise<LifeOpsCalendarEvent[]> {
+    const agentId = this.ctx.agentId();
+    const events = await Promise.all(
+      REMINDER_CALENDAR_PROVIDERS.map((provider) =>
+        this.ctx.repository.listCalendarEvents(
+          agentId,
+          provider,
+          timeMin,
+          timeMax,
+        ),
+      ),
+    );
+    return events.flat();
+  }
 
   /**
    * UTC date key of the last successful telemetry rollup+retention run.
@@ -3643,9 +3680,9 @@ export class RemindersDomain {
       });
       return;
     }
-    const event = (
-      await this.ctx.repository.listCalendarEvents(this.ctx.agentId(), "google")
-    ).find((candidate) => candidate.id === args.ownerId);
+    const event = (await this.listReminderCalendarEvents()).find(
+      (candidate) => candidate.id === args.ownerId,
+    );
     if (!event) {
       return;
     }
@@ -3730,12 +3767,9 @@ export class RemindersDomain {
         updatedAt: new Date().toISOString(),
       });
     } else {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === args.ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === args.ownerId,
+      );
       if (!event) {
         return;
       }
@@ -3943,12 +3977,9 @@ export class RemindersDomain {
     args.attempt.reviewStatus = "resolved";
     if (args.resolution === "snoozed") return;
     if (args.ownerType === "calendar_event") {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === args.ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === args.ownerId,
+      );
       if (event) {
         await this.ctx.repository.upsertCalendarEvent({
           ...event,
@@ -4251,10 +4282,7 @@ export class RemindersDomain {
       }
 
       if (reviewAttempt.ownerType === "calendar_event") {
-        calendarEvents ??= await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        );
+        calendarEvents ??= await this.listReminderCalendarEvents();
         const event =
           calendarEvents.find(
             (candidate) => candidate.id === reviewAttempt.ownerId,
@@ -5981,12 +6009,7 @@ export class RemindersDomain {
       OVERVIEW_HORIZON_MINUTES,
     ).toISOString();
     const calendarEvents = includeCalendar
-      ? await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-          now.toISOString(),
-          eventWindowEnd,
-        )
+      ? await this.listReminderCalendarEvents(now.toISOString(), eventWindowEnd)
       : [];
     const eventPlans = await this.ctx.repository.listReminderPlansForOwners(
       this.ctx.agentId(),
@@ -6005,12 +6028,16 @@ export class RemindersDomain {
     }
     // An all-day event has no start time: its stored startAt is UTC midnight
     // of the date, so an offset step would fire at an arbitrary local hour.
-    const allDayEventIds = new Set(
-      calendarEvents.filter((event) => event.isAllDay).map((event) => event.id),
+    // An event the owner declined is not attended (availability ignores it
+    // too), so it gets no reminder.
+    const unremindedEventIds = new Set(
+      calendarEvents
+        .filter((event) => event.isAllDay || ownerDeclinedEvent(event))
+        .map((event) => event.id),
     );
     const plansByEventId = new Map<string, LifeOpsReminderPlan>();
     for (const plan of eventPlans) {
-      if (allDayEventIds.has(plan.ownerId)) continue;
+      if (unremindedEventIds.has(plan.ownerId)) continue;
       const effectivePlan = this.resolveEffectiveReminderPlan(
         plan,
         globalReminderPreference,
@@ -7127,12 +7154,9 @@ export class RemindersDomain {
         },
       );
     } else {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === ownerId,
+      );
       if (!event) {
         fail(404, "life-ops calendar event not found");
       }

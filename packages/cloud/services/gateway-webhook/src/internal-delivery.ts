@@ -1,10 +1,15 @@
 /** Delivers authenticated proactive messages through the gateway-owned connector. */
 
+import {
+  type ApprovedRelayPhoto,
+  parseApprovedRelayPhotos,
+} from "@elizaos/plugin-network/contract";
 import { svcVerify } from "@elizaos/plugin-network/svc-auth";
 import { BlooioApiResponseError, blooioAdapter } from "./adapters/blooio";
 import { TelegramApiResponseError, telegramAdapter } from "./adapters/telegram";
 import { twilioAdapter } from "./adapters/twilio";
 import { type ChatEvent, PlatformDeliveryError } from "./adapters/types";
+import { resolveApprovedRelayPhotoUrls } from "./approved-relay-photos";
 import { resolveConnectorAccountId } from "./connector-account";
 import { logger } from "./logger";
 import {
@@ -63,6 +68,7 @@ type InternalWebhookDelivery = (
     }
 ) & {
   app?: "ntwrk" | "slop" | "peon" | "friends";
+  approvedPhotos?: ApprovedRelayPhoto[];
   networkCompliance?: { command: "stop" | "help" | "start"; messageId: string };
 };
 
@@ -145,6 +151,26 @@ function parseDelivery(value: unknown): InternalWebhookDelivery | undefined {
     !["ntwrk", "slop", "peon", "friends"].includes(String(input.app))
   )
     return undefined;
+  const approvedPhotos =
+    input.approvedPhotos === undefined
+      ? undefined
+      : parseApprovedRelayPhotos(input.approvedPhotos);
+  // Photo relay uses the normal configured service. Isolated reply realms have no photo authority here.
+  if (
+    input.approvedPhotos !== undefined &&
+    input.networkAuthority !== undefined
+  )
+    return undefined;
+  if (
+    input.approvedPhotos !== undefined &&
+    (!approvedPhotos ||
+      input.platform !== "blooio" ||
+      typeof input.phoneNumber !== "string" ||
+      input.chatId !== undefined ||
+      input.networkCompliance !== undefined ||
+      approvedPhotos.some((p) => p.app !== input.app))
+  )
+    return undefined;
   if (
     input.platform === "telegram" &&
     typeof input.connectorAccountId === "string" &&
@@ -185,6 +211,7 @@ function parseDelivery(value: unknown): InternalWebhookDelivery | undefined {
         ? { app: input.app as InternalWebhookDelivery["app"] }
         : {}),
       phoneNumber: input.phoneNumber,
+      ...(approvedPhotos ? { approvedPhotos } : {}),
       text: input.text.trim(),
       idempotencyKey: input.idempotencyKey,
     };
@@ -266,6 +293,9 @@ async function deliveryHash(
       "phoneNumber" in delivery ? delivery.phoneNumber : delivery.chatId,
       delivery.text,
       delivery.idempotencyKey,
+      ...(delivery.approvedPhotos
+        ? [["approved-photos", delivery.approvedPhotos]]
+        : []),
     ]),
   );
 }
@@ -299,6 +329,22 @@ async function receiptMatches(
   return receipt.hash === (await deliveryHash(delivery));
 }
 
+async function validPhotoDeliverySignature(
+  request: Request,
+  body: string,
+  delivery: InternalWebhookDelivery,
+): Promise<boolean> {
+  if (!delivery.approvedPhotos) return true;
+  const secret = process.env.SERVICE_TURN_SECRET;
+  const proof = await svcVerify(secret, {
+    method: "POST",
+    path: new URL(request.url).pathname,
+    headers: request.headers,
+    body,
+  });
+  return proof.ok && proof.id === delivery.idempotencyKey;
+}
+
 const notClaimed = () =>
   Response.json(
     {
@@ -321,10 +367,25 @@ export async function readInternalDeliveryReceipt(
   request: Request,
   dependencies: InternalDeliveryDependencies,
 ): Promise<Response> {
-  const raw = await request.json().catch(() => null);
+  const rawBody = await request.text();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(rawBody);
+  } catch {
+    raw = null;
+  }
   const delivery = parseDelivery(raw);
   if (!delivery)
     return Response.json({ success: false, error: "invalid" }, { status: 400 });
+  if (!(await validPhotoDeliverySignature(request, rawBody, delivery)))
+    return Response.json(
+      {
+        success: false,
+        acceptance: "not_accepted",
+        error: "invalid photo delivery authority",
+      },
+      { status: 403 },
+    );
   const key = `internal-delivery:${delivery.platform}:${delivery.project}:${delivery.idempotencyKey}`;
   let value = await dependencies.redis.get(key);
   if (
@@ -394,6 +455,16 @@ export async function deliverInternalMessage(
     );
   }
 
+  if (!(await validPhotoDeliverySignature(request, rawBody, delivery)))
+    return Response.json(
+      {
+        success: false,
+        acceptance: "not_accepted",
+        error: "invalid photo delivery authority",
+      },
+      { status: 403 },
+    );
+
   const networkScoped =
     isNetworkProject(delivery.project) ||
     ("phoneNumber" in delivery &&
@@ -401,6 +472,15 @@ export async function deliverInternalMessage(
         platform: delivery.platform,
         senderId: delivery.phoneNumber,
       }));
+  if (delivery.approvedPhotos && !networkScoped)
+    return Response.json(
+      {
+        success: false,
+        acceptance: "not_accepted",
+        error: "photo relay scope unavailable",
+      },
+      { status: 403 },
+    );
   let compliance = false;
   const proof =
     raw && typeof raw === "object"
@@ -599,6 +679,16 @@ export async function deliverInternalMessage(
       { status: 409, headers: { "Retry-After": "1" } },
     );
   }
+  if (delivery.approvedPhotos && process.env.NETWORK_RELAY_ENABLED !== "1")
+    return Response.json(
+      {
+        success: false,
+        acceptance: "not_accepted",
+        retryable: false,
+        error: "photo relay disabled",
+      },
+      { status: 403 },
+    );
   const pendingClaim = `pending:${crypto.randomUUID()}`;
   let claimed: unknown;
   try {
@@ -656,6 +746,18 @@ export async function deliverInternalMessage(
     if (!adapter.sendReplyWithReceipt) {
       throw new Error(`${delivery.platform} receipt delivery is unavailable`);
     }
+    // Resolve only this unsent, approved item. Receipt recovery exits above and
+    // cannot mint a fresh capability or dispatch another provider message.
+    const approvedMediaUrls =
+      delivery.approvedPhotos && "phoneNumber" in delivery
+        ? await resolveApprovedRelayPhotoUrls(
+            delivery.approvedPhotos,
+            delivery.idempotencyKey,
+            delivery.phoneNumber,
+            process.env,
+            fetch,
+          )
+        : undefined;
     // Provider dispatch may succeed before any transport error becomes visible.
     // Persist the tombstone first for every connector; only a proven rejection
     // or a validated receipt may replace it with retryable/complete state.
@@ -685,11 +787,15 @@ export async function deliverInternalMessage(
       return finalRefusal;
     }
     connectorAttempted = true;
-    const receipt = await adapter.sendReplyWithReceipt(
-      config,
-      event,
-      delivery.text,
-    );
+    const receipt = approvedMediaUrls
+      ? await adapter.sendReplyWithReceipt(
+          config,
+          event,
+          delivery.text,
+          undefined,
+          approvedMediaUrls,
+        )
+      : await adapter.sendReplyWithReceipt(config, event, delivery.text);
     if (receipt.providerMessageIds.length === 0) {
       throw new Error("Connector accepted delivery without a provider receipt");
     }

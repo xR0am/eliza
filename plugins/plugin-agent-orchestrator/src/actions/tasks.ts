@@ -84,6 +84,7 @@ import type {
 } from "../services/workspace-service.js";
 import { getCodingWorkspaceService } from "../services/workspace-service.js";
 import {
+  type AcpActionService,
   callbackText,
   canonicalSessionId,
   contentRecord,
@@ -2664,7 +2665,7 @@ type TaskSessionLookup =
  */
 async function sessionsOfTask(
   runtime: IAgentRuntime,
-  service: NonNullable<ReturnType<typeof getAcpService>>,
+  service: AcpActionService,
   taskId: string,
 ): Promise<TaskSessionLookup> {
   const taskService = runtime.getService?.(
@@ -2687,6 +2688,32 @@ async function sessionsOfTask(
 
 function isLiveSession(session: SessionInfo): boolean {
   return !TERMINAL_SESSION_STATUSES.has(session.status.toLowerCase());
+}
+
+/**
+ * Cancel a live sub-agent. A native session waiting between turns has no
+ * prompt to cancel and refuses with ACP_CANCEL_NO_ACTIVE_PROMPT, so it is
+ * stopped instead.
+ */
+async function cancelLiveSession(
+  service: NonNullable<ReturnType<typeof getAcpService>>,
+  sessionId: string,
+): Promise<void> {
+  if (!service.cancelSession) {
+    await service.stopSession(sessionId);
+    return;
+  }
+  try {
+    await service.cancelSession(sessionId);
+  } catch (error) {
+    if (
+      !(error instanceof ElizaError) ||
+      error.code !== "ACP_CANCEL_NO_ACTIVE_PROMPT"
+    ) {
+      throw error;
+    }
+    await service.stopSession(sessionId);
+  }
 }
 
 async function runCancel(
@@ -2716,8 +2743,7 @@ async function runCancel(
     if (all) {
       const stoppedSessions: string[] = [];
       for (const session of sessions) {
-        await (service.cancelSession?.(session.id) ??
-          service.stopSession(session.id));
+        await cancelLiveSession(service, session.id);
         stoppedSessions.push(session.id);
       }
       // The cancel confirmation is the complete answer to a single-operation
@@ -2747,8 +2773,7 @@ async function runCancel(
         );
       }
       for (const session of running) {
-        await (service.cancelSession?.(session.id) ??
-          service.stopSession(session.id));
+        await cancelLiveSession(service, session.id);
       }
       const text = `Canceled task ${taskId}.`;
       await callbackText(callback, text);
@@ -2797,8 +2822,7 @@ async function runCancel(
       );
     }
 
-    await (service.cancelSession?.(target.id) ??
-      service.stopSession(target.id));
+    await cancelLiveSession(service, target.id);
     const text = `Canceled task ${target.id}.`;
     await callbackText(callback, text);
     return {

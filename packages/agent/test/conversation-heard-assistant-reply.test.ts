@@ -363,6 +363,44 @@ it("maps a heard prefix of the spoken form back to the stored text", async () =>
   }
 }, 120_000);
 
+it("maps spoken prefixes after a stage direction", async () => {
+  const { agentId, adapter, dataDir, runtime, state } = await createFixture();
+  try {
+    const { conversation } = (
+      await call(state, "POST", "/api/conversations", { title: "aside" })
+    ).payload as { conversation: { id: string; roomId: UUID } };
+    const reply = "Hello (very quietly softly) world unseen";
+    const assistantId = await runtime.createMemory(
+      {
+        entityId: agentId,
+        agentId,
+        roomId: conversation.roomId,
+        content: { text: reply },
+      } as Memory,
+      "messages",
+    );
+
+    const result = await call(
+      state,
+      "POST",
+      `/api/conversations/${conversation.id}/messages/${assistantId}/heard`,
+      { heardText: "Hello w" },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.payload).toMatchObject({
+      text: "Hello (very quietly softly) world",
+      truncated: true,
+      changed: true,
+    });
+    const [stored] = await runtime.getMemoriesByIds([assistantId], "messages");
+    expect(stored?.content.text).toBe("Hello (very quietly softly) world");
+  } finally {
+    await adapter.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}, 120_000);
+
 it("trims a reply stored in content segments", async () => {
   const { agentId, adapter, dataDir, runtime, state } = await createFixture();
   try {

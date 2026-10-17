@@ -272,7 +272,13 @@ function enforceContentLengthLimit(
 function fileNameFromUrl(url: string): string | undefined {
 	try {
 		const parsed = new URL(url);
-		const base = getBasename(parsed.pathname);
+		let pathname = parsed.pathname;
+		try {
+			pathname = decodeURIComponent(pathname);
+		} catch {
+			// error-policy:J3 Keep malformed URL escapes as a literal filename.
+		}
+		const base = getBasename(pathname);
 		return base || undefined;
 	} catch {
 		// error-policy:J3 Redirect-derived URL text is untrusted; absence of a

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseIcsCalendar } from "./parser.js";
+import {
+  endAtFromIcsDuration,
+  parseIcsCalendar,
+  startAtBeforeIcsDurationEnd,
+} from "./parser.js";
 
 function feedWithSummary(summary: string): string {
   return [
@@ -28,5 +32,42 @@ describe("decodeIcsText unknown escapes", () => {
     const raw = "a\\,b\\;c\\\\d\\ne";
     const cal = parseIcsCalendar(feedWithSummary(raw));
     expect(cal.events[0]?.title).toBe("a,b;c\\d\ne");
+  });
+});
+
+describe("startAtBeforeIcsDurationEnd", () => {
+  it("steps back across a DST gap so overlapping starts stay in range", () => {
+    // 02:30 EDT on 2026-03-09; one nominal day earlier is 02:30 on 03-08,
+    // inside the New York spring-forward gap.
+    const boundary = startAtBeforeIcsDurationEnd({
+      endAt: "2026-03-09T06:30:00.000Z",
+      timezone: "America/New_York",
+      isAllDay: false,
+      duration: "P1D",
+    });
+    const overlappingStart = "2026-03-08T07:00:00.000Z";
+    expect(Date.parse(boundary)).toBeLessThan(Date.parse(overlappingStart));
+    expect(
+      Date.parse(
+        endAtFromIcsDuration({
+          startAt: overlappingStart,
+          timezone: "America/New_York",
+          isAllDay: false,
+          duration: "P1D",
+        }),
+      ),
+    ).toBeGreaterThan(Date.parse("2026-03-09T06:30:00.000Z"));
+    expect(boundary).toBe("2026-03-08T06:30:00.000Z");
+  });
+
+  it("returns the exact nominal inverse outside a gap", () => {
+    expect(
+      startAtBeforeIcsDurationEnd({
+        endAt: "2026-03-10T14:00:00.000Z",
+        timezone: "America/New_York",
+        isAllDay: false,
+        duration: "P1D",
+      }),
+    ).toBe("2026-03-09T14:00:00.000Z");
   });
 });

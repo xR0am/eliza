@@ -1280,15 +1280,62 @@ export function createScheduledTaskRunner(
     return { decision: { kind: "allow" } };
   }
 
-  async function shouldDeferForGlobalPause(
+  /**
+   * A skipped occurrence of a recurring task is used up: dueness counts the
+   * next occurrence from `firedAt`, so leaving it unchanged re-skips the same
+   * occurrence every tick and fires it at the first tick after the gate opens
+   * or the global pause ends. Record the occurrence instant, not the
+   * (possibly late) tick, so the schedule keeps its phase.
+   */
+  async function useUpRecurringOccurrence(task: ScheduledTask): Promise<void> {
+    if (!isRecurringTrigger(task.trigger)) return;
+    const skipped = await isScheduledTaskDue(task, {
+      now: now(),
+      ownerFacts: await deps.ownerFacts(),
+      anchors: deps.anchors,
+    });
+    task.state.firedAt = skipped.occurrenceAtIso ?? now().toISOString();
+  }
+
+  /**
+   * A tick after an ended pause window can still be firing an occurrence
+   * that fell inside it (no tick ran during the pause, e.g. the scheduler
+   * was offline). That occurrence belongs to the pause, so it is skipped,
+   * not caught up late. Recurring tasks only: skipping a one-time task is
+   * terminal, so it keeps the late catch-up instead of being lost.
+   */
+  async function occurredDuringPause(
     task: ScheduledTask,
-  ): Promise<{ paused: boolean; reason?: string }> {
+    pause: { startIso?: string; endIso?: string },
+  ): Promise<boolean> {
+    if (!pause.startIso || !pause.endIso) return false;
+    if (!isRecurringTrigger(task.trigger)) return false;
+    const due = await isScheduledTaskDue(task, {
+      now: now(),
+      ownerFacts: await deps.ownerFacts(),
+      anchors: deps.anchors,
+    });
+    if (!due.occurrenceAtIso) return false;
+    const occurrenceMs = Date.parse(due.occurrenceAtIso);
+    return (
+      occurrenceMs >= Date.parse(pause.startIso) &&
+      occurrenceMs < Date.parse(pause.endIso)
+    );
+  }
+
+  async function shouldDeferForGlobalPause(task: ScheduledTask): Promise<{
+    paused: boolean;
+    reason?: string;
+    endedPauseEndIso?: string;
+  }> {
     if (task.respectsGlobalPause === false) return { paused: false };
     const pause = await deps.globalPause.current(now());
-    if (!pause.active) return { paused: false };
+    const ended = !pause.active && (await occurredDuringPause(task, pause));
+    if (!pause.active && !ended) return { paused: false };
     return {
       paused: true,
       reason: pause.reason ? `global_pause: ${pause.reason}` : "global_pause",
+      ...(ended ? { endedPauseEndIso: pause.endIso } : {}),
     };
   }
 
@@ -2561,6 +2608,15 @@ export function createScheduledTaskRunner(
     // Global-pause check.
     const pause = await shouldDeferForGlobalPause(task);
     if (pause.paused) {
+      if (pause.endedPauseEndIso) {
+        // Retire every occurrence inside the ended window in one step; the
+        // next one counted from here is the first at or after the pause end.
+        task.state.firedAt = new Date(
+          Date.parse(pause.endedPauseEndIso) - 1,
+        ).toISOString();
+      } else {
+        await useUpRecurringOccurrence(task);
+      }
       task.state.status = "skipped";
       task.state.lastDecisionLog = pause.reason ?? "global_pause";
       if (!(await persist(task))) return { kind: "raced", taskId };
@@ -2577,19 +2633,7 @@ export function createScheduledTaskRunner(
     // Gate check.
     const gateOutcome = await evaluateGates(task);
     if (gateOutcome.decision.kind === "deny") {
-      // A denied occurrence of a recurring task is used up: dueness counts
-      // the next occurrence from `firedAt`, so leaving it unchanged re-skips
-      // the same occurrence every tick and fires at the first tick after the
-      // gate opens. Record the occurrence instant, not the (possibly late)
-      // tick, so the schedule keeps its phase.
-      if (isRecurringTrigger(task.trigger)) {
-        const denied = await isScheduledTaskDue(task, {
-          now: now(),
-          ownerFacts: await deps.ownerFacts(),
-          anchors: deps.anchors,
-        });
-        task.state.firedAt = denied.occurrenceAtIso ?? now().toISOString();
-      }
+      await useUpRecurringOccurrence(task);
       task.state.status = "skipped";
       task.state.lastDecisionLog = `${gateOutcome.gateKind ?? "gate"}: ${gateOutcome.decision.reason}`;
       if (!(await persist(task))) return { kind: "raced", taskId };

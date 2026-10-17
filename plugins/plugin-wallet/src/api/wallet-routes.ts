@@ -854,24 +854,19 @@ async function signLocalBrowserSolanaTransaction(
     const versioned = VersionedTransaction.deserialize(txBytes);
     versioned.sign([keypair]);
     signedBytes = versioned.serialize();
-    if (broadcast) {
-      const connection = new Connection(
-        browserSolanaClusterRpcUrl(cluster),
-        "confirmed",
-      );
-      broadcastSignature = await connection.sendRawTransaction(signedBytes);
-    }
-  } catch (_error) {
+  } catch {
+    // The fallback only covers the serialization format: a versioned
+    // transaction that fails to deserialize is retried as a legacy one.
     const legacy = Transaction.from(txBytes);
     legacy.partialSign(keypair);
     signedBytes = legacy.serialize();
-    if (broadcast) {
-      const connection = new Connection(
-        browserSolanaClusterRpcUrl(cluster),
-        "confirmed",
-      );
-      broadcastSignature = await connection.sendRawTransaction(signedBytes);
-    }
+  }
+  if (broadcast) {
+    const connection = new Connection(
+      browserSolanaClusterRpcUrl(cluster),
+      "confirmed",
+    );
+    broadcastSignature = await connection.sendRawTransaction(signedBytes);
   }
   return {
     address,

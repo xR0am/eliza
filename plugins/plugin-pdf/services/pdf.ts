@@ -27,6 +27,7 @@ import { parsePdfSpecDate } from "./pdf-date.js";
 
 type PdfTextItem = {
   str: string;
+  hasEOL?: boolean;
   transform?: unknown;
   width?: unknown;
   height?: unknown;
@@ -51,7 +52,7 @@ function isTextItem(item: unknown): item is PdfTextItem {
   );
 }
 
-function collectTextStrings(items: unknown): string[] {
+function collectTextStrings(items: unknown, lineSeparator = ""): string[] {
   if (!Array.isArray(items)) {
     throw new TypeError("PDF text content items must be an array");
   }
@@ -59,7 +60,7 @@ function collectTextStrings(items: unknown): string[] {
   const textItems: string[] = [];
   for (const item of items) {
     if (isTextItem(item)) {
-      textItems.push(item.str);
+      textItems.push(item.str + (item.hasEOL ? lineSeparator : ""));
     }
   }
   return textItems;
@@ -279,6 +280,7 @@ export class PdfService extends Service {
         );
         const isParserBlank = nativeText.length === 0 && operatorList.fnArray.length === 0;
         let ocrText: string | null = null;
+        let ocrRan = false;
         await assertActive();
         const rendered = await renderPageAsImage(pdf, pageNumber, {
           canvasImport: () => import("@napi-rs/canvas"),
@@ -295,6 +297,7 @@ export class PdfService extends Service {
         if (options.ocrPage) {
           ocrText = this.cleanUpContent(await options.ocrPage({ pageNumber, pngBytes }));
           if (!ocrText) ocrText = null;
+          ocrRan = true;
         }
         await assertActive();
         const response = await this.runtime
@@ -336,12 +339,15 @@ export class PdfService extends Service {
           throw new Error("IMAGE_DESCRIPTION returned an empty page transcription");
         }
         const visionReportsBlank = visionText === "[BLANK PAGE]";
-        if (visionReportsBlank && (!isParserBlank || ocrText)) {
+        // A scanned blank page still draws an image, so the parser cannot
+        // confirm it. OCR that ran and read nothing is the second check.
+        const isVerifiedBlank =
+          visionReportsBlank && !nativeText && !ocrText && (isParserBlank || ocrRan);
+        if (visionReportsBlank && !isVerifiedBlank) {
           throw new Error(
             "IMAGE_DESCRIPTION reported a blank page that conflicts with native or OCR evidence"
           );
         }
-        const isVerifiedBlank = isParserBlank && !ocrText && visionReportsBlank;
 
         const text = [
           nativeText,
@@ -462,9 +468,10 @@ export class PdfService extends Service {
       for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
         const page = await pdf.getPage(pageNum);
         const textContent = await page.getTextContent();
-        const pageText = collectTextStrings(textContent.items).join(
+        const pageText = collectTextStrings(
+          textContent.items,
           options.preserveWhitespace ? "" : " "
-        );
+        ).join("");
         textPages.push(pageText);
       }
 

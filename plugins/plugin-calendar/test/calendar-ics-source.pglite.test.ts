@@ -5,7 +5,7 @@
  */
 
 import { PGlite } from "@electric-sql/pglite";
-import type { IAgentRuntime } from "@elizaos/core";
+import { type IAgentRuntime, logger, type Memory } from "@elizaos/core";
 import { SECRETS_SERVICE_TYPE } from "@elizaos/plugin-assistant";
 import { RuntimeMigrator } from "@elizaos/plugin-sql";
 import { drizzle } from "drizzle-orm/pglite";
@@ -20,6 +20,7 @@ import {
 } from "vitest";
 import {
   createCalendarFeedConflictLoader,
+  createConflictDetectAction,
   evaluateCalendarWriteAvailability,
 } from "../src/actions/conflict-detect.js";
 import {
@@ -727,6 +728,68 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     ).toEqual(["School pickup"]);
   });
 
+  it("scans a subscribed all-day event on the owner's local day", async () => {
+    const source = await createSource();
+    // No X-WR-TIMEZONE, so the parser stores the all-day date with zone UTC.
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:offsite",
+          "DTSTAMP:20260601T000000Z",
+          "DTSTART;VALUE=DATE:20260702",
+          "DTEND;VALUE=DATE:20260703",
+          "SUMMARY:Team offsite",
+          "END:VEVENT",
+          // 18:00 to 19:00 on July 1 in Los Angeles.
+          "BEGIN:VEVENT",
+          "UID:call",
+          "DTSTAMP:20260601T000000Z",
+          "DTSTART:20260702T010000Z",
+          "DTEND:20260702T020000Z",
+          "SUMMARY:Call",
+          "END:VEVENT",
+          // 18:00 to 19:00 on July 2 in Los Angeles.
+          "BEGIN:VEVENT",
+          "UID:dinner",
+          "DTSTAMP:20260601T000000Z",
+          "DTSTART:20260703T010000Z",
+          "DTEND:20260703T020000Z",
+          "SUMMARY:Dinner",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    const action = createConflictDetectAction({
+      authorize: async () => true,
+      resolveTimeZone: async () => "America/Los_Angeles",
+      now: () => new Date("2026-07-01T19:00:00.000Z"),
+    });
+
+    const result = await action.handler(
+      { ...runtime, logger } as IAgentRuntime,
+      {
+        id: "00000000-0000-0000-0000-000000000301",
+        entityId: "00000000-0000-0000-0000-000000000302",
+        roomId: "00000000-0000-0000-0000-000000000303",
+        content: { text: "any conflicts this week?" },
+      } as Memory,
+      undefined,
+      { parameters: { action: "scan_week" } },
+      undefined,
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        conflicts: [
+          { eventA: { title: "Team offsite" }, eventB: { title: "Dinner" } },
+        ],
+      },
+    });
+  });
+
   it.each(["ü", "€", "😀"])(
     "reads a feed folded between every UTF-8 octet of %s",
     async (character) => {
@@ -935,6 +998,112 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
         startAt: "2026-10-31T14:00:00.000Z",
         endAt: "2026-11-01T15:00:00.000Z",
       }),
+    ]);
+  });
+
+  it("keeps each recurring day-length DURATION at the same local time across DST", async () => {
+    const source = await createSource();
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:weekly-overnight",
+          "DTSTAMP:20261001T080000Z",
+          "DTSTART;TZID=America/New_York:20261024T100000",
+          "DURATION:P1D",
+          "RRULE:FREQ=WEEKLY;COUNT=3",
+          "SUMMARY:Weekly overnight",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-10-20T00:00:00.000Z",
+        timeMax: "2026-11-10T00:00:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(
+      feed.events.map((event) => ({
+        startAt: event.startAt,
+        endAt: event.endAt,
+      })),
+    ).toEqual([
+      {
+        startAt: "2026-10-24T14:00:00.000Z",
+        endAt: "2026-10-25T14:00:00.000Z",
+      },
+      {
+        startAt: "2026-10-31T14:00:00.000Z",
+        endAt: "2026-11-01T15:00:00.000Z",
+      },
+      {
+        startAt: "2026-11-07T15:00:00.000Z",
+        endAt: "2026-11-08T15:00:00.000Z",
+      },
+    ]);
+
+    const overlapping = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-11-01T14:30:00.000Z",
+        timeMax: "2026-11-01T16:00:00.000Z",
+      },
+      new Date(),
+    );
+    expect(overlapping.events).toEqual([
+      expect.objectContaining({
+        startAt: "2026-10-31T14:00:00.000Z",
+        endAt: "2026-11-01T15:00:00.000Z",
+      }),
+    ]);
+  });
+
+  it("keeps a day-length DURATION occurrence when the window starts in the DST gap's next-day hour", async () => {
+    const source = await createSource();
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:daily-overnight-gap",
+          "DTSTAMP:20260201T080000Z",
+          "DTSTART;TZID=America/New_York:20260301T030000",
+          "DURATION:P1D",
+          "RRULE:FREQ=DAILY",
+          "SUMMARY:Daily overnight",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    // 02:30 EDT on Mar 9; one nominal day earlier is 02:30 on Mar 8, which
+    // falls inside the spring-forward gap.
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-03-09T06:30:00.000Z",
+        timeMax: "2026-03-09T06:50:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(
+      feed.events.map((event) => ({
+        startAt: event.startAt,
+        endAt: event.endAt,
+      })),
+    ).toEqual([
+      {
+        startAt: "2026-03-08T07:00:00.000Z",
+        endAt: "2026-03-09T07:00:00.000Z",
+      },
     ]);
   });
 
