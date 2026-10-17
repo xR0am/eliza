@@ -136,6 +136,10 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 		controller: AbortController;
 		settled: Promise<unknown>;
 	}>();
+	/** True while unload() is ending generations and freeing the session;
+	 *  generateWithUsage refuses new work so nothing starts on a session
+	 *  that is about to be released. */
+	private unloading = false;
 	private readonly budgetOverride: VoiceBudget | null;
 
 	constructor(
@@ -226,19 +230,23 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 		// our refs are cleared regardless so a failed release can't leave a stale
 		// "loaded" view either.
 		// The native session must outlive every generation stepping on it:
-		// cancel them and wait for them to stop before the release frees it.
-		for (const generation of this.generations) {
-			generation.controller.abort();
-		}
-		await Promise.all(
-			[...this.generations].map((generation) => generation.settled),
-		);
+		// stop admitting new ones, cancel the running ones, and wait for them
+		// to stop before the release frees it.
+		this.unloading = true;
 		try {
+			while (this.generations.size > 0) {
+				const running = [...this.generations];
+				for (const generation of running) {
+					generation.controller.abort();
+				}
+				await Promise.all(running.map((generation) => generation.settled));
+			}
 			await this.runtime.release();
 		} finally {
 			this.session = null;
 			this.loadedPath = null;
 			this.releaseBudgetReservations();
+			this.unloading = false;
 		}
 	}
 
@@ -250,6 +258,15 @@ export class FfiStreamingBackend implements LocalInferenceBackend {
 	async generateWithUsage(
 		args: GenerateArgs & { slotId?: number },
 	): Promise<LocalGenerateWithUsageResult> {
+		if (this.unloading) {
+			throw new ElizaError(
+				"[ffi-streaming-backend] generate() called while the model is unloading",
+				{
+					code: "LOCAL_MODEL_UNLOADING",
+					context: { modelPath: this.loadedPath },
+				},
+			);
+		}
 		if (!this.session) {
 			throw new Error(
 				"[ffi-streaming-backend] generate() called before load() — " +

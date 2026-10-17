@@ -537,4 +537,39 @@ describe("FfiStreamingBackend generation lifecycle", () => {
 		expect(steps.count).toBeLessThan(100);
 		expect(released).toEqual([`released after ${steps.count} steps`]);
 	}, 10_000);
+
+	it("refuses generations that start while unload is ending the running ones", async () => {
+		const steps = { count: 0 };
+		const released: string[] = [];
+		const backend = await loadedBackend(steps, released);
+		const first = backend
+			.generateWithUsage({ prompt: "hi", maxTokens: 1000 } as never)
+			.then(
+				() => "completed",
+				() => "stopped",
+			);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		const unloading = backend.unload();
+		// unload() is now waiting for the first generation to settle; the
+		// session is still attached, so a new call must be refused rather
+		// than opening a stream on a context that is about to be freed.
+		const second = backend.generateWithUsage({
+			prompt: "hi",
+			maxTokens: 1000,
+		} as never);
+		await expect(second).rejects.toMatchObject({
+			code: "LOCAL_MODEL_UNLOADING",
+		});
+		const stepsWhenRefused = steps.count;
+
+		await unloading;
+
+		expect(await first).toBe("stopped");
+		expect(released).toEqual([`released after ${steps.count} steps`]);
+		// No step ran after the refusal besides the one the first generation
+		// was finishing when it was aborted.
+		expect(steps.count - stepsWhenRefused).toBeLessThanOrEqual(1);
+		expect(backend.hasLoadedModel()).toBe(false);
+	}, 10_000);
 });
