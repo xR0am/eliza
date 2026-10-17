@@ -188,7 +188,10 @@ describe("managed Gmail owner boundary", () => {
       }
       return Response.json({ send: receipt() });
     });
-    const runtime = { agentId: "owned-agent" } as IAgentRuntime,
+    const runtime = {
+        agentId: "owned-agent",
+        getCache: async () => undefined,
+      } as unknown as IAgentRuntime,
       requester = {
         agentId: "owned-agent",
         entityId: "owner",
@@ -276,7 +279,10 @@ describe("managed Gmail owner boundary", () => {
         },
       });
     });
-    const runtime = { agentId: "owned-agent" } as IAgentRuntime,
+    const runtime = {
+        agentId: "owned-agent",
+        getCache: async () => undefined,
+      } as unknown as IAgentRuntime,
       requester = {
         agentId: "owned-agent",
         entityId: "owner",
