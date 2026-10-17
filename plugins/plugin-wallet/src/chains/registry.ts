@@ -36,11 +36,13 @@ import {
   Connection,
   LAMPORTS_PER_SOL,
   PublicKey,
+  SendTransactionError,
   SystemProgram,
   type TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import { type Address, type Chain, encodeFunctionData, parseAbi } from "viem";
 import * as viemChains from "viem/chains";
 import type { WalletBackendService } from "../services/wallet-backend-service.js";
@@ -1013,9 +1015,79 @@ async function executeSolanaTransfer(
   }).compileToV0Message();
   const transaction = new VersionedTransaction(message);
   transaction.sign([senderKeypair]);
-  const signature = await connection.sendTransaction(transaction, {
-    skipPreflight: false,
-  });
+
+  // Send the transaction. Two cases:
+  //
+  // 1. SendTransactionError: the RPC answered with an error (JSON-RPC error
+  //    response). The node processed the request. With skipPreflight: false,
+  //    this includes preflight/simulation rejections (e.g. insufficient
+  //    funds), where the node does NOT broadcast. This is a definitive
+  //    failure: rethrow so the EXECUTION_FAILED path reports the reason
+  //    (and logs via getLogs()). A retry is safe.
+  //
+  //    Note: per @solana/web3.js v1.98.4, the error's "action" field is set
+  //    from the skipPreflight option, not the real cause, and the field is
+  //    private. We do not read it; the error *type* (RPC answered vs not)
+  //    is the signal.
+  //
+  // 2. Any other error (network failure, timeout, response loss): no answer
+  //    arrived, so the broadcast status is truly uncertain — the tx may have
+  //    landed. Do NOT throw (which would invite a retry and risk duplicate
+  //    spend). Return unconfirmed with the signature derived from the signed
+  //    transaction for manual verification.
+  let signature: string;
+  let sendUncertain = false;
+  try {
+    signature = await connection.sendTransaction(transaction, {
+      skipPreflight: false,
+    });
+  } catch (error) {
+    if (error instanceof SendTransactionError) {
+      // RPC explicitly rejected the transaction. Definitive failure.
+      throw error;
+    }
+    // Uncertain: no RPC answer. Derive signature for explorer lookup.
+    // Do NOT claim "not found on explorer" means "definitely not broadcast".
+    sendUncertain = true;
+    signature = bs58.encode(transaction.signatures[0]);
+  }
+
+  // Distinguish: confirmed on-chain, explicitly failed on-chain, or uncertain.
+  // An explicit on-chain failure (confirmation.value.err) is safe to retry.
+  // An uncertain result must NOT be reported as success nor retried
+  // automatically, because the transaction may have landed and a new transfer
+  // would duplicate the spend. The signature is preserved so the user can
+  // check the explorer. Even if the explorer shows "not found", do NOT treat
+  // it as proof of non-broadcast — keep the no-auto-retry guidance.
+  let confirmationStatus: "confirmed" | "unconfirmed" = sendUncertain
+    ? "unconfirmed"
+    : "confirmed";
+  let explicitFailure: Error | null = null;
+  if (!sendUncertain) {
+    try {
+      const confirmation = await connection.confirmTransaction(
+        {
+          signature,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        },
+        "confirmed",
+      );
+      if (confirmation.value.err) {
+        explicitFailure = new Error(
+          `Solana transfer failed on-chain: ${JSON.stringify(confirmation.value.err)}`,
+        );
+        throw explicitFailure;
+      }
+    } catch (error) {
+      // Re-throw explicit on-chain failures (safe to retry); anything else
+      // (timeout, RPC error) leaves the outcome uncertain.
+      if (error === explicitFailure) {
+        throw error;
+      }
+      confirmationStatus = "unconfirmed";
+    }
+  }
 
   return {
     status: "submitted",
@@ -1029,6 +1101,10 @@ async function executeSolanaTransfer(
     to: params.recipient,
     amount: params.amount,
     fromToken: tokenMint,
+    metadata: {
+      confirmationStatus,
+      ...(sendUncertain ? { sendUncertain: true } : {}),
+    },
   };
 }
 
