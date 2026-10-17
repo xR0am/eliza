@@ -392,7 +392,9 @@ export const issueOpAction: Action = {
     runtime: IAgentRuntime,
     _message: Memory,
   ): Promise<boolean> => {
-    const r = buildResolvedClient(runtime, "agent");
+    const r = await buildResolvedClient(runtime, "agent", {
+      refresh: "on-miss",
+    });
     return !("error" in r);
   },
 
@@ -430,7 +432,7 @@ export const issueOpAction: Action = {
       await callback?.({ text: request.error });
       return { success: false, error: request.error };
     }
-    const resolved = buildResolvedClient(runtime, selection);
+    const resolved = await buildResolvedClient(runtime, selection);
     if ("error" in resolved) {
       await callback?.({ text: resolved.error });
       return { success: false, error: resolved.error };
