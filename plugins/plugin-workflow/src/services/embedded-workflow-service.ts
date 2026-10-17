@@ -441,9 +441,15 @@ export class EmbeddedWorkflowService extends Service {
   }
 
   private async resumeInterruptedExecutions(): Promise<void> {
-    const interrupted = (await this.listExecutions()).data.filter(
-      (execution) => !execution.finished
-    );
+    const interrupted = (
+      await this.getDb()
+        .select()
+        .from(embeddedExecutions)
+        .where(
+          and(eq(embeddedExecutions.agentId, this.tenantId), eq(embeddedExecutions.finished, false))
+        )
+        .orderBy(desc(embeddedExecutions.startedAt))
+    ).map((row) => cloneJson(row.execution));
     for (const execution of interrupted) {
       try {
         await this.resumeExecution(execution);
@@ -2491,17 +2497,21 @@ export class EmbeddedWorkflowService extends Service {
   async listExecutions(
     params: { workflowId?: string; limit?: number } = {}
   ): Promise<{ data: WorkflowExecution[] }> {
-    const rows = await this.getDb()
+    const query = this.getDb()
       .select()
       .from(embeddedExecutions)
-      .where(eq(embeddedExecutions.agentId, this.tenantId))
-      .orderBy(desc(embeddedExecutions.startedAt));
-    const data = rows
-      .filter((row) => !params.workflowId || row.workflowId === params.workflowId)
-      .map((row) => cloneJson(row.execution));
-    return {
-      data: params.limit === undefined ? data : data.slice(0, Math.max(0, params.limit)),
-    };
+      .where(
+        and(
+          eq(embeddedExecutions.agentId, this.tenantId),
+          params.workflowId ? eq(embeddedExecutions.workflowId, params.workflowId) : undefined
+        )
+      )
+      .orderBy(desc(embeddedExecutions.startedAt))
+      .$dynamic();
+    const rows = await (params.limit === undefined
+      ? query
+      : query.limit(Math.max(0, params.limit)));
+    return { data: rows.map((row) => cloneJson(row.execution)) };
   }
 
   async getExecution(id: string): Promise<WorkflowExecution> {
