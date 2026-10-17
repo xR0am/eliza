@@ -214,7 +214,9 @@ export class DexScreenerService extends Service {
           // A boosted token with no pairs returns []; [][0] is undefined,
           // which would leak past the downstream `!== null` filter, so guard
           // the length like getNewPairs does.
-          return Array.isArray(pairData) && pairData.length > 0 ? pairData[0] : null;
+          return Array.isArray(pairData) && pairData.length > 0
+            ? pairData[0]
+            : null;
         } catch (error) {
           console.error(
             `Failed to get pair data for ${token.tokenAddress}:`,
