@@ -71,30 +71,34 @@ export interface SendConsentOptions {
   readonly affirmations?: readonly string[];
 }
 
-// The draft most recently previewed to each actor/room in this process. A plain
-// confirmation must answer the latest preview, so a newer draft preview (for
-// example a reply drafted after an armed send) stops an older armed draft from
-// being recovered. Bounded; losing it only falls back to the explicit draftId.
-const latestPreviews = new Map<string, string>();
-const LATEST_PREVIEW_LIMIT = 1000;
-function previewKey(message: Pick<Memory, "entityId" | "roomId">) {
-  return message.entityId && message.roomId
-    ? `${message.entityId}:${message.roomId}`
-    : null;
-}
-/** Record that this actor/room was just shown a preview of `draftId`. */
-export function noteDraftPreview(
+/** Retire an older preview in the durable consent record before showing a new one.
+ * This also protects explicit stale draft IDs, process restarts and other workers.
+ */
+export async function noteDraftPreview(
+  runtime: IAgentRuntime,
   requester: Pick<Memory, "entityId" | "roomId"> | undefined,
   draftId: string,
-): void {
-  const key = requester && previewKey(requester);
-  if (!key || !draftId) return;
-  latestPreviews.delete(key);
-  latestPreviews.set(key, draftId);
-  if (latestPreviews.size > LATEST_PREVIEW_LIMIT) {
-    const oldest = latestPreviews.keys().next().value;
-    if (oldest !== undefined) latestPreviews.delete(oldest);
-  }
+): Promise<void> {
+  if (!requester?.entityId || !requester.roomId || !draftId) return;
+  const key = `message-consent:${requester.entityId}:${requester.roomId}`;
+  const existing = await runtime.getCache<unknown>(key);
+  if (
+    !pendingSend(existing) ||
+    existing.consumedBy !== null ||
+    existing.draftId === draftId
+  )
+    return;
+  const retired = await runtime.compareAndSetCache(key, existing, {
+    ...existing,
+    consumedBy: `superseded:${randomUUID()}`,
+  });
+  if (!retired)
+    throw new ElizaError(
+      "Send review changed while preparing this draft. Review it again.",
+      {
+        code: "MESSAGE_CONFIRMATION_PREVIEW_CHANGED",
+      },
+    );
 }
 
 /** Recover the preview's reference for an affirmative later turn in the same actor/room.
@@ -128,8 +132,6 @@ export async function pendingSendDraft(
     now - existing.armedAt > 5 * 60_000
   )
     return null;
-  const latest = latestPreviews.get(`${message.entityId}:${message.roomId}`);
-  if (latest !== undefined && latest !== existing.draftId) return null;
   return existing.draftId;
 }
 
@@ -194,6 +196,5 @@ export async function requireSendConsent(
     consumedBy: null,
     ...(options.draftId ? { draftId: options.draftId } : {}),
   } satisfies PendingSend);
-  if (armed && options.draftId) noteDraftPreview(message, options.draftId);
   return armed ? "pending" : "cancelled";
 }

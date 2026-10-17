@@ -299,6 +299,11 @@ it("a plain confirmation never sends an older armed draft after a newer draft pr
     });
     const yes = turn("yes");
     expect(await pendingSendDraft(runtime, yes)).toBeNull();
+    // A stale explicit ID must not consume the older armed consent either.
+    await sendDraftAction.handler(runtime, yes, undefined, {
+      parameters: { draftId: a.draftId },
+    });
+    expect(sent).toEqual([]);
     // The planner names B; neither A nor B is sent, B is re-previewed instead.
     const outcome = await sendDraftAction.handler(runtime, yes, undefined, {
       parameters: { draftId: b.draftId },

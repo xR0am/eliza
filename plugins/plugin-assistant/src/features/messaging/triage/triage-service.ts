@@ -488,7 +488,7 @@ export class TriageService {
     if (snapshot) Object.assign(record, structuredClone(snapshot));
     record.agentId = runtime.agentId;
     this.store.saveDraft(record, runtime.agentId);
-    noteDraftPreview(requester, record.draftId);
+    await noteDraftPreview(runtime, requester, record.draftId);
     return record;
   }
 
@@ -539,7 +539,7 @@ export class TriageService {
     if (snapshot) Object.assign(record, structuredClone(snapshot));
     record.agentId = runtime.agentId;
     this.store.saveDraft(record, runtime.agentId);
-    noteDraftPreview(params.requester, record.draftId);
+    await noteDraftPreview(runtime, params.requester, record.draftId);
     return record;
   }
 
