@@ -110,14 +110,45 @@ const BLOOIO_RECEIPT_CLEANUP_TASK_NAME = "IMESSAGE_BLOOIO_RECEIPT_CLEANUP";
 export const BLOOIO_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const BLOOIO_RECEIPT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
+/** Attempts per chat.db row before a retryable persistence failure is skipped. */
+export const IMESSAGE_INBOUND_PERSIST_MAX_ATTEMPTS = 5;
+
 class IMessageInboundPersistenceRetryError extends ElizaError {
   constructor(rowId: number, cause: unknown) {
     super("Inbound iMessage could not be persisted; retry the chat database row", {
       code: "IMESSAGE_INBOUND_PERSIST_FAILED",
       cause,
       context: { rowId },
+      severity: "ephemeral",
     });
   }
+}
+
+class IMessageInboundPersistenceRejectedError extends ElizaError {
+  constructor(rowId: number, cause: unknown, reason: "fatal-rejection" | "retries-exhausted") {
+    super("Inbound iMessage could not be persisted; the chat database row was skipped", {
+      code: "IMESSAGE_INBOUND_PERSIST_REJECTED",
+      cause,
+      context: { rowId, reason },
+      severity: "fatal",
+    });
+  }
+}
+
+/**
+ * A store rejection marked `fatal` (unsupported JSON text, structural budget,
+ * invalid input) fails identically on every retry, so rolling the cursor back
+ * for it would block every later row behind it.
+ */
+function isFatalPersistenceRejection(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth++) {
+    if (current instanceof ElizaError && current.severity === "fatal") {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
 }
 
 interface BlooioDispatchReceipt {
@@ -674,6 +705,8 @@ export class IMessageService extends Service implements IIMessageService {
    * we skip backlog on a fresh launch without ever double-delivering.
    */
   private lastRowId: number = 0;
+  /** Retryable persistence attempts for the chat.db row currently blocking the cursor. */
+  private inboundPersistRetry: { rowId: number; attempts: number } | null = null;
   /**
    * Reentrancy gate for the polling loop. Dispatch calls
    * `messageService.handleMessage` which invokes the LLM and typically
@@ -2292,6 +2325,9 @@ export class IMessageService extends Service implements IIMessageService {
       );
       try {
         await this.dispatchInboundMessage(row);
+        if (this.inboundPersistRetry?.rowId === row.rowId) {
+          this.inboundPersistRetry = null;
+        }
       } catch (error) {
         logger.error(
           `[imessage] Failed to dispatch inbound message ROWID=${row.rowId}: ${
@@ -2299,6 +2335,22 @@ export class IMessageService extends Service implements IIMessageService {
           }`
         );
         if (error instanceof IMessageInboundPersistenceRetryError) {
+          const attempts =
+            this.inboundPersistRetry?.rowId === row.rowId
+              ? this.inboundPersistRetry.attempts + 1
+              : 1;
+          if (attempts >= IMESSAGE_INBOUND_PERSIST_MAX_ATTEMPTS) {
+            // Bounded retry: a failure that persists across every attempt is
+            // reported and skipped so it cannot head-of-line block later rows.
+            this.inboundPersistRetry = null;
+            this.runtime.reportError(
+              "IMessageService.inboundPersistence",
+              new IMessageInboundPersistenceRejectedError(row.rowId, error, "retries-exhausted"),
+              { rowId: row.rowId, attempts }
+            );
+            continue;
+          }
+          this.inboundPersistRetry = { rowId: row.rowId, attempts };
           // Default-off ingestion has no outbound effect before persistence.
           // Roll back only to the row before this one and stop the batch so the
           // next tick retries it without replaying already completed rows.
@@ -2718,6 +2770,19 @@ export class IMessageService extends Service implements IIMessageService {
       try {
         await this.runtime.createMemory(memory, "messages");
       } catch (err) {
+        if (isFatalPersistenceRejection(err)) {
+          // Deterministic rejection: retrying replays the same failure forever.
+          // Report it and let the cursor advance past this row.
+          const rejection = new IMessageInboundPersistenceRejectedError(
+            row.rowId,
+            err,
+            "fatal-rejection"
+          );
+          this.runtime.reportError("IMessageService.inboundPersistence", rejection, {
+            rowId: row.rowId,
+          });
+          throw rejection;
+        }
         const failure = new IMessageInboundPersistenceRetryError(row.rowId, err);
         this.runtime.reportError("IMessageService.inboundPersistence", failure, {
           rowId: row.rowId,
