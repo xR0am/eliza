@@ -2267,19 +2267,18 @@ it("scopes room updates, upserts and deletes to the adapter agent", async () => 
   expect(await storage.get("rooms", ownRoomId)).toBeFalsy();
   expect(await storage.get("memories", ownMemoryId)).toBeFalsy();
 
-  // A roomId with no room row is still deletable: createMemories performs no
-  // room-existence check, so memories can be the only rows left under it and
-  // deleteRooms is the only call that sweeps them.
+  // A restored file can also carry a memory whose parent room row is gone. A
+  // missing parent cannot authorize the cascade, so it must fail closed.
   const danglingRoomId = id();
   const danglingMemoryId = id();
   await storage.set("memories", danglingMemoryId, {
     id: danglingMemoryId,
-    agentId,
-    entityId,
+    agentId: otherAgentId,
+    entityId: otherEntityId,
     roomId: danglingRoomId,
-    content: { text: "message of a room whose row is gone" },
+    content: { text: "another agent's orphaned message" },
     createdAt: Date.parse("2026-10-01T00:00:00.000Z"),
   });
   await adapter.deleteRooms([danglingRoomId]);
-  expect(await storage.get("memories", danglingMemoryId)).toBeFalsy();
+  expect(await storage.get("memories", danglingMemoryId)).toBeTruthy();
 });
