@@ -328,17 +328,19 @@ export class McpService extends Service {
       // SDK's GET/SSE message variants ("timeout" / "timed out" / "SSE error" /
       // "SSE stream disconnected" / "Failed to open SSE stream" / "Failed to
       // reconnect[ SSE stream]" / "Maximum reconnection attempts")
-      // case-insensitively. POST failures ("Error POSTing to endpoint", fetch
-      // network errors) fall through to the reconnect ladder below.
+      // case-insensitively as substrings: the SDK's StreamableHTTPError
+      // prefixes its message with "Streamable HTTP error: ". POST failures
+      // ("Error POSTing to endpoint", fetch network errors) fall through to
+      // the reconnect ladder below.
       const isExpectedTimeout =
         isHttpTransport &&
         (errorMessage === "undefined" ||
           errorMessage === "" ||
           lower.includes("sse error") ||
           lower.includes("sse stream disconnected") ||
-          lower.startsWith("failed to open sse stream") ||
-          lower.startsWith("failed to reconnect") ||
-          lower.startsWith("maximum reconnection attempts") ||
+          lower.includes("failed to open sse stream") ||
+          lower.includes("failed to reconnect") ||
+          lower.includes("maximum reconnection attempts") ||
           lower.includes("timeout") ||
           lower.includes("timed out"));
       if (!isExpectedTimeout) {

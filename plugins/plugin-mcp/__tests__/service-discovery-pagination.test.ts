@@ -439,10 +439,15 @@ type HttpTestServer = {
  */
 async function startHttpEchoServer(options: {
   readonly getStatus: number;
+  /** Delay before answering a GET, so its refusal lands after connect resolves. */
+  readonly getDelayMs?: number;
   readonly beforePost?: (body: { method?: string }, res: http.ServerResponse) => boolean;
 }): Promise<HttpTestServer> {
   const httpServer = http.createServer(async (req, res) => {
     if (req.method !== "POST") {
+      if (options.getDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.getDelayMs));
+      }
       res.writeHead(options.getStatus).end();
       return;
     }
@@ -528,12 +533,21 @@ describe("McpService HTTP transport recovery", () => {
     }
   }, 30_000);
 
-  it.each([400, 404])(
-    "stays connected without reconnecting when the server refuses the GET stream with %i",
-    async (getStatus) => {
+  it.each([
+    { getStatus: 400, getDelayMs: 0 },
+    { getStatus: 404, getDelayMs: 0 },
+    // The refusal arrives after initializeConnection has already succeeded,
+    // so only the transport error filter (not the success-path timer clear)
+    // can keep it out of the reconnect ladder.
+    { getStatus: 403, getDelayMs: 750 },
+    { getStatus: 404, getDelayMs: 750 },
+  ])(
+    "stays connected without reconnecting when the server refuses the GET stream with $getStatus after $getDelayMs ms",
+    async ({ getStatus, getDelayMs }) => {
       let initializeCount = 0;
       const server = await startHttpEchoServer({
         getStatus,
+        getDelayMs,
         beforePost: (body) => {
           if (body.method === "initialize") initializeCount++;
           return false;
@@ -542,9 +556,9 @@ describe("McpService HTTP transport recovery", () => {
       try {
         const service = await connectHttpService(server.url);
         expect(initializeCount).toBe(1);
-        // Longer than INITIAL_RETRY_DELAY (2 s), so a reconnect scheduled by the
-        // refused GET would have re-run initialize by now.
-        await new Promise((resolve) => setTimeout(resolve, 3_500));
+        // Longer than getDelayMs plus INITIAL_RETRY_DELAY (2 s), so a reconnect
+        // scheduled by the refused GET would have re-run initialize by now.
+        await new Promise((resolve) => setTimeout(resolve, getDelayMs + 3_500));
         expect(initializeCount).toBe(1);
         expect(service.getServers().find((s) => s.name === "remote")?.status).toBe("connected");
         expect((await service.callTool("remote", "echo")).content[0]).toMatchObject({
