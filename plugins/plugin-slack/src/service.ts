@@ -3725,7 +3725,10 @@ export class SlackService extends Service implements ISlackService {
     );
     const client = this.getClientForAccount(accountId);
     if (!client) {
-      return [];
+      throw new ElizaError("Slack account client is not initialized", {
+        code: "SLACK_ACCOUNT_NOT_INITIALIZED",
+        context: { accountId },
+      });
     }
 
     const { channelId, threadTs } = await this.resolveConnectorMessageLocation(
