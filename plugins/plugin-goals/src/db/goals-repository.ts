@@ -7,9 +7,9 @@
  * reminder/scheduling subsystem still reads + writes goal links
  * (`upsertGoalLink` / `deleteGoalLinksForLinked`), but through PA's own
  * repository, whose SQL was repointed to `app_goals` in the same carve — so a
- * single owner backs every reader. The `deleteGoal` cross-schema writes to
- * `app_lifeops.life_task_definitions` (spine FK-nullout) and
- * `app_lifeops.life_audit_events` (audit) stay on `app_lifeops`.
+ * single owner backs every reader. PA's own tables are written only by PA:
+ * it clears task references to a deleted goal and records goal audits through
+ * the hooks it passes to `GoalsService`.
  *
  * SQL execution + value encoding go through the self-contained {@link ./sql.ts}
  * helpers, so this repository has no dependency on plugin-personal-assistant.
@@ -276,13 +276,6 @@ export class GoalsRepository {
     );
     await executeRawSql(
       this.runtime,
-      `UPDATE app_lifeops.life_task_definitions
-         SET goal_id = NULL
-       WHERE agent_id = ${sqlQuote(agentId)}
-         AND goal_id = ${sqlQuote(goalId)}`,
-    );
-    await executeRawSql(
-      this.runtime,
       `DELETE FROM app_goals.life_goal_definitions
         WHERE agent_id = ${sqlQuote(agentId)}
           AND id = ${sqlQuote(goalId)}`,
@@ -336,10 +329,9 @@ export class GoalsRepository {
   }
 
   /**
-   * Append an audit event into PA's shared `app_lifeops.life_audit_events`
-   * table. Used by the standalone goals action's default `recordAudit` hook so
-   * goal creates/updates/deletes record exactly where PA records them. When PA
-   * is present it injects its own `recordAudit` (with the same SQL) instead.
+   * Append an audit event to this plugin's `app_goals.life_goal_audit_events`.
+   * Used by the standalone goals service's default `recordAudit` hook. When PA
+   * is present it injects its own `recordAudit` (into `app_lifeops`) instead.
    */
   async createAuditEvent(event: {
     id: string;
@@ -355,7 +347,7 @@ export class GoalsRepository {
   }): Promise<void> {
     await executeRawSql(
       this.runtime,
-      `INSERT INTO app_lifeops.life_audit_events (
+      `INSERT INTO app_goals.life_goal_audit_events (
         id, agent_id, event_type, owner_type, owner_id, reason,
         inputs_json, decision_json, actor, created_at
       ) VALUES (

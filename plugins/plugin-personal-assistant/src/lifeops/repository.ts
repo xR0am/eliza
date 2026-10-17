@@ -443,7 +443,12 @@ export class LifeOpsRepository {
   }
 
   async deleteGoal(agentId: string, goalId: string): Promise<void> {
+    await this.clearGoalReferences(agentId, goalId);
     return this.goalsRepo.deleteGoal(agentId, goalId);
+  }
+
+  async clearGoalReferences(agentId: string, goalId: string): Promise<void> {
+    return this.scheduleProjections.clearGoalReferences(agentId, goalId);
   }
 
   async upsertGoalLink(link: LifeOpsGoalLink): Promise<void> {
