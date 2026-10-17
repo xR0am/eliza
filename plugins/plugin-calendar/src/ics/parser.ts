@@ -9,7 +9,11 @@
 import { createHash } from "node:crypto";
 import { ElizaError } from "@elizaos/core";
 import { normalizeCalendarDateTimeInTimeZone } from "../internal/calendar-normalize.js";
-import { addDaysToLocalDate, getZonedDateParts } from "../internal/time.js";
+import {
+  addDaysToLocalDate,
+  getZonedDateParts,
+  type ZonedDateParts,
+} from "../internal/time.js";
 import type {
   IcsAttendee,
   IcsParsedCalendar,
@@ -642,7 +646,23 @@ export function startAtBeforeIcsDurationEnd(args: {
   );
   if (!resolved)
     throw new Error("ICS recurrence boundary could not be resolved.");
-  return resolved;
+  // A boundary wall time inside a DST gap resolves forward by the gap size.
+  // Step back by that shift so the boundary stays at or before the earliest
+  // start that can still overlap; callers filter each occurrence exactly.
+  const resolvedClock = getZonedDateParts(new Date(resolved), zone);
+  const wallMs = (parts: ZonedDateParts) =>
+    Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour % 24,
+      parts.minute,
+      parts.second,
+    );
+  const gapShiftMs = wallMs(resolvedClock) - wallMs({ ...clock, ...localDate });
+  return gapShiftMs > 0
+    ? new Date(Date.parse(resolved) - gapShiftMs).toISOString()
+    : resolved;
 }
 
 function addOneLocalDay(

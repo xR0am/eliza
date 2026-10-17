@@ -1002,6 +1002,48 @@ describe("CalendarService guarded ICS sources (real PGlite)", {
     ]);
   });
 
+  it("keeps a day-length DURATION occurrence when the window starts in the DST gap's next-day hour", async () => {
+    const source = await createSource();
+    await syncBody(
+      source.id,
+      calendar(
+        [
+          "BEGIN:VEVENT",
+          "UID:daily-overnight-gap",
+          "DTSTAMP:20260201T080000Z",
+          "DTSTART;TZID=America/New_York:20260301T030000",
+          "DURATION:P1D",
+          "RRULE:FREQ=DAILY",
+          "SUMMARY:Daily overnight",
+          "END:VEVENT",
+        ].join("\r\n"),
+      ),
+    );
+    // 02:30 EDT on Mar 9; one nominal day earlier is 02:30 on Mar 8, which
+    // falls inside the spring-forward gap.
+    const feed = await service.getCalendarFeed(
+      new URL("http://internal.test/api/calendar"),
+      {
+        grantId: source.id,
+        timeMin: "2026-03-09T06:30:00.000Z",
+        timeMax: "2026-03-09T06:50:00.000Z",
+      },
+      new Date(),
+    );
+
+    expect(
+      feed.events.map((event) => ({
+        startAt: event.startAt,
+        endAt: event.endAt,
+      })),
+    ).toEqual([
+      {
+        startAt: "2026-03-08T07:00:00.000Z",
+        endAt: "2026-03-09T07:00:00.000Z",
+      },
+    ]);
+  });
+
   it("ignores a spring-forward gap occurrence without consuming COUNT", async () => {
     const source = await createSource();
     await syncBody(
