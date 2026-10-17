@@ -3273,6 +3273,16 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   ): Promise<UUID[]> {
     const ids: UUID[] = [];
     for (const rel of relationships) {
+      // One edge per (source, target, agent), as the plugin-sql unique key: an
+      // existing edge is kept and no id is returned for it.
+      const existing = await this.storage.getWhere<StoredRelationship>(
+        COLLECTIONS.RELATIONSHIPS,
+        (r) =>
+          r.sourceEntityId === rel.sourceEntityId &&
+          r.targetEntityId === rel.targetEntityId &&
+          (r.agentId ?? this.agentId) === this.agentId,
+      );
+      if (existing.length > 0) continue;
       const id = randomUUID() as UUID;
       const stored: StoredRelationship = {
         id,

@@ -751,6 +751,25 @@ describe("durable SQLite agent adapter", () => {
     expect(updated?.metadata).toEqual({ note: "met at conf" });
   });
 
+  it("keeps one relationship per entity pair when it is created again, like plugin-sql", async () => {
+    const adapter = await open();
+    const edge = {
+      sourceEntityId: agentId,
+      targetEntityId: entityId,
+      tags: ["knows"],
+    };
+    const created = [
+      await adapter.createRelationships([edge]),
+      await adapter.createRelationships([edge]),
+      await adapter.createRelationships([edge]),
+    ];
+
+    expect(created.map((ids) => ids.length)).toEqual([1, 0, 0]);
+    expect(
+      await adapter.getRelationships({ entityIds: [agentId] }),
+    ).toHaveLength(1);
+  });
+
   it("rolls back domain records and runtime semantic state in one native transaction", async () => {
     const adapter = await open();
     await adapter.ensureEmbeddingDimension(3);
