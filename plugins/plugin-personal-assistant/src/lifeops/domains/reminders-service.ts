@@ -1142,6 +1142,14 @@ function collectNearbyReminderTitles(args: {
   return titles;
 }
 
+function ownerDeclinedEvent(event: LifeOpsCalendarEvent): boolean {
+  return event.attendees.some(
+    (attendee) =>
+      attendee.self &&
+      attendee.responseStatus?.trim().toLowerCase() === "declined",
+  );
+}
+
 function buildActiveCalendarEventReminders(
   events: Array<{
     id: string;
@@ -6020,12 +6028,16 @@ export class RemindersDomain {
     }
     // An all-day event has no start time: its stored startAt is UTC midnight
     // of the date, so an offset step would fire at an arbitrary local hour.
-    const allDayEventIds = new Set(
-      calendarEvents.filter((event) => event.isAllDay).map((event) => event.id),
+    // An event the owner declined is not attended (availability ignores it
+    // too), so it gets no reminder.
+    const unremindedEventIds = new Set(
+      calendarEvents
+        .filter((event) => event.isAllDay || ownerDeclinedEvent(event))
+        .map((event) => event.id),
     );
     const plansByEventId = new Map<string, LifeOpsReminderPlan>();
     for (const plan of eventPlans) {
-      if (allDayEventIds.has(plan.ownerId)) continue;
+      if (unremindedEventIds.has(plan.ownerId)) continue;
       const effectivePlan = this.resolveEffectiveReminderPlan(
         plan,
         globalReminderPreference,
