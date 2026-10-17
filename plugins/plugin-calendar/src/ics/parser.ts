@@ -616,6 +616,34 @@ export function endAtFromIcsDuration(args: {
 }
 
 /**
+ * Spring-forward DST gap size on a local date in milliseconds, or 0.
+ */
+function springForwardGapMs(
+  zone: string,
+  date: Pick<ZonedDateParts, "year" | "month" | "day">,
+): number {
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  const at = (hour: number) =>
+    normalizeCalendarDateTimeInTimeZone(
+      `${pad(date.year, 4)}-${pad(date.month)}-${pad(date.day)}T${pad(hour)}:00:00`,
+      "DST gap probe",
+      zone,
+    );
+  const startIso = at(0);
+  const endIso = at(23);
+  if (!startIso || !endIso) return 0;
+  const offsetMs = (iso: string) => {
+    const parts = getZonedDateParts(new Date(iso), zone);
+    return (
+      Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour % 24,
+        parts.minute, parts.second) - Date.parse(iso)
+    );
+  };
+  const gap = offsetMs(endIso) - offsetMs(startIso);
+  return gap > 0 ? gap : 0;
+}
+
+/**
  * Find an inclusive recurrence-search boundary for an event that can still
  * overlap `endAt` after a nominal RFC 5545 duration. This is the inverse of
  * {@link endAtFromIcsDuration}: exact units move on the timeline, then nominal
@@ -660,9 +688,20 @@ export function startAtBeforeIcsDurationEnd(args: {
       parts.second,
     );
   const gapShiftMs = wallMs(resolvedClock) - wallMs({ ...clock, ...localDate });
-  return gapShiftMs > 0
-    ? new Date(Date.parse(resolved) - gapShiftMs).toISOString()
-    : resolved;
+  let result =
+    gapShiftMs > 0
+      ? new Date(Date.parse(resolved) - gapShiftMs).toISOString()
+      : resolved;
+  // The end date (clock's date) may have a spring-forward DST gap. A start
+  // whose wall-clock falls inside that gap resolves forward by the gap size,
+  // so its end can land after the nominal end even when the start is earlier
+  // than the boundary above. Step back by the gap size so those overlapping
+  // starts stay in range; callers filter each occurrence exactly.
+  const endGapMs = springForwardGapMs(zone, clock);
+  if (endGapMs > 0) {
+    result = new Date(Date.parse(result) - endGapMs).toISOString();
+  }
+  return result;
 }
 
 function addOneLocalDay(
