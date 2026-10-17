@@ -284,6 +284,7 @@ export class ElizaCloudClient {
     text: string,
     roomId = "web-chat",
     channelType: ChatChannelType = "DM",
+    options: { signal?: AbortSignal } = {},
   ): AsyncGenerator<{ type: string; data: Record<string, unknown> }> {
     const url = `${this.baseUrl}/api/v1/eliza/agents/${agentId}/stream`;
     const response = await fetch(url, {
@@ -296,6 +297,7 @@ export class ElizaCloudClient {
         params: { text, roomId, channelType },
       }),
       redirect: "manual",
+      signal: withTimeout(60_000, options.signal),
     });
 
     if (isRedirectResponse(response)) {
