@@ -1,7 +1,8 @@
 /** Google Chat account switches saved in Settings or the character file take effect. */
-import { AgentRuntime } from "@elizaos/core";
-import { describe, expect, it } from "vitest";
+import { AgentRuntime, type IAgentRuntime, type MessageConnectorRegistration } from "@elizaos/core";
+import { describe, expect, it, vi } from "vitest";
 import { resolveGoogleChatAccountSettings } from "./accounts.ts";
+import { GoogleChatService } from "./service.ts";
 
 function runtime(settings: Record<string, string> = {}) {
   return new AgentRuntime({ character: { name: "ChatSettings", settings } });
@@ -36,6 +37,38 @@ describe("resolveGoogleChatAccountSettings", () => {
     expect(resolveGoogleChatAccountSettings(runtime())).toMatchObject({
       enabled: true,
       requireMention: true,
+    });
+  });
+});
+
+describe("Google Chat connector availability", () => {
+  it("reports a space-list failure instead of an empty workspace", async () => {
+    let connector: MessageConnectorRegistration | undefined;
+    const connectorRuntime = {
+      emitEvent: vi.fn(),
+      registerMessageConnector: vi.fn((registration: MessageConnectorRegistration) => {
+        connector = registration;
+      }),
+    } as unknown as IAgentRuntime;
+    const service = new GoogleChatService(connectorRuntime);
+    vi.spyOn(service, "getAccessToken").mockResolvedValue("token");
+    service.fetchImpl = vi.fn(
+      async () =>
+        new Response("temporarily unavailable", {
+          status: 503,
+          statusText: "Service Unavailable",
+        })
+    ) as typeof fetch;
+    (
+      service as unknown as {
+        getState: () => { accountId: string; cachedSpaces: [] };
+      }
+    ).getState = () => ({ accountId: "default", cachedSpaces: [] });
+    GoogleChatService.registerSendHandlers(connectorRuntime, service, "default");
+
+    await expect(connector?.listRooms?.({ runtime: connectorRuntime })).rejects.toMatchObject({
+      name: "GoogleChatApiError",
+      statusCode: 503,
     });
   });
 });
