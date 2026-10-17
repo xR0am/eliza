@@ -22,11 +22,15 @@ import {
   getPasskeyAuth,
   getPhoneAuth,
   isMockEmailEnabled,
+  type LoginMethodName,
+  loginMethodProviderKey,
+  loginMethodRefusal,
   normalizePublicClientId,
   OAUTH_CODE_TTL_MS,
   releaseUnattemptedSmsVerifyClaim,
   SMS_VERIFY_MAX_FAILED_ATTEMPTS,
   smsVerifyAttemptSlotKey,
+  tenantSwitchLoginRefusal,
 } from "../services/auth-lifecycle";
 import {
   checkAuthRateLimit,
@@ -322,51 +326,6 @@ async function getTenantAppClientLoginMethods(
   );
 }
 
-type LoginMethodName =
-  | "passkey"
-  | "email"
-  | "sms"
-  | "whatsapp"
-  | "totp"
-  | "siwe"
-  | "siws"
-  | "telegram"
-  | "farcaster"
-  | "oauth"
-  | "oidc";
-
-function loginMethodProviderKey(providerId: string | undefined): string {
-  return providerId?.trim().toLowerCase() ?? "";
-}
-
-/** Session auth methods that map one-to-one onto a tenant login method. */
-const REFRESH_LOGIN_METHODS = new Set<LoginMethodName>([
-  "passkey",
-  "email",
-  "sms",
-  "whatsapp",
-  "totp",
-  "siwe",
-  "siws",
-  "telegram",
-  "farcaster",
-]);
-
-function refreshLoginMethod(authMethod: unknown): LoginMethodName | undefined {
-  return typeof authMethod === "string" &&
-    REFRESH_LOGIN_METHODS.has(authMethod as LoginMethodName)
-    ? (authMethod as LoginMethodName)
-    : undefined;
-}
-
-async function tenantDisablesLoginMethod(
-  tenantId: string,
-  method: LoginMethodName,
-): Promise<boolean> {
-  const loginMethods = (await getTenantAuthAbuseConfig(tenantId)).loginMethods;
-  return loginMethods?.[method] === false;
-}
-
 function withoutTenantMfaClaims(
   claims: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -390,37 +349,10 @@ async function requireTenantLoginMethodAllowed(
   const loginMethods =
     (await getTenantAppClientLoginMethods(tenantId, clientId)) ??
     (await getTenantAuthAbuseConfig(tenantId)).loginMethods;
-  if (!loginMethods) return null;
-  if (
-    method !== "oauth" &&
-    method !== "oidc" &&
-    loginMethods[method] === false
-  ) {
-    return c.json<ApiResponse>(
-      { ok: false, error: `${method} login is disabled for this tenant` },
-      403,
-    );
-  }
-  const normalizedProviderId = loginMethodProviderKey(providerId);
-  if (
-    method === "oauth" &&
-    loginMethods.oauth?.[normalizedProviderId] === false
-  ) {
-    return c.json<ApiResponse>(
-      { ok: false, error: "OAuth login is disabled for this tenant" },
-      403,
-    );
-  }
-  if (
-    method === "oidc" &&
-    loginMethods.oidc?.[normalizedProviderId] === false
-  ) {
-    return c.json<ApiResponse>(
-      { ok: false, error: "OIDC login is disabled for this tenant" },
-      403,
-    );
-  }
-  return null;
+  const refusal = loginMethodRefusal(loginMethods, method, providerId);
+  return refusal
+    ? c.json<ApiResponse>({ ok: false, error: refusal }, 403)
+    : null;
 }
 
 async function isSsoRequiredForEmailDomain(
@@ -658,7 +590,7 @@ type RefreshRotationResult =
       status: "login_method_disabled";
       userId: string;
       tenantId: string;
-      method: LoginMethodName;
+      error: string;
     };
 
 type UsedRefreshTokenRecord = {
@@ -866,13 +798,16 @@ async function rotateRefreshTokenInsideTenant(
     // methods apply, checked before anything is spent so a refusal keeps the
     // current session.
     if (switchesTenant) {
-      const method = refreshLoginMethod(storedClaims.authMethod);
-      if (method && (await tenantDisablesLoginMethod(targetTenantId, method))) {
+      const refusal = await tenantSwitchLoginRefusal(
+        targetTenantId,
+        storedClaims,
+      );
+      if (refusal) {
         return {
           status: "login_method_disabled",
           userId: record.userId,
           tenantId: record.tenantId,
-          method,
+          error: refusal,
         };
       }
     }
@@ -8605,13 +8540,7 @@ auth.post("/refresh", async (c) => {
     );
   }
   if (rotatedRefresh.status === "login_method_disabled") {
-    return c.json<ApiResponse>(
-      {
-        ok: false,
-        error: `${rotatedRefresh.method} login is disabled for this tenant`,
-      },
-      403,
-    );
+    return c.json<ApiResponse>({ ok: false, error: rotatedRefresh.error }, 403);
   }
 
   const { record, newAccessToken, newRefreshToken } = rotatedRefresh;
@@ -12074,6 +12003,7 @@ async function provisionOAuthUser(opts: {
           userId: user.id,
           email,
           authMethod: "oauth",
+          oauthProviderId: providerName,
         },
         { id: user.id, email, walletAddress },
         c,
