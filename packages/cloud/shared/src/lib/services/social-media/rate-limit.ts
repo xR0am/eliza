@@ -27,6 +27,14 @@ export interface RetryOptions {
    * reported as a failure instead of being published twice.
    */
   replayUnknownOutcome?: boolean;
+  /**
+   * Whether exhausting the retries after an attempt that ended unknown throws
+   * `UnknownPostOutcomeError` instead of the raw error. Only a replayed create
+   * call (one the platform deduplicates) opts in: its last unanswered attempt
+   * may have published. Preliminary steps (sessions, token exchanges, uploads),
+   * reads and deletes leave it off, since their failure proves no post exists.
+   */
+  unknownOutcomeOnExhaustion?: boolean;
 }
 
 const PLATFORM_RATE_LIMITS: Record<
@@ -153,7 +161,13 @@ export async function withRetry<T>(
   parser: (response: Response) => Promise<T>,
   options: RetryOptions,
 ): Promise<ApiResponse<T>> {
-  const { maxRetries = 3, baseDelayMs = 1000, platform, replayUnknownOutcome = true } = options;
+  const {
+    maxRetries = 3,
+    baseDelayMs = 1000,
+    platform,
+    replayUnknownOutcome = true,
+    unknownOutcomeOnExhaustion = false,
+  } = options;
   let lastError: Error | undefined;
   let lastUnknownOutcome = false;
 
@@ -221,12 +235,13 @@ export async function withRetry<T>(
     }
   }
 
-  // Retries are exhausted. When the last attempt ended without a definite
-  // answer (a timeout, a lost body, a 5xx), the request may have taken
-  // effect, so surface the unknown outcome instead of the raw error:
-  // callers classify it as held, not as a refundable failure. The
-  // no-replay branch above already throws this error per attempt.
-  if (lastError && lastUnknownOutcome) throw new UnknownPostOutcomeError(platform, lastError);
+  // Retries are exhausted. For a replayed create that opted in, an unanswered
+  // last attempt (a timeout, a lost body, a 5xx) may have published, so
+  // surface the unknown outcome: callers hold the credit instead of refunding.
+  // The no-replay branch above already throws this error per attempt.
+  if (unknownOutcomeOnExhaustion && lastError && lastUnknownOutcome) {
+    throw new UnknownPostOutcomeError(platform, lastError);
+  }
   throw lastError || new Error(`${platform} request failed after ${maxRetries} retries`);
 }
 

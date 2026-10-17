@@ -15,7 +15,12 @@ import {
   decodeSocialMediaBase64,
   downloadSocialMediaBytes,
 } from "../media-download";
-import { failedPostResult, UnknownPostOutcomeError, withRetry } from "../rate-limit";
+import {
+  failedPostResult,
+  type RetryOptions,
+  UnknownPostOutcomeError,
+  withRetry,
+} from "../rate-limit";
 
 const MASTODON_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -96,6 +101,7 @@ async function mastodonApiRequest<T>(
   endpoint: string,
   accessToken: string,
   options: RequestInit = {},
+  retryOptions: Pick<RetryOptions, "unknownOutcomeOnExhaustion"> = {},
 ): Promise<T> {
   const { data } = await withRetry<T>(
     () =>
@@ -114,7 +120,7 @@ async function mastodonApiRequest<T>(
       }
       return response.json();
     },
-    { platform: "mastodon", maxRetries: 3 },
+    { platform: "mastodon", maxRetries: 3, ...retryOptions },
   );
 
   return data;
@@ -246,6 +252,8 @@ export const mastodonProvider: SocialMediaProvider = {
           // may already exist; one key per post lets Mastodon drop the replay.
           headers: { "Idempotency-Key": crypto.randomUUID() },
         },
+        // The last replay may have published even though it went unanswered.
+        { unknownOutcomeOnExhaustion: true },
       );
     } catch (error) {
       return failedPostResult("mastodon", error);
