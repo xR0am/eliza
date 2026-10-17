@@ -5,8 +5,9 @@
  * leaves @elizaos/* peers external so the host runtime supplies them. A failed
  * build never publishes an entry-only transpilation as a complete bundle. Path-traversal safety is delegated to the VFS.
  */
-import path from "node:path";
+
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { ElizaError } from "@elizaos/core";
 import * as esbuild from "esbuild";
 import type { VirtualFilesystemService } from "./virtual-filesystem.ts";
@@ -176,6 +177,9 @@ function defaultOutFile(entry: string): string {
   // plugins/b/index.ts) must not compile to the same dist file: the second
   // bundle would silently overwrite the first and both loads would import
   // the wrong plugin. Disambiguate with a short hash of the full entry path.
-  const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 8);
+  const digest = createHash("sha256")
+    .update(normalized)
+    .digest("hex")
+    .slice(0, 8);
   return `dist/${stem}.${digest}.js`;
 }
