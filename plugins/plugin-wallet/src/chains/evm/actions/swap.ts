@@ -850,9 +850,7 @@ async function resolveRelativeSwapAmount(
     // Native decimals are chain-specific (e.g. Tempo uses 6); fall back to
     // 18 only when the chain itself is not configured (parseSwapParams will
     // reject it below).
-    const chainConfig = wp.chains[chain]
-      ? wp.getChainConfigs(chain as SupportedChain)
-      : undefined;
+    const chainConfig = wp.chains[chain] ? wp.getChainConfigs(chain as SupportedChain) : undefined;
     const nativeDecimals = chainConfig?.nativeCurrency.decimals ?? 18;
     return resolveRelativeAmount(mode, opts.rawPercent, opts.nativeBalance, nativeDecimals);
   }
