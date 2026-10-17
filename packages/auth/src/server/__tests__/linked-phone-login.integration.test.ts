@@ -13,6 +13,7 @@ beforeAll(async () => {
   const environment = {
     NODE_ENV: "test",
     SMS_PROVIDER: "mock",
+    WHATSAPP_OTP_ENABLED: "true",
     STEWARD_DB_MODE: "pglite",
     STEWARD_PGLITE_MEMORY: "true",
     APP_URL: "https://login.example.test",
@@ -87,11 +88,11 @@ test("a verified linked phone signs into its existing email account", async () =
   expect(replay.status).toBe(401);
 });
 
-async function verifyPhone(phone: string) {
-  const sent = await post("/auth/sms/send", { phone, tenantId });
+async function verifyPhone(phone: string, channel = "sms") {
+  const sent = await post(`/auth/${channel}/send`, { phone, tenantId });
   expect(sent.status).toBe(200);
   const { MockSmsInbox } = await import("../auth/sms-provider");
-  return post("/auth/sms/verify", {
+  return post(`/auth/${channel}/verify`, {
     phone,
     code: MockSmsInbox.last(phone)?.code,
     tenantId,
@@ -128,4 +129,56 @@ test("conflicting original and linked phone owners receive no session", async ()
   const response = await verifyPhone(phone);
   expect(response.status).toBe(500);
   expect((await response.json()).token).toBeUndefined();
+});
+
+test("a phone linked through SMS gets no second account from WhatsApp login", async () => {
+  const { users, accounts } = await import("../db/schema-auth");
+  const phone = "+14155550126";
+  const subject = `phone:${createHash("sha256").update(phone).digest("hex")}`;
+  const [owner] = await database.db
+    .insert(users)
+    .values({ email: "sms-linked@example.test", emailVerified: true })
+    .returning();
+  await database.db.insert(accounts).values({
+    userId: owner.id,
+    provider: "phone",
+    providerAccountId: subject,
+  });
+  const whatsapp = await verifyPhone(phone, "whatsapp");
+  expect((await whatsapp.json()).token).toBeUndefined();
+  const { eq } = await import("drizzle-orm");
+  expect(
+    await database.db
+      .select()
+      .from(users)
+      .where(eq(users.walletAddress, subject)),
+  ).toEqual([]);
+  const sms = await verifyPhone(phone);
+  expect(sms.status).toBe(200);
+  expect((await sms.json()).user.id).toBe(owner.id);
+});
+
+test("a phone linked to two users through SMS and WhatsApp signs in to neither", async () => {
+  const { users, accounts } = await import("../db/schema-auth");
+  const phone = "+14155550127";
+  const subject = `phone:${createHash("sha256").update(phone).digest("hex")}`;
+  const [smsOwner, whatsappOwner] = await database.db
+    .insert(users)
+    .values([
+      { email: "split-sms@example.test", emailVerified: true },
+      { email: "split-whatsapp@example.test", emailVerified: true },
+    ])
+    .returning();
+  await database.db.insert(accounts).values([
+    { userId: smsOwner.id, provider: "phone", providerAccountId: subject },
+    {
+      userId: whatsappOwner.id,
+      provider: "whatsapp",
+      providerAccountId: subject,
+    },
+  ]);
+  for (const channel of ["sms", "whatsapp"]) {
+    const response = await verifyPhone(phone, channel);
+    expect((await response.json()).token).toBeUndefined();
+  }
 });
