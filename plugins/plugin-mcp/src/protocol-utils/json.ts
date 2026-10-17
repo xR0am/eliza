@@ -23,44 +23,45 @@ export {
   MCP_TOOL_SCHEMA_UNBOUNDED,
 } from "./schema-budget.js";
 
-/** Balanced `{...}` regions in `text`, in the order their `{` appears. Braces
- * written in prose, in a JSON5 string, or in a JSON5 comment do not change the
- * depth, so they never end a region early. */
-function* balancedObjects(text: string): Generator<string> {
-  for (let start = 0; start < text.length; start += 1) {
-    if (text[start] !== "{") continue;
-    let depth = 0;
-    let quote: string | undefined;
-    for (let index = start; index < text.length; index += 1) {
-      const character = text[index];
-      if (quote) {
-        if (character === "\\") index += 1;
-        else if (character === quote) quote = undefined;
-        continue;
-      }
-      if (character === '"' || character === "'") quote = character;
-      else if (character === "/" && text[index + 1] === "/") {
-        const newline = text.indexOf("\n", index);
-        if (newline === -1) break;
-        index = newline;
-      } else if (character === "/" && text[index + 1] === "*") {
-        const end = text.indexOf("*/", index + 2);
-        if (end === -1) break;
-        index = end + 1;
-      } else if (character === "{") depth += 1;
-      else if (character === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          yield text.slice(start, index + 1);
-          break;
-        }
-      }
-    }
-  }
+interface ObjectSpan {
+  readonly start: number;
+  readonly end: number;
 }
 
-/** Model text is untrusted and small; a brace-per-byte reply must not make the
- * candidate scan quadratic. */
+/** Balanced top-level `{...}` regions of `text`, oldest first, in one pass. A
+ * brace in a JSON5 string or comment does not change the depth, and a nested
+ * object is part of the region that holds it. */
+function topLevelObjects(text: string): ObjectSpan[] {
+  const spans: ObjectSpan[] = [];
+  const open: number[] = [];
+  let quote: string | undefined;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === "/" && text[index + 1] === "/") {
+      const newline = text.indexOf("\n", index);
+      if (newline === -1) break;
+      index = newline;
+    } else if (character === "/" && text[index + 1] === "*") {
+      const commentEnd = text.indexOf("*/", index + 2);
+      if (commentEnd === -1) break;
+      index = commentEnd + 1;
+    } else if (character === "{") open.push(index);
+    else if (character === "}") {
+      const start = open.pop();
+      // A `}` written in prose has no opening brace of its own.
+      if (start !== undefined && open.length === 0) spans.push({ start, end: index + 1 });
+    }
+  }
+  return spans;
+}
+
+/** Scan starts to try in one reply. */
 const MAX_OBJECT_CANDIDATES = 64;
 
 export function parseJSON<T>(input: string): T {
@@ -69,25 +70,34 @@ export function parseJSON<T>(input: string): T {
   const firstBrace = cleanedInput.indexOf("{");
   const lastBrace = cleanedInput.lastIndexOf("}");
 
-  // A model reply can carry prose on both sides of its arguments. The whole
-  // first-brace..last-brace range is tried first, so every input that parsed
-  // before parses the same way; when that prose itself contains a brace, each
-  // balanced object region is tried in turn.
-  const candidates: string[] = [];
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    candidates.push(cleanedInput.substring(firstBrace, lastBrace + 1));
-    for (const candidate of balancedObjects(cleanedInput)) {
-      if (candidates.length >= MAX_OBJECT_CANDIDATES) break;
-      if (candidate !== candidates[0]) candidates.push(candidate);
-    }
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error("No valid JSON object found in input");
   }
 
+  const wholeRange = cleanedInput.substring(firstBrace, lastBrace + 1);
+  const objects = topLevelObjects(cleanedInput).slice(-MAX_OBJECT_CANDIDATES);
+
+  // The whole first-brace..last-brace range is tried first, so every reply that
+  // parsed before parses the same way.
   let failure: string | undefined;
-  for (const candidate of candidates) {
+  try {
+    return JSON5.parse(wholeRange) as T;
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  }
+
+  // Prose around the arguments can contain a brace, as in "set units with
+  // {metric} or {imperial}". The arguments follow that prose, so the newest
+  // top-level region that parses is the call; the first region would run the
+  // example from the sentence and skip the retry that a parse failure causes.
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    const { start, end } = objects[index];
+    const candidate = cleanedInput.slice(start, end);
+    if (candidate === wholeRange) continue;
     try {
       return JSON5.parse(candidate) as T;
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
+    } catch {
+      // error-policy:J3 untrusted model output — try the next region.
     }
   }
 
