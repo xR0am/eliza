@@ -50,7 +50,6 @@ import type {
   GoogleSendEmailInput,
 } from "./types.js";
 
-const MESSAGE_METADATA_HEADERS = ["Subject", "From", "To", "Date"];
 const GMAIL_METADATA_HEADERS = [
   "Subject",
   "From",
@@ -883,7 +882,7 @@ export class GoogleGmailClient {
       userId: "me",
       id: params.messageId,
       format: params.includeBody ? "full" : "metadata",
-      metadataHeaders: MESSAGE_METADATA_HEADERS,
+      metadataHeaders: [...GMAIL_METADATA_HEADERS],
     });
 
     return mapMessage(response.data, Boolean(params.includeBody));

@@ -1267,11 +1267,15 @@ export class XService extends Service {
     // empty inbox.
     const messages = await this.listRecentDirectMessages(accountId);
 
-    // A conversation with the target includes the account's own replies, so
-    // match on the authenticated conversation pair, not only the sender.
+    // A stored room targets the provider conversation id, while a resolved
+    // user target names the authenticated one-to-one counterpart. Accept both
+    // forms so group rooms and the account's own replies remain readable.
     const matches = messages
       .filter(
-        (message) => !targetUserId || dmCounterpartId(message) === targetUserId,
+        (message) =>
+          !targetUserId ||
+          message.conversationId === targetUserId ||
+          dmCounterpartId(message) === targetUserId,
       )
       .map((message) =>
         this.buildXDirectMessageMemory(

@@ -18,4 +18,13 @@ const { installMobileAuthHostBridge } = await import(
   "./runtime/install-mobile-auth-host-bridge"
 );
 installMobileAuthHostBridge();
+// Android's bridge command boots the runtime directly; it does not use dev-server.
+// Admit the private Google host and its provider routing before that runtime starts.
+const { startNativeManagedGoogleHostForBoot } = await import(
+  "./runtime/native-managed-google-host"
+);
+// bin starts its CLI asynchronously. The private server belongs to the resident
+// process, rather than the completion of this module's import. An admission
+// failure leaves Google unavailable but must not stop the on-device agent.
+await startNativeManagedGoogleHostForBoot();
 await import("@elizaos/agent/bin");

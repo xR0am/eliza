@@ -13,9 +13,11 @@
  * definition / occurrence / reminder / calendar / activity-signal graph, so
  * they remain LifeOps mixin methods in PA.
  *
- * Two PA-owned concerns are taken as injected hooks rather than reimplemented:
- *   - `recordAudit` — audit events persist into PA's shared `app_lifeops` audit
- *     store; goal creates/updates/deletes record there exactly as before.
+ * PA-owned concerns are taken as injected hooks rather than reimplemented:
+ *   - `recordAudit` — with PA, audit events persist into PA's shared
+ *     `app_lifeops` audit store; without PA, into `app_goals`.
+ *   - `releaseGoalReferences` — PA clears its task definitions' references to
+ *     a deleted goal; without PA there are none.
  *   - `normalizeOwnership` — ownership normalization carries PA's domain /
  *     subject rules and resolves the owner-entity / agent identity; it stays
  *     PA-owned and is passed in.
@@ -211,6 +213,8 @@ export interface GoalsServiceDependencies {
   recordAudit: GoalsRecordAudit;
   normalizeOwnership: GoalsNormalizeOwnership;
   checkinSync?: () => GoalsCheckinSync | null;
+  /** Clear references to a goal that is being deleted from the host's tables. */
+  releaseGoalReferences?: (goalId: string) => Promise<void>;
 }
 
 export class GoalsService {
@@ -218,6 +222,7 @@ export class GoalsService {
   private readonly recordAudit: GoalsRecordAudit;
   private readonly normalizeOwnership: GoalsNormalizeOwnership;
   private readonly resolveCheckinSync: () => GoalsCheckinSync | null;
+  private readonly releaseGoalReferences?: (goalId: string) => Promise<void>;
 
   constructor(
     private readonly runtime: IAgentRuntime,
@@ -227,6 +232,7 @@ export class GoalsService {
     this.recordAudit = deps.recordAudit;
     this.normalizeOwnership = deps.normalizeOwnership;
     this.resolveCheckinSync = deps.checkinSync ?? (() => null);
+    this.releaseGoalReferences = deps.releaseGoalReferences;
   }
 
   private agentId(): string {
@@ -250,6 +256,7 @@ export class GoalsService {
     if (!goal) {
       fail(404, "life-ops goal not found");
     }
+    await this.releaseGoalReferences?.(goalId);
     await this.repository.deleteGoal(this.agentId(), goalId);
     await this.recordAudit(
       "goal_deleted",

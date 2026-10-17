@@ -3289,13 +3289,13 @@ function appendPendingToolQueueFeedbackEvent(
   });
 }
 
-const RESTORE_CONTEXT_TOOL: ToolDefinition = {
+const RESTORE_CONTEXT_TOOL = {
   name: "RESTORE_CONTEXT",
   // An unflagged tool disables request-wide strictness on Cerebras, including
   // required turn-scope arguments on the surrounding action tools.
   strict: true,
   description:
-    "Read missing context: scope=history restores original dialogue and retrieval diagnostics, scope=providers reads deferred provider bodies, scope=full (default) restores both. Use history for missing corrections or referents; a note-read tool already supplies note bodies. This reads the complete in-memory turn context once, performs no domain action and emits no user reply. Call it alone before planning effects; other calls in the same response will not execute.",
+    "Read deferred original dialogue, retrieval diagnostics or provider bodies using only the available scopes in this schema. scope=full (default) restores all remaining deferred context. A note-read tool already supplies note bodies. This performs no domain action and emits no user reply. Call it alone before planning effects; other calls in the same response will not execute.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -3305,7 +3305,7 @@ const RESTORE_CONTEXT_TOOL: ToolDefinition = {
     },
     required: ["reason"],
   },
-};
+} satisfies ToolDefinition;
 
 function renderPlannerModelInput(params: {
   context: ContextObject;
@@ -3321,6 +3321,7 @@ function renderPlannerModelInput(params: {
   promptSegments: PromptSegment[];
   cacheKeySegments: PromptSegment[];
   sourceSelectionApplied: boolean;
+  restoreContextTool?: ToolDefinition;
   actionSourceSelectionSchema?: JSONSchema & ActionParameterSchema;
 } {
   const original = params.trajectory.modelBaseContext ?? params.context;
@@ -3533,11 +3534,35 @@ function renderPlannerModelInput(params: {
       stepMessages: completeStepMessages,
     }),
   );
+  const historyRestorable =
+    selected.applied || background.applied || diagnosticProjection.applied;
+  const providersRestorable = deferred.available.length > 0;
+  const restoreContextTool: ToolDefinition | undefined =
+    historyRestorable || providersRestorable
+      ? {
+          ...RESTORE_CONTEXT_TOOL,
+          parameters: {
+            ...RESTORE_CONTEXT_TOOL.parameters,
+            properties: {
+              ...RESTORE_CONTEXT_TOOL.parameters.properties,
+              scope: {
+                type: "string",
+                enum: [
+                  ...(historyRestorable ? ["history"] : []),
+                  ...(providersRestorable ? ["providers"] : []),
+                  "full",
+                ],
+              },
+            },
+          },
+        }
+      : undefined;
   return {
     messages,
     promptSegments,
     cacheKeySegments,
     actionSourceSelectionSchema,
+    restoreContextTool,
     sourceSelectionApplied:
       selected.applied ||
       background.applied ||
@@ -3586,8 +3611,8 @@ export function buildInitialPlannerModelInputBudget(params: {
   return buildModelInputBudget({
     messages: renderedInput.messages,
     promptSegments: renderedInput.promptSegments,
-    tools: renderedInput.sourceSelectionApplied
-      ? [...(params.tools ?? []), RESTORE_CONTEXT_TOOL]
+    tools: renderedInput.restoreContextTool
+      ? [...(params.tools ?? []), renderedInput.restoreContextTool]
       : params.tools,
     modelName: config.contextWindowModelName,
     ...(config.contextWindowTokens
@@ -4397,8 +4422,8 @@ async function dispatchPlannerModelCall(params: {
     // envelope has no `completed` field (#17034); `parsePlannerOutput`
     // strips it before dispatch.
     modelParams.tools = withTurnScopeToolArg(
-      renderedInput.sourceSelectionApplied
-        ? [...(params.tools ?? []), RESTORE_CONTEXT_TOOL]
+      renderedInput.restoreContextTool
+        ? [...(params.tools ?? []), renderedInput.restoreContextTool]
         : params.tools,
       renderedInput.messages[0]?.role === "system" &&
         typeof renderedInput.messages[0].content === "string"

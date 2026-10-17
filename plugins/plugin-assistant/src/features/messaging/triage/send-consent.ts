@@ -36,6 +36,7 @@ interface PendingSend {
   messageTime: number;
   armedAt: number;
   consumedBy: string | null;
+  draftId?: string;
 }
 
 // A qualified answer is not blanket permission. Only an entire affirmative
@@ -54,16 +55,84 @@ function pendingSend(value: unknown): value is PendingSend {
     Number.isFinite(record.messageTime) &&
     typeof record.armedAt === "number" &&
     Number.isFinite(record.armedAt) &&
+    (record.draftId === undefined ||
+      (typeof record.draftId === "string" && record.draftId.length > 0)) &&
     (record.consumedBy === null || typeof record.consumedBy === "string")
   );
 }
 
 export interface SendConsentOptions {
+  /** Host-owned draft reference for a later reply; never send authority. */
+  readonly draftId?: string;
   /**
    * Exact whole-turn replies that also confirm this send, e.g. the value a
    * one-tap choice chip posts. Compared case-insensitively after trimming.
    */
   readonly affirmations?: readonly string[];
+}
+
+/** Retire an older preview in the durable consent record before showing a new one.
+ * This also protects explicit stale draft IDs, process restarts and other workers.
+ */
+export async function noteDraftPreview(
+  runtime: IAgentRuntime,
+  requester: Pick<Memory, "entityId" | "roomId"> | undefined,
+  draftId: string,
+): Promise<void> {
+  if (!requester?.entityId || !requester.roomId || !draftId) return;
+  const key = `message-consent:${requester.entityId}:${requester.roomId}`;
+  const existing = await runtime.getCache<unknown>(key);
+  if (
+    !pendingSend(existing) ||
+    existing.consumedBy !== null ||
+    existing.draftId === draftId
+  )
+    return;
+  const retired = await runtime.compareAndSetCache(key, existing, {
+    ...existing,
+    consumedBy: `superseded:${randomUUID()}`,
+  });
+  if (!retired)
+    throw new ElizaError(
+      "Send review changed while preparing this draft. Review it again.",
+      {
+        code: "MESSAGE_CONFIRMATION_PREVIEW_CHANGED",
+      },
+    );
+}
+
+/** Recover the preview's reference for an affirmative later turn in the same actor/room.
+ * The caller must still check the current draft digest and consume consent.
+ */
+export async function pendingSendDraft(
+  runtime: IAgentRuntime,
+  message: Memory,
+): Promise<string | null> {
+  if (
+    !message.id ||
+    !message.entityId ||
+    !message.roomId ||
+    !isAffirmative(unwrapUserMessageText(message).trim(), {}) ||
+    message.entityId === runtime.agentId ||
+    typeof message.createdAt !== "number" ||
+    !Number.isFinite(message.createdAt)
+  )
+    return null;
+  const existing = await runtime.getCache<unknown>(
+    `message-consent:${message.entityId}:${message.roomId}`,
+  );
+  const now = Date.now();
+  if (
+    !pendingSend(existing) ||
+    !existing.draftId ||
+    (existing.consumedBy !== null && existing.consumedBy !== message.id) ||
+    existing.messageId === message.id ||
+    message.createdAt <= existing.messageTime ||
+    now < existing.armedAt ||
+    now - existing.armedAt > 5 * 60_000
+  )
+    return null;
+  return existing.draftId;
 }
 
 function isAffirmative(text: string, options: SendConsentOptions): boolean {
@@ -125,6 +194,7 @@ export async function requireSendConsent(
     messageTime: message.createdAt,
     armedAt: now,
     consumedBy: null,
+    ...(options.draftId ? { draftId: options.draftId } : {}),
   } satisfies PendingSend);
   return armed ? "pending" : "cancelled";
 }

@@ -1081,12 +1081,7 @@ export class GoogleChatService extends Service implements IGoogleChatService {
   }
 
   private async listConnectorSpaces(accountId?: string): Promise<GoogleChatSpace[]> {
-    const state = this.getState(accountId);
-    try {
-      return await this.getSpaces(state.accountId);
-    } catch {
-      return [...state.cachedSpaces];
-    }
+    return this.getSpaces(accountId);
   }
 
   async processWebhookEvent(event: GoogleChatEvent, accountId?: string): Promise<void> {

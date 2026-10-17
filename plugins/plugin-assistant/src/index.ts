@@ -194,6 +194,7 @@ export type {
   MessageAdapter,
   MessageAdapterCapabilities,
   MessageDraftContext,
+  MessageManageContext,
   MessageRef,
   MessageSendContext,
   MessageSource,

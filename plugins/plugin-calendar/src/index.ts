@@ -46,6 +46,7 @@ export {
   extractCalendarPlanWithLlm,
   registerConflictDetectHostAdapter,
 } from "./actions/index.js";
+export { createCalendarMutationApprovalGateway } from "./actions/mutation-approval.js";
 export {
   type CalendarClientMethods,
   installCalendarClient,
@@ -131,6 +132,10 @@ export {
 } from "./internal/recurrence.js";
 export * from "./meetings/index.js";
 export * from "./microsoft/index.js";
+export {
+  CALENDAR_MUTATION_PORT_SERVICE,
+  resolveCalendarApproval,
+} from "./mutations/resolve.js";
 export { calendarPlugin, calendarPlugin as default } from "./plugin.js";
 export * from "./providers/index.js";
 export { registerCalendarApp } from "./register.js";

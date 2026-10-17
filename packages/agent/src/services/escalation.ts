@@ -621,7 +621,15 @@ export class EscalationService {
         severity: "ephemeral",
       });
     }
-    const existing = await EscalationService.getActiveEscalation(runtime);
+    let existing = await EscalationService.getActiveEscalation(runtime);
+    // Merging defers the new text to the next retry check. That check resolves
+    // on any owner message since the last send, or when no retry is left, so
+    // an escalation in either state would swallow the new alert unsent. Close
+    // it and start a fresh escalation, which delivers now.
+    if (existing && (await EscalationService.isSpent(runtime, existing))) {
+      await EscalationService.resolve(existing.id, runtime);
+      existing = null;
+    }
     if (existing) {
       const resumeWaitMs = pendingTimers
         .get(agentIdOf(runtime))
@@ -832,6 +840,26 @@ export class EscalationService {
     if (!agentId) return Promise.resolve();
     return transition(agentId, () =>
       EscalationService.resolve(escalationId, runtime),
+    );
+  }
+
+  /** True when the next check would resolve without sending again. */
+  private static async isSpent(
+    runtime: IAgentRuntime,
+    state: EscalationState,
+  ): Promise<boolean> {
+    const { config, ownerContacts } = loadEscalationSettings();
+    if (state.currentStep + 1 >= resolveMaxRetries(config)) return true;
+    const routingHints = await loadOwnerContactRoutingHints(
+      runtime,
+      ownerContacts,
+    );
+    return ownerRespondedSince(
+      runtime,
+      ownerContacts,
+      routingHints,
+      await resolveOwnerEntityId(runtime),
+      state.lastSentAt,
     );
   }
 

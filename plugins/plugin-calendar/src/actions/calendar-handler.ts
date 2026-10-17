@@ -1,3 +1,5 @@
+import { mergeCalendarSourceSelection } from "../internal/calendar-source-selection.js";
+import { isManagedCalendarGrant } from "../mutations/managed-gate.js";
 /**
  * Factory for the `CALENDAR` assistant action and its LLM-backed handler.
  *
@@ -353,6 +355,8 @@ type CalendarMutationSubaction =
   | "delete_event";
 
 type CalendarActionParams = {
+  grantId?: string;
+  calendarId?: string;
   target?: string;
   targetKind?: "query" | "eventId";
   subaction?: CalendarSubaction;
@@ -5251,7 +5255,7 @@ const calendarAction: CalendarHandlerAction = {
     "DO NOT use this action to propose or suggest candidate meeting times to send to someone — use PROPOSE_MEETING_TIMES for requests like 'propose three times for a 30 min sync with X', 'suggest meeting slots', or 'find times that work next week'. The create_event subaction is only for booking a single known time on your own calendar. " +
     "This action returns authoritative outcome receipts and complete internal evidence for the evaluator's final grounded reply; do not pair it with a speculative REPLY action.",
   descriptionCompressed:
-    "LifeOps calendar: view/search/create/query travel; not email/habits",
+    "Calendar read/create/update/delete. Updates/deletes require targetKind+target or query/details.eventId; approvals use CALENDAR_REVIEW",
   contexts: ["calendar", "contacts", "tasks"],
   roleGate: { minRole: "OWNER" },
   suppressPostActionContinuation: true,
@@ -5283,10 +5287,10 @@ const calendarAction: CalendarHandlerAction = {
         : suppliedParams;
     const intent = resolveCalendarIntentInput(params.intent, message);
 
-    const details = normalizeCalendarDetails(params.details, [
-      params.title,
-      params.query,
-    ]);
+    const details = mergeCalendarSourceSelection(
+      normalizeCalendarDetails(params.details, [params.title, params.query]),
+      params,
+    );
     // The real action remains available for connected providers. Ask the
     // existing host policy whether backend records are forbidden on this turn.
     const nativeCalendarFailure = calendarRecordPolicyFailure();
@@ -5309,7 +5313,7 @@ const calendarAction: CalendarHandlerAction = {
         turnComplete: false,
         text:
           nativeCalendarFailure +
-          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source, then retry this Calendar read with details.grantId and details.calendarId from that source. Do not substitute local backend records or change source selections without the owner request.",
+          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source. Supply BOTH grantId and calendarId from that result, either at the top level or inside details. A calendar label alone is insufficient. Do not repeat this call until both source IDs are present. Do not substitute local backend records or change source selections without the owner request.",
         effectReceipts: [
           calendarFailedReceipt({
             message,
@@ -5334,6 +5338,17 @@ const calendarAction: CalendarHandlerAction = {
           "CALENDAR_NATIVE_RESOURCE_REQUIRED",
         );
     };
+    // Availability spans every owner calendar, so a conflict elsewhere still
+    // blocks a write. Phone-owned turns cannot read merged backend records,
+    // and managed Google grants are not part of the merged feed; both check
+    // the exact destination source instead.
+    const scopedAvailabilitySource = (
+      grantId: string | undefined,
+      calendarId: string | undefined,
+    ): { grantId?: string; calendarId?: string } =>
+      grantId && (nativeGrantId || isManagedCalendarGrant(grantId))
+        ? { grantId, ...(calendarId ? { calendarId } : {}) }
+        : {};
     const calendarZone = await resolveOwnerCalendarTimeZone(
       runtime,
       new Date(),
@@ -5906,7 +5921,10 @@ const calendarAction: CalendarHandlerAction = {
         );
         const availability = await evaluateCalendarWriteAvailability({
           runtime,
-          ...(nativeGrantId ? { grantId: nativeGrantId } : {}),
+          ...scopedAvailabilitySource(
+            requestToApprove.grantId,
+            requestToApprove.calendarId,
+          ),
           startAt: requestToApprove.startAt,
           endAt: requestToApprove.endAt,
           timeZone: requestToApprove.timeZone,
@@ -6464,7 +6482,10 @@ const calendarAction: CalendarHandlerAction = {
           }
           const availability = await evaluateCalendarWriteAvailability({
             runtime,
-            ...(nativeGrantId ? { grantId: nativeGrantId } : {}),
+            ...scopedAvailabilitySource(
+              targetEvent.grantId,
+              targetEvent.calendarId,
+            ),
             startAt: proposedStart,
             endAt: proposedEnd,
             timeZone: zone,
@@ -7370,9 +7391,23 @@ const calendarAction: CalendarHandlerAction = {
       schema: { type: "string" as const },
     },
     {
+      name: "targetKind",
+      description:
+        "For update_event/delete_event, identify the existing event using query or eventId. Pair with target; omit for other operations.",
+      required: false,
+      schema: { type: "string" as const, enum: ["query", "eventId"] },
+    },
+    {
+      name: "target",
+      description:
+        "For update_event/delete_event, the existing event title (targetKind=query) or exact provider event ID (targetKind=eventId). Required for these operations unless query or details.eventId already identifies the target. Never leave the target only in intent.",
+      required: false,
+      schema: { type: "string" as const, minLength: 1 },
+    },
+    {
       name: "query",
       description:
-        "Event-content filter explicitly requested by the user, such as flight, dentist, Denver, or return flight. For trip_window, the trip or stay location (required). Never put dates, agenda, events, or schedule here just to express a time range. For an unfiltered day agenda use feed with details.timeMin/timeMax and omit query/queries.",
+        "For update_event/delete_event, the existing event title to locate; required unless target or details.eventId identifies it. For reads: event-content filter explicitly requested by the user, such as flight, dentist, Denver, or return flight. For trip_window, the trip or stay location (required). Never put dates, agenda, events, or schedule here just to express a time range. For an unfiltered day agenda use feed with details.timeMin/timeMax and omit query/queries.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -7390,24 +7425,24 @@ const calendarAction: CalendarHandlerAction = {
       name: "details",
       description:
         "Structured calendar fields; only the declared keys are accepted, so omit anything the user did not state. " +
-        "feed/search_events: timeMin/timeMax with timeZone. create_event: start (plus end or durationMinutes) and timeZone; location, description, recurrence and attendees only when the user gives them. " +
+        "Connected Google or Microsoft operations MUST include the exact grantId AND calendarId returned by CALENDAR_SOURCES, either as top-level fields or inside details. Never leave them out or substitute local Calendar records. feed/search_events: timeMin/timeMax with timeZone. create_event: start (plus end or durationMinutes) and timeZone; location, description, recurrence and attendees only when the user gives them. " +
         "update_event/delete_event: locate the target with eventId, oldTitle or query (plus date). The update itself (new time, rename, description, location, cleared fields) is extracted from the user's request and conversation, not copied from start/end, newTitle, description, location or clearFields, so state the requested change in intent. " +
         "Every wall-clock value is local (no Z, no offset) in timeZone; recurrenceScope is instance, this_and_following or series.",
       required: false,
       schema: CALENDAR_DETAILS_PARAMETER_SCHEMA,
     },
     {
-      // Planners habitually add a calendar-id field on feed/read calls (live:
-      // top-level calendar_id AND calendarId on one CALENDAR_FEED call, which
-      // validateToolArgs rejected and the whole read failed). Declare the
-      // field so the exact spelling calendarId validates; other spellings
-      // such as calendar_id are still rejected as unexpected arguments. Reads
-      // span the account's calendars and creation targets the built-in
-      // calendar, so the handler ignores this top-level value. An exact
-      // calendar selection is read from details.calendarId only.
+      // Explicit source IDs may be supplied together here or inside details.
+      name: "grantId",
+      description:
+        "Exact connected-provider grantId from CALENDAR_SOURCES. Required with calendarId whenever the user names Google or Microsoft. Omit only for the built-in local Calendar.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
       name: "calendarId",
       description:
-        "Ignored; leave unset. To select an exact calendar from a Calendar result, use details.calendarId. Agenda reads use the selected Calendar feed; searches cover connected calendars. Use details.includeHiddenCalendars to explicitly change that scope. Event creation targets the built-in calendar.",
+        "Exact calendarId returned by CALENDAR_SOURCES, paired with grantId. Nested details.calendarId remains supported. With no grantId this legacy top-level field does not change source selection.",
       required: false,
       schema: { type: "string" as const },
     },

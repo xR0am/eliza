@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   ChannelType,
   compareMemoryIds,
+  type Log,
   type Memory,
   MemoryType,
   ROLE_WRITE_AUDIT_LOG_TYPE,
@@ -2174,4 +2175,209 @@ it("keeps entity name lookups inside the requested agent and honors an explicit 
       limit: 1,
     }),
   ).toHaveLength(1);
+});
+
+it("scopes room updates, upserts and deletes to the adapter agent", async () => {
+  const adapter = await open();
+  const otherAgentId = id();
+  const otherRoomId = id();
+  const otherMemoryId = id();
+  const otherEntityId = id();
+  const otherParticipantId = id();
+  const storage = await adapter.getConnection();
+
+  // A restored file can carry another agent's rooms; the reads already hide
+  // them (getRoomsByIds), so the write paths must not reach them either.
+  await storage.set("rooms", otherRoomId, {
+    id: otherRoomId,
+    agentId: otherAgentId,
+    source: "test",
+    type: ChannelType.DM,
+    metadata: {},
+    createdAt: new Date().toISOString(),
+  });
+  await storage.set("memories", otherMemoryId, {
+    id: otherMemoryId,
+    agentId: otherAgentId,
+    entityId: otherEntityId,
+    roomId: otherRoomId,
+    content: { text: "another agent's message" },
+    createdAt: Date.parse("2026-10-01T00:00:00.000Z"),
+  });
+  await storage.set("participants", otherParticipantId, {
+    id: otherParticipantId,
+    entityId: otherEntityId,
+    roomId: otherRoomId,
+  });
+
+  await adapter.createRooms([
+    { id: otherRoomId, source: "created", type: ChannelType.DM },
+  ]);
+  expect(
+    (await storage.get<{ source?: string }>("rooms", otherRoomId))?.source,
+  ).toBe("test");
+
+  await adapter.updateRooms([
+    { id: otherRoomId, source: "rewritten", type: ChannelType.GROUP },
+  ]);
+  expect(
+    (await storage.get<{ source?: string }>("rooms", otherRoomId))?.source,
+  ).toBe("test");
+
+  await adapter.upsertRooms([
+    { id: otherRoomId, source: "upserted", type: ChannelType.DM },
+  ]);
+  expect(
+    (await storage.get<{ source?: string }>("rooms", otherRoomId))?.source,
+  ).toBe("test");
+
+  // deleteRooms cascades memories, participants, components and logs on
+  // room_id, so reaching another agent's room would destroy its history.
+  await adapter.deleteRooms([otherRoomId]);
+  expect(await storage.get("rooms", otherRoomId)).toBeTruthy();
+  expect(await storage.get("memories", otherMemoryId)).toBeTruthy();
+  expect(await storage.get("participants", otherParticipantId)).toBeTruthy();
+
+  // The adapter still owns its own rooms.
+  const ownRoomId = id();
+  const ownMemoryId = id();
+  await adapter.createRooms([
+    { id: ownRoomId, agentId, source: "test", type: ChannelType.DM },
+  ]);
+  await storage.set("memories", ownMemoryId, {
+    id: ownMemoryId,
+    agentId,
+    entityId,
+    roomId: ownRoomId,
+    content: { text: "this agent's message" },
+    createdAt: Date.parse("2026-10-01T00:00:00.000Z"),
+  });
+  await adapter.updateRooms([
+    { id: ownRoomId, agentId, source: "renamed", type: ChannelType.DM },
+  ]);
+  expect(
+    (await storage.get<{ source?: string }>("rooms", ownRoomId))?.source,
+  ).toBe("renamed");
+  await adapter.upsertRooms([
+    { id: ownRoomId, agentId, source: "upserted", type: ChannelType.DM },
+  ]);
+  expect(
+    (await storage.get<{ source?: string }>("rooms", ownRoomId))?.source,
+  ).toBe("upserted");
+  await adapter.deleteRooms([ownRoomId]);
+  expect(await storage.get("rooms", ownRoomId)).toBeFalsy();
+  expect(await storage.get("memories", ownMemoryId)).toBeFalsy();
+
+  // A restored file can also carry a memory whose parent room row is gone. A
+  // missing parent cannot authorize the cascade, so it must fail closed.
+  const danglingRoomId = id();
+  const danglingMemoryId = id();
+  await storage.set("memories", danglingMemoryId, {
+    id: danglingMemoryId,
+    agentId: otherAgentId,
+    entityId: otherEntityId,
+    roomId: danglingRoomId,
+    content: { text: "another agent's orphaned message" },
+    createdAt: Date.parse("2026-10-01T00:00:00.000Z"),
+  });
+  await adapter.deleteRooms([danglingRoomId]);
+  expect(await storage.get("memories", danglingMemoryId)).toBeTruthy();
+});
+
+it("scopes log reads and mutations to the adapter agent", async () => {
+  const adapter = await open();
+  const otherAgentId = id();
+  const ownRoomId = id();
+  const otherRoomId = id();
+  const otherEntityId = id();
+  const otherLogId = id();
+
+  await adapter.createRooms([
+    { id: ownRoomId, agentId, source: "test", type: ChannelType.DM },
+  ]);
+  await adapter.createLogs([
+    {
+      body: { source: "scope-probe", metadata: { who: "this agent" } },
+      entityId,
+      roomId: ownRoomId,
+      type: "scope-probe",
+    },
+  ]);
+
+  // Simulate a restored file carrying another agent's room and log: the
+  // storage layer accepts the rows, but the adapter must not serve them,
+  // mirroring PostgreSQL's ownedLogRoomCondition.
+  const storage = await adapter.getConnection();
+  await storage.set("rooms", otherRoomId, {
+    id: otherRoomId,
+    agentId: otherAgentId,
+    source: "test",
+    type: ChannelType.DM,
+  });
+  await storage.set("logs", otherLogId, {
+    id: otherLogId,
+    entityId: otherEntityId,
+    roomId: otherRoomId,
+    type: "scope-probe",
+    body: { source: "scope-probe", metadata: { who: "other agent" } },
+    createdAt: new Date(),
+  });
+
+  expect(
+    (await adapter.getLogs({ type: "scope-probe" })).map((log) => log.body),
+  ).toEqual([{ source: "scope-probe", metadata: { who: "this agent" } }]);
+  expect(await adapter.getLogsByIds([otherLogId])).toEqual([]);
+
+  await adapter.updateLogs([
+    { id: otherLogId, updates: { type: "rewritten" } },
+  ]);
+  await adapter.deleteLogs([otherLogId]);
+
+  const survivor = await storage.get<Log>("logs", otherLogId);
+  expect(survivor?.body).toEqual({
+    source: "scope-probe",
+    metadata: { who: "other agent" },
+  });
+  expect(survivor?.type).toBe("scope-probe");
+
+  // A log naming a room with no room record stays readable and mutable.
+  // createLogs performs no room-existence check (unlike PostgreSQL, whose
+  // foreign key rejects the write), so a dangling roomId is a normal write
+  // outcome — audit logs may land before their room row exists. Reads stay
+  // fail-open here, matching the room/world convention that rows without a
+  // resolvable owner belong to this database.
+  const orphanLogId = id();
+  const missingRoomId = id();
+  await storage.set("logs", orphanLogId, {
+    id: orphanLogId,
+    entityId,
+    roomId: missingRoomId,
+    type: "scope-probe",
+    body: { source: "scope-probe", metadata: { who: "orphan" } },
+    createdAt: new Date(),
+  });
+
+  expect(
+    (await adapter.getLogs({ type: "scope-probe" }))
+      .map((log) => (log.body as { metadata: { who: string } }).metadata.who)
+      .sort(),
+  ).toEqual(["orphan", "this agent"]);
+  expect(await adapter.getLogsByIds([orphanLogId])).toHaveLength(1);
+
+  await adapter.updateLogs([
+    { id: orphanLogId, updates: { type: "rewritten" } },
+  ]);
+  expect((await adapter.getLogsByIds([orphanLogId]))[0]?.type).toBe(
+    "rewritten",
+  );
+  await adapter.deleteLogs([orphanLogId]);
+  expect(await adapter.getLogsByIds([orphanLogId])).toEqual([]);
+
+  // The adapter still manages its own logs.
+  const [ownLog] = await adapter.getLogs({ type: "scope-probe" });
+  if (!ownLog?.id) throw new Error("own log missing");
+  await adapter.updateLogs([{ id: ownLog.id, updates: { type: "rewritten" } }]);
+  expect((await adapter.getLogsByIds([ownLog.id]))[0]?.type).toBe("rewritten");
+  await adapter.deleteLogs([ownLog.id]);
+  expect(await adapter.getLogsByIds([ownLog.id])).toEqual([]);
 });
