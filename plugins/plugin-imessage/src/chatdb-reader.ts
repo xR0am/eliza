@@ -24,7 +24,7 @@
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { logger } from "@elizaos/core";
+import { ElizaError, logger } from "@elizaos/core";
 import type { IMessagePermissionAction } from "./types.js";
 
 /**
@@ -802,9 +802,12 @@ export async function openChatDb(
             isSticker: a.is_sticker === 1,
           }));
         } catch (error) {
-          logger.debug(
-            `[imessage] attachment query failed for rowid=${row.row_id}: ${error instanceof Error ? error.message : String(error)}`
-          );
+          throw new ElizaError("iMessage attachment metadata could not be read", {
+            code: "IMESSAGE_ATTACHMENT_READ_FAILED",
+            cause: error,
+            context: { rowId: row.row_id },
+            severity: "ephemeral",
+          });
         }
       }
 
