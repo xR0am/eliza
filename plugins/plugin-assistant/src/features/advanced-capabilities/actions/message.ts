@@ -46,6 +46,7 @@ import {
   ModelType,
   markOwnerExclusiveDisclosureUsed,
   OWNER_PRIVATE_DESTINATION_DISCLOSURE_BASIS,
+  promoteSubactionsToActions,
   resolveCanonicalOwnerIdForMessage,
   revalidateOwnerExclusiveDisclosure,
   runWithActionRoutingContext,
@@ -166,7 +167,7 @@ const MESSAGE_CONTEXTS = [
 ];
 
 const MESSAGE_DESCRIPTION =
-  "Addressed messaging action: DMs, groups, channels, rooms, threads, servers, users, inboxes, drafts, and authorized cross-world continuity. Use list_worlds to discover durable worlds shared by the verified requester and this agent, list_rooms to inspect the current or an authorized worldId, and read_message to page an exact provider message or email body. Use manage_server for structural server administration on a connector that supports it (create/edit/delete channels, categories, and roles, permission overwrites, member roles, invites, moderation, guild templates) — gated by connector configuration. Public feed publishing uses POST.";
+  "Addressed messaging action: DMs, groups, channels, rooms, threads, servers, users, inboxes, drafts, and authorized cross-world continuity. Use list_worlds to discover durable worlds shared by the verified requester and this agent, list_rooms to inspect the current or an authorized worldId, and read_message to page an exact provider message or email body. Use manage_server for structural server administration on a connector that supports it (create/edit/delete channels, categories, and roles, permission overwrites, member roles, invites, moderation, guild templates) — gated by connector configuration. Email uses send_draft with an exact preview and a later affirmative user reply. The send operation delivers through messaging connectors. Public feed publishing uses POST.";
 const MESSAGE_COMPRESSED =
   "primary message action send read_channel read_with_contact read_message search list_channels list_servers list_connections list_worlds list_rooms join leave react edit delete pin get_user manage_server triage list_inbox search_inbox draft_reply draft_followup respond send_draft schedule_draft_send manage dm group channel room thread user server world inbox draft connections platforms reachable";
 
@@ -6844,7 +6845,16 @@ export const messageAction: Action = {
   ] as ActionExample[][],
   validate: async (runtime, message, state, options) => {
     refreshDescriptions(messageAction, runtime);
-    const explicitOp = inferOp(paramsFromOptions(options));
+    const parameters = paramsFromOptions(options);
+    const explicitOp = inferOp(parameters);
+    // One local registration read; no connector handshake or provider request.
+    if (
+      normalizeOp(parameters.action) === "send" &&
+      !listMessageConnectors(runtime).some((connector) =>
+        connector.capabilities.includes("send_message"),
+      )
+    )
+      return false;
     if (explicitOp === "list_worlds" || explicitOp === "list_rooms") {
       // Scenario and API callers may invoke an explicit topology read without
       // a model-composed routing state. The handlers still revalidate the
@@ -6920,5 +6930,29 @@ export const messageAction: Action = {
     }
   },
 };
+
+/** Both registrations expose the same authored distinction between connector
+ * sends and the owner-reviewed email draft flow. No handler or gate changes.
+ */
+export function promoteMessageActions(): readonly Action[] {
+  return promoteSubactionsToActions(messageAction, {
+    overrides: {
+      send: {
+        description:
+          "Send a direct message through a registered messaging connector. For Gmail or another email inbox, use MESSAGE_SEND_DRAFT to prepare an exact draft and obtain later user confirmation.",
+      },
+      send_draft: {
+        parameters: sendDraftAction.parameters,
+        description: sendDraftAction.description,
+        descriptionCompressed: sendDraftAction.descriptionCompressed,
+        similes: [
+          ...(sendDraftAction.similes ?? []),
+          "SEND_EMAIL",
+          "SEND_GMAIL",
+        ],
+      },
+    },
+  });
+}
 
 export default messageAction;
