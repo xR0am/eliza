@@ -89,7 +89,10 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
   ): Promise<ManageResult> {
     const requester = await owner(runtime, context?.requester);
     if (!this.manager)
-      throw unavailable("Managed Gmail mailbox changes are unavailable.");
+      throw new ElizaError(
+        "Managed Gmail mailbox changes are not available on this device yet. Nothing was changed.",
+        { code: "MANAGED_GMAIL_MAILBOX_UNAVAILABLE" },
+      );
     if (!requester.id || !requester.roomId || !requester.entityId)
       throw unavailable("Mailbox changes need the current owner turn.");
     const kind =
@@ -151,7 +154,10 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
   ) {
     const caller = await owner(runtime, context?.requester);
     if (!this.sender)
-      throw unavailable("Managed Gmail sending is unavailable.");
+      throw new ElizaError(
+        "Managed Gmail sending is not available on this device yet. Nothing was sent.",
+        { code: "MANAGED_GMAIL_SEND_UNAVAILABLE" },
+      );
     if (
       draft.source !== "gmail" ||
       draft.inReplyToId ||

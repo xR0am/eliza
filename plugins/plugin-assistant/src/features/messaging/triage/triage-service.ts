@@ -18,7 +18,7 @@ import {
   getDefaultMessageRefStore,
   type MessageRefStore,
 } from "./message-ref-store.ts";
-import { draftConsentDigest } from "./send-consent.ts";
+import { draftConsentDigest, noteDraftPreview } from "./send-consent.ts";
 import {
   compareMessageRefsByRecency,
   rankScored,
@@ -488,6 +488,7 @@ export class TriageService {
     if (snapshot) Object.assign(record, structuredClone(snapshot));
     record.agentId = runtime.agentId;
     this.store.saveDraft(record, runtime.agentId);
+    noteDraftPreview(requester, record.draftId);
     return record;
   }
 
@@ -538,6 +539,7 @@ export class TriageService {
     if (snapshot) Object.assign(record, structuredClone(snapshot));
     record.agentId = runtime.agentId;
     this.store.saveDraft(record, runtime.agentId);
+    noteDraftPreview(params.requester, record.draftId);
     return record;
   }
 

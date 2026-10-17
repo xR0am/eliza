@@ -72,7 +72,7 @@ import {
   logRoutineDevMemoryHeartbeat,
 } from "./dev-memory-heartbeat.js";
 import { warnStalePluginDists } from "./dev-plugin-dist-staleness.js";
-import { startNativeManagedGoogleHost } from "./native-managed-google-host.js";
+import { startNativeManagedGoogleHostForBoot } from "./native-managed-google-host.js";
 import { resolveRuntimeBootstrapFailure } from "./runtime-bootstrap-policy.js";
 import {
   mergedRecoverySkipPlugins,
@@ -529,15 +529,6 @@ async function shutdown(): Promise<void> {
   }, 10000);
   forceExitTimer.unref();
   logger.info(`${getLogPrefix()} Dev server shutting down…`);
-  if (nativeManagedGoogleHost) {
-    try {
-      await nativeManagedGoogleHost.close();
-    } catch (error) {
-      // error-policy:J6 process shutdown still has a bounded forced exit.
-      logger.warn(`Native Google host shutdown failed: ${formatError(error)}`);
-    }
-    nativeManagedGoogleHost = undefined;
-  }
   // A teardown started by an API stop or restart owns its runtime; wait for it (bounded
   // by the forced-exit timer above) so the adapter closes before exit.
   if (pendingRuntimeTeardown)
@@ -569,6 +560,17 @@ async function shutdown(): Promise<void> {
       );
     }
     currentRuntime = null;
+  }
+  // Close the private Google host only after the runtime has stopped, so an
+  // in-flight Gmail or Calendar request keeps its endpoint until it settles.
+  if (nativeManagedGoogleHost) {
+    try {
+      await nativeManagedGoogleHost.close();
+    } catch (error) {
+      // error-policy:J6 process shutdown still has a bounded forced exit.
+      logger.warn(`Native Google host shutdown failed: ${formatError(error)}`);
+    }
+    nativeManagedGoogleHost = undefined;
   }
   clearTimeout(forceExitTimer);
   process.exit(0);
@@ -641,7 +643,10 @@ async function main() {
     );
   }
   syncResolvedApiPort(process.env, actualPort);
-  nativeManagedGoogleHost = await startNativeManagedGoogleHost();
+  nativeManagedGoogleHost = await startNativeManagedGoogleHostForBoot(
+    process.env,
+    (message) => logger.warn(message),
+  );
   // Boot the elizaOS agent runtime without blocking server readiness. Scheduled
   // here — before the CORS dynamic import and the cosmetic banner/pairing block
   // below — because `scheduleRuntimeBootstrap` only queues a macrotask: the lone

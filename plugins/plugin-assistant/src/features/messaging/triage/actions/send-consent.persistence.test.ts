@@ -233,6 +233,89 @@ it("binds actual draft sending to a later user turn and consumes consent once du
   }
 });
 
+it("a plain confirmation never sends an older armed draft after a newer draft preview", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "message-consent-latest-"));
+  const runtime = new AgentRuntime({
+    agentId: randomUUID() as UUID,
+    character: { name: "Consent test", bio: [] },
+    logLevel: "fatal",
+  });
+  runtime.registerDatabaseAdapter(
+    SQLiteDatabaseAdapter.create(
+      join(directory, "agent.sqlite"),
+      runtime.agentId,
+    ),
+  );
+  await runtime.init();
+  const actor = randomUUID() as UUID,
+    room = randomUUID() as UUID;
+  let timestamp = Date.now() - 10000;
+  const turn = (text: string): Memory => ({
+    id: randomUUID() as UUID,
+    agentId: runtime.agentId,
+    entityId: actor,
+    roomId: room,
+    createdAt: ++timestamp,
+    content: { text },
+  });
+  const sent: string[] = [];
+  class Transport extends BaseMessageAdapter {
+    readonly source = "telegram" as const;
+    isAvailable() {
+      return true;
+    }
+    protected async createDraftImpl(
+      _runtime: AgentRuntime,
+      draft: DraftRequest,
+    ) {
+      return { draftId: randomUUID(), preview: draft.body };
+    }
+    protected async sendDraftImpl(_runtime: AgentRuntime, draftId: string) {
+      sent.push(draftId);
+      return { externalId: `accepted-${draftId}` };
+    }
+  }
+  const service = getDefaultTriageService();
+  service.register(new Transport());
+  try {
+    const first = turn("Send Alice the notes");
+    const a = await service.draftFollowup(runtime, {
+      requester: first,
+      source: "telegram",
+      to: [{ identifier: "alice" }],
+      body: "Notes for Alice",
+    });
+    await sendDraftAction.handler(runtime, first, undefined, {
+      parameters: { draftId: a.draftId },
+    });
+    expect(sent).toEqual([]);
+    // A newer preview in the same conversation, without armed send consent.
+    const second = turn("Also draft Bob a message");
+    const b = await service.draftFollowup(runtime, {
+      requester: second,
+      source: "telegram",
+      to: [{ identifier: "bob" }],
+      body: "Message for Bob",
+    });
+    const yes = turn("yes");
+    expect(await pendingSendDraft(runtime, yes)).toBeNull();
+    // The planner names B; neither A nor B is sent, B is re-previewed instead.
+    const outcome = await sendDraftAction.handler(runtime, yes, undefined, {
+      parameters: { draftId: b.draftId },
+    });
+    expect(outcome).toMatchObject({ data: { requiresConfirmation: true } });
+    expect(sent).toEqual([]);
+    // Omitting the ID on another plain yes does not fall back to A either.
+    await sendDraftAction.handler(runtime, turn("yes"), undefined, {
+      parameters: {},
+    });
+    expect(sent).not.toContain(a.draftId);
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("refuses a new outbound draft when the adapter cannot send a new message", async () => {
   class NoSendAdapter extends BaseMessageAdapter {
     readonly source = "telegram" as const;

@@ -11,6 +11,17 @@ const brokerKeys = [
   "ELIZA_MANAGED_GMAIL_OPERATION_BROKER",
   "ELIZA_MANAGED_CALENDAR_READ_BROKER",
 ] as const;
+/**
+ * Gmail sending through the native host depends on a separately owned
+ * production service that is not yet qualified on device. The host publishes
+ * the send endpoint only when this flag is explicitly set; the owner must still
+ * review each exact draft before dispatch.
+ */
+export const NATIVE_GMAIL_SEND_FLAG = "ELIZA_NATIVE_GOOGLE_GMAIL_SEND_ENABLED";
+const enabled = (value: string | undefined) => {
+  const v = value?.trim().toLowerCase();
+  return v === "1" || v === "true";
+};
 const unavailable = (message: string) =>
   new ElizaError(message, { code: "NATIVE_MANAGED_GOOGLE_HOST_UNAVAILABLE" });
 
@@ -30,7 +41,10 @@ export async function startNativeManagedGoogleHost(
     !raw ||
     raw.length > 8192 ||
     !token ||
-    !apiToken
+    !apiToken ||
+    // The managed Gmail and Calendar transports accept only this format; a
+    // published endpoint they cannot use would break Gmail reads at plugin init.
+    !/^[A-Za-z0-9_-]{64}$/.test(apiToken)
   )
     throw unavailable("Native Google host admission is incomplete");
   const canonicalRoot = fs.realpathSync(root);
@@ -72,7 +86,15 @@ export async function startNativeManagedGoogleHost(
     throw unavailable(
       "Native Google host module differs from its admitted manifest",
     );
-  const binding = JSON.parse(raw);
+  let binding: unknown;
+  try {
+    binding = JSON.parse(raw);
+  } catch {
+    // A SyntaxError would quote the private binding; report only its absence.
+    throw unavailable("Native Google host binding is invalid");
+  }
+  if (!binding || typeof binding !== "object" || Array.isArray(binding))
+    throw unavailable("Native Google host binding is invalid");
   const module = await import(pathToFileURL(filename).href);
   if (typeof module.startNativeGoogleAgentHost !== "function")
     throw unavailable("Native Google host module has no supported entry");
@@ -103,11 +125,39 @@ export async function startNativeManagedGoogleHost(
       throw unavailable("A managed Google host is already configured");
     }
   }
-  for (const key of brokerKeys) env[key] = endpoint;
+  const published = brokerKeys.filter(
+    (key) =>
+      key !== "ELIZA_MANAGED_GMAIL_SEND_BROKER" ||
+      enabled(env[NATIVE_GMAIL_SEND_FLAG]),
+  );
+  for (const key of published) env[key] = endpoint;
   return {
     async close() {
-      for (const key of brokerKeys) if (env[key] === endpoint) delete env[key];
+      for (const key of published) if (env[key] === endpoint) delete env[key];
       await host.close();
     },
   };
+}
+
+/**
+ * Boot callers use this form: the on-device agent must still start when the
+ * Google host cannot be admitted (for example before Cloud sign-in). Google
+ * stays unavailable, and only a typed code is reported, never host output.
+ */
+export async function startNativeManagedGoogleHostForBoot(
+  env: NodeJS.ProcessEnv = process.env,
+  warn: (message: string) => void = (message) => console.warn(message),
+): Promise<{ close(): Promise<void> } | undefined> {
+  try {
+    return await startNativeManagedGoogleHost(env);
+  } catch (error) {
+    const code =
+      error instanceof ElizaError && typeof error.code === "string"
+        ? error.code
+        : "NATIVE_MANAGED_GOOGLE_HOST_FAILED";
+    warn(
+      `[native-google-host] Google services are unavailable; the agent continues without them (${code}).`,
+    );
+    return undefined;
+  }
 }

@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { startNativeManagedGoogleHost } from "./native-managed-google-host.js";
+import {
+  startNativeManagedGoogleHost,
+  startNativeManagedGoogleHostForBoot,
+} from "./native-managed-google-host.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -41,20 +44,31 @@ function fixture() {
   };
   return { root, entry, env };
 }
-test("authenticated native resource loading publishes all four private ports and retires them together", async () => {
+test("authenticated native resource loading publishes read ports, withholds Gmail send by default and retires them together", async () => {
   const f = fixture();
   const host = await startNativeManagedGoogleHost(f.env);
   expect(host).toBeDefined();
   for (const name of [
     "ELIZA_MANAGED_GMAIL_READ_BROKER",
-    "ELIZA_MANAGED_GMAIL_SEND_BROKER",
     "ELIZA_MANAGED_GMAIL_OPERATION_BROKER",
     "ELIZA_MANAGED_CALENDAR_READ_BROKER",
   ])
     expect(f.env[name]).toBe("http://127.0.0.1:47899/__alpha-owner-gmail");
+  expect(f.env.ELIZA_MANAGED_GMAIL_SEND_BROKER).toBeUndefined();
   await host?.close();
   expect(f.env.ELIZA_MANAGED_GMAIL_READ_BROKER).toBeUndefined();
+  expect(f.env.ELIZA_MANAGED_GMAIL_OPERATION_BROKER).toBeUndefined();
   expect(f.env.ELIZA_MANAGED_CALENDAR_READ_BROKER).toBeUndefined();
+});
+test("Gmail send is published only when the host explicitly enables it", async () => {
+  const f = fixture();
+  f.env.ELIZA_NATIVE_GOOGLE_GMAIL_SEND_ENABLED = "1";
+  const host = await startNativeManagedGoogleHost(f.env);
+  expect(f.env.ELIZA_MANAGED_GMAIL_SEND_BROKER).toBe(
+    "http://127.0.0.1:47899/__alpha-owner-gmail",
+  );
+  await host?.close();
+  expect(f.env.ELIZA_MANAGED_GMAIL_SEND_BROKER).toBeUndefined();
 });
 test("native host refuses altered modules, foreign resource paths and desktop activation", async () => {
   const altered = fixture();
@@ -76,4 +90,30 @@ test("native host refuses altered modules, foreign resource paths and desktop ac
   await expect(startNativeManagedGoogleHost(desktop.env)).rejects.toMatchObject(
     { code: "NATIVE_MANAGED_GOOGLE_HOST_UNAVAILABLE" },
   );
+});
+test("boot admission failures leave Google unavailable without stopping the agent or leaking the binding", async () => {
+  const f = fixture();
+  delete f.env.ELIZAOS_CLOUD_API_KEY;
+  const warnings: string[] = [];
+  await expect(
+    startNativeManagedGoogleHostForBoot(f.env, (m) => warnings.push(m)),
+  ).resolves.toBeUndefined();
+  expect(warnings.join("\n")).toContain(
+    "NATIVE_MANAGED_GOOGLE_HOST_UNAVAILABLE",
+  );
+  const malformed = fixture();
+  malformed.env.ELIZA_NATIVE_GOOGLE_BINDING_JSON = '{"grant":"private-grant"';
+  const error = await startNativeManagedGoogleHost(malformed.env).catch(
+    (e: unknown) => e as Error,
+  );
+  expect(error).toMatchObject({
+    code: "NATIVE_MANAGED_GOOGLE_HOST_UNAVAILABLE",
+  });
+  expect(String((error as Error).message)).not.toContain("private-grant");
+  const badToken = fixture();
+  badToken.env.ELIZA_API_TOKEN = "short";
+  await expect(
+    startNativeManagedGoogleHost(badToken.env),
+  ).rejects.toMatchObject({ code: "NATIVE_MANAGED_GOOGLE_HOST_UNAVAILABLE" });
+  expect(badToken.env.ELIZA_MANAGED_GMAIL_READ_BROKER).toBeUndefined();
 });

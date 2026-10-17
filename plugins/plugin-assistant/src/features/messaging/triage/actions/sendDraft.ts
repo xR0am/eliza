@@ -283,12 +283,16 @@ export const sendDraftAction: Action = {
   ): Promise<ActionResult> => {
     let parsed = parseSendDraftParams(options);
     const service = getDefaultTriageService();
-    // A whole-turn affirmation refers to the host's reviewed draft. Planner
-    // parameters cannot redirect it or replace its content. The digest/CAS
-    // confirmation gate below remains the authority to send.
+    // A whole-turn affirmation refers to the host's latest reviewed draft.
+    // Planner content or an invented ID cannot redirect it. A different draft
+    // the planner names explicitly is kept: the digest gate below then
+    // re-previews it instead of sending the earlier armed draft.
     const pendingId = await pendingSendDraft(runtime, _message);
-    if (pendingId && service.getDraft(runtime, pendingId))
-      parsed = { draftId: pendingId };
+    if (pendingId && service.getDraft(runtime, pendingId)) {
+      const named = "error" in parsed ? undefined : parsed.draftId;
+      if (!named || named === pendingId || !service.getDraft(runtime, named))
+        parsed = { draftId: pendingId };
+    }
     if ("error" in parsed) {
       const draftParsed = parseDraftFollowupParams(
         await outboundDraftOptionsFromMessage(runtime, _message, options),

@@ -2,7 +2,7 @@ import type {
   ApprovalEnqueueInput,
   ApprovalEnqueueResult,
 } from "@elizaos/plugin-assistant";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const controls = vi.hoisted(() => ({ owner: true, role: vi.fn() }));
 vi.mock("@elizaos/core", () => ({
@@ -160,5 +160,73 @@ describe("standalone Calendar owner approval", () => {
       request: { ...request, title: "Changed" },
     });
     expect(a.idempotencyKey).not.toBe(b.idempotencyKey);
+  });
+  describe("managed Google Calendar deletion", () => {
+    const managedGrant = `alpha-google:${"c".repeat(64)}`;
+    const targetEvent = {
+      id: `${managedGrant}:event-1`,
+      externalId: "event-1",
+      grantId: managedGrant,
+      calendarId: "primary",
+      provider: "google",
+      side: "owner",
+      title: "Private fixture",
+      startAt: "2026-10-14T18:00:00Z",
+      endAt: "2026-10-14T18:02:00Z",
+      updatedAt: "2026-10-14T17:00:00Z",
+      organizer: { self: true },
+      attendees: [],
+      metadata: { etag: '"v1"' },
+    } as unknown as Parameters<
+      ReturnType<typeof createCalendarMutationApprovalGateway>["cancel"]
+    >[0]["targetEvent"];
+    const cancelRequest = {
+      grantId: managedGrant,
+      side: "owner",
+      calendarId: "primary",
+      eventId: "event-1",
+      notifyAttendees: false,
+    } as never;
+    afterEach(() => vi.unstubAllEnvs());
+    it("refuses before asking the owner when deletion is not enabled", async () => {
+      vi.stubEnv("ELIZA_MANAGED_CALENDAR_DELETE_ENABLED", "");
+      const { enqueue, gateway } = setup();
+      await expect(
+        gateway.cancel({
+          runtime,
+          message,
+          request: cancelRequest,
+          targetEvent,
+        }),
+      ).rejects.toMatchObject({ code: "CALENDAR_MANAGED_DELETE_UNAVAILABLE" });
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+    it("still queues an owner review, and refuses nonowners, when deletion is enabled", async () => {
+      vi.stubEnv("ELIZA_MANAGED_CALENDAR_DELETE_ENABLED", "1");
+      const { enqueue, gateway } = setup();
+      const review = await gateway.cancel({
+        runtime,
+        message,
+        request: cancelRequest,
+        targetEvent,
+      });
+      expect(review.requestId).toBe("approval-1");
+      expect(enqueue.mock.calls[0][0]).toMatchObject({
+        subjectUserId: "owner",
+        action: "cancel_event",
+        payload: { grantId: managedGrant, eventId: "event-1" },
+      });
+      expect(controls.role).toHaveBeenCalledWith(runtime, message, "OWNER");
+      controls.owner = false;
+      await expect(
+        gateway.cancel({
+          runtime,
+          message,
+          request: cancelRequest,
+          targetEvent,
+        }),
+      ).rejects.toThrow("current owner");
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    });
   });
 });

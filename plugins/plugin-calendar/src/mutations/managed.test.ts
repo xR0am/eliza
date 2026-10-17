@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ call: vi.fn() }));
 vi.mock("../service/managed-calendar-read.js", () => ({
@@ -150,4 +150,87 @@ it("unsupported notification options fail before a provider call", async () => {
     } as never),
   ).rejects.toThrow("editor");
   expect(state.call).not.toHaveBeenCalled();
+});
+describe("managed Calendar deletion gate", () => {
+  const cancel = {
+    payload: {
+      action: "cancel_event",
+      side: "owner",
+      grantId: source,
+      calendarId: "calendar",
+      eventId: "event-1",
+      expectedProviderVersion: '"v1"',
+      recurrenceScope: null,
+      cancellationMode: "organizer_cancel",
+    },
+  } as never;
+  const target = {
+    event: {
+      id: `${source}:event-1`,
+      externalId: "event-1",
+      grantId: source,
+      calendarId: "calendar",
+      side: "owner",
+      provider: "google",
+      startAt: "2026-10-14T18:00:00Z",
+      endAt: "2026-10-14T18:02:00Z",
+      attendees: [],
+      metadata: { etag: '"v1"' },
+    },
+  };
+  it("refuses deletion by default with a typed non-retryable error and no host call", async () => {
+    const port = make().port;
+    await expect(port.preflight(cancel)).rejects.toMatchObject({
+      failure: {
+        code: "CALENDAR_MANAGED_DELETE_UNAVAILABLE",
+        retryable: false,
+      },
+    });
+    await expect(
+      port.execute(cancel, {
+        sourceId: source,
+        calendarId: "calendar",
+        managedAccountId: "account",
+      } as never),
+    ).rejects.toMatchObject({
+      failure: { code: "CALENDAR_MANAGED_DELETE_UNAVAILABLE" },
+    });
+    expect(state.call).not.toHaveBeenCalled();
+  });
+  it("runs deletion preflight only when the host explicitly enables it", async () => {
+    state.call.mockResolvedValueOnce(caps).mockResolvedValueOnce(target);
+    const port = createManagedCalendarMutationPort(
+      { ELIZA_MANAGED_CALENDAR_DELETE_ENABLED: "1" },
+      fetch,
+      "agent",
+    );
+    const preflight = await port?.port.preflight(cancel);
+    expect(preflight).toMatchObject({
+      operation: "cancel_event",
+      providerEventId: "event-1",
+      managedAccountId: "account",
+    });
+    expect(
+      state.call.mock.calls.every(
+        ([input]) => input.operation !== "write-execute",
+      ),
+    ).toBe(true);
+  });
+});
+it("treats a capability failure before dispatch as not accepted, not unknown", async () => {
+  state.call.mockRejectedValueOnce(Error("host down"));
+  await expect(
+    make().port.execute(approval, {
+      sourceId: source,
+      calendarId: "calendar",
+      managedAccountId: "account",
+    } as never),
+  ).rejects.toMatchObject({
+    failure: { code: "CALENDAR_MANAGED_WRITE_UNAVAILABLE" },
+  });
+  expect(
+    state.call.mock.calls.every(
+      ([input]) => input.operation !== "write-execute",
+    ),
+  ).toBe(true);
 });

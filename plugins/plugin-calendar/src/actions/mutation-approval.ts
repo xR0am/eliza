@@ -26,6 +26,11 @@ import { INTERNAL_URL } from "../internal/detail.js";
 import { isElizaCalendarGrant } from "../internal/eliza-calendar.js";
 import { CalendarServiceError } from "../internal/errors.js";
 import { isMicrosoftCalendarGrantId } from "../microsoft/accounts.js";
+import {
+  isManagedCalendarGrant,
+  MANAGED_CALENDAR_DELETE_UNAVAILABLE,
+  managedCalendarDeleteEnabled,
+} from "../mutations/managed-gate.js";
 import { CalendarService } from "../service/CalendarService.js";
 import type {
   CalendarMutationApprovalResult,
@@ -442,6 +447,16 @@ export function createCalendarMutationApprovalGateway(options?: {
       });
     },
     async cancel(args) {
+      // Refuse before asking the owner to approve a change this host cannot run.
+      if (
+        isManagedCalendarGrant(args.request.grantId) &&
+        !managedCalendarDeleteEnabled()
+      )
+        throw new CalendarServiceError(
+          409,
+          "Deleting events from the managed Google Calendar is not available on this device yet. Nothing was changed.",
+          MANAGED_CALENDAR_DELETE_UNAVAILABLE,
+        );
       const cancellationMode = cancellationModeForEvent(args.targetEvent);
       const seriesMaster = await bindFollowingSeriesMaster(
         args.runtime,

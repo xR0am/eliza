@@ -60,6 +60,12 @@
       "types": "./dist/mutations/port.d.ts",
       "import": "./dist/mutations/port.js",
       "default": "./dist/mutations/port.js"
+    },
+    "./mutations/managed": {
+      "eliza-source": "./src/mutations/managed.ts",
+      "types": "./dist/mutations/managed.d.ts",
+      "import": "./dist/mutations/managed.js",
+      "default": "./dist/mutations/managed.js"
     }
   },
   "scripts": {

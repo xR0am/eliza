@@ -5,10 +5,24 @@ export type ManagedGmailMutation = {
   kind: "archive" | "trash" | "mark-read" | "mark-unread";
   requestId: string;
 };
+/**
+ * Archive, trash and read-state changes have no qualified host acceptance yet.
+ * They stay off, even when the operation broker is configured, unless the host
+ * also sets this flag.
+ */
+export const MANAGED_GMAIL_MAILBOX_CHANGES_FLAG =
+  "ELIZA_MANAGED_GMAIL_MAILBOX_CHANGES_ENABLED";
+export function managedGmailMailboxChangesEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = env[MANAGED_GMAIL_MAILBOX_CHANGES_FLAG]?.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
 export function managedGmailManager(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
 ) {
+  if (!managedGmailMailboxChangesEnabled(env)) return undefined;
   const call = managedGmailHostTransport(
     env.ELIZA_MANAGED_GMAIL_OPERATION_BROKER,
     env.ELIZA_API_TOKEN,

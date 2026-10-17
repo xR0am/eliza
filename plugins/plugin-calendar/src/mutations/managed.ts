@@ -7,6 +7,10 @@ import {
   calendarMutationOperationKey,
 } from "./ledger.js";
 import {
+  MANAGED_CALENDAR_DELETE_UNAVAILABLE,
+  managedCalendarDeleteEnabled,
+} from "./managed-gate.js";
+import {
   CalendarMutationNotAcceptedError,
   type CalendarMutationPort,
   type CalendarMutationPreflight,
@@ -19,6 +23,13 @@ type Payload = Extract<
 >;
 const scoped = (v: unknown): v is string =>
   typeof v === "string" && /^alpha-google:[a-f0-9]{64}$/.test(v);
+
+const deleteUnavailable = () =>
+  new CalendarMutationPreflightError(
+    MANAGED_CALENDAR_DELETE_UNAVAILABLE,
+    "Deleting events from the managed Google Calendar is not available on this device yet. Nothing was changed.",
+    { retryable: false },
+  );
 function object(v: unknown): Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v))
     throw Error("Invalid managed Calendar response");
@@ -85,6 +96,8 @@ export function createManagedCalendarMutationPort(
           "CALENDAR_MANAGED_SOURCE_REQUIRED",
           "Choose the exact owner Calendar",
         );
+      if (p.action === "cancel_event" && !managedCalendarDeleteEnabled(env))
+        throw deleteUnavailable();
       if (
         p.action !== "schedule_event" &&
         p.recurrenceScope &&
@@ -153,9 +166,27 @@ export function createManagedCalendarMutationPort(
     },
     async execute(approval, preflight) {
       const p = approval.payload as Payload;
-      const caps = await capabilities(preflight.sourceId, preflight.calendarId);
+      if (p.action === "cancel_event" && !managedCalendarDeleteEnabled(env))
+        throw deleteUnavailable();
+      // Nothing has been sent to the provider yet, so a failure here is a
+      // definite non-acceptance rather than an unknown provider outcome.
+      let caps: Awaited<ReturnType<typeof capabilities>>;
+      try {
+        caps = await capabilities(preflight.sourceId, preflight.calendarId);
+      } catch (error) {
+        throw new CalendarMutationNotAcceptedError(
+          "CALENDAR_MANAGED_WRITE_UNAVAILABLE",
+          "Calendar write access could not be verified. Nothing was changed.",
+          undefined,
+          error,
+        );
+      }
       if (caps.accountId !== preflight.managedAccountId)
-        throw Error("Calendar account changed");
+        throw new CalendarMutationPreflightError(
+          "CALENDAR_MANAGED_ACCOUNT_CHANGED",
+          "Calendar account changed after review. Nothing was changed.",
+          { retryable: false },
+        );
       const raw = object(
         await call({
           operation: "write-execute",

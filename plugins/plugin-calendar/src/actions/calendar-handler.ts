@@ -1,4 +1,5 @@
 import { mergeCalendarSourceSelection } from "../internal/calendar-source-selection.js";
+import { isManagedCalendarGrant } from "../mutations/managed-gate.js";
 /**
  * Factory for the `CALENDAR` assistant action and its LLM-backed handler.
  *
@@ -5337,6 +5338,17 @@ const calendarAction: CalendarHandlerAction = {
           "CALENDAR_NATIVE_RESOURCE_REQUIRED",
         );
     };
+    // Availability spans every owner calendar, so a conflict elsewhere still
+    // blocks a write. Phone-owned turns cannot read merged backend records,
+    // and managed Google grants are not part of the merged feed; both check
+    // the exact destination source instead.
+    const scopedAvailabilitySource = (
+      grantId: string | undefined,
+      calendarId: string | undefined,
+    ): { grantId?: string; calendarId?: string } =>
+      grantId && (nativeGrantId || isManagedCalendarGrant(grantId))
+        ? { grantId, ...(calendarId ? { calendarId } : {}) }
+        : {};
     const calendarZone = await resolveOwnerCalendarTimeZone(
       runtime,
       new Date(),
@@ -5909,8 +5921,10 @@ const calendarAction: CalendarHandlerAction = {
         );
         const availability = await evaluateCalendarWriteAvailability({
           runtime,
-          grantId: requestToApprove.grantId,
-          calendarId: requestToApprove.calendarId,
+          ...scopedAvailabilitySource(
+            requestToApprove.grantId,
+            requestToApprove.calendarId,
+          ),
           startAt: requestToApprove.startAt,
           endAt: requestToApprove.endAt,
           timeZone: requestToApprove.timeZone,
@@ -6468,8 +6482,10 @@ const calendarAction: CalendarHandlerAction = {
           }
           const availability = await evaluateCalendarWriteAvailability({
             runtime,
-            ...(targetEvent.grantId ? { grantId: targetEvent.grantId } : {}),
-            calendarId: targetEvent.calendarId,
+            ...scopedAvailabilitySource(
+              targetEvent.grantId,
+              targetEvent.calendarId,
+            ),
             startAt: proposedStart,
             endAt: proposedEnd,
             timeZone: zone,
