@@ -276,7 +276,11 @@ export class ElizaCloudClient {
     };
 
     if (rpc.error) throw new Error(rpc.error.message);
-    return rpc.result?.text ?? "(no response)";
+    const replyText = rpc.result?.text;
+    if (typeof replyText !== "string" || !replyText.trim()) {
+      throw new CloudBridgeError("Bridge response did not include reply text");
+    }
+    return replyText;
   }
 
   async *sendMessageStream(
