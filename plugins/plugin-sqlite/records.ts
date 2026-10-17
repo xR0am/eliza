@@ -2635,7 +2635,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
    * are separated through the owning room. A log whose room record is absent
    * (legacy rows, or callers that log before the room exists) stays visible,
    * matching the room/world convention that rows stored without an agentId
-   * belong to this database.
+   * belong to this database. createLogs performs no room-existence check
+   * (PostgreSQL rejects such writes with its room foreign key), so fail-open
+   * reads keep normally written rows reachable and mutable.
    */
   private async logIsVisibleToOwner(log: Log): Promise<boolean> {
     if (!log.roomId) return true;

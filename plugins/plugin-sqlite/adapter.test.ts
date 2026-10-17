@@ -2089,6 +2089,39 @@ it("scopes log reads and mutations to the adapter agent", async () => {
   });
   expect(survivor?.type).toBe("scope-probe");
 
+  // A log naming a room with no room record stays readable and mutable.
+  // createLogs performs no room-existence check (unlike PostgreSQL, whose
+  // foreign key rejects the write), so a dangling roomId is a normal write
+  // outcome — audit logs may land before their room row exists. Reads stay
+  // fail-open here, matching the room/world convention that rows without a
+  // resolvable owner belong to this database.
+  const orphanLogId = id();
+  const missingRoomId = id();
+  await storage.set("logs", orphanLogId, {
+    id: orphanLogId,
+    entityId,
+    roomId: missingRoomId,
+    type: "scope-probe",
+    body: { source: "scope-probe", metadata: { who: "orphan" } },
+    createdAt: new Date(),
+  });
+
+  expect(
+    (await adapter.getLogs({ type: "scope-probe" }))
+      .map((log) => (log.body as { metadata: { who: string } }).metadata.who)
+      .sort(),
+  ).toEqual(["orphan", "this agent"]);
+  expect(await adapter.getLogsByIds([orphanLogId])).toHaveLength(1);
+
+  await adapter.updateLogs([
+    { id: orphanLogId, updates: { type: "rewritten" } },
+  ]);
+  expect((await adapter.getLogsByIds([orphanLogId]))[0]?.type).toBe(
+    "rewritten",
+  );
+  await adapter.deleteLogs([orphanLogId]);
+  expect(await adapter.getLogsByIds([orphanLogId])).toEqual([]);
+
   // The adapter still manages its own logs.
   const [ownLog] = await adapter.getLogs({ type: "scope-probe" });
   if (!ownLog?.id) throw new Error("own log missing");
