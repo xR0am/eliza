@@ -283,6 +283,13 @@ export class McpService extends Service {
         resources,
         resourceTemplates,
       };
+      // An error raised during connect or discovery may have scheduled a
+      // reconnect; the session is healthy now, so cancel it rather than tear
+      // down a working connection when the timer fires.
+      if (state.reconnectTimeout) {
+        clearTimeout(state.reconnectTimeout);
+        state.reconnectTimeout = undefined;
+      }
       state.status = "connected";
       state.lastConnected = new Date();
       state.reconnectAttempts = 0;
@@ -314,17 +321,24 @@ export class McpService extends Service {
       const errorMessage = error?.message ?? String(error);
       const lower = errorMessage.toLowerCase();
       // For HTTP transports the optional server→client stream (the long-lived
-      // GET/SSE channel) routinely times out or disconnects on request/response
-      // servers that never hold it open. That is benign and must not tear down
-      // the working POST channel, so match the SDK's message variants
-      // ("timeout" / "timed out" / "SSE error" / "SSE stream disconnected")
-      // case-insensitively.
+      // GET/SSE channel) routinely times out, disconnects, or is refused (a
+      // stateless server or gateway answering GET with 400/403/404 instead of
+      // 405) on request/response servers that never hold it open. That is
+      // benign and must not tear down the working POST channel, so match the
+      // SDK's GET/SSE message variants ("timeout" / "timed out" / "SSE error" /
+      // "SSE stream disconnected" / "Failed to open SSE stream" / "Failed to
+      // reconnect[ SSE stream]" / "Maximum reconnection attempts")
+      // case-insensitively. POST failures ("Error POSTing to endpoint", fetch
+      // network errors) fall through to the reconnect ladder below.
       const isExpectedTimeout =
         isHttpTransport &&
         (errorMessage === "undefined" ||
           errorMessage === "" ||
           lower.includes("sse error") ||
           lower.includes("sse stream disconnected") ||
+          lower.startsWith("failed to open sse stream") ||
+          lower.startsWith("failed to reconnect") ||
+          lower.startsWith("maximum reconnection attempts") ||
           lower.includes("timeout") ||
           lower.includes("timed out"));
       if (!isExpectedTimeout) {
