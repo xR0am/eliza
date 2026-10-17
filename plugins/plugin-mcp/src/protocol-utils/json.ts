@@ -30,7 +30,9 @@ interface ObjectSpan {
 
 /** Balanced top-level `{...}` regions of `text`, oldest first, in one pass. A
  * brace in a JSON5 string or comment does not change the depth, and a nested
- * object is part of the region that holds it. */
+ * object is part of the region that holds it. Quotes and comments count only
+ * inside a region: outside one the text is prose, where an apostrophe such as
+ * "Here's" would open a string that pairs with a quote in a later region. */
 function topLevelObjects(text: string): ObjectSpan[] {
   const spans: ObjectSpan[] = [];
   const open: number[] = [];
@@ -40,6 +42,10 @@ function topLevelObjects(text: string): ObjectSpan[] {
     if (quote) {
       if (character === "\\") index += 1;
       else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (open.length === 0) {
+      if (character === "{") open.push(index);
       continue;
     }
     if (character === '"' || character === "'") quote = character;

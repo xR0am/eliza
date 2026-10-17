@@ -41,6 +41,18 @@ describe("parseJSON with braces in the prose", () => {
     ).toEqual({ toolArguments: { query: "Bangkok" } });
   });
 
+  it("reads the call after an apostrophe in the prose", () => {
+    expect(parseJSON('Don\'t pass {units}. Call: {"query":"weather"}')).toEqual({
+      query: "weather",
+    });
+  });
+
+  it("reads the call, not the example, when the prose and the call hold apostrophes", () => {
+    expect(parseJSON('Example: {"city":"London"}. Here\'s the call: {"city":"Xi\'an"}')).toEqual({
+      city: "Xi'an",
+    });
+  });
+
   it("keeps escaped quotes and comments inside the call", () => {
     expect(
       parseJSON('Use {x} now: {"query":"say \\"hi\\"" /* a { b */ ,"units":"metric"}')
