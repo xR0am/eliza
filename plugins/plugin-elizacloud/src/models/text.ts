@@ -26,6 +26,7 @@ import {
   logger,
   ModelType,
   parseProviderRateLimit,
+  parseProviderResetAt,
   providerRetryAfterMs,
   recordInferenceSpan,
   renderChatMessagesForPrompt,
@@ -535,21 +536,51 @@ export type CloudTextRequestError = Error & {
 };
 
 /**
- * Typed wait for a Cloud 429, read from structured fields only: the plan
- * bucket body (`error.retryAfterMs`, `error.retryAfterSeconds`, `error.plan.id`,
- * `error.limit.bucket`), the org tier body (`retryAfterSeconds`), then the
- * `Retry-After-Ms`/`Retry-After` headers. Malformed values are skipped and the
- * wait is capped. This is a report for the client; nothing here waits.
+ * Typed wait for a Cloud refusal, read from structured fields only.
+ *
+ * - A 429: the plan bucket body (`error.retryAfterMs`, `error.retryAfterSeconds`,
+ *   `error.plan.id`, `error.limit.bucket`), the org tier body
+ *   (`retryAfterSeconds`), then the `Retry-After-Ms`/`Retry-After` headers.
+ * - A used-up period allowance: `error.code: "allowance_exhausted"` with
+ *   `error.resetsAt`, as a 429 or as the inference 402 `insufficient_quota`.
+ *   It gets `scope: "period"`; the 402 stays a non-retried credits failure.
+ *
+ * The reset time is the first valid of `error.resetsAt`, `error.retryAt` and
+ * the `X-RateLimit-Reset` header. `resetAfterSeconds` is the body's
+ * `error.retryAfterSeconds` when the reset came from the body, else the time
+ * to the chosen reset. Without any retry field, the wait is the time to the
+ * reset. Malformed values are skipped and the wait is capped. This is a
+ * report for the client; nothing here waits.
  */
 export function readCloudRateLimit(
   response: Response,
-  body: unknown
+  body: unknown,
+  now: number = Date.now()
 ): ProviderRateLimit | undefined {
-  if (response.status !== 429) return undefined;
   const record = asRecord(body);
   const errorRecord = recordAt(record, "error");
+  const allowanceExhausted = errorRecord.code === "allowance_exhausted";
+  if (response.status !== 429 && !(response.status === 402 && allowanceExhausted))
+    return undefined;
   const seconds = (value: unknown): unknown =>
     typeof value === "number" ? value * 1000 : undefined;
+  const bodyResetAt = [errorRecord.resetsAt, errorRecord.retryAt]
+    .map(parseProviderResetAt)
+    .find((value) => value !== undefined);
+  const resetAt =
+    bodyResetAt ?? parseProviderResetAt(response.headers.get("x-ratelimit-reset"));
+  const untilReset =
+    resetAt === undefined ? undefined : Math.max(0, Date.parse(resetAt) - now);
+  const bodySeconds = errorRecord.retryAfterSeconds;
+  const resetAfterSeconds =
+    untilReset === undefined
+      ? undefined
+      : bodyResetAt !== undefined &&
+          typeof bodySeconds === "number" &&
+          Number.isFinite(bodySeconds) &&
+          bodySeconds >= 0
+        ? bodySeconds
+        : Math.ceil(untilReset / 1000);
   const responseHeaders: Record<string, string> = {};
   for (const name of ["retry-after-ms", "retry-after"]) {
     const value = response.headers.get(name);
@@ -560,19 +591,22 @@ export function readCloudRateLimit(
     seconds(errorRecord.retryAfterSeconds),
     seconds(record.retryAfterSeconds),
     providerRetryAfterMs({ responseHeaders }),
-  ]
-    .find((value) => boundProviderRetryAfterMs(value) !== undefined);
+    untilReset,
+  ].find((value) => boundProviderRetryAfterMs(value) !== undefined);
   return parseProviderRateLimit({
     kind: "rate_limited",
     retryAfterMs,
     planId: recordAt(errorRecord, "plan").id,
-    scope: recordAt(errorRecord, "limit").bucket,
+    scope: allowanceExhausted ? "period" : recordAt(errorRecord, "limit").bucket,
+    resetAt,
+    resetAfterSeconds,
   });
 }
 
 /**
  * One error shape for every non-ok Cloud text response. The message comes from
- * the body's `error.message` or the status; a 429 adds the typed `rateLimit`.
+ * the body's `error.message` or the status; a 429 or a period-allowance 402
+ * adds the typed `rateLimit`.
  */
 export function cloudTextRequestError(
   response: Response,

@@ -111,4 +111,36 @@ describe("PdfService real unpdf boundary", () => {
 		// Local 09:31:21 at UTC+02:30 is 07:01:21Z.
 		expect(info.metadata.modificationDate?.toISOString()).toBe("2020-06-10T07:01:21.000Z");
 	});
+
+	describe("complete extraction of a page the vision model reports as blank", () => {
+		// A scanned blank back side: the page draws only a white fill, no text.
+		const whitePage = () => buildPdf("", "<< >>", "1 1 1 rg 0 0 612 792 re f");
+		const blankVision = {
+			useModel: async () => ({ description: "[BLANK PAGE]" }),
+		} as unknown as IAgentRuntime;
+
+		it("accepts the page when OCR ran and read no text", async () => {
+			const service = new PdfService(blankVision);
+			const document = await service.extractCompleteDocument(whitePage(), {
+				ocrPage: async () => "",
+			});
+			expect(document.pages.map((page) => page.method)).toEqual(["blank"]);
+		});
+
+		it("still rejects the page when no OCR ran", async () => {
+			const service = new PdfService(blankVision);
+			await expect(service.extractCompleteDocument(whitePage())).rejects.toThrow(
+				/conflicts with native or OCR evidence/,
+			);
+		});
+
+		it("still rejects the page when OCR read text", async () => {
+			const service = new PdfService(blankVision);
+			await expect(
+				service.extractCompleteDocument(whitePage(), {
+					ocrPage: async () => "Signed: A. Parent",
+				}),
+			).rejects.toThrow(/conflicts with native or OCR evidence/);
+		});
+	});
 });

@@ -382,9 +382,9 @@ class PayoutStatusService {
 
   private getEvmWalletAddress(privateKey: string): string | null {
     try {
-      const key = privateKey.startsWith("0x")
-        ? (privateKey as `0x${string}`)
-        : (`0x${privateKey}` as `0x${string}`);
+      const key = (
+        /^0x/i.test(privateKey) ? `0x${privateKey.slice(2)}` : `0x${privateKey}`
+      ) as `0x${string}`;
       const account = privateKeyToAccount(key);
       return account.address;
     } catch (error) {

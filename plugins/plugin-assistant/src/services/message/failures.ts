@@ -41,7 +41,14 @@ function rateLimitedAttempt(error: unknown): FailureReplyAttempt {
 function terminalProviderFailure(
   error: unknown,
 ): FailureReplyAttempt | undefined {
-  if (isInsufficientCreditsError(error)) return { kind: "creditsExhausted" };
+  if (isInsufficientCreditsError(error)) {
+    // A used-up period allowance carries its reset time; it stays a
+    // non-retried credits failure.
+    const rateLimit = readProviderRateLimit(error);
+    return rateLimit?.scope === "period"
+      ? { kind: "creditsExhausted", rateLimit }
+      : { kind: "creditsExhausted" };
+  }
   if (isAuthError(error)) return { kind: "authFailed" };
   if (isRateLimitError(error)) return rateLimitedAttempt(error);
   if (isProviderSchemaRejection(error)) return { kind: "schemaRejected" };
@@ -377,7 +384,9 @@ export class MessageFailures {
         kind: failureKind,
         transient: responseContent.transient === true,
         message: replyText,
-        ...(attempt.kind === "rateLimited" && attempt.rateLimit
+        ...((attempt.kind === "rateLimited" ||
+          attempt.kind === "creditsExhausted") &&
+        attempt.rateLimit
           ? { rateLimit: attempt.rateLimit }
           : {}),
       },

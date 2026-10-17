@@ -845,3 +845,44 @@ describe("Shared Network admission and consent boundaries", () => {
     expect(sent).toHaveLength(0);
   });
 });
+
+describe("identity-link codes on per-agent routes", () => {
+  test("a link code on a tenant-keyed per-agent route is not confirmed", async () => {
+    const agentId = "00000000-0000-4000-8000-0000000000a1";
+    // A per-agent connector is verified with the tenant's own secrets, so the
+    // sender id it reports is not attested by the platform.
+    await redis.set(
+      `webhook-config:twilio:agent:${agentId}`,
+      JSON.stringify({
+        agentId,
+        accountSid: "ACtenant",
+        authToken: "tenant-token",
+        phoneNumber: "+14155550001",
+      }),
+    );
+    const event: ChatEvent = {
+      platform: "twilio",
+      messageId: "SMagent-link",
+      chatId: "+14155550123",
+      senderId: "+14155550123",
+      text: "LINK-ABCD2345",
+      rawPayload: {},
+    };
+    const response = await handleWebhook(
+      new Request(`https://gateway.test/webhook/app/twilio/${agentId}`, {
+        method: "POST",
+        body: JSON.stringify(event),
+      }),
+      fakeTwilio,
+      deps(),
+      "app",
+      agentId,
+    );
+    expect(response.status).toBe(200);
+    await Bun.sleep(300);
+
+    expect(cloudBodies.some((body) => body.code === "LINK-ABCD2345")).toBe(
+      false,
+    );
+  });
+});

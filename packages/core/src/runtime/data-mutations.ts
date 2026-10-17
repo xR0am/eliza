@@ -183,16 +183,25 @@ export class RuntimeDataMutations {
 		memories: Array<{ memory: Memory; tableName: string }>,
 		options?: { entityContext?: UUID },
 	): Promise<void> {
-		const messages = memories
-			.filter((entry) => entry.tableName === "messages" && entry.memory.id)
+		const messageEntries = memories.filter(
+			(entry) => entry.tableName === "messages",
+		);
+		const messages = messageEntries
+			.filter((entry) => entry.memory.id)
 			.map((entry) => entry.memory as Memory & { id: UUID });
+		// Memory.id is optional: id-less upserts still write rows through the
+		// adapter's createMemory fallback, so their rooms must be invalidated
+		// too, or the memo keeps serving the stale window.
+		const messageRoomIds = new Set(
+			messageEntries.map((entry) => entry.memory.roomId),
+		);
 		return this.mutateSourceEvidence(
 			messages.map((row) => row.id),
 			messages,
 			async () => {
 				await this.runtime.adapter.upsertMemories(memories, options);
-				for (const message of messages)
-					this.host.roomMessagesMemo().invalidate(message.roomId);
+				for (const roomId of messageRoomIds)
+					this.host.roomMessagesMemo().invalidate(roomId);
 			},
 		);
 	}

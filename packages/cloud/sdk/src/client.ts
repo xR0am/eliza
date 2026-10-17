@@ -443,7 +443,7 @@ export class ElizaCloudClient {
     // require one, but never fall back to it if the response is malformed.
     const requestSessionId = createCliLoginRequestId();
     const query = options.returnTo
-      ? `?returnTo=${encodeURIComponent(options.returnTo)}`
+      ? `&returnTo=${encodeURIComponent(options.returnTo)}`
       : "";
 
     return this.requestData<{

@@ -252,7 +252,10 @@ function calendarEventForAvailability(
           endDate: allDayDateForCalendarEvent(event, event.endAt),
         }
       : {}),
-    timeZone: event.timezone,
+    // All-day dates are civil dates on the owner's local days, as in feed
+    // reads, so they resolve in the scan's zone. The stored zone is the
+    // calendar's (UTC for an ICS feed without X-WR-TIMEZONE).
+    timeZone: event.isAllDay ? null : event.timezone,
     isAllDay: event.isAllDay,
     status: event.status,
     // A subscribed calendar (ICS) event keeps TRANSP under its own key.

@@ -189,6 +189,13 @@ export const ROUTE_MODE_MATRIX: ReadonlyArray<RouteModeRule> = [
     owner: null,
     reason: "local ASR transcription — hidden in cloud + remote",
   },
+  {
+    path: "/api/asr/local-inference/end-of-turn",
+    method: "POST",
+    modes: ["local", "local-only"],
+    owner: null,
+    reason: "local semantic end-of-turn scoring — hidden in cloud + remote",
+  },
 
   {
     path: "/api/tts/paradee",

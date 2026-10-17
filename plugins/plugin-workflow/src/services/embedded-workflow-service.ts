@@ -253,7 +253,7 @@ export class EmbeddedWorkflowService extends Service {
   private readonly workerReconciliations = new Map<string, ReturnType<typeof setTimeout>>();
   private reconciliationStopped = false;
   private readonly resumeAdmissions = new Map<string, Promise<void>>();
-  private scheduleWorkerReconciliation(execution: WorkflowExecution): void {
+  private scheduleWorkerReconciliation(execution: WorkflowExecution, delayMs = 1000): void {
     if (this.reconciliationStopped || this.workerReconciliations.has(execution.id)) return;
     const timer = setTimeout(() => {
       this.workerReconciliations.delete(execution.id);
@@ -264,9 +264,34 @@ export class EmbeddedWorkflowService extends Service {
           'Worker reconciliation unavailable; unfinished state preserved'
         );
       });
-    }, 1000);
+    }, delayMs);
     timer.unref?.();
     this.workerReconciliations.set(execution.id, timer);
+  }
+
+  /**
+   * Smithers does not wait for a timer in process: a run that reaches a
+   * timer that is not due returns `waiting-timer` and expects its host to
+   * call it again. Resume at the earliest timer that has not fired yet.
+   */
+  private scheduleTimerResume(execution: WorkflowExecution): void {
+    const fired = new Set<unknown>();
+    const created = new Map<unknown, number>();
+    for (const event of execution.events ?? []) {
+      const payload = event.payload as { timerId?: unknown; firesAtMs?: unknown } | undefined;
+      if (event.type === 'TimerFired' || event.type === 'TimerCancelled')
+        fired.add(payload?.timerId);
+      else if (event.type === 'TimerCreated' && typeof payload?.firesAtMs === 'number')
+        created.set(payload.timerId, payload.firesAtMs);
+    }
+    const pending = [...created].filter(([timerId]) => !fired.has(timerId));
+    const firesAtMs = pending.length
+      ? Math.min(...pending.map(([, at]) => at))
+      : Date.now() + 60_000;
+    // setTimeout overflows above 2^31-1 ms; a far timer is re-armed when the
+    // resumed run reports `waiting-timer` again.
+    const delayMs = Math.min(Math.max(firesAtMs - Date.now(), 0) + 100, 2_147_483_647);
+    this.scheduleWorkerReconciliation(execution, delayMs);
   }
 
   private readonly cancellationControls = new Map<string, Promise<void>>();
@@ -2021,6 +2046,7 @@ export class EmbeddedWorkflowService extends Service {
         ...(result.nextRunId ? { nextRunId: result.nextRunId } : {}),
       };
       await this.saveExecution(completed);
+      if (completed.status === 'waiting-timer') this.scheduleTimerResume(completed);
       return completed;
     } catch (error) {
       if (
