@@ -27,6 +27,14 @@ export interface RetryOptions {
    * reported as a failure instead of being published twice.
    */
   replayUnknownOutcome?: boolean;
+  /**
+   * Whether exhausting the retries after an attempt that ended unknown throws
+   * `UnknownPostOutcomeError` instead of the raw error. Only a replayed create
+   * call (one the platform deduplicates) opts in: its last unanswered attempt
+   * may have published. Preliminary steps (sessions, token exchanges, uploads),
+   * reads and deletes leave it off, since their failure proves no post exists.
+   */
+  unknownOutcomeOnExhaustion?: boolean;
 }
 
 const PLATFORM_RATE_LIMITS: Record<
@@ -153,8 +161,15 @@ export async function withRetry<T>(
   parser: (response: Response) => Promise<T>,
   options: RetryOptions,
 ): Promise<ApiResponse<T>> {
-  const { maxRetries = 3, baseDelayMs = 1000, platform, replayUnknownOutcome = true } = options;
+  const {
+    maxRetries = 3,
+    baseDelayMs = 1000,
+    platform,
+    replayUnknownOutcome = true,
+    unknownOutcomeOnExhaustion = false,
+  } = options;
   let lastError: Error | undefined;
+  let lastUnknownOutcome = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // Whether this attempt ended without a definite answer from the platform:
@@ -207,6 +222,7 @@ export async function withRetry<T>(
       lastError = error instanceof Error ? error : new Error(String(error));
       if ((error as RateLimitError).rateLimited) throw error;
       if (error instanceof SocialApiRejectionError) unknownOutcome = false;
+      lastUnknownOutcome = unknownOutcome;
       if (!replayUnknownOutcome) {
         throw unknownOutcome ? new UnknownPostOutcomeError(platform, lastError) : lastError;
       }
@@ -219,6 +235,13 @@ export async function withRetry<T>(
     }
   }
 
+  // Retries are exhausted. For a replayed create that opted in, an unanswered
+  // last attempt (a timeout, a lost body, a 5xx) may have published, so
+  // surface the unknown outcome: callers hold the credit instead of refunding.
+  // The no-replay branch above already throws this error per attempt.
+  if (unknownOutcomeOnExhaustion && lastError && lastUnknownOutcome) {
+    throw new UnknownPostOutcomeError(platform, lastError);
+  }
   throw lastError || new Error(`${platform} request failed after ${maxRetries} retries`);
 }
 
