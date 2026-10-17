@@ -24,6 +24,7 @@ import {
   isChatFailureKind,
   PatchConversationRequestSchema,
   PostConversationCleanupEmptyRequestSchema,
+  PostConversationMessageHeardRequestSchema,
   PostConversationRequestSchema,
   PostConversationTruncateRequestSchema,
   PostSeedMessagesRequestSchema,
@@ -119,6 +120,7 @@ import {
 import {
   deleteConversationMemories,
   deleteConversationMessage,
+  recordHeardAssistantMessage,
   truncateConversationMessages,
 } from "../services/conversation-message-service.ts";
 import {
@@ -2995,6 +2997,11 @@ const conversationEndpoints = [
   },
   {
     method: "POST",
+    path: /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/heard$/,
+    handle: recordHeardConversationMessageRoute,
+  },
+  {
+    method: "POST",
     path: /^\/api\/conversations\/[^/]+\/messages\/stream$/,
     handle: streamConversationMessage,
   },
@@ -4603,6 +4610,119 @@ async function deleteConversationMessageRoute(
               status: number;
             }
           ).status
+        : 500;
+    error(res, getErrorMessage(err), status);
+  } finally {
+    await historyLease.release();
+  }
+  return true;
+}
+/**
+ * `POST /api/conversations/:id/messages/:messageId/heard` keeps only the part
+ * of an assistant reply that the user heard before they interrupted playback.
+ *
+ * Body: `{ heardText }`, non-empty. It must be a prefix of either the stored
+ * reply text or its spoken form (`sanitizeSpeechText` from `@elizaos/core`,
+ * the text TTS speaks); whitespace runs compare as one space. A spoken-form
+ * prefix is stored as the matching stored-text prefix, rounded up to the end
+ * of the word. Anything else is 409; nothing can extend the reply.
+ * Response: `{ ok, messageId, text, truncated, changed }`.
+ */
+async function recordHeardConversationMessageRoute(
+  ctx: ConversationHandlerContext,
+): Promise<boolean> {
+  const { req, res, pathname, readJsonBody, json, error, state } = ctx;
+  const segments = pathname.split("/");
+  const convId = decodePathComponent(segments[3], res, "conversation id");
+  if (convId === null) return true;
+  const rawMessageId = decodePathComponent(
+    segments[5],
+    res,
+    "conversation message id",
+  );
+  if (rawMessageId === null) return true;
+  const messageId = validateUuid(rawMessageId);
+  if (!messageId) {
+    error(res, "Invalid assistant message id", 400);
+    return true;
+  }
+  const conv = await getConversationWithRestore(state, convId);
+  if (!conv) {
+    error(res, "Conversation not found", 404);
+    return true;
+  }
+  if (rejectWaifuConversationAccessIfNeeded(req, conv, error, res)) {
+    return true;
+  }
+  if (rejectWaifuNonAdminMutationIfNeeded(req, error, res)) return true;
+  const rawBody = await readJsonBody<Record<string, unknown>>(req, res);
+  if (rawBody === null) return true;
+  const parsed = PostConversationMessageHeardRequestSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    error(res, parsed.error.issues[0]?.message ?? "Invalid request body", 400);
+    return true;
+  }
+  const runtime = state.runtime;
+  if (!runtime) {
+    error(res, "Agent is not running", 503);
+    return true;
+  }
+  const admission = createRequestDisconnectAbortTracker({
+    req,
+    res,
+    operation: "Conversation heard-text admission",
+  });
+  let historyLease: RoomHandlerLease;
+  try {
+    historyLease = await runtime.roomHandlerQueue.acquire(
+      conv.roomId,
+      admission.signal,
+    );
+  } catch (err) {
+    admission.dispose();
+    if (admission.isAborted()) return true;
+    error(
+      res,
+      isRoomQueueBackpressureError(err)
+        ? "Conversation is busy; retry after the pending turns finish"
+        : `Failed to serialize conversation history: ${getErrorMessage(err)}`,
+      roomQueueAdmissionStatus(err),
+    );
+    return true;
+  }
+  admission.markCompleted();
+  admission.dispose();
+  try {
+    if (
+      state.conversations.get(conv.id) !== conv ||
+      state.deletedConversationIds.has(conv.id)
+    ) {
+      error(res, "Conversation was deleted", 404);
+      return true;
+    }
+    const result = await runtime.roomHandlerQueue.runInLease(
+      conv.roomId,
+      historyLease,
+      () =>
+        recordHeardAssistantMessage(
+          runtime,
+          conv,
+          messageId,
+          parsed.data.heardText,
+        ),
+    );
+    if (result.changed) {
+      conv.updatedAt = new Date().toISOString();
+      state.broadcastWs?.({
+        type: "conversation-updated",
+        conversation: conv,
+      });
+    }
+    json(res, { ok: true, messageId, ...result });
+  } catch (err) {
+    const status =
+      typeof (err as { status?: unknown }).status === "number"
+        ? (err as { status: number }).status
         : 500;
     error(res, getErrorMessage(err), status);
   } finally {

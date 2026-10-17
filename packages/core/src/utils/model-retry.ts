@@ -156,8 +156,15 @@ export function providerRateLimitRetryAt(
 	return undefined;
 }
 
-/** Provider rate-limit buckets a typed 429 may name. */
-export const PROVIDER_RATE_LIMIT_SCOPES = ["burst", "sustained"] as const;
+/**
+ * Provider limits a typed 429 may name: the plan's burst and sustained
+ * request buckets, or the plan's period allowance.
+ */
+export const PROVIDER_RATE_LIMIT_SCOPES = [
+	"burst",
+	"sustained",
+	"period",
+] as const;
 export type ProviderRateLimitScope =
 	(typeof PROVIDER_RATE_LIMIT_SCOPES)[number];
 
@@ -171,8 +178,16 @@ export interface ProviderRateLimit {
 	retryAfterMs: number;
 	/** Provider plan id that owns the refused bucket. */
 	planId?: string;
-	/** Provider bucket that refused the request. */
+	/** Provider bucket or allowance that refused the request. */
 	scope?: ProviderRateLimitScope;
+	/**
+	 * When the provider sent one: the absolute time (ISO 8601) at which the
+	 * refused bucket or period allowance resets. Not capped, so a period
+	 * allowance can reset days after the refusal.
+	 */
+	resetAt?: string;
+	/** Seconds from the refusal until `resetAt`. Present only with `resetAt`. */
+	resetAfterSeconds?: number;
 }
 
 /** Upper bound for a reported wait; longer provider hints are clamped. */
@@ -208,30 +223,57 @@ export function parseProviderRateLimit(
 	const scope = PROVIDER_RATE_LIMIT_SCOPES.find(
 		(candidate) => candidate === record.scope,
 	);
+	const resetAt = parseProviderResetAt(record.resetAt);
+	const resetAfterSeconds =
+		typeof record.resetAfterSeconds === "number" &&
+		Number.isFinite(record.resetAfterSeconds) &&
+		record.resetAfterSeconds >= 0
+			? Math.ceil(record.resetAfterSeconds)
+			: undefined;
 	return {
 		kind: "rate_limited",
 		retryAfterMs,
 		...(planId ? { planId } : {}),
 		...(scope ? { scope } : {}),
+		...(resetAt !== undefined && resetAfterSeconds !== undefined
+			? { resetAt, resetAfterSeconds }
+			: {}),
 	};
+}
+
+/** ISO 8601 date-time with an explicit `Z` or numeric offset. */
+const PROVIDER_RESET_AT_PATTERN =
+	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/;
+
+/** Normalize an ISO 8601 reset time with a time zone; anything else is dropped. */
+export function parseProviderResetAt(value: unknown): string | undefined {
+	if (typeof value !== "string" || !PROVIDER_RESET_AT_PATTERN.test(value))
+		return undefined;
+	const ms = Date.parse(value);
+	return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
 }
 
 /**
  * Read the typed rate limit a provider attached to its 429 (`rateLimit` on the
  * error node), through SDK and failover wrappers. Prose is never parsed. It is
  * a report for the client, not a retry signal: no caller waits on it.
+ *
+ * A used-up period allowance (`scope: "period"`) is reported from any status,
+ * including a permanent-quota 402, so the client can show when the allowance
+ * resets. `providerRateLimitRetryAt` still rejects it, so nothing retries.
  */
 export function readProviderRateLimit(
 	error: unknown,
 ): ProviderRateLimit | undefined {
 	if (typeof error !== "object" || error === null) return undefined;
-	if (isPermanentQuotaError(error)) return undefined;
+	const permanentQuota = isPermanentQuotaError(error);
 	for (const node of retryEvidenceNodes(error)) {
-		if (nodeStatus(node) !== 429) continue;
 		const rateLimit = parseProviderRateLimit(
 			(node as { rateLimit?: unknown }).rateLimit,
 		);
-		if (rateLimit) return rateLimit;
+		if (!rateLimit) continue;
+		if (rateLimit.scope === "period") return rateLimit;
+		if (!permanentQuota && nodeStatus(node) === 429) return rateLimit;
 	}
 	return undefined;
 }

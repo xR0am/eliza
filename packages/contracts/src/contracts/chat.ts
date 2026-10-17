@@ -129,8 +129,10 @@ export interface ChatTerminalFailure {
   code?: string;
   /**
    * Present only on the live reply when `kind` is `rate_limited` and the
-   * provider reported a wait. `retryAfterMs` is the provider's wait at the
-   * time the request failed; replays and history omit it.
+   * provider reported a wait, or when `kind` is `insufficient_credits` for a
+   * used-up period allowance (`scope: "period"`, with `resetAt` and
+   * `resetAfterSeconds`). `retryAfterMs` is the provider's wait at the time
+   * the request failed; replays and history omit it.
    */
   rateLimit?: ProviderRateLimit;
 }
@@ -184,9 +186,14 @@ export function parseChatTerminalFailure(
   ) {
     return undefined;
   }
-  const rateLimit =
-    kind === "rate_limited"
+  const parsedRateLimit =
+    kind === "rate_limited" || kind === "insufficient_credits"
       ? parseProviderRateLimit(record.rateLimit)
+      : undefined;
+  // Credits failures carry only a used-up period allowance's reset time.
+  const rateLimit =
+    kind === "rate_limited" || parsedRateLimit?.scope === "period"
+      ? parsedRateLimit
       : undefined;
   return {
     kind,
