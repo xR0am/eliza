@@ -167,9 +167,13 @@ async function renewOne(domain: ManagedDomain): Promise<DomainRenewalResult> {
 
   try {
     const renewed = await cloudflareRegistrarService.renewDomain(domain.domain);
-    const newExpiry = renewed.expiresAt
-      ? new Date(renewed.expiresAt)
-      : addOneYear(domain.expiresAt);
+    // renewDomain only turns auto-renew on; Cloudflare renews later, so its
+    // expiry is usually still the old one. Record the period the org paid for.
+    const registrarExpiry = renewed.expiresAt ? new Date(renewed.expiresAt) : null;
+    const newExpiry =
+      registrarExpiry && registrarExpiry > domain.expiresAt
+        ? registrarExpiry
+        : addOneYear(domain.expiresAt);
     await managedDomainsService.recordRenewal(domain.id, newExpiry);
     logger.info("[Domain Renewals] renewed", {
       ...base,

@@ -1505,21 +1505,28 @@ async function findOrCreatePhoneUserWithStatus(
 ): Promise<UserProvisionResult> {
   const phoneSubject = `phone:${hashSha256Hex(phone)}`;
   const db = getDb();
-  const [linked] = await db
-    .select({ user: users })
+  // SMS and WhatsApp share one subject, so a link made through either channel
+  // marks the number as owned.
+  const links = await db
+    .select({ provider: accounts.provider, user: users })
     .from(accounts)
     .innerJoin(users, eq(accounts.userId, users.id))
     .where(
       and(
-        eq(accounts.provider, provider),
+        inArray(accounts.provider, ["phone", "whatsapp"]),
         eq(accounts.providerAccountId, phoneSubject),
       ),
     );
+  const linked = links.find((link) => link.provider === provider);
   const [existing] = await db
     .select()
     .from(users)
     .where(eq(users.walletAddress, phoneSubject));
-  if (linked && existing && linked.user.id !== existing.id) {
+  // Every link and the original phone account must name one user, so neither
+  // channel can sign the number in to a different account.
+  const owners = new Set(links.map((link) => link.user.id));
+  if (existing) owners.add(existing.id);
+  if (owners.size > 1 || (!linked && !existing && links.length > 0)) {
     throw new ElizaError("Phone login identity needs reconciliation", {
       code: "PHONE_IDENTITY_CONFLICT",
     });

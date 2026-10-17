@@ -805,3 +805,78 @@ describe("TASKS object parameters accept the shapes the handler reads", () => {
     ).not.toContain("metadata");
   });
 });
+
+// Native ACP agent whose prompt turns hang until session/cancel.
+const HANG_NATIVE_AGENT = `import { createInterface } from "node:readline";
+const pending = new Map();
+let n = 0;
+const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") return send({ id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+  if (msg.method === "session/new") return send({ id: msg.id, result: { sessionId: "s" + ++n } });
+  if (msg.method === "session/prompt") return void pending.set(msg.params.sessionId, msg.id);
+  if (msg.method === "session/cancel") {
+    const id = pending.get(msg.params.sessionId);
+    pending.delete(msg.params.sessionId);
+    if (id !== undefined) send({ id, result: { stopReason: "cancelled" } });
+    return;
+  }
+  if (msg.id !== undefined && msg.method) send({ id: msg.id, result: {} });
+});
+`;
+
+describe("TASKS cancel on the native transport", () => {
+  it("cancels every task when one sub-agent is waiting between turns", async () => {
+    const agentPath = path.join(workdir, "hang-acp-agent.mjs");
+    await writeFile(agentPath, HANG_NATIVE_AGENT);
+    let service: AcpService | undefined;
+    const values: Record<string, string> = {
+      ELIZA_ACP_TRANSPORT: "native",
+      ELIZA_ACP_NO_TERMINAL: "true",
+      ELIZA_ELIZAOS_ACP_COMMAND: `node ${agentPath}`,
+    };
+    const runtime = {
+      ...runtimeWith(() => service),
+      getSetting: (key: string) => values[key],
+    } as IAgentRuntime;
+    service = new AcpService(runtime);
+    await service.start();
+    try {
+      const idle = await service.spawnSession({
+        agentType: "elizaos",
+        workdir,
+        approvalPreset: "permissive",
+      });
+      const busy = await service.spawnSession({
+        agentType: "elizaos",
+        workdir,
+        approvalPreset: "permissive",
+      });
+      const turn = service.sendPrompt(busy.sessionId, "long build");
+      await waitForStatus(service, busy.sessionId, "busy");
+
+      const result = await tasksAction.handler(
+        runtime,
+        {
+          id: "00000000-0000-4000-8000-0000000000aa",
+          entityId: "00000000-0000-4000-8000-0000000000bb",
+          roomId: "00000000-0000-4000-8000-0000000000cc",
+          content: { text: "cancel all tasks" },
+        } as unknown as Memory,
+        undefined,
+        { parameters: { action: "cancel", all: true } },
+        async () => [],
+      );
+      turn.catch(() => undefined);
+
+      expect({
+        success: result?.success,
+        idle: (await service.getSession(idle.sessionId))?.status,
+        busy: (await service.getSession(busy.sessionId))?.status,
+      }).toEqual({ success: true, idle: "stopped", busy: "cancelled" });
+    } finally {
+      await service.stop();
+    }
+  });
+});

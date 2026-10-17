@@ -169,3 +169,12 @@ it("does not reply again after a reply thread was only partly posted", async () 
   );
   expect(replyStarts).toHaveLength(1);
 });
+
+it("does not reply again after X accepted a reply without a usable receipt", async () => {
+  const sendTweet = vi.fn(async () => ({ data: {} }));
+  const { runCycles } = timelineHarness("[REPLY]", { sendTweet });
+
+  await runCycles(2);
+
+  expect(sendTweet).toHaveBeenCalledTimes(1);
+});

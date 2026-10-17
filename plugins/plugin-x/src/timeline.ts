@@ -117,7 +117,10 @@ function mayHavePublished(error: unknown): boolean {
     if (
       e instanceof ElizaError &&
       (e.code === "X_THREAD_PARTIALLY_POSTED" ||
-        e.code === "X_POST_RECEIPT_INDETERMINATE")
+        e.code === "X_POST_RECEIPT_INDETERMINATE" ||
+        // X accepted the write but returned no usable receipt (the
+        // startup-post callback treats this as already public).
+        e.code === "X_POST_RESPONSE_INVALID")
     ) {
       return true;
     }

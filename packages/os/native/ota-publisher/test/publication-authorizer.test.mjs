@@ -431,6 +431,8 @@ const goVersion = (() => {
 })();
 
 test("publishes a real signed fixture graph through the Go verifier", {
+  // Requires the module's exact Go toolchain on PATH. Runs only when that Go
+  // version is available; otherwise the test is skipped with a reason.
   skip: goVersion,
 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ota-authorize-go-"));
