@@ -3040,11 +3040,14 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     if (roomIds.length === 0) return;
     // Only rooms this adapter owns are deletable. The cascade below removes
     // memories, participants, components and logs keyed by room_id, so
-    // deleting another agent's room would destroy its history as well.
+    // deleting another agent's room would destroy its history as well. A
+    // missing room row stays deletable: createMemories performs no
+    // room-existence check, so a dangling roomId can still own rows (and the
+    // cascade, not the room row, is what frees them).
     const owned: UUID[] = [];
     for (const roomId of roomIds) {
       const room = await this.storage.get<Room>(COLLECTIONS.ROOMS, roomId);
-      if (room && this.roomIsVisibleToOwner(room)) owned.push(roomId);
+      if (!room || this.roomIsVisibleToOwner(room)) owned.push(roomId);
     }
     if (owned.length === 0) return;
     const set = new Set(owned);

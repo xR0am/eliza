@@ -2266,4 +2266,20 @@ it("scopes room updates, upserts and deletes to the adapter agent", async () => 
   await adapter.deleteRooms([ownRoomId]);
   expect(await storage.get("rooms", ownRoomId)).toBeFalsy();
   expect(await storage.get("memories", ownMemoryId)).toBeFalsy();
+
+  // A roomId with no room row is still deletable: createMemories performs no
+  // room-existence check, so memories can be the only rows left under it and
+  // deleteRooms is the only call that sweeps them.
+  const danglingRoomId = id();
+  const danglingMemoryId = id();
+  await storage.set("memories", danglingMemoryId, {
+    id: danglingMemoryId,
+    agentId,
+    entityId,
+    roomId: danglingRoomId,
+    content: { text: "message of a room whose row is gone" },
+    createdAt: Date.parse("2026-10-01T00:00:00.000Z"),
+  });
+  await adapter.deleteRooms([danglingRoomId]);
+  expect(await storage.get("memories", danglingMemoryId)).toBeFalsy();
 });
