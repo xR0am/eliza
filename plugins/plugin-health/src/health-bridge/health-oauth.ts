@@ -30,6 +30,10 @@ const HEALTH_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
 const pendingHealthOAuthSessions = new Map<string, PendingHealthOAuthSession>();
+const pendingHealthTokenRefreshes = new Map<
+  string,
+  Promise<StoredHealthConnectorToken>
+>();
 
 export class HealthOAuthError extends Error {
   constructor(
@@ -435,19 +439,10 @@ async function exchangeToken(
   return unwrapHealthTokenResponse(json, session.provider);
 }
 
-export async function refreshStoredHealthToken(
-  tokenRef: string | null | undefined,
-): Promise<StoredHealthConnectorToken | null> {
-  const token = readStoredHealthToken(tokenRef);
-  if (!token?.refreshToken) {
-    return token;
-  }
-  if (
-    token.expiresAt !== null &&
-    token.expiresAt - ACCESS_TOKEN_REFRESH_BUFFER_MS > Date.now()
-  ) {
-    return token;
-  }
+async function refreshHealthToken(
+  tokenRef: string,
+  token: StoredHealthConnectorToken & { refreshToken: string },
+): Promise<StoredHealthConnectorToken> {
   const oauth = providerSpec(token.provider).oauth;
   const body = new URLSearchParams({
     grant_type: "refresh_token",
@@ -497,8 +492,40 @@ export async function refreshStoredHealthToken(
     expiresAt: tokenExpiresAt(payload),
     updatedAt: new Date().toISOString(),
   };
-  writeStoredHealthToken(tokenRef ?? tokenRefFor(token), next);
+  writeStoredHealthToken(tokenRef, next);
   return next;
+}
+
+export async function refreshStoredHealthToken(
+  tokenRef: string | null | undefined,
+): Promise<StoredHealthConnectorToken | null> {
+  if (!tokenRef) return null;
+  const token = readStoredHealthToken(tokenRef);
+  if (!token?.refreshToken) {
+    return token;
+  }
+  if (
+    token.expiresAt !== null &&
+    token.expiresAt - ACCESS_TOKEN_REFRESH_BUFFER_MS > Date.now()
+  ) {
+    return token;
+  }
+
+  const activeRefresh = pendingHealthTokenRefreshes.get(tokenRef);
+  if (activeRefresh) return activeRefresh;
+
+  const refresh = refreshHealthToken(tokenRef, {
+    ...token,
+    refreshToken: token.refreshToken,
+  });
+  pendingHealthTokenRefreshes.set(tokenRef, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (pendingHealthTokenRefreshes.get(tokenRef) === refresh) {
+      pendingHealthTokenRefreshes.delete(tokenRef);
+    }
+  }
 }
 
 export function startHealthConnectorOAuth(args: {
