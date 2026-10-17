@@ -95,6 +95,24 @@ describe("cloudLogin poll response parsing", () => {
     expect((error as Error).cause).toBeInstanceOf(SyntaxError);
   });
 
+  it("accepts null optional fields from an authenticated poll", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    mockFetch([
+      () =>
+        json({
+          status: "authenticated",
+          apiKey: "eliza_key",
+          keyPrefix: null,
+          expiresAt: null,
+        }),
+    ]);
+
+    const result = await cloudLogin({ baseUrl: BASE_URL, pollIntervalMs: 1 });
+
+    expect(result).toEqual({ apiKey: "eliza_key", keyPrefix: "", expiresAt: null });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("rejects parsed poll bodies that do not match the login contract", async () => {
     vi.spyOn(logger, "warn").mockImplementation(() => undefined);
 

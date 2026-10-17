@@ -53,7 +53,13 @@ function parseCloudLoginPollData(value: unknown): CloudLoginPollData {
     ["keyPrefix", keyPrefix],
     ["expiresAt", expiresAt],
   ] as const) {
-    if (fieldValue !== undefined && typeof fieldValue !== "string") {
+    // Optional fields may be JSON null (e.g. a non-expiring key has
+    // `expiresAt: null`); treat null as absent.
+    if (
+      fieldValue !== undefined &&
+      fieldValue !== null &&
+      typeof fieldValue !== "string"
+    ) {
       throw new TypeError(`Eliza Cloud login poll response has an invalid ${field}`);
     }
   }
