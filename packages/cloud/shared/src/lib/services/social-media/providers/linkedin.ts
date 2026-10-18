@@ -533,6 +533,10 @@ export const linkedinProvider: SocialMediaProvider = {
             actor: authorUrn,
           }),
         },
+        // A like is a create: a replay after a lost response sends the
+        // create again, the same rule the create and comment calls in
+        // this file follow.
+        { replayUnknownOutcome: false },
       );
 
       return { success: true };
