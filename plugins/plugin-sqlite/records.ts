@@ -675,6 +675,18 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const entity of entities) {
       const id = (entity.id ?? randomUUID()) as UUID;
+      // plugin-sql inserts with onConflictDoNothing, so an existing row is
+      // never overwritten — in particular not another agent's entity,
+      // whose stored agentId and metadata a blind set would replace. Like
+      // plugin-sql, the existing id is still reported as created.
+      if (await this.storage.get<Entity>(COLLECTIONS.ENTITIES, id)) {
+        logger.warn(
+          { src: "plugin:sqlite", entityId: id },
+          "Entity already existed; treating it as created",
+        );
+        ids.push(id);
+        continue;
+      }
       // Components live in their own collection, never in the entity row.
       const { components: _components, ...row } = entity;
       await this.storage.set(COLLECTIONS.ENTITIES, id, { ...row, id });
