@@ -3377,11 +3377,16 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         rel.id,
       );
       if (!existing) continue;
+      // Only this agent's edges are updatable: plugin-sql puts agentId in
+      // updateRelationship's WHERE, and a stored row for another agent is
+      // not this adapter's to rewrite — in particular not to re-own by
+      // taking the caller's agentId (the rooms/worlds guard pattern).
+      if ((existing.agentId ?? this.agentId) !== this.agentId) continue;
       const next: StoredRelationship = {
         ...existing,
         sourceEntityId: rel.sourceEntityId,
         targetEntityId: rel.targetEntityId,
-        agentId: rel.agentId,
+        agentId: existing.agentId ?? this.agentId,
         tags: rel.tags,
         // Provided metadata replaces the stored object, as in plugin-sql.
         metadata: rel.metadata ?? existing.metadata,
