@@ -3795,16 +3795,30 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   }
 
   async createPairingRequests(requests: PairingRequest[]): Promise<UUID[]> {
+    // plugin-sql's createPairingRequest is a plain insert: a duplicate id
+    // fails instead of replacing the stored row. A blind set here silently
+    // replaced a pending request — its pairing code included. Check every id
+    // before writing so a conflicting batch fails without partial writes.
+    const seen = new Set<UUID>();
+    for (const request of requests) {
+      const id = request.id as UUID;
+      if (
+        seen.has(id) ||
+        (await this.storage.get<PairingRequest>(
+          COLLECTIONS.PAIRING_REQUESTS,
+          id,
+        ))
+      ) {
+        throw new ElizaError("Pairing request already exists", {
+          code: "PAIRING_REQUEST_ALREADY_EXISTS",
+          context: { pairingRequestId: id },
+        });
+      }
+      seen.add(id);
+    }
     const ids: UUID[] = [];
     for (const request of requests) {
       const id = request.id as UUID;
-      // plugin-sql's createPairingRequest is a plain insert: a duplicate
-      // id fails instead of replacing the stored row. A blind set here
-      // silently replaced a pending request — its pairing code included.
-      if (
-        await this.storage.get<PairingRequest>(COLLECTIONS.PAIRING_REQUESTS, id)
-      )
-        continue;
       await this.storage.set(COLLECTIONS.PAIRING_REQUESTS, id, {
         ...request,
         id,
