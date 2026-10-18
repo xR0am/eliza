@@ -651,6 +651,10 @@ export const metaProvider: SocialMediaProvider = {
         `/${postId}/likes?access_token=${credentials.accessToken}`,
         credentials.accessToken,
         { method: "POST" },
+        // A like is a create: a replay after a lost response sends the
+        // create again, the same rule the create and reply calls in
+        // this file follow.
+        { replayUnknownOutcome: false },
       );
 
       return { success: true };
