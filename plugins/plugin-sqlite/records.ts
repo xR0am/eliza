@@ -3034,8 +3034,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
       const id = room.id as UUID;
       const existing = await this.storage.get<Room>(COLLECTIONS.ROOMS, id);
       // plugin-sql inserts with onConflictDoNothing, so an existing row is
-      // never overwritten — in particular not another agent's room.
-      if (existing && !this.roomIsVisibleToOwner(existing)) continue;
+      // never overwritten — in particular not another agent's room, and
+      // not this agent's either: a sparse re-create would drop the stored
+      // worldId and metadata. upsertRooms is the merge-write path.
+      if (existing) continue;
       await this.storage.set(COLLECTIONS.ROOMS, id, { ...room, id });
       ids.push(id);
     }
