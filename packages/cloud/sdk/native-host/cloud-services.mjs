@@ -1544,8 +1544,7 @@ export function createCloudRoutes({
         if (!attempt.poll)
           attempt.poll = (async () => {
             if (verifiedAccountStore) throw verifiedRequired();
-            if (attempt.authenticated)
-              return { status: "authenticated", connected: true };
+            if (attempt.authenticated) return attempt.authenticated;
             // The provider result is single-use: finish private persistence even if
             // the browser closes its polling request during navigation.
             const value = await parse(
@@ -1566,8 +1565,16 @@ export function createCloudRoutes({
                 await store.write(value.apiKey);
               });
               current(attempt.generation);
-              attempt.authenticated = true;
-              return { status: "authenticated", connected: true };
+              // Cloud says whether this sign-in made the account. An older Cloud
+              // sends no flag, and the reply then has no `created`.
+              attempt.authenticated = {
+                status: "authenticated",
+                connected: true,
+                ...(typeof value.accountCreated === "boolean"
+                  ? { created: value.accountCreated }
+                  : {}),
+              };
+              return attempt.authenticated;
             }
             return {
               status: ["pending", "expired", "error"].includes(value.status)
