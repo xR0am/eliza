@@ -907,6 +907,11 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const component of components) {
       const id = component.id as UUID;
+      // plugin-sql's createComponent is a plain insert: a duplicate id
+      // fails instead of replacing the stored row. A blind set here
+      // silently overwrote the existing component, data included.
+      if (await this.storage.get<Component>(COLLECTIONS.COMPONENTS, id))
+        continue;
       await this.storage.set(COLLECTIONS.COMPONENTS, id, { ...component, id });
       ids.push(id);
     }
