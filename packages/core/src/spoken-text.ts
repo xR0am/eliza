@@ -17,6 +17,7 @@
  */
 
 import { REASONING_TAG_NAMES } from "./utils/reasoning-tags";
+import { looksLikeStageDirection } from "./utils/stage-directions";
 
 const NON_SPEECH_TAGS = [...REASONING_TAG_NAMES, "tool_calls?", "tools?"].join(
 	"|",
@@ -52,7 +53,13 @@ function stripThinkingAndMarkup(input: string): string {
 	return text;
 }
 
-const STAR_DIRECTION_PATTERN = /\*{1,2}[^*\n]+\*{1,2}/g;
+// A star span is either a stage direction (`*sighs*`, not spoken) or markdown
+// emphasis (`**Settings**`, `*love*`), whose words must still be spoken.
+const STAR_SPAN_PATTERN = /\*{1,2}([^*\n]+)\*{1,2}/g;
+
+function peelStarSpan(_match: string, inner: string): string {
+	return looksLikeStageDirection(inner) ? " " : inner;
+}
 
 const BALANCED_DIRECTION_PATTERNS = [
 	/\([^()]*\)/g,
@@ -147,7 +154,7 @@ function stripNonSpeechDirections(input: string): string {
 	let stabilized = false;
 	for (let pass = 0; pass < MAX_NON_SPEECH_STRIP_PASSES; pass += 1) {
 		const previous = text;
-		text = text.replace(STAR_DIRECTION_PATTERN, " ");
+		text = text.replace(STAR_SPAN_PATTERN, peelStarSpan);
 		for (const pattern of BALANCED_DIRECTION_PATTERNS) {
 			text = text.replace(pattern, " ");
 		}
