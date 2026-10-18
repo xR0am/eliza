@@ -25,4 +25,23 @@ describe("sanitizeSpeechText star spans", () => {
 		expect(sanitizeSpeechText("Hello *waves* friend")).toBe("Hello friend");
 		expect(sanitizeSpeechText("**laughs** okay")).toBe("okay");
 	});
+
+	it("drops an unlisted action at the start of the reply or a sentence", () => {
+		expect(
+			sanitizeSpeechText("*adjusts glasses* Let me check that for you."),
+		).toBe("Let me check that for you.");
+		expect(sanitizeSpeechText("*takes a deep breath* Okay, here goes.")).toBe(
+			"Okay, here goes.",
+		);
+		expect(sanitizeSpeechText("*rolls eyes* Fine.")).toBe("Fine.");
+		expect(
+			sanitizeSpeechText("Sure. *leans in closer* Can I tell you a secret?"),
+		).toBe("Sure. Can I tell you a secret?");
+	});
+
+	it("speaks bold at the start of a sentence", () => {
+		expect(sanitizeSpeechText("**Your flight** leaves at nine.")).toBe(
+			"Your flight leaves at nine.",
+		);
+	});
 });

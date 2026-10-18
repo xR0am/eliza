@@ -54,11 +54,22 @@ function stripThinkingAndMarkup(input: string): string {
 }
 
 // A star span is either a stage direction (`*sighs*`, not spoken) or markdown
-// emphasis (`**Settings**`, `*love*`), whose words must still be spoken.
+// emphasis (`**Settings**`, `I *love* it`), whose words must still be spoken.
+// A known action word is a direction anywhere. Otherwise bold is emphasis, and
+// a single-star span is a direction only where roleplay puts actions: at the
+// start of the reply or of a sentence (`*adjusts glasses* Let me check.`).
 const STAR_SPAN_PATTERN = /\*{1,2}([^*\n]+)\*{1,2}/g;
 
-function peelStarSpan(_match: string, inner: string): string {
-	return looksLikeStageDirection(inner) ? " " : inner;
+function peelStarSpan(
+	match: string,
+	inner: string,
+	offset: number,
+	source: string,
+): string {
+	if (looksLikeStageDirection(inner)) return " ";
+	if (match.startsWith("**")) return inner;
+	const before = source.slice(0, offset).trimEnd();
+	return before === "" || /[.!?。！？:\n]$/u.test(before) ? " " : inner;
 }
 
 const BALANCED_DIRECTION_PATTERNS = [
