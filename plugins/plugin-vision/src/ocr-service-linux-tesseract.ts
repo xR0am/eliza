@@ -392,7 +392,8 @@ export class LinuxTesseractOcrService implements OcrWithCoordsService {
       logger.warn(
         `[LinuxTesseractOcr] OCR failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return { blocks: [] };
+      // A failed run is not an empty screen: callers report or skip it.
+      throw err;
     } finally {
       // The frame is a copy of the screen or of a user image; it must not
       // outlive the call (frequent OCR would also fill the temp dir).
