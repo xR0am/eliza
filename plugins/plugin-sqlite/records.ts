@@ -3277,7 +3277,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         COLLECTIONS.RELATIONSHIPS,
         (r) =>
           r.sourceEntityId === pair.sourceEntityId &&
-          r.targetEntityId === pair.targetEntityId,
+          r.targetEntityId === pair.targetEntityId &&
+          // Only this agent's edge answers the lookup: plugin-sql puts
+          // agentId in getRelationship's WHERE for the same pair query.
+          (r.agentId ?? this.agentId) === this.agentId,
       );
       const first = matches[0];
       result.push(first ? relationshipFromStored(first, this.agentId) : null);
