@@ -265,7 +265,7 @@ async function validateDbHost(
   pinnedHost: string | null;
 }> {
   const extracted = extractHosts(creds);
-  if (extracted.error) {
+  if (extracted.hosts === null) {
     return { error: extracted.error, pinnedHost: null };
   }
   const hosts = extracted.hosts;
