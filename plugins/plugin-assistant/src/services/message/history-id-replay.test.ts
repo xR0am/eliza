@@ -276,6 +276,28 @@ describe("history ID grammar", () => {
     }
   });
 
+  // step-1792347996116-qcw4ho: a routing-context read spent the only repair, so
+  // the IDs copied from the search receipt threw after a successful read.
+  it("replays qcw4ho: a repair after a successful read is available again", async () => {
+    const f = await fixture([
+      read(["general"]),
+      read([`history:search:${IMAGE_REPLY}`]),
+      read(["h541", "h9999"]),
+      read(["h541", "h550", "h551"]),
+      handle({ replyText: "found it." }),
+    ]);
+    expect((await f.run()).kind).toBe("decision");
+    expect(f.useModel).toHaveBeenCalledTimes(5);
+    expect(f.prompt(1)).toContain('Rejected references: [\\"general\\"].');
+    expect(f.prompt(1)).toContain("History index: history:h1–history:h551");
+    expect(f.prompt(2)).toContain(
+      '\\"matchedSourceIds\\":[\\"history:h541\\",\\"history:h550\\",\\"history:h551\\"]',
+    );
+    expect(f.prompt(3)).toContain('Rejected references: [\\"h9999\\"].');
+    // A rejected READ_CONTEXT call has no decision to echo.
+    expect(f.prompt(1)).not.toContain("previous_context_read_decision");
+  });
+
   it("still fails closed on two consecutive invalid reads", async () => {
     const f = await fixture([read(["h9999"]), read(["general"])]);
     await expect(f.run()).rejects.toMatchObject({
@@ -298,7 +320,23 @@ describe("history ID grammar", () => {
     expect(f.prompt(0)).not.toContain("reply 156");
     expect(f.prompt(1)).toContain("reply 156");
     expect(f.prompt(1)).toContain("previous_context_read_decision");
+    expect(f.prompt(1)).not.toContain('\\"contextRequests\\":[\\"h156');
     if (result.kind === "decision")
       expect(result.messageHandler.plan.contexts).toContain("agent_internal");
+  });
+
+  it("names the rejected entry and echoes the routed decision in the repair", async () => {
+    const f = await fixture([
+      handle({ ...pullLogs, contextRequests: ["h9999"] }),
+      handle({ ...pullLogs, contextRequests: [] }),
+    ]);
+    expect((await f.run()).kind).toBe("decision");
+    const repair = f.prompt(1);
+    expect(repair).toContain("context_read_repair");
+    expect(repair).toContain('Rejected references: [\\"h9999\\"].');
+    expect(repair).toContain("history:search:<text>");
+    expect(repair).toContain("previous_context_read_decision");
+    expect(repair).toContain("agent_internal");
+    expect(repair).not.toContain('\\"contextRequests\\":[\\"h9999');
   });
 });
