@@ -914,6 +914,48 @@ describe("openChatDb + ChatDbReader (bun:sqlite backed)", { timeout: 60_000 }, (
     }
   });
 
+  it("fails the poll read when attachment metadata cannot be read", async ({ skip }) => {
+    const { path, cleanup } = await makeFixtureDb(skip);
+    try {
+      const reader = await openChatDb(path);
+      if (!reader) return;
+      const openDatabase = await getDatabase();
+      if (!openDatabase) return;
+
+      const mutator = openDatabase(path);
+      mutator.run("DROP TABLE message_attachment_join");
+      mutator.close();
+
+      expect(() => reader.fetchNewMessages(0, 100)).toThrow(
+        expect.objectContaining({
+          code: "IMESSAGE_ATTACHMENT_READ_FAILED",
+          context: { rowId: 10 },
+        })
+      );
+
+      const tolerated = reader
+        .fetchNewMessages(0, 100, { tolerateAttachmentReadFailure: new Set([10]) })
+        .find((message) => message.rowId === 10);
+      expect(tolerated?.attachments).toEqual([]);
+      expect(tolerated?.attachmentReadFailed).toBe(true);
+
+      const recovery = openDatabase(path);
+      recovery.run(
+        "CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER)"
+      );
+      recovery.run(
+        "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (10, 1)"
+      );
+      recovery.close();
+
+      expect(reader.fetchNewMessages(0, 100)[0]?.attachments).toHaveLength(1);
+
+      reader.close();
+    } finally {
+      cleanup();
+    }
+  });
+
   it("marks outbound messages with isFromMe=true", async ({ skip }) => {
     const { path, cleanup } = await makeFixtureDb(skip);
     try {
