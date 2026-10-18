@@ -236,3 +236,31 @@ describe("Network weekday with a date", () => {
     }
   });
 });
+
+describe("Network weekday with next week", () => {
+  it("ends on the weekday of the next calendar week, not this week's", () => {
+    const now = new Date("2026-10-14T15:00:00Z"); // Wednesday
+    for (const [text, until] of [
+      ["I'm in Lisbon until Friday next week", "2026-10-23"],
+      ["I'm in Lisbon until Friday of next week", "2026-10-23"],
+      ["I'm away until Monday next week", "2026-10-19"],
+      // A bare weekday still means its next occurrence, this week.
+      ["I'm in Lisbon until Friday", "2026-10-16"],
+    ]) {
+      assert.deepEqual(
+        authorizeSetState(
+          { state: "traveling", until, evidence: text },
+          text,
+          now,
+        ),
+        {
+          allowed: true,
+          state: "traveling",
+          from: null,
+          until: `${until}T00:00:00.000Z`,
+        },
+        text,
+      );
+    }
+  });
+});

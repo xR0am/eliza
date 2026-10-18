@@ -186,6 +186,15 @@ export function parseDateExpr(expr: string, now: Date): Date | null {
         (dated[10] && dated[11]))
     )
       return parseDateExpr(after, now);
+    // "Friday next week" names the Friday of the next calendar week. The bare
+    // weekday branch resolved it to this week's Friday, ending the window six
+    // days early; "next Friday" already resolved to that date.
+    if (/^,?\s+(?:of\s+)?next\s+week\b/.test(rest))
+      return nextWeekday(
+        WEEKDAYS.indexOf(m[8].slice(0, 3).toLowerCase()),
+        today,
+        true,
+      );
     const w = WEEKDAYS.indexOf(m[8].slice(0, 3).toLowerCase());
     return nextWeekday(w, today, Boolean(m[7]));
   }
