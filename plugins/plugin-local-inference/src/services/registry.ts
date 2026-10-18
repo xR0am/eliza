@@ -118,11 +118,22 @@ async function readElizaOwnedHealed(): Promise<InstalledModel[]> {
 	return present;
 }
 
+/**
+ * A stat failure proves the artifact is absent only for ENOENT/ENOTDIR.
+ * EACCES, EIO, ELOOP and friends leave existence unknown, so the row must
+ * not be healed away and rewritten out of registry.json.
+ */
+function isAbsentPathError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | null)?.code;
+	return code === "ENOENT" || code === "ENOTDIR";
+}
+
 async function modelArtifactPresent(modelPath: string): Promise<boolean> {
 	try {
 		return (await fs.stat(modelPath)).isFile();
-	} catch {
-		return false;
+	} catch (error) {
+		if (isAbsentPathError(error)) return false;
+		throw error;
 	}
 }
 

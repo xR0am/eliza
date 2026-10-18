@@ -325,6 +325,43 @@ describe("local inference registry removal", () => {
 		},
 	);
 
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"surfaces an unreadable artifact instead of dropping its registry row",
+		async () => {
+			const stateDir = useTempStateDir();
+			const textDir = path.join(
+				stateDir,
+				"local-inference",
+				"models",
+				"eliza-1-2b",
+				"text",
+			);
+			const modelPath = path.join(textDir, "model.gguf");
+			fs.mkdirSync(textDir, { recursive: true });
+			fs.writeFileSync(modelPath, "fake-model");
+			await upsertElizaModel(installedModel("eliza-1-2b", modelPath));
+			expect((await listInstalledModels()).map((m) => m.id)).toEqual([
+				"eliza-1-2b",
+			]);
+
+			// EACCES while stat-ing the artifact proves nothing about whether the
+			// model is still on disk, so the row must not be healed away.
+			fs.chmodSync(textDir, 0o000);
+			try {
+				await expect(listInstalledModels()).rejects.toMatchObject({
+					code: "EACCES",
+				});
+			} finally {
+				fs.chmodSync(textDir, 0o755);
+			}
+
+			expect(readRawRegistry().models?.map((m) => m.id)).toEqual([
+				"eliza-1-2b",
+			]);
+			expect(fs.existsSync(modelPath)).toBe(true);
+		},
+	);
+
 	it.skipIf(process.platform === "win32")(
 		"refuses a registry path that escapes through a symlinked parent",
 		async () => {
