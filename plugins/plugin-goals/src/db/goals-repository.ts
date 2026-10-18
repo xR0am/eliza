@@ -159,7 +159,22 @@ export class GoalsRepository {
   }
 
   async updateGoal(goal: LifeOpsGoalDefinition): Promise<void> {
-    await executeRawSql(
+    await this.writeGoal(goal);
+  }
+
+  /** Update only when the caller's source row is still current. */
+  async updateGoalIfUnchanged(
+    goal: LifeOpsGoalDefinition,
+    expectedUpdatedAt: string,
+  ): Promise<boolean> {
+    return this.writeGoal(goal, expectedUpdatedAt);
+  }
+
+  private async writeGoal(
+    goal: LifeOpsGoalDefinition,
+    expectedUpdatedAt?: string,
+  ): Promise<boolean> {
+    const rows = await executeRawSql(
       this.runtime,
       `UPDATE app_goals.life_goal_definitions
           SET domain = ${sqlQuote(goal.domain)},
@@ -177,8 +192,15 @@ export class GoalsRepository {
               metadata_json = ${sqlJson(goal.metadata)},
               updated_at = ${sqlQuote(goal.updatedAt)}
         WHERE id = ${sqlQuote(goal.id)}
-          AND agent_id = ${sqlQuote(goal.agentId)}`,
+          AND agent_id = ${sqlQuote(goal.agentId)}
+          ${
+            expectedUpdatedAt === undefined
+              ? ""
+              : `AND updated_at = ${sqlQuote(expectedUpdatedAt)}`
+          }
+      RETURNING id`,
     );
+    return rows.length > 0;
   }
 
   /**

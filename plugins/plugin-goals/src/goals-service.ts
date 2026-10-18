@@ -472,9 +472,21 @@ export class GoalsService {
               normalizeOptionalRecord(request.metadata, "metadata"),
             )
           : current.goal.metadata,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(
+        Math.max(Date.now(), Date.parse(current.goal.updatedAt) + 1),
+      ).toISOString(),
     };
-    await this.repository.updateGoal(nextGoal);
+    const updated = await this.repository.updateGoalIfUnchanged(
+      nextGoal,
+      current.goal.updatedAt,
+    );
+    if (!updated) {
+      fail(
+        409,
+        "life-ops goal changed while the update was in progress; retry the update",
+        "GOAL_UPDATE_CONFLICT",
+      );
+    }
     await this.recordAudit(
       "goal_updated",
       "goal",

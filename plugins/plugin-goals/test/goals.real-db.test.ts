@@ -14,7 +14,7 @@
  */
 
 import type { AgentRuntime, Plugin } from "@elizaos/core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createRealTestRuntime,
   type RealTestRuntimeResult,
@@ -107,6 +107,51 @@ describe("GoalsService + GoalsRepository — real PGLite", () => {
     const reread = await repository.getGoal(runtime.agentId, created.goal.id);
     expect(reread?.title).toBe("Learn watercolor painting");
     expect(reread?.status).toBe("paused");
+  });
+
+  it("rejects a stale update without reverting a concurrent goal edit", async () => {
+    const created = await service.createGoal({
+      title: "Original title",
+      description: "Original description",
+    });
+    const getGoal = GoalsRepository.prototype.getGoal;
+    const spy = vi
+      .spyOn(GoalsRepository.prototype, "getGoal")
+      .mockImplementationOnce(async function (
+        this: GoalsRepository,
+        agentId,
+        goalId,
+      ) {
+        const snapshot = await getGoal.call(this, agentId, goalId);
+        await executeRawSql(
+          runtime,
+          `UPDATE app_goals.life_goal_definitions
+              SET title = 'Concurrent title',
+                  updated_at = '${new Date(
+                    Date.parse(created.goal.updatedAt) + 1_000,
+                  ).toISOString()}'
+            WHERE id = '${created.goal.id}'`,
+        );
+        return snapshot;
+      });
+
+    try {
+      await expect(
+        service.updateGoal(created.goal.id, {
+          description: "Requested description",
+        }),
+      ).rejects.toMatchObject({
+        name: "GoalsServiceError",
+        status: 409,
+        code: "GOAL_UPDATE_CONFLICT",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const reread = await repository.getGoal(runtime.agentId, created.goal.id);
+    expect(reread?.title).toBe("Concurrent title");
+    expect(reread?.description).toBe("Original description");
   });
 
   it("short-circuits a near-duplicate active goal via dedup (real DB read)", async () => {
