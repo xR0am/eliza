@@ -3662,9 +3662,25 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   }
 
   async createTasks(tasks: Task[]): Promise<UUID[]> {
+    const pending = tasks.map((task) => ({
+      task,
+      id: (task.id ?? randomUUID()) as UUID,
+    }));
+    // An existing row for another agent is never overwritten or re-owned by
+    // stamping this agent on it. plugin-sql fails on the duplicate primary
+    // key, so fail before writing any task in the batch instead of returning
+    // fewer ids than were requested.
+    for (const { id } of pending) {
+      const existing = await this.storage.get<Task>(COLLECTIONS.TASKS, id);
+      if (existing && !this.taskIsVisibleToOwner(existing)) {
+        throw new ElizaError("SQLite task id belongs to another agent", {
+          code: "SQLITE_TASK_ID_CONFLICT",
+          context: { taskId: id },
+        });
+      }
+    }
     const ids: UUID[] = [];
-    for (const task of tasks) {
-      const id = (task.id ?? randomUUID()) as UUID;
+    for (const { task, id } of pending) {
       await this.storage.set(COLLECTIONS.TASKS, id, {
         ...task,
         id,
