@@ -573,16 +573,21 @@ export async function openChatDb(
   // the ~97% of messages that store their content there instead of in
   // the plain `text` column, and enough status columns to surface
   // reactions, replies, edits, and read receipts to the caller.
+  //
+  // Apple dates are read as TEXT: modern macOS stores them as nanoseconds
+  // since 2001, past Number.MAX_SAFE_INTEGER, and node:sqlite throws
+  // ERR_OUT_OF_RANGE on such an INTEGER. appleDateToJsMs parses the text
+  // as a BigInt.
   const pollStmt = db.query(`
     SELECT
       m.ROWID AS row_id,
       m.guid AS guid,
       m.text AS text,
       m.attributedBody AS attributed_body,
-      m.date AS apple_date,
-      m.date_read AS apple_date_read,
-      m.date_edited AS apple_date_edited,
-      m.date_retracted AS apple_date_retracted,
+      CAST(m.date AS TEXT) AS apple_date,
+      CAST(m.date_read AS TEXT) AS apple_date_read,
+      CAST(m.date_edited AS TEXT) AS apple_date_edited,
+      CAST(m.date_retracted AS TEXT) AS apple_date_retracted,
       m.is_from_me AS is_from_me,
       m.is_read AS is_read,
       m.is_sent AS is_sent,
@@ -637,10 +642,10 @@ export async function openChatDb(
       m.guid AS guid,
       m.text AS text,
       m.attributedBody AS attributed_body,
-      m.date AS apple_date,
-      m.date_read AS apple_date_read,
-      m.date_edited AS apple_date_edited,
-      m.date_retracted AS apple_date_retracted,
+      CAST(m.date AS TEXT) AS apple_date,
+      CAST(m.date_read AS TEXT) AS apple_date_read,
+      CAST(m.date_edited AS TEXT) AS apple_date_edited,
+      CAST(m.date_retracted AS TEXT) AS apple_date_retracted,
       m.is_from_me AS is_from_me,
       m.is_read AS is_read,
       m.is_sent AS is_sent,
@@ -670,10 +675,10 @@ export async function openChatDb(
       m.guid AS guid,
       m.text AS text,
       m.attributedBody AS attributed_body,
-      m.date AS apple_date,
-      m.date_read AS apple_date_read,
-      m.date_edited AS apple_date_edited,
-      m.date_retracted AS apple_date_retracted,
+      CAST(m.date AS TEXT) AS apple_date,
+      CAST(m.date_read AS TEXT) AS apple_date_read,
+      CAST(m.date_edited AS TEXT) AS apple_date_edited,
+      CAST(m.date_retracted AS TEXT) AS apple_date_retracted,
       m.is_from_me AS is_from_me,
       m.is_read AS is_read,
       m.is_sent AS is_sent,
@@ -709,7 +714,7 @@ export async function openChatDb(
       c.display_name AS display_name,
       c.service_name AS service_name,
       c.style AS chat_style,
-      c.last_read_message_timestamp AS last_read_apple_date,
+      CAST(c.last_read_message_timestamp AS TEXT) AS last_read_apple_date,
       GROUP_CONCAT(h.id, ',') AS participant_handles
     FROM chat c
     LEFT JOIN chat_handle_join chj ON c.ROWID = chj.chat_id
@@ -725,10 +730,10 @@ export async function openChatDb(
     guid: string;
     text: string | null;
     attributed_body: Uint8Array | null;
-    apple_date: number;
-    apple_date_read: number | null;
-    apple_date_edited: number | null;
-    apple_date_retracted: number | null;
+    apple_date: string | null;
+    apple_date_read: string | null;
+    apple_date_edited: string | null;
+    apple_date_retracted: string | null;
     is_from_me: number;
     is_read: number | null;
     is_sent: number | null;
@@ -822,7 +827,7 @@ export async function openChatDb(
         chatId: row.chat_identifier ?? "",
         chatType: row.chat_style === 43 ? "group" : "direct",
         displayName: row.display_name,
-        timestamp: appleDateToJsMs(row.apple_date),
+        timestamp: appleDateToJsMs(row.apple_date ?? 0),
         isFromMe: row.is_from_me === 1,
         service,
         isSent: row.is_sent === 1,
@@ -923,7 +928,7 @@ export async function openChatDb(
           display_name: string | null;
           service_name: string | null;
           chat_style: number | null;
-          last_read_apple_date: number | null;
+          last_read_apple_date: string | null;
           participant_handles: string | null;
         }>;
         return rows.map((row) => ({
