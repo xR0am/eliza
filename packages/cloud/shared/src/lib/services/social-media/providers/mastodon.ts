@@ -344,6 +344,10 @@ export const mastodonProvider: SocialMediaProvider = {
         `/statuses/${postId}/reblog`,
         credentials.accessToken,
         { method: "POST" },
+        // The last replay may have reblogged even though it went
+        // unanswered; the create call in this file passes the same
+        // option so an exhausted unknown outcome is held, not refunded.
+        { unknownOutcomeOnExhaustion: true },
       );
     } catch (error) {
       return failedPostResult("mastodon", error);
