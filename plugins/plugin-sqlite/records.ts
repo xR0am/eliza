@@ -649,6 +649,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const entity of entities) {
       const id = (entity.id ?? randomUUID()) as UUID;
+      // plugin-sql inserts with onConflictDoNothing, so an existing row is
+      // never overwritten — in particular not another agent's entity,
+      // whose stored agentId and metadata a blind set would replace.
+      if (await this.storage.get<Entity>(COLLECTIONS.ENTITIES, id)) continue;
       // Components live in their own collection, never in the entity row.
       const { components: _components, ...row } = entity;
       await this.storage.set(COLLECTIONS.ENTITIES, id, { ...row, id });
