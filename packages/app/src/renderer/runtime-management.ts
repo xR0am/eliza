@@ -362,7 +362,8 @@ async function execute(
   if (request.op === "revoke_host") {
     const identity = await getRemoteTargetIdentity();
     const hostId = identity.identity?.runtimeId;
-    if (!hostId) throw new Error("This computer's host identity is unavailable.");
+    if (!hostId)
+      throw new Error("This computer's host identity is unavailable.");
     const cloud = createDefaultRemoteControlCloudClient();
     await cloud.revokeHost(hostId);
     if (!(await finalizeRemoteTargetHostRevoke(hostId))) {
