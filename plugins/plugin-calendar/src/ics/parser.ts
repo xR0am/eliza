@@ -629,17 +629,27 @@ function springForwardGapMs(
       "DST gap probe",
       zone,
     );
-  const startIso = at(0);
-  const endIso = at(23);
-  if (!startIso || !endIso) return 0;
-  const offsetMs = (iso: string) => {
-    const parts = getZonedDateParts(new Date(iso), zone);
+  const dayStart = at(0);
+  const dayEnd = at(23);
+  if (!dayStart || !dayEnd) return 0;
+  const offsetMs = (instantMs: number) => {
+    const parts = getZonedDateParts(new Date(instantMs), zone);
     return (
-      Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour % 24,
-        parts.minute, parts.second) - Date.parse(iso)
+      Date.UTC(
+        parts.year,
+        parts.month - 1,
+        parts.day,
+        parts.hour % 24,
+        parts.minute,
+        parts.second,
+      ) - instantMs
     );
   };
-  const gap = offsetMs(endIso) - offsetMs(startIso);
+  // Probe an hour before local midnight: a zone that springs forward at
+  // midnight (America/Santiago, Asia/Beirut) has no 00:00, so `dayStart`
+  // already carries the post-gap offset.
+  const gap =
+    offsetMs(Date.parse(dayEnd)) - offsetMs(Date.parse(dayStart) - 3_600_000);
   return gap > 0 ? gap : 0;
 }
 
