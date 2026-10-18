@@ -229,6 +229,7 @@ export async function ensureConnections(
 	>();
 	const worldMap = new Map<string, World>();
 	const roomMap = new Map<string, Room>();
+	const roomExplicitTypes = new Map<string, ChannelType>();
 	const roomFallbackNames = new Map<string, string>();
 	const roomParticipants = new Map<string, Set<UUID>>();
 
@@ -287,6 +288,12 @@ export async function ensureConnections(
 			(Object.values(ChannelType) as string[]).includes(c.type)
 				? (c.type as keyof typeof ChannelType)
 				: ChannelType.DM;
+		// `type` is optional: remember only a type the connection actually
+		// gave, so a type-less connection can keep the stored room's type
+		// at write time instead of demoting it to the DM default.
+		if (roomType !== ChannelType.DM || c.type === ChannelType.DM) {
+			roomExplicitTypes.set(c.roomId, roomType as ChannelType);
+		}
 		// `name` and `channelId` stay unset here when the connection omits them;
 		// they are filled from the stored room (or a default) before the write.
 		const room: Room = {
@@ -412,9 +419,9 @@ export async function ensureConnections(
 		},
 	);
 
-	// A connection that omits the room's channel or name keeps what the room
-	// already records, such as the platform conversation id a connector stored
-	// through ensureRoomExists; replies to the room are addressed by it.
+	// A connection that omits the room's channel, name, or type keeps what the
+	// room already records, such as the platform conversation id a connector
+	// stored through ensureRoomExists; replies to the room are addressed by it.
 	const storedRooms =
 		roomMap.size > 0
 			? ((await adapter.getRoomsByIds([...roomMap.keys()] as UUID[])) ?? [])
@@ -426,6 +433,9 @@ export async function ensureConnections(
 			...r,
 			name: r.name || stored?.name || roomFallbackNames.get(r.id) || "default",
 			channelId: r.channelId ?? stored?.channelId ?? r.id,
+			// A connection that omits `type` keeps the stored room's type;
+			// the DM default applies only when no type is recorded at all.
+			type: roomExplicitTypes.get(r.id) ?? stored?.type ?? r.type,
 			agentId,
 		};
 	});
