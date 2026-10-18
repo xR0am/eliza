@@ -1229,12 +1229,25 @@ export class SolanaService extends Service {
   }
 
   async getCirculatingSupply(mint: string) {
-    const accounts = await this.connection.getParsedProgramAccounts(TOKEN_PROGRAM_ID, {
-      filters: [
-        { dataSize: 165 }, // size of token account
-        { memcmp: { offset: 0, bytes: mint } }, // filter by mint
-      ],
-    });
+    // Token accounts live under two programs: the legacy Token program and
+    // Token-2022. Query both, like the wallet token-account listing does; a
+    // Token-2022 mint has no accounts under the legacy program, so counting
+    // only that program reports a supply of 0 for it. Token-2022 accounts
+    // with extensions are longer than the plain 165-byte token account, so
+    // that query omits the dataSize filter and the loop below skips parsed
+    // entries that are not token accounts.
+    const [legacyAccounts, token2022Accounts] = await Promise.all([
+      this.connection.getParsedProgramAccounts(TOKEN_PROGRAM_ID, {
+        filters: [
+          { dataSize: 165 }, // size of token account
+          { memcmp: { offset: 0, bytes: mint } }, // filter by mint
+        ],
+      }),
+      this.connection.getParsedProgramAccounts(TOKEN_2022_PROGRAM_ID, {
+        filters: [{ memcmp: { offset: 0, bytes: mint } }],
+      }),
+    ]);
+    const accounts = [...legacyAccounts, ...token2022Accounts];
 
     const KNOWN_EXCLUDED_ACCOUNTS = ["MINT_AUTHORITY_WALLET", "TREASURY_WALLET", "BURN_ADDRESS"];
 
@@ -1243,8 +1256,9 @@ export class SolanaService extends Service {
       const data = acc.account.data as ParsedAccountData;
       const info = data.parsed.info as {
         owner: string;
-        tokenAmount: { amount: string; decimals: number };
+        tokenAmount?: { amount: string; decimals: number };
       };
+      if (!info.tokenAmount) continue;
       const owner = info.owner;
 
       if (owner === "11111111111111111111111111111111") continue;
