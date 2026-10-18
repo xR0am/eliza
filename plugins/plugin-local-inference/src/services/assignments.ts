@@ -93,8 +93,18 @@ export async function readAssignments(): Promise<ModelAssignments> {
 		const parsed = JSON.parse(raw) as AssignmentsFile;
 		if (parsed?.version !== 1 || !parsed.assignments) return {};
 		return sanitizeAssignments(parsed.assignments);
-	} catch {
-		return {};
+	} catch (error) {
+		// No assignments file yet is legitimately "no policy declared", and the
+		// boot-time auto-assign path depends on that. A file that exists but
+		// cannot be read or parsed is not the same thing: returning {} there makes
+		// every caller treat "policy unreadable" as "policy empty", and the next
+		// read-modify-write (setAssignment, ensureBundledAssignment) rewrites the
+		// file from that empty map and destroys the user's other slots.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		throw new Error(
+			`failed to read local inference assignments at ${assignmentsPath()}`,
+			{ cause: error },
+		);
 	}
 }
 
