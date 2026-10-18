@@ -1765,6 +1765,44 @@ it("cache CAS has one winner, preserves null and rejects lossy values", async ()
   );
 });
 
+it("reports an existing entity id as created without overwriting another agent's row", async () => {
+  const adapter = await open();
+  const foreignId = id();
+  const otherAgentId = id();
+  const freshId = id();
+  const storage = await adapter.getConnection();
+  await storage.set("entities", foreignId, {
+    id: foreignId,
+    agentId: otherAgentId,
+    names: ["Original"],
+    metadata: { owner: "other" },
+  });
+
+  // plugin-sql returns every requested id and treats existing rows as created.
+  expect(
+    await adapter.createEntities([
+      {
+        id: foreignId,
+        agentId,
+        names: ["Rewritten"],
+        metadata: { owner: "self" },
+      },
+      { id: freshId, agentId, names: ["Fresh"] },
+    ]),
+  ).toEqual([foreignId, freshId]);
+  expect(await storage.get("entities", foreignId)).toEqual({
+    id: foreignId,
+    agentId: otherAgentId,
+    names: ["Original"],
+    metadata: { owner: "other" },
+  });
+  expect(await storage.get("entities", freshId)).toMatchObject({
+    id: freshId,
+    agentId,
+    names: ["Fresh"],
+  });
+});
+
 it("keeps another agent's worlds out of listing, updates, and metadata swaps", async () => {
   const adapter = await open();
   const ownedId = id();
