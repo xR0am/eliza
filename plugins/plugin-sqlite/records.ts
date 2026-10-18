@@ -3295,6 +3295,9 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     let stored = await this.storage.getWhere<StoredRelationship>(
       COLLECTIONS.RELATIONSHIPS,
       (r) => {
+        // Only this agent's edges are listed: plugin-sql's getRelationships
+        // query carries `agentId = this.agentId` alongside its filters.
+        if ((r.agentId ?? this.agentId) !== this.agentId) return false;
         if (entitySet) {
           if (
             !entitySet.has(r.sourceEntityId as UUID) &&
