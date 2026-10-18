@@ -3592,6 +3592,11 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const task of tasks) {
       const id = (task.id ?? randomUUID()) as UUID;
+      // An existing row for another agent is never overwritten — in
+      // particular not re-owned by stamping this agent on it (the
+      // createRooms guard in this file applies the same rule).
+      const existing = await this.storage.get<Task>(COLLECTIONS.TASKS, id);
+      if (existing && !this.taskIsVisibleToOwner(existing)) continue;
       await this.storage.set(COLLECTIONS.TASKS, id, {
         ...task,
         id,
