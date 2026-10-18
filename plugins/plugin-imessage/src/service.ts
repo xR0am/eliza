@@ -1372,7 +1372,24 @@ export class IMessageService extends Service implements IIMessageService {
     // the standard event bus see outbound iMessage sends the same way
     // they see Telegram / Discord / Slack sends.
     if (this.runtime) {
-      this.runtime.emitEvent(IMessageEventTypes.MESSAGE_SENT, {
+      const observeEvent = (event: string, payload: EventPayload) => {
+        const reportFailure = (error: unknown) =>
+          this.runtime.reportError("IMessageService.emitMessageSent", error, {
+            event,
+            accountId,
+            chatId: target,
+          });
+        try {
+          // error-policy:J7 The provider send is already accepted. Event
+          // listeners are observers, so report a rejected listener without
+          // creating an unhandled rejection or making the send retryable.
+          const emitted = this.runtime.emitEvent(event, payload);
+          if (emitted) void emitted.catch(reportFailure);
+        } catch (error) {
+          reportFailure(error);
+        }
+      };
+      observeEvent(IMessageEventTypes.MESSAGE_SENT, {
         runtime: this.runtime,
         source: "imessage",
         accountId,
@@ -1380,7 +1397,7 @@ export class IMessageService extends Service implements IIMessageService {
         text,
         hasMedia: mediaUrls.length > 0,
       } as EventPayload);
-      this.runtime.emitEvent(EventType.MESSAGE_SENT, {
+      observeEvent(EventType.MESSAGE_SENT, {
         runtime: this.runtime,
         source: "imessage",
         message: {
