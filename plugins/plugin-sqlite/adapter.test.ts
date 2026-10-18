@@ -409,6 +409,52 @@ describe("durable SQLite agent adapter", () => {
     expect(otherSource).toBeNull();
   });
 
+  it("rejects a duplicate component id with a typed error and keeps the stored row", async () => {
+    const adapter = await open();
+    const worldId = id();
+    const componentId = id();
+    const freshId = id();
+    await adapter.createAgents([{ id: agentId, name: "Secret agent" }]);
+    await adapter.createEntities([{ id: entityId, agentId, names: ["User"] }]);
+    await adapter.createWorlds([{ id: worldId, name: "Secrets", agentId }]);
+    const component = {
+      id: componentId,
+      entityId,
+      agentId,
+      roomId,
+      worldId,
+      sourceEntityId: agentId,
+      type: "secret",
+      createdAt: 1,
+      data: { value: "original" },
+    };
+    await expect(adapter.createComponents([component])).resolves.toEqual([
+      componentId,
+    ]);
+
+    await expect(
+      adapter.createComponents([
+        { ...component, id: freshId, data: { value: "fresh" } },
+        { ...component, data: { value: "replacement" } },
+      ]),
+    ).rejects.toMatchObject({
+      code: "COMPONENT_ALREADY_EXISTS",
+      context: { componentId },
+    });
+    await expect(
+      Promise.all([
+        adapter.createComponents([{ ...component, id: freshId }]),
+        adapter.createComponents([{ ...component, id: freshId }]),
+      ]),
+    ).rejects.toMatchObject({ code: "COMPONENT_ALREADY_EXISTS" });
+
+    const stored = await adapter.getComponentsByIds([componentId, freshId]);
+    expect(stored.map(({ id, data }) => ({ id, data }))).toEqual([
+      { id: componentId, data: { value: "original" } },
+      { id: freshId, data: { value: "original" } },
+    ]);
+  });
+
   it("returns entity components from getEntitiesByIds and getEntitiesForRooms as plugin-sql does", async () => {
     const adapter = await open();
     const worldId = id();

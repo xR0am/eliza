@@ -360,6 +360,32 @@ function withWorldMetadataTail<T>(
   return run;
 }
 
+/**
+ * Serialization tail for component creates, keyed by storage instance for
+ * the same reason as {@link withWorldMetadataTail}: the existence check and
+ * the write are separate storage calls, so two concurrent creates of one id
+ * would both pass the check and the second would overwrite the first.
+ */
+const componentCreateTails = new WeakMap<IStorage, Promise<void>>();
+
+function withComponentCreateTail<T>(
+  storage: IStorage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const run = (componentCreateTails.get(storage) ?? Promise.resolve()).then(
+    operation,
+    operation,
+  );
+  componentCreateTails.set(
+    storage,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
 function relationshipFromStored(
   r: StoredRelationship,
   fallbackAgentId: UUID,
@@ -904,18 +930,35 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
   // ── Component CRUD ────────────────────────────────────────────────────
 
   async createComponents(components: Component[]): Promise<UUID[]> {
-    const ids: UUID[] = [];
-    for (const component of components) {
-      const id = component.id as UUID;
-      // plugin-sql's createComponent is a plain insert: a duplicate id
-      // fails instead of replacing the stored row. A blind set here
-      // silently overwrote the existing component, data included.
-      if (await this.storage.get<Component>(COLLECTIONS.COMPONENTS, id))
-        continue;
-      await this.storage.set(COLLECTIONS.COMPONENTS, id, { ...component, id });
-      ids.push(id);
-    }
-    return ids;
+    // plugin-sql's createComponent is a plain insert: a duplicate id fails
+    // instead of replacing the stored row. Reject every conflict before the
+    // first write so a failed batch never leaves part of itself stored.
+    return withComponentCreateTail(this.storage, async () => {
+      const ids: UUID[] = [];
+      const seen = new Set<UUID>();
+      for (const component of components) {
+        const id = component.id as UUID;
+        if (
+          seen.has(id) ||
+          (await this.storage.get<Component>(COLLECTIONS.COMPONENTS, id))
+        ) {
+          throw new ElizaError("Component already exists", {
+            code: "COMPONENT_ALREADY_EXISTS",
+            context: { componentId: id },
+          });
+        }
+        seen.add(id);
+        ids.push(id);
+      }
+      for (const component of components) {
+        const id = component.id as UUID;
+        await this.storage.set(COLLECTIONS.COMPONENTS, id, {
+          ...component,
+          id,
+        });
+      }
+      return ids;
+    });
   }
 
   async getComponentsByIds(componentIds: UUID[]): Promise<Component[]> {
