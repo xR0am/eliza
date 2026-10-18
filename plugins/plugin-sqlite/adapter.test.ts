@@ -1986,6 +1986,38 @@ it("pages newest pairing requests by UUID when the higher id is uppercase", asyn
   ]);
 });
 
+it("rejects a pairing request create that reuses a stored id", async () => {
+  const adapter = await open();
+  const pairingId = id();
+  const request = {
+    id: pairingId,
+    channel: "telegram",
+    agentId,
+    senderId: "sender",
+    code: "ORIGINAL",
+    createdAt: PAIRING_AT,
+    lastSeenAt: PAIRING_AT,
+  };
+  expect(await adapter.createPairingRequests([request])).toEqual([pairingId]);
+
+  await expect(
+    adapter.createPairingRequests([
+      { ...request, id: id(), senderId: "other", code: "OTHER" },
+      { ...request, code: "REPLACED" },
+    ]),
+  ).rejects.toMatchObject({
+    code: "PAIRING_REQUEST_ALREADY_EXISTS",
+    context: { pairingRequestId: pairingId },
+  });
+
+  const [page] = await adapter.getPairingRequests([
+    { channel: "telegram", agentId },
+  ]);
+  expect(page.requests.map(({ id, code }) => ({ id, code }))).toEqual([
+    { id: pairingId, code: "ORIGINAL" },
+  ]);
+});
+
 it("pages newest pairing allowlist entries by UUID when the higher id is uppercase", async () => {
   const adapter = await open();
   await adapter.createPairingAllowlistEntries([
