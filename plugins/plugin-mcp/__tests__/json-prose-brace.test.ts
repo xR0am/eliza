@@ -53,6 +53,33 @@ describe("parseJSON with braces in the prose", () => {
     });
   });
 
+  it("reads the call after a placeholder with an apostrophe in braces", () => {
+    expect(
+      parseJSON('Example: {"city":"London"}. Replace {user\'s city} with: {"city":"Paris"}')
+    ).toEqual({ city: "Paris" });
+  });
+
+  it("fails instead of reading the example when a placeholder opens a quote", () => {
+    expect(() =>
+      parseJSON('Example: {"city":"London"}. Replace {the \'city field} with: {"city":"Paris"}')
+    ).toThrow(/unclosed object/);
+  });
+
+  it("fails instead of reading the example when the call is cut off", () => {
+    expect(() => parseJSON('Example: {"city":"London"}. Call: {"city":"Paris"')).toThrow(
+      /unclosed object/
+    );
+    expect(() =>
+      parseJSON('Example: {"city":"London"}. Call: {"note":"it is","nested":{"x":1},"city":"Par')
+    ).toThrow(/No valid JSON object/);
+  });
+
+  it("fails instead of reading the example when the call is malformed", () => {
+    expect(() => parseJSON('Example: {"city":"London"}. Call: {"city" "Paris"}')).toThrow(
+      /No valid JSON object/
+    );
+  });
+
   it("keeps escaped quotes and comments inside the call", () => {
     expect(
       parseJSON('Use {x} now: {"query":"say \\"hi\\"" /* a { b */ ,"units":"metric"}')
@@ -95,5 +122,35 @@ describe("withModelRetry on a reply with braces in the prose", () => {
 
     expect(result).toEqual({ toolArguments: { query: "Bangkok" } });
     expect(modelCalls).toBe(0);
+  });
+
+  it("asks the model again when the call after an example is cut off", async () => {
+    const replies = [
+      'Example: {"toolArguments":{"query":"London"}}. Call: {"toolArguments":{"query":"Bangk',
+      '{"toolArguments":{"query":"Bangkok"}}',
+    ];
+    let modelCalls = 0;
+    const runtime = {
+      getSetting: () => ({ maxRetries: 2 }),
+      useModel: async () => {
+        modelCalls += 1;
+        return replies[Math.min(modelCalls, replies.length - 1)];
+      },
+    } as unknown as IAgentRuntime;
+
+    const result = await withModelRetry<Record<string, unknown>>({
+      runtime,
+      message: { content: { text: "weather in Bangkok" } } as never,
+      state: {} as never,
+      input: replies[0],
+      validationFn: (value: unknown) => ({
+        success: true as const,
+        data: value as Record<string, unknown>,
+      }),
+      createFeedbackPromptFn: () => "Send the call again.",
+    });
+
+    expect(result).toEqual({ toolArguments: { query: "Bangkok" } });
+    expect(modelCalls).toBe(1);
   });
 });
