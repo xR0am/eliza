@@ -39,3 +39,21 @@ it("rejects an unreadable action-result store instead of reporting no results", 
     context: { messageId },
   });
 });
+
+it("calls a receiver-dependent getActionResults with the runtime bound", () => {
+  const messageId = "00000000-0000-0000-0000-0000000000cd" as UUID;
+  const stored = [{ actionName: "REPLY", success: true }];
+  // Mirrors AgentRuntime.getActionResults, a class method reading `this.stateCache`.
+  class StateCacheRuntime {
+    stateCache = new Map<string, { data: { actionResults: unknown[] } }>([
+      [`${messageId}_action_results`, { data: { actionResults: stored } }],
+    ]);
+    getActionResults(id: UUID): unknown[] {
+      return (
+        this.stateCache.get(`${id}_action_results`)?.data.actionResults ?? []
+      );
+    }
+  }
+  const runtime = new StateCacheRuntime() as unknown as AgentRuntime;
+  expect(readRuntimeActionResults(runtime, messageId)).toEqual(stored);
+});

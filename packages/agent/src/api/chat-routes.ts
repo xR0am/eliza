@@ -1108,7 +1108,8 @@ export function readRuntimeActionResults(
     return [];
   }
   try {
-    return getActionResults(messageId);
+    // AgentRuntime.getActionResults reads `this.stateCache`; keep the receiver.
+    return getActionResults.call(runtime, messageId);
   } catch (error) {
     // error-policy:J2 context-adding rethrow — downstream `[]` means "no
     // action succeeded", so swallowing a read failure would make the route
