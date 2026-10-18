@@ -359,7 +359,7 @@ export const mastodonProvider: SocialMediaProvider = {
     // id (the create path in this file applies the same rule). This
     // method returns its result directly, so build the held result here.
     const reblogId = status?.id;
-    if (typeof reblogId !== "string" || !reblogId) {
+    if (typeof reblogId !== "string" || !reblogId.trim()) {
       return failedPostResult(
         "mastodon",
         new UnknownPostOutcomeError(
