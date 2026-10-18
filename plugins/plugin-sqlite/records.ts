@@ -3834,6 +3834,17 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const entry of entries) {
       const id = entry.id as UUID;
+      // plugin-sql's createPairingAllowlistEntry is a plain insert: a
+      // duplicate id fails instead of replacing the stored row. A blind
+      // set here silently replaced an allowlist entry — the sender it
+      // allows included.
+      if (
+        await this.storage.get<PairingAllowlistEntry>(
+          COLLECTIONS.PAIRING_ALLOWLIST,
+          id,
+        )
+      )
+        continue;
       await this.storage.set(COLLECTIONS.PAIRING_ALLOWLIST, id, {
         ...entry,
         id,
