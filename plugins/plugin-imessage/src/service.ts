@@ -60,6 +60,7 @@ import {
   type ChatDbReader,
   DEFAULT_CHAT_DB_PATH,
   getLastChatDbAccessIssue,
+  IMESSAGE_ATTACHMENT_READ_FAILED,
   openChatDb,
 } from "./chatdb-reader.js";
 import {
@@ -112,6 +113,18 @@ const BLOOIO_RECEIPT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 /** Attempts per chat.db row before a retryable persistence failure is skipped. */
 export const IMESSAGE_INBOUND_PERSIST_MAX_ATTEMPTS = 5;
+
+/** Poll attempts per chat.db row before an attachment metadata read failure is tolerated. */
+export const IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS = 5;
+
+/** Row id of a chat.db attachment metadata read failure, or null for any other error. */
+function attachmentReadFailureRowId(error: unknown): number | null {
+  if (!(error instanceof ElizaError) || error.code !== IMESSAGE_ATTACHMENT_READ_FAILED) {
+    return null;
+  }
+  const rowId = error.context?.rowId;
+  return typeof rowId === "number" ? rowId : null;
+}
 
 class IMessageInboundPersistenceRetryError extends ElizaError {
   constructor(rowId: number, cause: unknown) {
@@ -725,6 +738,13 @@ export class IMessageService extends Service implements IIMessageService {
   private lastRowId: number = 0;
   /** Retryable persistence attempts for the chat.db row currently blocking the cursor. */
   private inboundPersistRetry: { rowId: number; attempts: number } | null = null;
+  /** Attachment metadata read attempts for the chat.db row currently blocking the poll. */
+  private attachmentReadRetry: { rowId: number; attempts: number } | null = null;
+  /**
+   * Rows whose attachment read failure exhausted its retries and was reported.
+   * The reader delivers them without attachments until the cursor passes them.
+   */
+  private attachmentReadTolerated = new Set<number>();
   /**
    * Reentrancy gate for the polling loop. Dispatch calls
    * `messageService.handleMessage` which invokes the LLM and typically
@@ -1216,6 +1236,8 @@ export class IMessageService extends Service implements IIMessageService {
 
     this.settings = null;
     this.lastRowId = 0;
+    this.attachmentReadRetry = null;
+    this.attachmentReadTolerated.clear();
     logger.info("iMessage service stopped");
   }
 
@@ -2221,7 +2243,9 @@ export class IMessageService extends Service implements IIMessageService {
       try {
         await this.pollForNewMessages();
       } catch (error) {
-        logger.debug(`Polling error: ${error}`);
+        logger.warn(
+          `[imessage] Polling error: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }, this.settings.pollIntervalMs);
   }
@@ -2262,14 +2286,65 @@ export class IMessageService extends Service implements IIMessageService {
     }
   }
 
+  /**
+   * Read the next batch from chat.db. An attachment metadata read failure
+   * leaves the cursor in place so the next tick retries the row; after
+   * {@link IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS} attempts it is reported and
+   * the row is delivered without attachments (`attachmentReadFailed`) so it
+   * cannot head-of-line block later rows. Returns null when this tick must
+   * stop and retry.
+   */
+  private fetchInboundBatch(sinceRowId: number, limit: number): ChatDbMessage[] | null {
+    if (!this.runtime || !this.chatDb) return null;
+    // Retry state only matters until the cursor has durably moved past the row
+    // (a persistence rollback can rewind the cursor below a tolerated row).
+    if (this.attachmentReadRetry && this.attachmentReadRetry.rowId <= sinceRowId) {
+      this.attachmentReadRetry = null;
+    }
+    for (const rowId of this.attachmentReadTolerated) {
+      if (rowId <= sinceRowId) this.attachmentReadTolerated.delete(rowId);
+    }
+    for (;;) {
+      try {
+        return this.attachmentReadTolerated.size > 0
+          ? this.chatDb.fetchNewMessages(sinceRowId, limit, {
+              tolerateAttachmentReadFailure: this.attachmentReadTolerated,
+            })
+          : this.chatDb.fetchNewMessages(sinceRowId, limit);
+      } catch (error) {
+        const rowId = attachmentReadFailureRowId(error);
+        if (rowId === null || this.attachmentReadTolerated.has(rowId)) throw error;
+        const attempts =
+          this.attachmentReadRetry?.rowId === rowId ? this.attachmentReadRetry.attempts + 1 : 1;
+        logger.warn(
+          `[imessage] Attachment metadata read failed for ROWID=${rowId} (attempt ${attempts}/${IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS}): ${
+            error instanceof Error && error.cause instanceof Error
+              ? error.cause.message
+              : String(error)
+          }`
+        );
+        if (attempts < IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS) {
+          this.attachmentReadRetry = { rowId, attempts };
+          return null;
+        }
+        this.attachmentReadRetry = null;
+        this.attachmentReadTolerated.add(rowId);
+        this.runtime.reportError("IMessageService.inboundAttachmentRead", error, {
+          rowId,
+          attempts,
+        });
+      }
+    }
+  }
+
   private async pollForNewMessagesInner(): Promise<void> {
     if (!this.runtime || !this.chatDb) return;
 
     // Cap batch size to 50 to keep per-tick latency bounded on busy
     // inboxes. If traffic exceeds that, subsequent ticks catch up.
     const cursorBeforeBatch = this.lastRowId;
-    const batch = this.chatDb.fetchNewMessages(this.lastRowId, 50);
-    if (batch.length === 0) {
+    const batch = this.fetchInboundBatch(cursorBeforeBatch, 50);
+    if (batch === null || batch.length === 0) {
       return;
     }
 

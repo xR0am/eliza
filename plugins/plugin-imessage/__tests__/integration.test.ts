@@ -891,8 +891,17 @@ describe("openChatDb + ChatDbReader (bun:sqlite backed)", { timeout: 60_000 }, (
       mutator.close();
 
       expect(() => reader.fetchNewMessages(0, 100)).toThrow(
-        expect.objectContaining({ code: "IMESSAGE_ATTACHMENT_READ_FAILED" })
+        expect.objectContaining({
+          code: "IMESSAGE_ATTACHMENT_READ_FAILED",
+          context: { rowId: 10 },
+        })
       );
+
+      const tolerated = reader
+        .fetchNewMessages(0, 100, { tolerateAttachmentReadFailure: new Set([10]) })
+        .find((message) => message.rowId === 10);
+      expect(tolerated?.attachments).toEqual([]);
+      expect(tolerated?.attachmentReadFailed).toBe(true);
 
       const recovery = openDatabase(path);
       recovery.run(
