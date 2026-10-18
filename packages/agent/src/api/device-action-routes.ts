@@ -82,6 +82,7 @@ export function deviceRequestCredential(
       ? capabilityHeader.split(",").map((value) => value.trim())
       : [];
   const allowedCapabilities = new Set([
+    "camera.capture-photo.v1",
     "calendar.local-event.v1",
     "calendar.create.v1",
     "calendar.next-read.v1",

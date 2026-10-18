@@ -1239,7 +1239,7 @@ test("device approval REST lifecycle survives restart and never duplicates claim
     {
       const capability = "clock.handoff.v1";
       const allCapabilities =
-        "calendar.local-event.v1,notes.local-record.v1,reminders.local-record.v1,maps.selected-read.v1,clock.handoff.v1";
+        "calendar.local-event.v1,notes.local-record.v1,reminders.local-record.v1,maps.selected-read.v1,clock.handoff.v1,camera.capture-photo.v1";
       const enrolled = await request(
         "/register",
         { label: "Fixture phone", workflowProtocol: 1 },
