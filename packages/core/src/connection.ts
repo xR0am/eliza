@@ -228,6 +228,7 @@ export async function ensureConnections(
 		}
 	>();
 	const worldMap = new Map<string, World>();
+	const worldFallbackNames = new Map<string, string>();
 	const roomMap = new Map<string, Room>();
 	const roomExplicitTypes = new Map<string, ChannelType>();
 	const roomFallbackNames = new Map<string, string>();
@@ -267,13 +268,14 @@ export async function ensureConnections(
 			};
 		}
 
+		// `name` stays unset when the connection omits `worldName`; it is
+		// filled from the stored world (or the generated fallback) before the
+		// write, so a nameless connection cannot replace a real world name
+		// with the fallback. A name an earlier connection in this batch gave
+		// the same world is kept the same way.
 		const world: World = {
 			id: worldId,
-			name: c.worldName
-				? c.worldName
-				: c.messageServerId
-					? `World for server ${c.messageServerId}`
-					: `World for room ${c.roomId}`,
+			name: c.worldName || worldMap.get(worldId)?.name || undefined,
 			agentId,
 			messageServerId: c.messageServerId,
 			metadata: {
@@ -282,6 +284,14 @@ export async function ensureConnections(
 			},
 		};
 		worldMap.set(worldId, world);
+		if (!worldFallbackNames.has(worldId)) {
+			worldFallbackNames.set(
+				worldId,
+				c.messageServerId
+					? `World for server ${c.messageServerId}`
+					: `World for room ${c.roomId}`,
+			);
+		}
 
 		const roomType =
 			typeof c.type === "string" &&
@@ -383,6 +393,12 @@ export async function ensureConnections(
 							merged: {
 								...existing,
 								...world,
+								name:
+									world.name ||
+									existing?.name ||
+									worldFallbackNames.get(world.id),
+								messageServerId:
+									world.messageServerId ?? existing?.messageServerId,
 								agentId,
 								metadata: {
 									...(existing?.metadata ?? {}),
