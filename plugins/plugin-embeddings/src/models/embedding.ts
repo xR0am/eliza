@@ -247,6 +247,13 @@ async function requestEmbeddingsFromEndpoint(
         }, expected ${embeddingDimension}. Check EMBEDDING_DIMENSIONS / EMBEDDING_MODEL.`
       );
     }
+    const invalidComponent = item.embedding.findIndex((value) => !Number.isFinite(value));
+    if (invalidComponent !== -1) {
+      throw new Error(
+        `${endpoint.role} embedding API returned a non-numeric or non-finite vector component ` +
+          `at vector ${idx}, component ${invalidComponent}`
+      );
+    }
     vectors[idx] = item.embedding;
   }
 
