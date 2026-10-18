@@ -3593,9 +3593,18 @@ export class SlackService extends Service implements ISlackService {
       ? await this.getUser(message.user, accountId)
       : null;
     const displayName = user ? getSlackUserDisplayName(user) : slackUserId;
-    const channel = await this.getChannel(channelId, accountId).catch(
-      () => null,
-    );
+    const channel = effectiveThreadTs
+      ? null
+      : await this.getChannel(channelId, accountId);
+    if (!effectiveThreadTs && !channel) {
+      throw new ElizaError(
+        "Slack conversation metadata is unavailable for message history",
+        {
+          code: "SLACK_CHANNEL_IDENTITY_MISSING",
+          context: { accountId, channelId, messageTs: message.ts },
+        },
+      );
+    }
     const channelType = effectiveThreadTs
       ? ChannelType.THREAD
       : channel?.isIm
