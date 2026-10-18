@@ -1803,6 +1803,50 @@ it("keeps another agent's worlds out of listing, updates, and metadata swaps", a
   });
 });
 
+it("rejects creating a task whose id belongs to another agent", async () => {
+  const adapter = await open();
+  const otherAgentId = id();
+  const foreignId = id();
+  const ownedId = id();
+  const freshId = id();
+  await adapter.createTasks([{ id: ownedId, name: "a-task" }]);
+  const storage = await adapter.getConnection();
+  await storage.set("tasks", foreignId, {
+    id: foreignId,
+    agentId: otherAgentId,
+    name: "b-task",
+  });
+
+  await expect(
+    adapter.createTasks([
+      { id: freshId, name: "batched" },
+      { id: foreignId, name: "hijack" },
+    ]),
+  ).rejects.toMatchObject({ code: "SQLITE_TASK_ID_CONFLICT" });
+  expect(await storage.get("tasks", foreignId)).toMatchObject({
+    id: foreignId,
+    agentId: otherAgentId,
+    name: "b-task",
+  });
+  // The batch fails before any write, so the other task was not created.
+  expect(await storage.get("tasks", freshId)).toBeNull();
+
+  expect(
+    await adapter.createTasks([
+      { id: freshId, name: "new-task" },
+      { id: ownedId, name: "a-task-again" },
+    ]),
+  ).toEqual([freshId, ownedId]);
+  expect(await storage.get("tasks", freshId)).toMatchObject({
+    agentId,
+    name: "new-task",
+  });
+  expect(await storage.get("tasks", ownedId)).toMatchObject({
+    agentId,
+    name: "a-task-again",
+  });
+});
+
 it("keeps another agent's tasks out of name lookup, id lookup, and writes", async () => {
   const adapter = await open();
   const otherAgentId = id();
