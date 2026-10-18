@@ -2623,10 +2623,7 @@ export function createScheduledTaskRunner(
           const intervalMs = task.trigger.everyMinutes * 60_000;
           const lastFireMs = Date.parse(task.state.firedAt ?? "");
           const baseMs = Number.isFinite(lastFireMs) ? lastFireMs : endMs;
-          const steps = Math.max(
-            1,
-            Math.ceil((endMs - baseMs) / intervalMs),
-          );
+          const steps = Math.max(1, Math.ceil((endMs - baseMs) / intervalMs));
           task.state.firedAt = new Date(
             baseMs + (steps - 1) * intervalMs,
           ).toISOString();
