@@ -21,6 +21,12 @@ const codes = new Set([
   "SUBSCRIPTION_CATALOG_UNAVAILABLE",
 ]);
 
+export function appendTailOutput(current: string, chunk: Buffer): string {
+  if (Buffer.byteLength(current) + chunk.length > 1048576)
+    throw new Error("catalog_tail_limit");
+  return current + chunk.toString();
+}
+
 export function catalogCodes(raw: string, expectedUrl: string): string[] {
   const found = new Set<string>();
   // Wrangler 4.116 JSON output uses four-space indentation, one object per event.
@@ -123,12 +129,14 @@ if (import.meta.main) {
       failed = true;
     });
     tail.stdout?.on("data", (chunk) => {
-      if (output.length + chunk.length > 1048576) {
+      if (exceeded) return;
+      try {
+        output = appendTailOutput(output, chunk);
+      } catch {
+        output = "";
         exceeded = true;
         tail?.kill("SIGTERM");
-        return;
       }
-      output += chunk.toString();
     });
     tail.stderr?.resume(); // Never forward or persist provider errors.
     await delay(10000);
