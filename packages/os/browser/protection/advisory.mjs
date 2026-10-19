@@ -101,6 +101,11 @@ export function createProtectionAdvisory(
     const ticket = (tickets.get(tabId) ?? 0) + 1;
     tickets.set(tabId, ticket);
     const revision = epoch;
+    // A newer show for this tab replaces this one. An owner change alone does not: this page
+    // still needs its advice, so it is drawn again for the new owner. Otherwise a page that
+    // committed while the account context changed kept no advice until its next navigation.
+    const replaced = () => tickets.get(tabId) !== ticket;
+    const again = () => (replaced() ? undefined : show(tabId, address));
     displays.delete(tabId);
     let url;
     try {
@@ -132,13 +137,15 @@ export function createProtectionAdvisory(
       : current
         ? "current"
         : "unavailable";
-    if (revision !== epoch || tickets.get(tabId) !== ticket) return;
+    if (replaced()) return;
+    if (revision !== epoch) return again();
     if (
       acknowledgements.has(url.origin) &&
       acknowledgements.get(url.origin) !== evidence
     )
       acknowledgements.delete(url.origin);
-    if (revision !== epoch || tickets.get(tabId) !== ticket) return;
+    if (replaced()) return;
+    if (revision !== epoch) return again();
     const nonce = crypto.randomUUID();
     const state =
       current && !similar
@@ -156,12 +163,8 @@ export function createProtectionAdvisory(
     // Bind the injection to the current URL before it starts. The page receipt is
     // checked again below; an origin change never inherits an acknowledgement.
     const tab = await api.tabs.get(tabId);
-    if (
-      tab.url !== address ||
-      revision !== epoch ||
-      tickets.get(tabId) !== ticket
-    )
-      return;
+    if (tab.url !== address || replaced()) return;
+    if (revision !== epoch) return again();
     const frame = await api.webNavigation.getFrame({ tabId, frameId: 0 });
     if (!frame?.documentId || frame.url !== address) return;
     const work = (renders.get(tabId) ?? Promise.resolve())
@@ -178,7 +181,8 @@ export function createProtectionAdvisory(
     renders.set(tabId, work);
     const results = await work;
     if (renders.get(tabId) === work) renders.delete(tabId);
-    if (revision !== epoch || tickets.get(tabId) !== ticket) return;
+    if (replaced()) return;
+    if (revision !== epoch) return again();
     const result = results.find((value) => value.frameId === 0);
     if (typeof result?.documentId !== "string") return;
     if (!state) return true;
@@ -254,6 +258,9 @@ export function createProtectionAdvisory(
     );
     return true;
   });
+  // Pages that committed before this worker registered its listeners (a cold browser start or a
+  // worker restart) get their advice now, not only after the next list refresh or navigation.
+  void refreshAll().catch(() => {});
   async function setOwner(value) {
     if (
       value !== null &&
