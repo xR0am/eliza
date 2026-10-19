@@ -107,9 +107,10 @@ export function priorDialogueContent(text: string, speaker?: string): string {
   return `${speaker}: ${text}`;
 }
 
-export function verifiedCrossRoomContent(memory: Memory): string {
-  const text = getUserMessageText(memory);
-  const attachmentText = (memory.content.attachments ?? [])
+/** One entry per attachment of a prior message: label, media type and
+ * description. URLs and the full attachment text stay out of history. */
+function priorDialogueAttachmentSummary(memory: Memory): string {
+  return (memory.content.attachments ?? [])
     .map((attachment) => {
       const label =
         attachment.filename ??
@@ -117,11 +118,9 @@ export function verifiedCrossRoomContent(memory: Memory): string {
         attachment.id ??
         "attachment";
       const mediaType = attachment.mimeType ?? attachment.contentType;
-      const readable = attachment.text ?? attachment.description;
-      return `[attachment: ${label}${mediaType ? `; ${mediaType}` : ""}${readable ? `; ${readable}` : ""}]`;
+      return `[attachment: ${label}${mediaType ? `; ${mediaType}` : ""}${attachment.description ? `; ${attachment.description}` : ""}]`;
     })
     .join(" ");
-  return [text, attachmentText].filter(Boolean).join(" ");
 }
 
 /** The unaugmented original behind a rendered dialogue segment. */
@@ -345,6 +344,8 @@ export function appendPriorDialogueEvents(
     const sourceReplyReferences = storedReferences
       ? { ...storedReferences, replySha256: sourceReplyTextHash(text) }
       : undefined;
+    // History discovery strips this exact suffix to recover the quotable text.
+    const attachmentSummary = priorDialogueAttachmentSummary(memory);
     events.push({
       id: `history:${memory.id}`,
       type: "segment",
@@ -354,7 +355,7 @@ export function appendPriorDialogueEvents(
         id: `history:${memory.id}`,
         label: isOwnReply ? "prior_message:agent" : "prior_message:user",
         content: priorDialogueContent(
-          text,
+          attachmentSummary ? `${text} ${attachmentSummary}` : text,
           speakerName ?? (isOwnReply ? "assistant" : "user"),
         ),
         stable: false,
@@ -363,6 +364,7 @@ export function appendPriorDialogueEvents(
           entityId: memory.entityId,
           speakerName: speakerName ?? (isOwnReply ? "assistant" : "user"),
           ...(sourceReplyReferences ? { sourceReplyReferences } : {}),
+          ...(attachmentSummary ? { attachmentSummary } : {}),
           ...(originalText !== undefined
             ? { originalTextSha256: sourceReplyTextHash(originalText) }
             : {}),
@@ -389,7 +391,12 @@ export function appendPriorDialogueEvents(
     if (memory.entityId === runtime.agentId && !includeOwnReplies) {
       continue;
     }
-    const content = verifiedCrossRoomContent(memory);
+    const content = [
+      getUserMessageText(memory),
+      priorDialogueAttachmentSummary(memory),
+    ]
+      .filter(Boolean)
+      .join(" ");
     if (!content || looksLikePriorDialogueArtifact(content)) continue;
     const isOwnReply = memory.entityId === runtime.agentId;
     const speakerName = isOwnReply
