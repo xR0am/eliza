@@ -68,3 +68,23 @@ an AES-256-GCM key), and only the sealed envelope is uploaded. Defaults: 5
 single-use `alpha-staging-qa` codes and one 50-redemption `alpha-staging-shared`
 code, 183 days each. The pepper is the staging Environment secret
 `ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER`. Delete the artifact after download.
+
+## Production test grant
+
+`Cloud production test grant` runs only on an exact reviewed `main` commit and
+uses the protected `production` Environment. Its default run reads only database
+identity and column metadata. The existing reviewed cluster and authority digest
+variables must match; missing variables refuse the run. It reports booleans or
+fixed error codes, without database names, credentials, SQL parameters or grants.
+
+Explicit `mint=true` issues exactly one single-use Plus grant, with 7 days by
+default and a maximum of 31 days. It refuses redemption by an organization with
+an open paid plan. The unredeemed code expires after one day. The mint transaction
+rechecks production identity and migration 0547 columns on its own database
+session. This does not apply migrations or change Stripe objects.
+
+Supply the recipient public key made by `recipient-envelope.ts keygen`, as in
+the staging procedure above. Only the sealed envelope is uploaded for one day.
+Open it locally with the matching private key. Never put plaintext codes in logs
+or issue comments. The workflow is not a payment, redemption, or service-acceptance
+check. Do not dispatch the staging workflow against production.
