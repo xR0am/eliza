@@ -1145,6 +1145,7 @@ export async function runV5MessageRuntimeStage1(
             deviceActionForCapabilities(
               action,
               getDeviceActionTurn()?.credential.capabilities,
+              args.message.content.metadata,
             ),
           )
         : args.runtime.actions;

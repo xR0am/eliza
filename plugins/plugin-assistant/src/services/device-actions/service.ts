@@ -32,6 +32,11 @@ import {
   validateCalendarResult,
 } from "./calendar-contract.ts";
 import {
+  CAMERA_CAPTURE_CAPABILITY,
+  isCameraCapture,
+  validateCameraCaptureResult,
+} from "./camera-contract.ts";
+import {
   assertClockObservation,
   CLOCK_ALARMS_CAPABILITY,
   CLOCK_CAPABILITY,
@@ -794,6 +799,7 @@ export class DeviceActionService {
         viewProfileVersion: 1 as const,
         userTextFormatVersion: 1 as const,
         capabilities: [
+          CAMERA_CAPTURE_CAPABILITY,
           "calendar.local-event.v1",
           CALENDAR_CREATE_CAPABILITY,
           CALENDAR_NEXT_CAPABILITY,
@@ -1024,6 +1030,7 @@ export class DeviceActionService {
       throw new DeviceActionError("Calendar capability unavailable");
     if (
       ![
+        "camera_capture_photo",
         "sms_send",
         "clock_handoff",
         "clock_alarm",
@@ -1060,12 +1067,25 @@ export class DeviceActionService {
         !viewProfile.views.includes(validated.view)
       )
         throw new DeviceActionError("View unavailable on this installation");
+      const turn = getDeviceActionTurn();
+      const metadata = turn?.replyContext?.message.content.metadata;
+      const directRequest =
+        turn?.runtime === this.runtime &&
+        metadata &&
+        typeof metadata === "object" &&
+        !Array.isArray(metadata) &&
+        "agentActionMode" in metadata &&
+        metadata.agentActionMode === "direct-request-v1";
+      const requestingMessage = directRequest
+        ? turn?.replyContext?.message.id
+        : undefined;
       const payload: DeviceActionPayload = {
         action: "device_action",
         version: 1,
         installationId: c.installationId,
         enrollmentId: String(row.enrollment_id),
         operation: validated,
+        ...(requestingMessage ? { requestMessageId: requestingMessage } : {}),
         ...(validated.type === "open_view" && viewProfile
           ? { viewProfileRevision: viewProfile.revision }
           : {}),
@@ -1622,6 +1642,21 @@ export class DeviceActionService {
           throw new DeviceActionError("Invalid Clock receipt");
         }
       } else if (
+        isCameraCapture(payload.operation) &&
+        receipt.outcome === "applied"
+      ) {
+        try {
+          receipt = {
+            ...receipt,
+            result: validateCameraCaptureResult(
+              value.result,
+              identifier(receipt.operationId),
+            ),
+          };
+        } catch {
+          throw new DeviceActionError("Invalid saved photo receipt");
+        }
+      } else if (
         isMapsOperation(payload.operation) &&
         receipt.outcome === "applied"
       ) {
@@ -1855,6 +1890,21 @@ export class DeviceActionService {
             };
         } catch {
           throw new DeviceActionError("Invalid Clock receipt");
+        }
+      } else if (
+        isCameraCapture(payload.operation) &&
+        receipt.outcome === "applied"
+      ) {
+        try {
+          receipt = {
+            ...receipt,
+            result: validateCameraCaptureResult(
+              value.result,
+              identifier(receipt.operationId),
+            ),
+          };
+        } catch {
+          throw new DeviceActionError("Invalid saved photo receipt");
         }
       } else if (
         isMapsOperation(payload.operation) &&

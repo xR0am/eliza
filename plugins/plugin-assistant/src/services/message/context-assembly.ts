@@ -448,6 +448,7 @@ export async function createV5MessageContextObject(args: {
           ? deviceActionForCapabilities(
               action,
               getDeviceActionTurn()?.credential.capabilities,
+              args.message.content.metadata,
             )
           : action;
       // Clone only this turn's action schema. Never mutate the registered action
