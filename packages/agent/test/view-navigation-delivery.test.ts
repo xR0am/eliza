@@ -1466,7 +1466,7 @@ describe("model-selected host navigation", () => {
     { reply: "Messages is open.", wrongDestination: true },
     { reply: "Calendar is open.", wrongDestination: true },
     {
-      reply: "Notes is open.",
+      reply: "I’ll take you to Notes.",
       wrongDestination: false,
       missingNativeBundle: true,
     },
@@ -1560,6 +1560,8 @@ describe("model-selected host navigation", () => {
         expect(JSON.stringify(params)).not.toContain(
           "PRIVATE_CONTROL_SENTINEL",
         );
+        if (missingNativeBundle)
+          expect(JSON.stringify(params)).toContain("user's preferred wording");
         return {
           text: "",
           toolCalls: [
@@ -1646,7 +1648,7 @@ describe("model-selected host navigation", () => {
           kind: "planned_reply",
           result: {
             responseContent: {
-              text: missingNativeBundle ? "Opening Notes." : reply,
+              text: reply,
             },
           },
         });
@@ -2513,13 +2515,12 @@ describe("native completed-action navigation", () => {
     const result = await show(f.runtime, "notes", input);
     expect(result).toMatchObject({
       success: true,
-      verifiedUserFacing: true,
       data: { navigation: { status: "prepared" } },
       values: { navigationPrepared: true, completedActionDelivered: false },
     });
     expect(
       result && typeof result !== "boolean" && result.userFacingText,
-    ).not.toContain("Opened");
+    ).toBeUndefined();
     expect(f.kernelRequests()).toBe(1);
     expect(f.frames).toHaveLength(0);
     const scope = { hostKey: f.hostKey, clientId: "origin-client" };
