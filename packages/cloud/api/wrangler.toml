@@ -944,6 +944,7 @@ binding = "AI"
 binding = "BROWSER"
 
 [env.production.vars]
+VOICE_BATCH_STT_PROVIDER = "cartesia"
 LOGIN_API_URL = "https://steward-api-production-115d.up.railway.app"
 NODE_ENV = "production"
 # Signed Twilio callbacks and media-stream URLs must use the externally routed
