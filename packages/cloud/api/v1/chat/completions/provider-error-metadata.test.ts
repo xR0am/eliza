@@ -1,7 +1,60 @@
 import { describe, expect, test } from "bun:test";
-import { getSafeProviderErrorMetadata } from "./provider-error-metadata";
+import {
+  getSafeCallerLlmPurpose,
+  getSafeProviderErrorMetadata,
+} from "./provider-error-metadata";
 
 describe("provider failure diagnostic privacy", () => {
+  test("correlates rejected requests using only caller-asserted finite purposes", () => {
+    const error = {
+      statusCode: 400,
+      data: {
+        error: {
+          code: "invalid_json_schema",
+          param: "tools[0].PRIVATE_SENTINEL",
+        },
+      },
+    };
+    for (const purpose of ["should_respond", "action_planner", "response"]) {
+      const request = new Request(
+        "https://example.invalid/api/v1/chat/completions",
+        { headers: { "X-Eliza-Llm-Purpose": purpose } },
+      );
+      expect(
+        getSafeProviderErrorMetadata(
+          error,
+          getSafeCallerLlmPurpose(request.headers.get("X-Eliza-Llm-Purpose")),
+        ),
+      ).toEqual({
+        callerPurpose: purpose,
+        upstreamStatus: 400,
+        providerErrorCode: "invalid_json_schema",
+        parameterCategory: "tools",
+      });
+    }
+    for (const purpose of [
+      null,
+      "",
+      "ACTION_PLANNER",
+      "unknown",
+      "action_planner,response",
+      "PRIVATE_SENTINEL",
+      "response\r\nPRIVATE_SENTINEL",
+      "x".repeat(32768),
+    ]) {
+      const result = getSafeProviderErrorMetadata(
+        error,
+        getSafeCallerLlmPurpose(purpose),
+      );
+      expect(result).toEqual({
+        upstreamStatus: 400,
+        providerErrorCode: "invalid_json_schema",
+        parameterCategory: "tools",
+      });
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_SENTINEL");
+    }
+  });
+
   test("classifies a provider rejection without its private schema path or body", () => {
     const result = getSafeProviderErrorMetadata({
       statusCode: 400,

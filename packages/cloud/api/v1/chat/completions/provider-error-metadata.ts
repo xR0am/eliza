@@ -1,3 +1,16 @@
+/** Caller-asserted purpose only; never evidence of an authenticated runtime stage. */
+export type CallerLlmPurpose = "should_respond" | "action_planner" | "response";
+
+export function getSafeCallerLlmPurpose(
+  value: string | null,
+): CallerLlmPurpose | undefined {
+  return value === "should_respond" ||
+    value === "action_planner" ||
+    value === "response"
+    ? value
+    : undefined;
+}
+
 /** Finite diagnostic categories only: provider bodies may echo private request data. */
 const ERROR_CODES = new Set([
   "invalid_request_error",
@@ -87,10 +100,13 @@ function containsOrdered(text: string, ...parts: string[]): boolean {
 /** Does not return any provider-owned string, path, message, body, or identifier. */
 export function getSafeProviderErrorMetadata(
   error: unknown,
+  callerPurpose?: CallerLlmPurpose,
 ): Record<string, unknown> {
   let current = error;
   const seen = new Set<unknown>();
-  const result: Record<string, unknown> = {};
+  const result: Record<string, unknown> = callerPurpose
+    ? { callerPurpose }
+    : {};
   for (let depth = 0; depth < 4 && current && !seen.has(current); depth++) {
     seen.add(current);
     const status = field(current, "statusCode");
