@@ -12,8 +12,8 @@ import {
 import { SQLiteDatabaseAdapter } from "@elizaos/testing/runtime";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { recordCloudInferenceFailure } from "../../../plugins/plugin-elizacloud/src/utils/inference-diagnostics.ts";
 import { proposeDeviceAction } from "../../../plugins/plugin-assistant/src/services/device-actions/action.ts";
+import { recordCloudInferenceFailure } from "../../../plugins/plugin-elizacloud/src/utils/inference-diagnostics.ts";
 import { installRouterHandler } from "../../../plugins/plugin-local-inference/src/services/router-handler.ts";
 import { detectRuntimeModel } from "../src/api/agent-model.ts";
 import {
