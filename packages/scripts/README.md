@@ -79,3 +79,13 @@ and metrics are disabled. No provider configuration or payment is changed.
 Production requires `main`. A 503 without a captured code fails the diagnostic;
 it does not prove a missing binding. Compare binding presence and the captured
 code before repairing provider configuration.
+The protected **Mobile App Auth Registration Admin** workflow has a read-only
+`inventory` operation for Alpha Phone recovery. It reports only presence of the
+three known mobile-auth Worker secret bindings and aggregate registration counts
+for the fixed environment-specific Alpha callback. It does not require a registry
+value, so it can diagnose a missing registry. Production runs require `main`.
+The database connection must match both protected database identity hash variables;
+all registration queries run in the same read-only transaction. Existing `diagnose`
+and `repair` behavior is unchanged. A present Worker registry is not permission to
+replace it: preserve every existing client and Android certificate when repairing
+configuration. This inventory neither reveals nor changes those values.
