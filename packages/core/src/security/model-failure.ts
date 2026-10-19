@@ -15,6 +15,7 @@ import { ModelType } from "../types/model.ts";
 import {
 	isModelFundingAuthorityError,
 	isProviderContextOverflowFailure,
+	modelProviderErrorStatus,
 } from "../utils/model-errors.ts";
 import {
 	findNextCloseTag,
@@ -67,16 +68,8 @@ export function isModelProviderRetryBudgetExhaustedError(
 }
 
 function hasHttpStatus(error: unknown, statuses: readonly number[]): boolean {
-	const candidate = asErrorObject(error);
-	if (!candidate) return false;
-	return statuses.includes(Number(candidate.statusCode ?? candidate.status));
-}
-
-function readHttpStatus(error: unknown): number | undefined {
-	const candidate = asErrorObject(error);
-	if (!candidate) return undefined;
-	const status = Number(candidate.statusCode ?? candidate.status);
-	return Number.isFinite(status) && status > 0 ? status : undefined;
+	const status = modelProviderErrorStatus(error);
+	return status !== undefined && statuses.includes(status);
 }
 
 /**
@@ -126,7 +119,7 @@ function extractErrorMessage(error: unknown): string | undefined {
  */
 export function describeModelCallError(error: unknown): string {
 	const unwrapped = unwrapRetryError(error);
-	const status = readHttpStatus(unwrapped) ?? readHttpStatus(error);
+	const status = modelProviderErrorStatus(error);
 	const message = extractErrorMessage(unwrapped) ?? extractErrorMessage(error);
 	if (message && status) return `HTTP ${status}: ${message}`;
 	if (message) return message;
@@ -143,8 +136,7 @@ export function describeModelCallError(error: unknown): string {
 
 /** Recognizes rate limits from structured provider status, including retry envelopes. Status-less errors use message matching; status and statusCode are both supported. */
 export function isRateLimitError(error: unknown): boolean {
-	const unwrapped = unwrapRetryError(error);
-	if (hasHttpStatus(unwrapped, [429])) {
+	if (hasHttpStatus(error, [429])) {
 		return true;
 	}
 	if (!(error instanceof Error)) return false;
@@ -187,7 +179,7 @@ export const INSUFFICIENT_CREDITS_REPLY =
 // "out of credits" and tell the user to spend money on a condition that
 // resolves by waiting.
 const INSUFFICIENT_CREDITS_RE =
-	/\b(?:insufficient(?:[_\s]+(?:credits?|quota|funds))|insufficient_quota|out of credits|max usage reached|quota(?:\s+exceeded)?|billing.*disabled|payment.*required|account.*suspended|spending.*limit|budget.*exceeded|no.*api.*credits|credit.*balance.*zero)\b/i;
+	/\b(?:insufficient(?:[_\s]+(?:credits?|quota|funds))|insufficient_quota|out of credits|max usage reached|quota(?:\s+exceeded)?|billing.*disabled|payment.*required|account.*suspended|spending.*limit|budget.*exceeded|no.*api.*credits|credit.*balance.*(?:zero|too low))\b/i;
 
 const BILLING_KEYWORDS_RE =
 	/\b(?:billing|quota|credits?|budget|spending|payment|subscription|plan limit)\b/i;
@@ -212,7 +204,7 @@ export function isInsufficientCreditsMessage(message: string): boolean {
 export function isInsufficientCreditsError(error: unknown): boolean {
 	if (typeof error === "string") return isInsufficientCreditsMessage(error);
 	const unwrapped = unwrapRetryError(error);
-	if (hasHttpStatus(unwrapped, [402])) {
+	if (hasHttpStatus(error, [402])) {
 		return true;
 	}
 	const candidate = asErrorObject(unwrapped);
@@ -230,7 +222,7 @@ export function isInsufficientCreditsError(error: unknown): boolean {
 	}
 	const message = unwrapped instanceof Error ? unwrapped.message : "";
 	if (isInsufficientCreditsMessage(message)) return true;
-	return hasHttpStatus(unwrapped, [429]) && BILLING_KEYWORDS_RE.test(message);
+	return hasHttpStatus(error, [429]) && BILLING_KEYWORDS_RE.test(message);
 }
 
 /**
@@ -241,8 +233,7 @@ export function isInsufficientCreditsError(error: unknown): boolean {
  * first, message-substring fallback second.
  */
 export function isAuthError(error: unknown): boolean {
-	const unwrapped = unwrapRetryError(error);
-	if (hasHttpStatus(unwrapped, [401, 403])) {
+	if (hasHttpStatus(error, [401, 403])) {
 		return true;
 	}
 	if (!(error instanceof Error)) return false;
@@ -325,7 +316,7 @@ export function isModelProviderFallbackError(
 	if (isRateLimitError(error)) {
 		return true;
 	}
-	if (hasHttpStatus(unwrapped, [500, 502, 503, 504, 529])) {
+	if (hasHttpStatus(error, [500, 502, 503, 504, 529])) {
 		return true;
 	}
 	if (!(error instanceof Error)) return false;

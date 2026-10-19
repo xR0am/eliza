@@ -1,11 +1,16 @@
 /** Same durable scheduler row and real reminder processing, driven by a virtual
  * core clock. Notification sink records deliveries; no network/model inference. */
+
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   AgentEventService,
   attestDeliveryAudienceFromCanonicalRoom,
   ChannelType,
+  ElizaError,
   executePlannedToolCall,
   type Memory,
+  SEND_HANDLER_NOT_FOUND,
   TaskService,
   type UUID,
 } from "@elizaos/core";
@@ -545,6 +550,259 @@ it("quiet-blocked due work consumes its wake without a one-second retry loop", a
     expect(model).not.toHaveBeenCalled();
   } finally {
     model.mockRestore();
+    await f.cleanup();
+  }
+}, 120000);
+
+it("a long SMS reminder whose second part Twilio rejects is not sent again", async () => {
+  const f = await createLifeOpsTestRuntime();
+  const bodies: string[] = [];
+  const twilio = createServer((request, response) => {
+    let form = "";
+    request.on("data", (chunk) => {
+      form += chunk;
+    });
+    request.on("end", () => {
+      bodies.push(new URLSearchParams(form).get("Body") ?? "");
+      const accepted = bodies.length === 1;
+      response.writeHead(accepted ? 201 : 400, {
+        "Content-Type": "application/json",
+      });
+      response.end(
+        JSON.stringify(accepted ? { sid: "SM1" } : { message: "rejected" }),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => twilio.listen(0, "127.0.0.1", resolve));
+  vi.stubEnv(
+    "ELIZA_MOCK_TWILIO_BASE",
+    `http://127.0.0.1:${(twilio.address() as AddressInfo).port}`,
+  );
+  vi.stubEnv("TWILIO_ACCOUNT_SID", "ACtest");
+  vi.stubEnv("TWILIO_AUTH_TOKEN", "token");
+  vi.stubEnv("TWILIO_PHONE_NUMBER", "+15550000000");
+  // The model writes the SMS body; this one is over the 1600-character limit.
+  const model = vi
+    .spyOn(f.runtime, "useModel")
+    .mockResolvedValue("word ".repeat(400).trim());
+  try {
+    const service = new LifeOpsService(f.runtime);
+    await service.upsertChannelPolicy({
+      channelType: "sms",
+      channelRef: "+15551234567",
+      allowReminders: true,
+    });
+    const due = Date.now() + 90000;
+    await service.createDefinition({
+      title: "Long SMS proof",
+      kind: "habit",
+      cadence: {
+        kind: "once",
+        dueAt: new Date(due).toISOString(),
+        visibilityLeadMinutes: 0,
+      },
+      timezone: "UTC",
+      metadata: { ownerSurface: "OWNER_REMINDERS" },
+      reminderPlan: {
+        steps: [{ channel: "sms", offsetMinutes: 0, label: "Text" }],
+      },
+    });
+    vi.setSystemTime(new Date(due));
+    await service.processReminders({
+      now: new Date(due).toISOString(),
+      scope: "definitions",
+    });
+    expect(bodies).toHaveLength(2);
+    const attempts = await service.repository.listReminderAttempts(
+      f.runtime.agentId,
+    );
+    expect(attempts.filter((a) => a.channel === "sms")).toEqual([
+      expect.objectContaining({
+        outcome: "blocked_connector",
+        deliveryMetadata: expect.objectContaining({
+          reason: "runtime_send_acceptance_unknown",
+          providerMessageIds: ["SM1"],
+        }),
+      }),
+    ]);
+    vi.setSystemTime(new Date(due + 1000));
+    await service.processReminders({
+      now: new Date(due + 1000).toISOString(),
+      scope: "definitions",
+    });
+    expect(bodies).toHaveLength(2);
+  } finally {
+    model.mockRestore();
+    vi.unstubAllEnvs();
+    await new Promise((resolve) => twilio.close(resolve));
+    await f.cleanup();
+  }
+}, 120000);
+
+it.each([
+  [
+    "a split message whose second part failed",
+    {
+      kind: "partially_delivered",
+      receipt: {
+        providerMessageIds: ["tg-1"],
+        acceptedAt: 1,
+        persistence: { status: "not_attempted", reason: "test fixture" },
+      },
+      memories: [],
+      code: "SEND_PARTIAL",
+      message: "Part 2 of 2 failed after part 1 was accepted.",
+    },
+    "runtime_send_partially_delivered",
+  ],
+  ["no delivery evidence", undefined, "runtime_send_unknown"],
+  [
+    "a send that threw after the request left",
+    Error("socket hang up"),
+    "runtime_send_acceptance_unknown",
+  ],
+])(
+  "a connector reminder with %s is not sent again",
+  async (_case, sendResult, reason) => {
+    const f = await createLifeOpsTestRuntime();
+    const send = vi.spyOn(f.runtime, "sendMessageToTarget");
+    if (sendResult instanceof Error) send.mockRejectedValue(sendResult);
+    else send.mockResolvedValue(sendResult as never);
+    try {
+      const service = new LifeOpsService(f.runtime);
+      await service.upsertChannelPolicy({
+        channelType: "telegram",
+        channelRef: "owner-chat",
+        allowReminders: true,
+        metadata: { channelId: "owner-chat" },
+      });
+      const due = Date.now() + 90000;
+      await service.createDefinition({
+        title: "Connector proof",
+        kind: "habit",
+        cadence: {
+          kind: "once",
+          dueAt: new Date(due).toISOString(),
+          visibilityLeadMinutes: 0,
+        },
+        timezone: "UTC",
+        metadata: { ownerSurface: "OWNER_REMINDERS" },
+        reminderPlan: {
+          steps: [{ channel: "telegram", offsetMinutes: 0, label: "Ping" }],
+        },
+      });
+      vi.setSystemTime(new Date(due));
+      await service.processReminders({
+        now: new Date(due).toISOString(),
+        scope: "definitions",
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      const attempts = await service.repository.listReminderAttempts(
+        f.runtime.agentId,
+      );
+      expect(attempts.filter((a) => a.channel === "telegram")).toEqual([
+        expect.objectContaining({
+          outcome: "blocked_connector",
+          deliveryMetadata: expect.objectContaining({ reason }),
+        }),
+      ]);
+      // The next scheduler ticks must not send the same reminder again.
+      for (const later of [due + 60_000, due + 120_000]) {
+        vi.setSystemTime(new Date(later));
+        await service.processReminders({
+          now: new Date(later).toISOString(),
+          scope: "definitions",
+        });
+      }
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      send.mockRestore();
+      await f.cleanup();
+    }
+  },
+  120000,
+);
+
+it("a connector reminder whose send handler is not registered yet is retried and delivered once", async () => {
+  const f = await createLifeOpsTestRuntime();
+  const send = vi
+    .spyOn(f.runtime, "sendMessageToTarget")
+    .mockRejectedValueOnce(
+      new ElizaError("Send handler not found for source: telegram", {
+        code: SEND_HANDLER_NOT_FOUND,
+        context: { source: "telegram" },
+      }),
+    )
+    .mockResolvedValue({
+      kind: "delivered",
+      receipt: {
+        providerMessageIds: ["tg-1"],
+        acceptedAt: 1,
+        persistence: { status: "not_attempted", reason: "test fixture" },
+      },
+      memories: [],
+    } as never);
+  try {
+    const service = new LifeOpsService(f.runtime);
+    await service.upsertChannelPolicy({
+      channelType: "telegram",
+      channelRef: "owner-chat",
+      allowReminders: true,
+      metadata: { channelId: "owner-chat" },
+    });
+    const due = Date.now() + 90000;
+    await service.createDefinition({
+      title: "Connector startup proof",
+      kind: "habit",
+      cadence: {
+        kind: "once",
+        dueAt: new Date(due).toISOString(),
+        visibilityLeadMinutes: 0,
+      },
+      timezone: "UTC",
+      metadata: { ownerSurface: "OWNER_REMINDERS" },
+      reminderPlan: {
+        steps: [{ channel: "telegram", offsetMinutes: 0, label: "Ping" }],
+      },
+    });
+    vi.setSystemTime(new Date(due));
+    await service.processReminders({
+      now: new Date(due).toISOString(),
+      scope: "definitions",
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    const first = await service.repository.listReminderAttempts(
+      f.runtime.agentId,
+    );
+    expect(first.filter((a) => a.channel === "telegram")).toEqual([
+      expect.objectContaining({
+        outcome: "blocked_connector",
+        deliveryMetadata: expect.objectContaining({
+          reason: "runtime_send_handler_missing",
+        }),
+      }),
+    ]);
+    // Nothing was sent, so the next tick retries once the handler exists,
+    // and later ticks do not send the delivered step again.
+    for (const later of [due + 60_000, due + 120_000]) {
+      vi.setSystemTime(new Date(later));
+      await service.processReminders({
+        now: new Date(later).toISOString(),
+        scope: "definitions",
+      });
+    }
+    expect(send).toHaveBeenCalledTimes(2);
+    const attempts = await service.repository.listReminderAttempts(
+      f.runtime.agentId,
+    );
+    expect(
+      attempts
+        .filter((a) => a.channel === "telegram")
+        .map((a) => a.outcome)
+        .sort(),
+    ).toEqual(["blocked_connector", "delivered"]);
+  } finally {
+    send.mockRestore();
     await f.cleanup();
   }
 }, 120000);

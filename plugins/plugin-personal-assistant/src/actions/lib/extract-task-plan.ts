@@ -31,7 +31,15 @@ import {
 import { textStatesExplicitRecurrence } from "@elizaos/core/protocol";
 import { resolveDefaultTimeZone } from "../../lifeops/defaults.js";
 import { normalizeExplicitTimeZoneToken } from "../../lifeops/time/timezone.js";
-import { getZonedDateParts } from "../../lifeops/time.js";
+import { describeNowForPrompt } from "../../lifeops/time.js";
+import {
+  validateCadenceKind,
+  validatePositiveNumber,
+  validatePriority,
+  validateTitle,
+  validateWeekdays,
+  validateWindows,
+} from "./extracted-field-validators.js";
 import { UNDATED_TODO_EXTRACTION_GUIDANCE } from "./undated-todo-intent.js";
 
 // ── Types ─────────────────────────────────────────────
@@ -96,7 +104,9 @@ export interface ExtractedTaskCreatePlan extends ExtractedTaskParams {
   response: string | null;
 }
 
-const VALID_CADENCE_KINDS = new Set([
+const VALID_CADENCE_KINDS: ReadonlySet<
+  NonNullable<ExtractedTaskParams["cadenceKind"]>
+> = new Set([
   "unscheduled",
   "once",
   "daily",
@@ -177,29 +187,6 @@ const EMPTY_TASK_CREATE_PLAN: ExtractedTaskCreatePlan = {
   dueInMinutes: null,
   multiStep: false,
 };
-
-const WEEKDAY_NAMES = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-] as const;
-
-/**
- * Human-readable current date/time in the owner's timezone, used to ground
- * absolute-date extraction ("april 17", "next friday") in the prompt.
- */
-function describeNowForPrompt(now: Date, timeZone: string): string {
-  const parts = getZonedDateParts(now, timeZone);
-  const weekday = new Date(
-    Date.UTC(parts.year, parts.month - 1, parts.day, 12),
-  ).getUTCDay();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${WEEKDAY_NAMES[weekday]} ${parts.year}-${pad(parts.month)}-${pad(parts.day)} ${pad(parts.hour)}:${pad(parts.minute)} (${timeZone})`;
-}
 
 function promptText(value: string): string {
   const trimmed = value.trim();
@@ -292,12 +279,6 @@ function buildExtractionPrompt(
 
 // ── Validators ────────────────────────────────────────
 
-function validateTitle(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function validateRequestKind(
   value: unknown,
 ): ExtractedTaskParams["requestKind"] {
@@ -324,32 +305,6 @@ function validateResponse(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function validateCadenceKind(
-  value: unknown,
-): ExtractedTaskParams["cadenceKind"] {
-  if (typeof value !== "string") return null;
-  return VALID_CADENCE_KINDS.has(value)
-    ? (value as ExtractedTaskParams["cadenceKind"])
-    : null;
-}
-
-function validateWindows(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const filtered = value.filter(
-    (w: unknown) => typeof w === "string" && w.trim().length > 0,
-  );
-  return filtered.length > 0 ? filtered : null;
-}
-
-function validateWeekdays(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const filtered = value.filter(
-    (d: unknown) =>
-      typeof d === "number" && Number.isInteger(d) && d >= 0 && d <= 6,
-  );
-  return filtered.length > 0 ? filtered : null;
-}
-
 function validateTimeOfDay(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -363,18 +318,6 @@ function validateTimeZone(value: unknown): string | null {
     return null;
   }
   return normalizeExplicitTimeZoneToken(value);
-}
-
-function validatePositiveNumber(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value;
-}
-
-function validatePriority(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return Math.max(1, Math.min(5, Math.round(value)));
 }
 
 const LOCAL_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -418,7 +361,10 @@ export function buildTaskCreatePlan(
     return null;
   }
   const requestKind = validateRequestKind(parsed.requestKind);
-  const cadenceKind = validateCadenceKind(parsed.cadenceKind);
+  const cadenceKind = validateCadenceKind(
+    parsed.cadenceKind,
+    VALID_CADENCE_KINDS,
+  );
   return {
     mode,
     response:

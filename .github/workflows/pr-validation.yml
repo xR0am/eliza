@@ -1,9 +1,9 @@
 # This workflow is the sole pull-request and merge-candidate validation authority.
 # It checks mergeability and workflow syntax, then builds and
-# statically validates the affected workspace closure. A narrow, mock-backed
+# statically validates the selected workspace closure. A narrow, mock-backed
 # billing replay E2E, path-scoped real PostgreSQL subscription-authority proof,
 # and the bounded synthetic-world transaction suite are the affected-path test
-# exceptions. Provider, device, deployment, and destructive-effect lanes remain
+# exceptions, alongside a path-scoped native speech compile/contract check. Provider, device, deployment, and destructive-effect lanes remain
 # excluded.
 name: PR Validation
 
@@ -31,6 +31,11 @@ env:
 jobs:
   secret-scan:
     uses: ./.github/workflows/gitleaks.yml
+    with:
+      base_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      head_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+  paradee-stream-contract:
+    uses: ./.github/workflows/paradee-stream-contract.yml
     with:
       base_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       head_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
@@ -85,7 +90,7 @@ jobs:
           fi
 
       - name: Setup Node for dependency-free change selection
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -175,11 +180,134 @@ jobs:
         if: steps.core_scope.outputs.core_bootstrap_required == 'true'
         run: bun run build:core
 
-      - name: Build affected workspace closure
+      # Opt in before a synchronize event; adding the label alone does not rerun CI.
+      # Reuse this job's core bootstrap; retain all existing build/type/test gates below.
+      - name: Build matching staging API and frontend artifacts
+        id: staging_artifacts
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          contains(github.event.pull_request.labels.*.name, 'staging-artifacts') &&
+          steps.affected.outputs.cloud == 'true' && steps.affected.outputs.app == 'true'
+        timeout-minutes: 10
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          CLOUDFLARE_API_TOKEN: ""
+          CLOUDFLARE_API_KEY: ""
+          CLOUDFLARE_EMAIL: ""
+          WRANGLER_SEND_METRICS: "false"
+          VITE_API_URL: https://api-staging.eliza.app
+          NEXT_PUBLIC_API_URL: https://api-staging.eliza.app
+          VITE_OIDC_ISSUER_URL: https://api-staging.eliza.app
+          VITE_ELIZA_CLOUD_BASE: https://cloud-staging.eliza.app
+          VITE_APP_URL: https://staging.eliza.app
+          NEXT_PUBLIC_APP_URL: https://cloud-staging.eliza.app
+          VITE_ELIZA_APP_URL: https://cloud-staging.eliza.app
+          VITE_STEWARD_TENANT_ID: elizacloud-staging
+          NEXT_PUBLIC_STEWARD_TENANT_ID: elizacloud-staging
+          VITE_ENVIRONMENT: staging
+          VITE_VOICE_REALTIME_WS: "0"
+          VITE_VOICE_REALTIME_FORCE: "0"
+          VITE_PLAYWRIGHT_TEST_AUTH: "false"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          # Host config imports Core's emitted protocol. Avoid waiting for unrelated workspaces.
+          test -s node_modules/@elizaos/core/dist/protocol.js
+          bun run --cwd packages/host build
+          artifact_root="$RUNNER_TEMP/cloud-staging-artifacts"
+          mkdir -p "$artifact_root/api" "$artifact_root/ui"
+          # Same frontend command and staging origins as cloud-cf-release.yml.
+          bun run --cwd packages/app build:web
+          # Only local bundling: no upload, deployment, login, or resource provisioning.
+          (
+            cd packages/cloud/api
+            bunx wrangler@4.100.0 deploy --env staging --dry-run --outdir "$artifact_root/api"
+          )
+          # Ship the real Pages Functions bundle, not a static-only preview.
+          (
+            cd packages/app
+            bunx wrangler@4.100.0 pages functions build functions \
+              --outdir "$artifact_root/functions" --project-directory . \
+              --build-output-directory web-dist
+            test -s "$artifact_root/functions/index.js"
+            install -m 0644 "$artifact_root/functions/index.js" web-dist/_worker.js
+            node --check web-dist/_worker.js
+          )
+          test -s packages/app/web-dist/index.html
+          test -s "$artifact_root/api/index.js"
+          cp -a packages/app/web-dist/. "$artifact_root/ui/"
+          cp packages/app/wrangler.toml "$artifact_root/ui-wrangler.toml"
+          cp packages/cloud/api/wrangler.toml "$artifact_root/api-wrangler.toml"
+          git diff --exit-code
+          export ARTIFACT_ROOT="$artifact_root"
+          python3 - <<'PYMANIFEST'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["ARTIFACT_ROOT"])
+          files = {}
+          for path in sorted(root.rglob("*")):
+              if path.is_file():
+                  files[str(path.relative_to(root))] = {
+                      "bytes": path.stat().st_size,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  }
+          manifest = {
+              "sourceSha": os.environ["SOURCE_SHA"],
+              "sourceTree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "target": "staging",
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "runAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "tools": {
+                  "node": subprocess.check_output(["node", "--version"], text=True).strip(),
+                  "bun": subprocess.check_output(["bun", "--version"], text=True).strip(),
+                  "wrangler": "4.100.0",
+              },
+              "frontendEnv": {key: value for key, value in os.environ.items()
+                              if key.startswith("VITE_") or key.startswith("NEXT_PUBLIC_")},
+              "qualification": "Build-only; requires successful PR checks and separate staging admission before use.",
+              "publicProviderConfiguration": "Not supplied by protected environments; release preflight must compare final public provider inputs.",
+              "deployments": 0,
+              "files": files,
+          }
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PYMANIFEST
+          echo "path=$artifact_root" >> "$GITHUB_OUTPUT"
+          echo "name=cloud-staging-${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload matching staging build artifacts
+        if: steps.staging_artifacts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.staging_artifacts.outputs.name }}
+          path: ${{ steps.staging_artifacts.outputs.path }}
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Build selected workspace closure
         if: steps.affected.outputs.source == 'true'
         env:
-          TURBO_SCM_BASE: ${{ steps.diff.outputs.merge_base }}
-        run: node packages/scripts/run-turbo.ts run build --concurrency=4 --affected --output-logs=errors-only
+          RUN_TURBO_AFFECTED: ${{ steps.affected.outputs.full == 'false' && '1' || '0' }}
+          TURBO_SCM_BASE: ${{ steps.affected.outputs.base }}
+        run: node packages/scripts/run-turbo.ts run build --concurrency=4 --output-logs=errors-only
+
+      - name: Verify Network Personal room routes
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 3
+        run: bun run --cwd packages/cloud/api test network-personal-room-routes
+
+      - name: Verify Shared signed delivery and history
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 3
+        run: bun run --cwd packages/cloud/api test shared-runtime-cutover-reminder.miniflare
+
+      - name: Verify personal Shared chat entry without paid activation
+        if: steps.affected.outputs.app == 'true'
+        timeout-minutes: 1
+        run: >-
+          node node_modules/vitest/vitest.mjs run --config vitest.config.ts
+          packages/ui/src/cloud/join/lib/run-join-flow.test.ts
+          --maxWorkers=1 --no-file-parallelism --testTimeout=10000 --hookTimeout=10000
 
       - name: Verify Shared general search with real Workerd and SQLite
         if: steps.affected.outputs.cloud == 'true'
@@ -205,19 +333,58 @@ jobs:
         working-directory: packages/cloud/shared
         run: bun --conditions=eliza-source test ./src/lib/services/shared-runtime/run-shared-agent-turn.realtime-audit.test.ts --timeout 30000
 
+      - name: Verify owner-consented Google backend boundaries
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 3
+        working-directory: packages/cloud/shared
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset SHARED_ELIZA_LIVE_MODEL_URL SHARED_ELIZA_LIVE_MODEL_ID SHARED_ELIZA_LIVE_WEB_SEARCH
+          for suite in \
+            src/db/repositories/personal-google-context-consent.pglite.test.ts \
+            src/lib/services/oauth/oauth2.personal-context.test.ts \
+            src/lib/services/oauth/oauth2.personal-context-publication.pglite.test.ts \
+            src/lib/services/agent-google-connector/calendar.pagination.test.ts \
+            src/lib/services/shared-runtime/shared-google-consent.test.ts \
+            src/lib/services/shared-runtime/shared-google-owner-binding.test.ts \
+            src/lib/services/shared-runtime/shared-google-read-port.test.ts \
+            src/lib/services/shared-runtime/shared-google-context-plugin.test.ts \
+            src/lib/services/shared-runtime/shared-eliza-runtime.google.test.ts; do
+            bun --conditions=eliza-source test "$suite" --timeout 30000
+          done
+
+      - name: Verify selected Google owner status through Hono and PostgreSQL
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 1
+        working-directory: packages/cloud/api
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset SHARED_ELIZA_LIVE_MODEL_URL SHARED_ELIZA_LIVE_MODEL_ID SHARED_ELIZA_LIVE_WEB_SEARCH
+          bun --conditions=eliza-source test ./v1/eliza/google/status/route.personal-context.test.ts --timeout 30000
+          bun --conditions=eliza-source test ./__tests__/private-owner-credential.pglite.test.ts --timeout 30000
+
+      - name: Verify personal Google cards and account-switch behavior
+        if: steps.affected.outputs.cloud == 'true'
+        timeout-minutes: 2
+        working-directory: packages/ui
+        run: bun run test:e2e src/cloud/connectors/__e2e__/google-personal-context.test.tsx
+
       - name: Run synthetic-world transaction tests
         if: steps.diff.outputs.synthetic_world_changed == 'true'
         run: bun run --cwd packages/testing test:synthetic-world
 
-      - name: Lint and typecheck affected workspaces in parallel
+      - name: Lint and typecheck selected workspaces in parallel
         if: steps.affected.outputs.source == 'true'
         env:
-          TURBO_SCM_BASE: ${{ steps.diff.outputs.merge_base }}
+          RUN_TURBO_AFFECTED: ${{ steps.affected.outputs.full == 'false' && '1' || '0' }}
+          TURBO_SCM_BASE: ${{ steps.affected.outputs.base }}
         run: |
           set -euo pipefail
-          NODE_OPTIONS=--max-old-space-size=2048 node packages/scripts/run-turbo.ts run lint:check --concurrency=1 --affected &
+          NODE_OPTIONS=--max-old-space-size=2048 node packages/scripts/run-turbo.ts run lint:check --concurrency=1 &
           lint_pid=$!
-          node packages/scripts/run-turbo.ts run typecheck --concurrency=1 --affected &
+          node packages/scripts/run-turbo.ts run typecheck --concurrency=1 &
           types_pid=$!
           status=0
           wait "$lint_pid" || status=$?
@@ -379,6 +546,8 @@ jobs:
     name: Subscription authority PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      SUBSCRIPTION_AUTHORITY_POSTGRES_IMAGE: postgres:16-alpine
     steps:
       - name: Checkout candidate source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -401,11 +570,58 @@ jobs:
             packages/cloud/shared packages/core \
             package.json bun.lock bunfig.toml turbo.json \
             tsconfig.json tsconfig.base.json .github/actions/setup-bun-workspace \
-            .github/workflows/pr-validation.yml; then
+            .github/actions/setup-public-image-cache .github/workflows/pr-validation.yml; then
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Configure Docker Hub cache for required PostgreSQL
+        if: steps.authority-diff.outputs.run == 'true'
+        uses: ./.github/actions/setup-public-image-cache
+      - name: Pull required PostgreSQL image before builds
+        if: steps.authority-diff.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Public pulls must not inherit registry credentials from this runner.
+          public_pull_config="$(mktemp -d "$RUNNER_TEMP/public-postgres-pull.XXXXXX")"
+          trap 'rm -rf "$public_pull_config"' EXIT
+          printf '{}\n' > "$public_pull_config/config.json"
+          pull_status=0
+          docker --config "$public_pull_config" pull "$SUBSCRIPTION_AUTHORITY_POSTGRES_IMAGE" || pull_status=$?
+          if [ "$pull_status" -eq 0 ]; then exit 0; fi
+          echo "::error::Required PostgreSQL image pull failed before dependency and core builds."
+          # Keep only recent daemon errors; never print credential/header lines
+          # or URL user-info/query strings from other configured mirrors.
+          if ! timeout 5s sudo journalctl --unit docker.service --since '2 minutes ago' \
+            --no-pager --lines 80 --output cat \
+            | grep -Ei 'error|failed|mirror\.gcr\.io|toomanyrequests|429' \
+            | grep -Eiv 'authorization|cookie|password|secret|credential|header|bearer|basic|authconfig|(token|auth)["[:space:]]*[:=]' \
+            | sed -E 's#(https?://)[^/@[:space:]]+@#\1[REDACTED]@#g; s#\?[^[:space:]"]*#?[REDACTED]#g' \
+            | tail -n 30; then
+            echo "::warning::No safe daemon error detail was available."
+          fi
+          # Probe from this runner, without Docker credentials or private headers.
+          headers="$RUNNER_TEMP/subscription-cache-head.headers"
+          curl_status=0
+          curl --disable --silent --show-error --head --fail \
+            --connect-timeout 5 --max-time 15 \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            --dump-header "$headers" --output /dev/null \
+            --write-out 'Public GCR manifest HEAD status: %{http_code}\n' \
+            "https://mirror.gcr.io/v2/library/${SUBSCRIPTION_AUTHORITY_POSTGRES_IMAGE%:*}/manifests/${SUBSCRIPTION_AUTHORITY_POSTGRES_IMAGE#*:}" \
+            || curl_status=$?
+          if [ "$curl_status" -ne 0 ]; then
+            echo "::warning::Public cache HEAD failed with curl exit $curl_status."
+          fi
+          digest="$(awk 'tolower($1) == "docker-content-digest:" {gsub("\r", "", $2); print $2}' "$headers" 2>/dev/null)" || digest=""
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Public GCR manifest digest: $digest"
+          else
+            echo "::warning::Public cache HEAD supplied no valid manifest digest."
+          fi
+          rm -f "$headers"
+          exit "$pull_status"
       - if: steps.authority-diff.outputs.run == 'true'
         uses: ./.github/actions/setup-bun-workspace
         with:
@@ -431,7 +647,7 @@ jobs:
           container="eliza-subscription-authority-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           trap 'docker stop "$container" >/dev/null 2>&1 || true' EXIT
           docker run --rm --detach --name "$container" \
-            --env POSTGRES_HOST_AUTH_METHOD=trust --publish 5432:5432 postgres:16-alpine
+            --env POSTGRES_HOST_AUTH_METHOD=trust --publish 5432:5432 "$SUBSCRIPTION_AUTHORITY_POSTGRES_IMAGE"
           for attempt in $(seq 1 60); do
             if [ "$(docker inspect --format '{{.State.Running}}' "$container")" != "true" ]; then
               docker logs "$container"
@@ -520,6 +736,7 @@ jobs:
       - source-checks
       - billing-payment-replay-e2e
       - subscription-authority-postgres
+      - paradee-stream-contract
     runs-on: ubuntu-24.04
     steps:
       - name: Require every admission lane
@@ -529,6 +746,7 @@ jobs:
             source-checks=${{ needs.source-checks.result }}
             billing-payment-replay-e2e=${{ needs.billing-payment-replay-e2e.result }}
             subscription-authority-postgres=${{ needs.subscription-authority-postgres.result }}
+            paradee-stream-contract=${{ needs.paradee-stream-contract.result }}
         run: |
           set -euo pipefail
           for pair in $RESULTS; do

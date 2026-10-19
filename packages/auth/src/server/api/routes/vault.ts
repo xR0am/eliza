@@ -277,16 +277,14 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 function base64UrlDecode(value: string): Uint8Array | null {
+  // Mirrors the user.ts copy of this decoder: base64url wire values may
+  // arrive padded or unpadded (the shared web-push helper documents the
+  // same contract), so optional trailing padding is accepted.
+  if (!/^[A-Za-z0-9_-]+={0,2}$/u.test(value)) return null;
   try {
-    if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-    const paddingLength = (4 - (padded.length % 4)) % 4;
-    const binary = atob(`${padded}${"=".repeat(paddingLength)}`);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
   } catch {
     return null;
   }
@@ -480,7 +478,8 @@ function parseListLimit(value: string | undefined, fallback = 100): number {
 function parseListOffset(value: string | undefined): number {
   const parsed = value ? Number(value) : 0;
   if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
-  return Math.min(parsed, 100_000);
+  // Do not clamp large valid offsets: a ceiling repeats earlier pages.
+  return parsed;
 }
 
 function isUint64DecimalString(value: unknown): value is string {
@@ -530,6 +529,15 @@ function parseReferenceId(value: unknown): string | undefined | null {
   return trimmed;
 }
 
+// parseInt stops at the first non-digit ("1e3" -> 1), so a malformed CHAIN_ID
+// silently switched the signing chain (e.g. to mainnet) instead of falling
+// back to the 8453 default. Require the whole trimmed value to be decimal,
+// mirroring the strict Number() parsing of this same env var in global-wallet.ts.
+function parseChainIdEnv(): number {
+  const raw = (process.env.CHAIN_ID ?? "").trim();
+  return /^\+?\d+$/.test(raw) ? Number(raw) : 8453;
+}
+
 function parseTransferActionInput(body: TransferActionInput): {
   to: string;
   token: "native" | string;
@@ -547,7 +555,7 @@ function parseTransferActionInput(body: TransferActionInput): {
   const chainId =
     typeof body.chainId === "number" && Number.isInteger(body.chainId)
       ? body.chainId
-      : parseInt(process.env.CHAIN_ID || "8453", 10);
+      : parseChainIdEnv();
   const referenceId = parseReferenceId(body.referenceId);
   const isSolanaTransfer = isSolanaActionChain(chainId);
 
@@ -605,7 +613,7 @@ function parseSendCallsActionInput(body: SendCallsActionInput):
   const chainId =
     typeof body.chainId === "number" && Number.isInteger(body.chainId)
       ? body.chainId
-      : parseInt(process.env.CHAIN_ID || "8453", 10);
+      : parseChainIdEnv();
   if (!Number.isSafeInteger(chainId) || chainId <= 0)
     return "chainId must be a positive integer";
   const referenceId = parseReferenceId(body.referenceId);
@@ -2152,8 +2160,7 @@ vaultRoutes.post("/:agentId/sign", async (c) => {
     );
   }
 
-  const resolvedChainId =
-    request.chainId || parseInt(process.env.CHAIN_ID || "8453", 10);
+  const resolvedChainId = request.chainId || parseChainIdEnv();
   if (!hasCalldata(request.data)) {
     const gasGuard = await nativeTransferGasAccountingGuard(
       c,
@@ -6468,7 +6475,7 @@ vaultRoutes.post("/:agentId/sign-typed-data", async (c) => {
 
   const resolvedChainId =
     (typeof body.domain.chainId === "number" ? body.domain.chainId : 0) ||
-    parseInt(process.env.CHAIN_ID || "8453", 10);
+    parseChainIdEnv();
   // Use the EIP-712 domain's verifyingContract as the request `to` so that
   // destination-based policies (approved-addresses, condition-set, contract
   // allowlist) meaningfully gate the contract the typed data authorizes. Falls

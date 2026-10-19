@@ -23,16 +23,19 @@ import {
   toCardPlace,
 } from "./card.js";
 import { MapsError } from "./errors.js";
+import type { MapsDeviceNavigationStatus } from "./navigation.js";
 import { getMapsService, type MapsService } from "./service.js";
 import {
   coordinatesSchema,
   type PlaceRef,
   placeRefSchema,
+  type RoutePlan,
   travelModeSchema,
 } from "./types.js";
 
 const MAPS_SUBACTIONS = [
   "place",
+  "select",
   "route",
   "save",
   "share",
@@ -237,7 +240,7 @@ function directPlace(params: Params, prefix = ""): PlaceRef | null {
   if (!hasDirectInput) return null;
   if (latitude === undefined || longitude === undefined || !name) {
     throw new MapsError(
-      "Coordinate-defined places require latitude, longitude, and name together.",
+      `Coordinate-defined places require ${field("latitude")}, ${field("longitude")}, and ${field("name")} together.`,
       { code: "MAPS_INVALID_INPUT" },
     );
   }
@@ -301,6 +304,48 @@ function actionError(error: MapsError): ActionResult {
         : {}),
     },
     error,
+  };
+}
+
+/** Reports the device's own navigation state; the agent never claims more. */
+function deviceResult(
+  actionName: string,
+  action: string,
+  status: MapsDeviceNavigationStatus,
+): ActionResult {
+  if (
+    !status ||
+    ![
+      "selected",
+      "navigating",
+      "stopped",
+      "awaiting-location",
+      "awaiting-confirmation",
+    ].includes(status.state)
+  ) {
+    throw new MapsError("The phone returned an invalid navigation state.", {
+      code: "MAPS_MALFORMED_RESPONSE",
+    });
+  }
+  const place = status.placeName ?? "the destination";
+  const userFacingText =
+    status.state === "selected"
+      ? `Selected ${place} on the map.`
+      : status.state === "navigating"
+        ? `Navigating to ${place}${status.travelMode ? ` by ${status.travelMode}` : ""}.`
+        : status.state === "awaiting-confirmation"
+          ? `Confirm on the phone to start navigation to ${place}.`
+          : status.state === "awaiting-location"
+            ? "The phone needs location access before navigation can start."
+            : "Navigation stopped.";
+  return {
+    success:
+      status.state !== "awaiting-location" &&
+      status.state !== "awaiting-confirmation",
+    text: userFacingText,
+    userFacingText,
+    verifiedUserFacing: true,
+    data: { actionName, action, device: status },
   };
 }
 
@@ -535,34 +580,80 @@ async function execute(
             callback,
           );
         }
-        const { route, provider: routeProvider } =
-          await service.planRouteResult(
-            {
-              origin,
-              destination,
-              travelMode: validated(
-                travelModeSchema,
-                text(params.travelMode) ?? "drive",
-                "Travel mode must be drive, walk, bicycle, or transit.",
-              ),
-            },
-            text(params.provider),
-          );
+        const routeRequest = {
+          origin,
+          destination,
+          travelMode: validated(
+            travelModeSchema,
+            text(params.travelMode) ?? "drive",
+            "Travel mode must be drive, walk, bicycle, or transit.",
+          ),
+        };
+        const { routes, provider: routeProvider } = flag(params.alternatives)
+          ? await service.planRouteAlternativesResult(
+              routeRequest,
+              text(params.provider),
+            )
+          : await service
+              .planRouteResult(routeRequest, text(params.provider))
+              .then(({ route, provider }) => ({ routes: [route], provider }));
+        const [route] = routes as [RoutePlan, ...RoutePlan[]];
         const minutes = Math.round(route.durationSeconds / 60);
+        const others = routes
+          .slice(1)
+          .map(
+            (alternative, index) =>
+              `Alternative ${index + 1}: about ${Math.round(alternative.durationSeconds / 60)} min, ${alternative.distanceMeters} m.`,
+          );
         return result(
           action,
           {
             success: true,
-            text: `${route.distanceMeters} m, about ${minutes} min by ${route.travelMode}.`,
+            text: [
+              `${route.distanceMeters} m, about ${minutes} min by ${route.travelMode}.`,
+              ...others,
+            ].join("\n"),
             userFacingText: appendMapsCard(
-              `${route.origin.name} to ${route.destination.name}: about ${minutes} min by ${route.travelMode}.`,
+              [
+                `${route.origin.name} to ${route.destination.name}: about ${minutes} min by ${route.travelMode}.`,
+                ...others,
+              ].join("\n"),
               routeCard(route, routeProvider.attribution),
             ),
             verifiedUserFacing: true,
-            data: { actionName: "MAPS", action, route },
+            data: {
+              actionName: "MAPS",
+              action,
+              route,
+              ...(routes.length > 1 ? { alternatives: routes.slice(1) } : {}),
+            },
           },
           callback,
         );
+      }
+      case "select": {
+        const place = await resolvedPlace(service, params, message.entityId);
+        if (!place) {
+          return result(
+            action,
+            missingInput(
+              action,
+              message,
+              [
+                {
+                  name: "placeId",
+                  type: "text",
+                  label: "Place ID",
+                  required: true,
+                },
+              ],
+              "Which place should I select on the map?",
+            ),
+            callback,
+          );
+        }
+        const status = await service.requireDeviceNavigation().select(place);
+        return result(action, deviceResult("MAPS", action, status), callback);
       }
       case "save": {
         const place = await resolvedPlace(service, params, message.entityId);
@@ -764,19 +855,20 @@ export const mapsAction: Action = {
     "NAVIGATION",
   ],
   description:
-    "Look up places, plan routes, save places, create shareable geo links, or hand a destination to navigation. Use the specific promoted MAPS_* action when the requested operation is known.",
+    "Look up places, plan routes, save places, create shareable geo links, or hand a destination to navigation. Use the specific promoted MAPS_* action when the requested operation is known. Saving a place runs only through MAPS_SAVE.",
   descriptionCompressed:
     "Place search, routes, saved places, sharing, and navigation.",
   contexts: ["location", "travel", "productivity"],
   routingHint:
-    "Use MAPS_PLACE for place/address lookup, MAPS_ROUTE for directions, MAPS_SAVE to persist a place, MAPS_SHARE for a geo share link, and MAPS_NAVIGATE for a navigation handoff.",
+    "Use MAPS_PLACE for place/address lookup, MAPS_SELECT to show a place on the phone map, MAPS_ROUTE for directions, MAPS_SAVE to persist a place, MAPS_SHARE for a geo share link, and MAPS_NAVIGATE for a navigation handoff. Use MAPS_NAVIGATION_START, MAPS_NAVIGATION_REROUTE and MAPS_NAVIGATION_STOP for in-app phone navigation.",
   // Direct umbrella execution is read-only. The promoted MAPS_SAVE virtual
   // owns the write and receipt contract in plugin.ts.
   tags: ["domain:maps"],
   parameters: [
     {
       name: "action",
-      description: "Maps operation.",
+      description:
+        "Maps operation: place | select | route | share | navigate. MAPS rejects save; call MAPS_SAVE to save a place.",
       required: false,
       schema: { type: "string", enum: [...MAPS_SUBACTIONS] },
     },
@@ -792,14 +884,14 @@ export const mapsAction: Action = {
       description: "Provider place identifier.",
       required: false,
       schema: { type: "string" },
-      subactions: ["place", "save", "share", "navigate"],
+      subactions: ["place", "select", "save", "share", "navigate"],
     },
     {
       name: "savedPlaceId",
       description: "Saved-place UUID.",
       required: false,
       schema: { type: "string" },
-      subactions: ["share", "navigate"],
+      subactions: ["select", "share", "navigate"],
     },
     {
       name: "provider",
@@ -826,21 +918,21 @@ export const mapsAction: Action = {
       description: "Place/near latitude from -90 to 90.",
       required: false,
       schema: { type: "number" },
-      subactions: ["place", "save", "share", "navigate"],
+      subactions: ["place", "select", "save", "share", "navigate"],
     },
     {
       name: "longitude",
       description: "Place/near longitude from -180 to 180.",
       required: false,
       schema: { type: "number" },
-      subactions: ["place", "save", "share", "navigate"],
+      subactions: ["place", "select", "save", "share", "navigate"],
     },
     {
       name: "name",
       description: "Name for a coordinate-defined place.",
       required: false,
       schema: { type: "string" },
-      subactions: ["save", "share", "navigate"],
+      subactions: ["select", "save", "share", "navigate"],
     },
     {
       name: "address",
@@ -865,42 +957,48 @@ export const mapsAction: Action = {
     },
     {
       name: "originLatitude",
-      description: "Route origin latitude.",
+      description:
+        "Route origin latitude. Requires originLongitude and originName.",
       required: false,
       schema: { type: "number" },
       subactions: ["route"],
     },
     {
       name: "originLongitude",
-      description: "Route origin longitude.",
+      description:
+        "Route origin longitude. Requires originLatitude and originName.",
       required: false,
       schema: { type: "number" },
       subactions: ["route"],
     },
     {
       name: "originName",
-      description: "Route origin coordinate label.",
+      description:
+        "Route origin coordinate label. Required with originLatitude and originLongitude.",
       required: false,
       schema: { type: "string" },
       subactions: ["route"],
     },
     {
       name: "destinationLatitude",
-      description: "Route destination latitude.",
+      description:
+        "Route destination latitude. Requires destinationLongitude and destinationName.",
       required: false,
       schema: { type: "number" },
       subactions: ["route"],
     },
     {
       name: "destinationLongitude",
-      description: "Route destination longitude.",
+      description:
+        "Route destination longitude. Requires destinationLatitude and destinationName.",
       required: false,
       schema: { type: "number" },
       subactions: ["route"],
     },
     {
       name: "destinationName",
-      description: "Route destination coordinate label.",
+      description:
+        "Route destination coordinate label. Required with destinationLatitude and destinationLongitude.",
       required: false,
       schema: { type: "string" },
       subactions: ["route"],
@@ -910,6 +1008,14 @@ export const mapsAction: Action = {
       description: "drive | walk | bicycle | transit.",
       required: false,
       schema: { type: "string", enum: ["drive", "walk", "bicycle", "transit"] },
+      subactions: ["route"],
+    },
+    {
+      name: "alternatives",
+      description:
+        "True to ask the provider for alternative routes in addition to the recommended one.",
+      required: false,
+      schema: { type: "boolean" },
       subactions: ["route"],
     },
     {
@@ -969,3 +1075,166 @@ export function bindPromotedMapsSaveHandler(action: Action): void {
     );
   };
 }
+
+const NAVIGATION_SUBACTIONS = ["start", "reroute", "stop"] as const;
+type NavigationSubaction = (typeof NAVIGATION_SUBACTIONS)[number];
+
+function navigationSubaction(value: unknown): NavigationSubaction | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return NAVIGATION_SUBACTIONS.includes(normalized as NavigationSubaction)
+    ? (normalized as NavigationSubaction)
+    : null;
+}
+
+/**
+ * Asks the phone to start, reroute or stop in-app navigation. The phone owns
+ * GPS, the active route and guidance; Cloud supplies route data to the phone.
+ */
+async function executeNavigation(
+  runtime: IAgentRuntime,
+  message: Memory,
+  _state?: State,
+  options?: HandlerOptions,
+  callback?: HandlerCallback,
+): Promise<ActionResult> {
+  const params = parameters(message, options);
+  const action = navigationSubaction(params.action) ?? "start";
+  const reply = async (value: ActionResult) => {
+    await callback?.({
+      text: value.userFacingText ?? value.text,
+      actions: [`MAPS_NAVIGATION_${action.toUpperCase()}`],
+    });
+    return value;
+  };
+  const service = getMapsService(runtime);
+  try {
+    if (action === "stop") {
+      return reply(
+        deviceResult(
+          "MAPS_NAVIGATION",
+          action,
+          await service.requireDeviceNavigation().stop(),
+        ),
+      );
+    }
+    if (action === "reroute") {
+      return reply(
+        deviceResult(
+          "MAPS_NAVIGATION",
+          action,
+          await service.requireDeviceNavigation().reroute(),
+        ),
+      );
+    }
+    const device = service.requireDeviceNavigation();
+    const destination = await resolvedPlace(service, params, message.entityId);
+    if (!destination) {
+      return reply(
+        missingInput(
+          "navigate",
+          message,
+          [
+            {
+              name: "placeId",
+              type: "text",
+              label: "Destination place ID",
+              required: true,
+            },
+            TRAVEL_MODE_FIELD,
+          ],
+          "Where should navigation go?",
+        ),
+      );
+    }
+    const travelMode = validated(
+      travelModeSchema,
+      text(params.travelMode) ?? "drive",
+      "Travel mode must be drive, walk, bicycle, or transit.",
+    );
+    return reply(
+      deviceResult(
+        "MAPS_NAVIGATION",
+        action,
+        await device.start({ destination, travelMode }),
+      ),
+    );
+  } catch (error) {
+    // error-policy:J1 Typed provider and device failures reach the planner.
+    if (error instanceof MapsError) return reply(actionError(error));
+    throw error;
+  }
+}
+
+export const mapsNavigationAction: Action = {
+  name: "MAPS_NAVIGATION",
+  similes: ["TURN_BY_TURN", "START_NAVIGATION", "STOP_NAVIGATION", "REROUTE"],
+  description:
+    "Start, reroute or stop in-app navigation on the phone. The phone uses its own location and asks the user before guidance starts.",
+  descriptionCompressed: "Phone navigation start, reroute and stop.",
+  contexts: ["location", "travel"],
+  tags: ["domain:maps", "capability:device"],
+  parameters: [
+    {
+      name: "action",
+      description: "Navigation operation: start | reroute | stop.",
+      required: false,
+      schema: { type: "string", enum: [...NAVIGATION_SUBACTIONS] },
+    },
+    {
+      name: "placeId",
+      description: "Destination provider place identifier.",
+      required: false,
+      schema: { type: "string" },
+      subactions: ["start"],
+    },
+    {
+      name: "savedPlaceId",
+      description: "Destination saved-place UUID.",
+      required: false,
+      schema: { type: "string" },
+      subactions: ["start"],
+    },
+    {
+      name: "provider",
+      description: "Registered maps adapter id; omit for the default.",
+      required: false,
+      schema: { type: "string" },
+      subactions: ["start"],
+    },
+    {
+      name: "latitude",
+      description: "Destination latitude. Requires longitude and name.",
+      required: false,
+      schema: { type: "number" },
+      subactions: ["start"],
+    },
+    {
+      name: "longitude",
+      description: "Destination longitude. Requires latitude and name.",
+      required: false,
+      schema: { type: "number" },
+      subactions: ["start"],
+    },
+    {
+      name: "name",
+      description: "Destination name for a coordinate-defined place.",
+      required: false,
+      schema: { type: "string" },
+      subactions: ["start"],
+    },
+    {
+      name: "travelMode",
+      description: "drive | walk | bicycle | transit.",
+      required: false,
+      schema: { type: "string", enum: ["drive", "walk", "bicycle", "transit"] },
+      subactions: ["start"],
+    },
+  ],
+  validate: async (_runtime, _message, _state, options) => {
+    const value = (options?.parameters as Record<string, unknown> | undefined)
+      ?.action;
+    return value === undefined || navigationSubaction(value) !== null;
+  },
+  handler: executeNavigation,
+};

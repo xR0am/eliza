@@ -37,7 +37,8 @@
     "lint:check": "bunx @biomejs/biome check .",
     "format": "bunx @biomejs/biome format --write .",
     "format:check": "bunx @biomejs/biome format .",
-    "test:native-session": "node --test test/native-host/credential-access.node.mjs"
+    "test:native-session": "node --test test/native-host/credential-access.node.mjs",
+    "test:native-passwords": "node --test test/native-host/password-custody.node.mjs"
   },
   "capacitor": {
     "android": {
@@ -51,7 +52,7 @@
   "devDependencies": {
     "@capacitor/core": "^8.3.1",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "rollup": "^4.64.0",
+    "rollup": "^4.64.5",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {

@@ -375,7 +375,8 @@ function parseListLimit(value: string | undefined, fallback = 100): number {
 function parseListOffset(value: string | undefined): number {
   const parsed = value ? Number(value) : 0;
   if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
-  return Math.min(parsed, 100_000);
+  // Do not clamp large valid offsets: a ceiling repeats earlier pages.
+  return parsed;
 }
 
 function auditCtx(c: {
@@ -686,17 +687,15 @@ function getPlatformMetadataValidationError(
 }
 
 function clampLimit(value: string | null, fallback = 50): number {
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(1, Math.min(parsed, 100));
+  const parsed = value ? Number(value) : fallback;
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, 100);
 }
 
 function parseOffset(value: string | null): number {
-  if (!value) return 0;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, parsed);
+  const parsed = value ? Number(value) : 0;
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
+  return parsed;
 }
 
 function parseQueryList(value: string | undefined): string[] {
@@ -4853,7 +4852,12 @@ platform.delete(
           throw new Error("Cannot unlink the user's last login method");
         }
 
-        const revokedBefore = await revocationStore.revokeUserTokens(userId);
+        const revokedBefore = await revocationStore.revokeUserTokens(
+          userId,
+          undefined,
+          undefined,
+          tx,
+        );
         const [deleted] = await tx
           .delete(accounts)
           .where(
@@ -5047,10 +5051,18 @@ platform.post(
           );
         }
 
-        const fromRevokedBefore =
-          await revocationStore.revokeUserTokens(fromUserId);
-        const toRevokedBefore =
-          await revocationStore.revokeUserTokens(toUserId);
+        const fromRevokedBefore = await revocationStore.revokeUserTokens(
+          fromUserId,
+          undefined,
+          undefined,
+          tx,
+        );
+        const toRevokedBefore = await revocationStore.revokeUserTokens(
+          toUserId,
+          undefined,
+          undefined,
+          tx,
+        );
         const [updated] = await tx
           .update(accounts)
           .set({ userId: toUserId })
@@ -6229,6 +6241,8 @@ platform.patch("/tenants/:id/members/:userId", async (c) => {
         await revocationStore.revokeUserTokens(
           userId,
           revokedUserTokensIssuedBefore,
+          undefined,
+          tx,
         );
         await tx
           .delete(refreshTokens)

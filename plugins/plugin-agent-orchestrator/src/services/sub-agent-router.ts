@@ -44,6 +44,7 @@ import {
   hasHealthyPooledAccount,
   reportCodingAccountFailure,
 } from "./coding-account-selection.js";
+import { isLoopbackUrl } from "./completion-evidence.js";
 import {
   beginPendingHandoff,
   settlePendingHandoff,
@@ -467,16 +468,6 @@ function comparableUrlTarget(url: string): string | undefined {
   }
 }
 
-function isLoopbackUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host === "localhost" || host === "::1" || host.startsWith("127.");
-  } catch {
-    // error-policy:J3 URL parse of untrusted input; unparseable = not loopback.
-    return false;
-  }
-}
-
 /**
  * Is this URL a loopback probe target? Matches the guard's own classification
  * (127.0.0.0/8, ::1 — bracketed or not — IPv4-mapped loopback, `localhost`)
@@ -828,7 +819,12 @@ export class SubAgentRouter extends Service {
       return;
     }
     const capRaw = readSetting(this.runtime, "ACPX_SUB_AGENT_ROUND_TRIP_CAP");
-    const parsed = capRaw ? Number.parseInt(capRaw, 10) : NaN;
+    // Number.parseInt stops at the first non-digit ("5junk" -> 5), so a
+    // typo was silently accepted as the cap instead of falling back to
+    // the default (32). Require the whole trimmed value to be decimal,
+    // mirroring resolveGenerationTimeoutMs in the discord plugin.
+    const capText = (capRaw ?? "").trim();
+    const parsed = /^\+?\d+$/.test(capText) ? Number(capText) : NaN;
     // Resolve the state-lost respawn cap through the shared resolver so the
     // router and the task service's terminal decision agree on the SAME
     // effective cap even under an operator override (#14104).

@@ -37,11 +37,12 @@ import {
   segmentBlock,
   selectCompletionContext,
   stripEffectDeliveryBinding,
+  validateUuid,
 } from "@elizaos/core";
 import type { EvaluatorOutput } from "../../runtime/evaluator";
 import { renderActionResultsForModel } from "../../runtime/planner-rendering";
 import { resolveCallbackActionName } from "./action-identifiers.js";
-import { rewriteActionCallbackInCharacter } from "./delivery.js";
+import { renderActionCallbackInCharacter } from "./delivery.js";
 import { normalizeActionIdentifier } from "./direct-action-heuristics";
 import { financialCompletionIsUngrounded } from "./financial-completion.ts";
 import {
@@ -287,6 +288,8 @@ export function plannedReplyHasClaimGroundingReceipt(args: {
   results: readonly ActionResult[];
   actions: readonly Action[];
   evaluator?: EvaluatorOutput;
+  currentScope?: Pick<IAgentRuntime, "agentId"> &
+    Pick<Memory, "entityId" | "id">;
 }): boolean {
   if (args.kind === "completed_side_effect") {
     return (
@@ -314,6 +317,61 @@ export function plannedReplyHasClaimGroundingReceipt(args: {
       const action = actionsByName.get(normalizeActionIdentifier(name));
       const tags = new Set(action?.tags ?? []);
       const scopes = emptyTrackedStateClaimScopes(args.reply);
+      if (
+        observation?.resource === "todos" &&
+        observation.count === 0 &&
+        args.currentScope !== undefined &&
+        typeof args.currentScope.agentId === "string" &&
+        typeof args.currentScope.entityId === "string" &&
+        args.currentScope.agentId.length > 0 &&
+        args.currentScope.entityId.length > 0 &&
+        observation.agentId === args.currentScope.agentId &&
+        observation.entityId === args.currentScope.entityId &&
+        observation.messageId === args.currentScope.id &&
+        typeof args.currentScope.id === "string" &&
+        args.currentScope.id.length > 0 &&
+        result.data?.agentId === observation.agentId &&
+        result.data?.entityId === observation.entityId &&
+        result.data?.op === "list" &&
+        Array.isArray(result.data?.todos) &&
+        result.data.todos.length === 0 &&
+        ((observation.scope === "active_current_inventory" &&
+          result.data?.includeCompleted === false) ||
+          (observation.scope === "entire_current_inventory" &&
+            result.data?.includeCompleted === true)) &&
+        typeof observation.observedAt === "string" &&
+        Number.isFinite(Date.parse(observation.observedAt)) &&
+        tags.has("resource:tracked-work") &&
+        tags.has("resource:todos") &&
+        tags.has("capability:read") &&
+        scopes.length > 0 &&
+        scopes.every(
+          (scope) =>
+            scope === "todos_active" ||
+            (scope === "todos_all" &&
+              observation.scope === "entire_current_inventory"),
+        ) &&
+        !args.results.slice(resultIndex + 1).some((later) => {
+          const laterName = later.data?.actionName;
+          const laterAction =
+            typeof laterName === "string"
+              ? actionsByName.get(normalizeActionIdentifier(laterName))
+              : undefined;
+          if (!laterAction?.tags?.includes("resource:todos")) return false;
+          // A later read can supersede emptiness just as a mutation can.
+          // Only a fully valid, distinct scope proves it unrelated.
+          // Null, empty and malformed identity values are unknown, not distinct.
+          const laterAgentId = validateUuid(later.data?.agentId);
+          const laterEntityId = validateUuid(later.data?.entityId);
+          return (
+            !laterAgentId ||
+            !laterEntityId ||
+            (laterAgentId === observation.agentId &&
+              laterEntityId === observation.entityId)
+          );
+        })
+      )
+        return true;
       if (
         observation?.resource === "notes" &&
         observation.scope === "entire_current_inventory" &&
@@ -615,6 +673,9 @@ export function evaluatePlannedReplyEgress(args: {
   actionResults: readonly ActionResult[];
   actions: readonly Action[];
   evaluator?: EvaluatorOutput;
+  /** Trusted current turn identity, supplied by runtime/message, never tool data. */
+  currentScope?: Pick<IAgentRuntime, "agentId"> &
+    Pick<Memory, "entityId" | "id">;
 }): PlannedReplyEgressDecision {
   const reply = args.reply.trim();
   if (!reply) return { verdict: "allow" };
@@ -672,6 +733,7 @@ export function evaluatePlannedReplyEgress(args: {
         reply,
         results: args.actionResults,
         actions: args.actions,
+        currentScope: args.currentScope,
       })
     ) {
       return { verdict: "allow" };
@@ -703,6 +765,11 @@ export async function resolvePlannedReplyEgress(args: {
   beforeContextRestore?: () => Promise<void>;
 }): Promise<{ text: string; effectReceiptIds: readonly string[] }> {
   const decision = evaluatePlannedReplyEgress({
+    currentScope: {
+      agentId: args.runtime.agentId,
+      entityId: args.message.entityId,
+      id: args.message.id,
+    },
     reply: args.reply,
     request: getUserMessageText(args.message),
     providers: args.providers,
@@ -763,6 +830,11 @@ export async function resolvePlannedReplyEgress(args: {
     withoutObservedTimestampLabels(args.reply, actionResults()) !==
       args.reply &&
     evaluatePlannedReplyEgress({
+      currentScope: {
+        agentId: args.runtime.agentId,
+        entityId: args.message.entityId,
+        id: args.message.id,
+      },
       reply: args.reply,
       request: getUserMessageText(args.message),
       providers: args.providers,
@@ -824,19 +896,36 @@ export async function resolvePlannedReplyEgress(args: {
         : {}),
     },
   });
-  const rewrite = (selected: boolean) => {
-    getStreamingContext()?.abortSignal?.throwIfAborted();
+  const abortSignal = getStreamingContext()?.abortSignal;
+  const rewrite = async (selected: boolean) => {
+    abortSignal?.throwIfAborted();
     const jsonPayload = payload(selected);
     const text = JSON.stringify(jsonPayload);
-    return rewriteActionCallbackInCharacter({
-      runtime: args.runtime,
-      message: args.message,
-      response: { text },
-      text,
-      jsonPayload: JSON.parse(text) as JsonValue,
-      allowFullContextRequest: selected && historySelection !== undefined,
-      groundingFailure: reason,
-    });
+    try {
+      return await renderActionCallbackInCharacter({
+        runtime: args.runtime,
+        message: args.message,
+        response: { text },
+        text,
+        jsonPayload: JSON.parse(text) as JsonValue,
+        allowFullContextRequest: selected && historySelection !== undefined,
+        groundingFailure: reason,
+      });
+    } catch (error) {
+      if (abortSignal?.aborted) throw error;
+      // error-policy:J2 required recovery cannot expose the rejected draft.
+      // Preserve the provider failure at the recovery boundary.
+      const recoveryFailure = new ElizaError(
+        "A grounded conversational reply could not be generated",
+        {
+          code: "REPLY_GROUNDING_FAILED",
+          cause: error,
+          context: { roomId: args.message.roomId, messageId: args.message.id },
+        },
+      );
+      args.runtime.reportError("MessageService.replyRecovery", recoveryFailure);
+      throw recoveryFailure;
+    }
   };
   let selected = historySelection !== undefined;
   let rewritten = await rewrite(selected);
@@ -867,6 +956,11 @@ export async function resolvePlannedReplyEgress(args: {
   const proof = resolveProof();
   const rewrittenDecision = reply
     ? evaluatePlannedReplyEgress({
+        currentScope: {
+          agentId: args.runtime.agentId,
+          entityId: args.message.entityId,
+          id: args.message.id,
+        },
         reply,
         request: getUserMessageText(args.message),
         providers: args.providers,

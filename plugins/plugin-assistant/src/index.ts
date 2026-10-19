@@ -193,7 +193,10 @@ export type {
   ManageResult,
   MessageAdapter,
   MessageAdapterCapabilities,
+  MessageDraftContext,
+  MessageManageContext,
   MessageRef,
+  MessageSendContext,
   MessageSource,
   ReadMessageControl,
   ReadMessageRequest,
@@ -282,10 +285,13 @@ export {
   DEVICE_VIEWS,
   DeviceActionError,
 } from "./services/device-actions/contract.ts";
+export type { DeviceReadCompletionHint } from "./services/device-actions/read-completion.ts";
 export {
   DeviceActionService,
   type DeviceCredential,
   deviceProposalDigest,
+  getDeviceActionTurn,
+  setDeviceReadReplyConversation,
   withDeviceActionTurn,
 } from "./services/device-actions/service.ts";
 export * from "./services/evaluator.ts";

@@ -26,6 +26,7 @@ import { Spinner } from "../ui/spinner";
 import { StatusDot } from "../ui/status-badge";
 import { Textarea } from "../ui/textarea";
 import {
+  cronTimeZone,
   DURATION_UNITS,
   durationToMs,
   durationUnitLabel,
@@ -34,6 +35,7 @@ import {
   localizedExecutionStatus,
   nextRunsForCron,
   nextRunsForInterval,
+  onceInstant,
   type TranslateFn,
   type TriggerFormState,
   validateCronExpression,
@@ -1229,7 +1231,7 @@ function SchedulePreview({
     if (form.triggerType === "once") {
       const raw = form.scheduledAtIso.trim();
       if (!raw || !Number.isFinite(Date.parse(raw))) return null;
-      const date = new Date(raw);
+      const date = new Date(onceInstant(form));
       const isPast = date.getTime() <= now.getTime();
       return { kind: "once" as const, date, isPast };
     }
@@ -1237,7 +1239,12 @@ function SchedulePreview({
     if (form.triggerType === "cron") {
       const result = validateCronExpression(form.cronExpression);
       if (!result.ok) return null;
-      const dates = nextRunsForCron(form.cronExpression, 3, now);
+      const dates = nextRunsForCron(
+        form.cronExpression,
+        3,
+        now,
+        cronTimeZone(form.timezone),
+      );
       if (dates.length === 0) return null;
       return { kind: "dates" as const, dates };
     }
@@ -1250,16 +1257,7 @@ function SchedulePreview({
     }
 
     return null;
-  }, [
-    form.triggerType,
-    form.durationValue,
-    form.durationUnit,
-    form.scheduledAtIso,
-    form.cronExpression,
-    form.eventKind,
-    previewNow,
-    t,
-  ]);
+  }, [form, previewNow, t]);
 
   if (!preview) return null;
 

@@ -37,6 +37,7 @@ import {
 } from "@elizaos/host";
 import {
   type DatabaseConfig,
+  type ElizaConfig,
   type PostgresCredentials,
   resolveApiBindHost,
 } from "@elizaos/host/protocol";
@@ -172,49 +173,64 @@ function isApiLoopbackOnly(): boolean {
   return isLoopbackHost(bind);
 }
 /**
+ * Result of host extraction. A malformed connection string is its own
+ * outcome: reporting it as "no hosts" would claim the credentials carry no
+ * host even though the operator supplied a full (but unparseable) DSN.
+ */
+type HostExtraction =
+  | { hosts: string[]; error: null }
+  | { hosts: null; error: string };
+/**
  * Extract all potential hosts from a Postgres connection string or credentials object.
  * Includes query params like ?host= and ?hostaddr= which Postgres clients honor.
- * Returns empty array if no host can be determined.
+ * Returns an error when the connection string cannot be parsed as a URL, and an
+ * empty host list when no host can be determined.
  */
-function extractHosts(creds: PostgresCredentials): string[] {
+function extractHosts(creds: PostgresCredentials): HostExtraction {
   if (creds.connectionString) {
+    let url: URL;
     try {
-      const url = new URL(creds.connectionString);
-      const hosts: string[] = [];
-      // PostgreSQL connection strings can have ?host= param that overrides URI hostname
-      const hostParam = url.searchParams.get("host");
-      if (hostParam) {
-        hosts.push(
-          ...hostParam
-            .split(",")
-            .map((h) => normalizeHostLike(h))
-            .filter(Boolean),
-        );
-      }
-      // Also check hostaddr param
-      const hostAddrParam = url.searchParams.get("hostaddr");
-      if (hostAddrParam) {
-        hosts.push(
-          ...hostAddrParam
-            .split(",")
-            .map((h) => normalizeHostLike(h))
-            .filter(Boolean),
-        );
-      }
-      // Include URI hostname
-      if (url.hostname) {
-        hosts.push(normalizeHostLike(url.hostname));
-      }
-      return [...new Set(hosts)];
+      url = new URL(creds.connectionString);
     } catch {
-      return []; // Unparseable — will be rejected
+      return {
+        hosts: null,
+        error:
+          "Invalid PostgreSQL connection string: expected a postgres:// or " +
+          "postgresql:// URL. Check the value for a missing scheme or stray characters.",
+      };
     }
+    const hosts: string[] = [];
+    // PostgreSQL connection strings can have ?host= param that overrides URI hostname
+    const hostParam = url.searchParams.get("host");
+    if (hostParam) {
+      hosts.push(
+        ...hostParam
+          .split(",")
+          .map((h) => normalizeHostLike(h))
+          .filter(Boolean),
+      );
+    }
+    // Also check hostaddr param
+    const hostAddrParam = url.searchParams.get("hostaddr");
+    if (hostAddrParam) {
+      hosts.push(
+        ...hostAddrParam
+          .split(",")
+          .map((h) => normalizeHostLike(h))
+          .filter(Boolean),
+      );
+    }
+    // Include URI hostname
+    if (url.hostname) {
+      hosts.push(normalizeHostLike(url.hostname));
+    }
+    return { hosts: [...new Set(hosts)], error: null };
   }
   if (creds.host) {
     const host = normalizeHostLike(creds.host);
-    return host ? [host] : [];
+    return { hosts: host ? [host] : [], error: null };
   }
-  return [];
+  return { hosts: [], error: null };
 }
 /**
  * Check whether an IP address falls in a blocked range.
@@ -248,7 +264,11 @@ async function validateDbHost(
   error: string | null;
   pinnedHost: string | null;
 }> {
-  const hosts = extractHosts(creds);
+  const extracted = extractHosts(creds);
+  if (extracted.hosts === null) {
+    return { error: extracted.error, pinnedHost: null };
+  }
+  const hosts = extracted.hosts;
   if (hosts.length === 0) {
     return {
       error: "Could not determine target host from the provided credentials.",
@@ -520,6 +540,7 @@ function handleGetConfig(
 async function handlePutConfig(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  liveConfig?: Pick<ElizaConfig, "database">,
 ): Promise<void> {
   const body = await readJsonBody<DatabaseConfig>(req, res);
   if (!body) return;
@@ -579,6 +600,9 @@ async function handlePutConfig(
   }
   config.database = merged;
   saveElizaConfig(config);
+  // Mirror into the live server config so a later full save of it does not
+  // write the previous database settings back to disk.
+  if (liveConfig) liveConfig.database = merged;
   logger.info(
     { src: "database-api", provider: merged.provider },
     "Database configuration saved",
@@ -1279,6 +1303,7 @@ export async function handleDatabaseRoute(
   res: http.ServerResponse,
   runtime: AgentRuntime | null,
   pathname: string,
+  liveConfig?: Pick<ElizaConfig, "database">,
 ): Promise<boolean> {
   const method = req.method ?? "GET";
   // ── GET /api/database/status ──────────────────────────────────────────
@@ -1293,7 +1318,7 @@ export async function handleDatabaseRoute(
   }
   // ── PUT /api/database/config ──────────────────────────────────────────
   if (method === "PUT" && pathname === "/api/database/config") {
-    await handlePutConfig(req, res);
+    await handlePutConfig(req, res, liveConfig);
     return true;
   }
   // ── POST /api/database/test ───────────────────────────────────────────

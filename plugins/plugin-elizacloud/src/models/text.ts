@@ -10,6 +10,7 @@ import type {
   GenerateTextParams,
   IAgentRuntime,
   ModelTypeName,
+  ProviderRateLimit,
   TextStreamResult,
   TokenUsage,
   ToolCall,
@@ -17,12 +18,16 @@ import type {
 } from "@elizaos/core";
 import {
 	assertModelOutputComplete,
+  boundProviderRetryAfterMs,
   buildCanonicalSystemPrompt,
   MODEL_PROVIDER_RETRY_BUDGET_EXHAUSTED,
   createPreparedModelRequestGuard,
   ElizaError,
   logger,
   ModelType,
+  parseProviderRateLimit,
+  parseProviderResetAt,
+  providerRetryAfterMs,
   recordInferenceSpan,
   renderChatMessagesForPrompt,
   resolveEffectiveSystemPrompt,
@@ -44,6 +49,7 @@ import {
 } from "../utils/config";
 import { emitModelUsageEvent } from "../utils/events";
 import { extractResponsesOutputText } from "../utils/responses-output";
+import { recordCloudInferenceFailure } from "../utils/inference-diagnostics";
 import { createCloudApiClient } from "../utils/sdk-client";
 
 const TEXT_NANO_MODEL_TYPE = (ModelType.TEXT_NANO ?? "TEXT_NANO") as ModelTypeName;
@@ -523,6 +529,101 @@ export class ElizaCloudGatewayWarmingExhaustedError extends ElizaError {
   }
 }
 
+/** Error thrown for a non-ok Cloud text response. */
+export type CloudTextRequestError = Error & {
+  status: number;
+  error?: unknown;
+  rateLimit?: ProviderRateLimit;
+};
+
+/**
+ * Typed wait for a Cloud refusal, read from structured fields only.
+ *
+ * - A 429: the plan bucket body (`error.retryAfterMs`, `error.retryAfterSeconds`,
+ *   `error.plan.id`, `error.limit.bucket`), the org tier body
+ *   (`retryAfterSeconds`), then the `Retry-After-Ms`/`Retry-After` headers.
+ * - A used-up period allowance: `error.code: "allowance_exhausted"` with
+ *   `error.resetsAt`, as a 429 or as the inference 402 `insufficient_quota`.
+ *   It gets `scope: "period"`; the 402 stays a non-retried credits failure.
+ *
+ * The reset time is the first valid of `error.resetsAt`, `error.retryAt` and
+ * the `X-RateLimit-Reset` header. `resetAfterSeconds` is the body's
+ * `error.retryAfterSeconds` when the reset came from the body, else the time
+ * to the chosen reset. Without any retry field, the wait is the time to the
+ * reset. Malformed values are skipped and the wait is capped. This is a
+ * report for the client; nothing here waits.
+ */
+export function readCloudRateLimit(
+  response: Response,
+  body: unknown,
+  now: number = Date.now()
+): ProviderRateLimit | undefined {
+  const record = asRecord(body);
+  const errorRecord = recordAt(record, "error");
+  const allowanceExhausted = errorRecord.code === "allowance_exhausted";
+  if (response.status !== 429 && !(response.status === 402 && allowanceExhausted))
+    return undefined;
+  const seconds = (value: unknown): unknown =>
+    typeof value === "number" ? value * 1000 : undefined;
+  const bodyResetAt = [errorRecord.resetsAt, errorRecord.retryAt]
+    .map(parseProviderResetAt)
+    .find((value) => value !== undefined);
+  const resetAt =
+    bodyResetAt ?? parseProviderResetAt(response.headers.get("x-ratelimit-reset"));
+  const untilReset =
+    resetAt === undefined ? undefined : Math.max(0, Date.parse(resetAt) - now);
+  const bodySeconds = errorRecord.retryAfterSeconds;
+  const resetAfterSeconds =
+    untilReset === undefined
+      ? undefined
+      : bodyResetAt !== undefined &&
+          typeof bodySeconds === "number" &&
+          Number.isFinite(bodySeconds) &&
+          bodySeconds >= 0
+        ? bodySeconds
+        : Math.ceil(untilReset / 1000);
+  const responseHeaders: Record<string, string> = {};
+  for (const name of ["retry-after-ms", "retry-after"]) {
+    const value = response.headers.get(name);
+    if (value !== null) responseHeaders[name] = value;
+  }
+  const retryAfterMs = [
+    errorRecord.retryAfterMs,
+    seconds(errorRecord.retryAfterSeconds),
+    seconds(record.retryAfterSeconds),
+    providerRetryAfterMs({ responseHeaders }),
+    untilReset,
+  ].find((value) => boundProviderRetryAfterMs(value) !== undefined);
+  return parseProviderRateLimit({
+    kind: "rate_limited",
+    retryAfterMs,
+    planId: recordAt(errorRecord, "plan").id,
+    scope: allowanceExhausted ? "period" : recordAt(errorRecord, "limit").bucket,
+    resetAt,
+    resetAfterSeconds,
+  });
+}
+
+/**
+ * One error shape for every non-ok Cloud text response. The message comes from
+ * the body's `error.message` or the status; a 429 or a period-allowance 402
+ * adds the typed `rateLimit`.
+ */
+export function cloudTextRequestError(
+  response: Response,
+  body: unknown
+): CloudTextRequestError {
+  const errorBody = asRecord(body).error;
+  const message =
+    firstString(asRecord(errorBody).message) ?? `elizaOS Cloud error ${response.status}`;
+  const requestError = new Error(message) as CloudTextRequestError;
+  requestError.status = response.status;
+  if (errorBody) requestError.error = errorBody;
+  const rateLimit = readCloudRateLimit(response, body);
+  if (rateLimit) requestError.rateLimit = rateLimit;
+  return requestError;
+}
+
 function parseJsonRecord(text: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(text);
@@ -891,6 +992,41 @@ function unwrapJsonSchema(value: unknown): unknown {
   return record.schema ?? record.jsonSchema ?? value;
 }
 
+// OpenAI-style strict function calling requires every object level to list all
+// of its properties in `required` and to set `additionalProperties: false`.
+function isStrictCompatibleJsonSchema(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.every(isStrictCompatibleJsonSchema);
+  }
+  if (!value || typeof value !== "object") {
+    return true;
+  }
+  const schema = value as Record<string, unknown>;
+  const isObject =
+    schema.type === "object" ||
+    (Array.isArray(schema.type) && schema.type.includes("object")) ||
+    schema.properties !== undefined;
+  if (isObject) {
+    const properties = asRecord(schema.properties);
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    if (
+      schema.additionalProperties !== false ||
+      Object.keys(properties).some((key) => !required.includes(key)) ||
+      !Object.values(properties).every(isStrictCompatibleJsonSchema)
+    ) {
+      return false;
+    }
+  }
+  return (
+    ["items", "anyOf", "oneOf", "allOf"].every((key) =>
+      isStrictCompatibleJsonSchema(schema[key])
+    ) &&
+    ["$defs", "definitions"].every((key) =>
+      Object.values(asRecord(schema[key])).every(isStrictCompatibleJsonSchema)
+    )
+  );
+}
+
 // Normalize a single tool entry into the OpenAI `{ type, function }` wire
 // shape. Accepts BOTH the already-nested form (`{ type: "function", function:
 // { name, parameters } }`) and core's FLAT `ToolDefinition` envelope
@@ -910,18 +1046,33 @@ function normalizeNativeToolEntry(
     return undefined;
   }
   const description = firstString(nested.description, tool.description);
+  const requestedStrict =
+    typeof nested.strict === "boolean"
+      ? nested.strict
+      : typeof tool.strict === "boolean"
+        ? tool.strict
+        : undefined;
   const inputSchema = unwrapJsonSchema(
     nested.parameters ??
       tool.inputSchema ??
       tool.parameters ??
       tool.schema ?? { type: "object" }
   );
+  // Core's `strict` is a caller preference: action tools default to
+  // `strict: true` while optional parameters stay out of `required`. Forward
+  // `strict: true` only for schemas that meet the strict contract, so strict
+  // providers do not reject the whole request. `strict: false` is always safe.
+  const strict =
+    requestedStrict === true && !isStrictCompatibleJsonSchema(inputSchema)
+      ? undefined
+      : requestedStrict;
   return {
     type: "function",
     function: {
       name,
       ...(description ? { description } : {}),
       parameters: inputSchema,
+      ...(strict !== undefined ? { strict } : {}),
     },
   };
 }
@@ -1116,10 +1267,9 @@ function buildNativeRequestBody(
   const userReasoningEffort = resolveUserReasoningEffort(runtime, modelName);
   if (userReasoningEffort) {
     requestBody.reasoning_effort = userReasoningEffort;
-  } else if (normalizeCerebrasModelId(modelName) === "qwen-3.8-27b") {
-    // Qwen defaults to high reasoning upstream; interactive Cloud calls use
-    // the same non-reasoning default as direct Cerebras calls unless pinned.
-    requestBody.reasoning_effort = "none";
+  } else if (resolveCerebrasThinkingOffReasoningEffort(modelName) !== undefined) {
+    // Use the highest supported Cerebras effort unless the caller selects one.
+    requestBody.reasoning_effort = "high";
   }
   // The runtime signals "don't reason" via providerOptions.eliza.thinking="off"
   // (e.g. the Stage-1 RESPONSE_HANDLER formatting call), but
@@ -1474,7 +1624,10 @@ async function generateTextWithModel(
     },
     "responses",
     params.signal
-  );
+  ).catch((error) => {
+    if (!params.signal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+    throw error;
+  });
   let data: ResponsesApiResponse = {};
   if (responseText) {
     try {
@@ -1489,37 +1642,15 @@ async function generateTextWithModel(
   }
 
   if (!response.ok) {
-    const errorBody = typeof data === "object" && data ? data.error : undefined;
-    const errorMessage =
-      typeof errorBody?.message === "string" && errorBody.message.trim()
-        ? errorBody.message.trim()
-        : `elizaOS Cloud error ${response.status}`;
-    const requestError = new Error(errorMessage) as Error & {
-      status?: number;
-      error?: unknown;
-    };
-    requestError.status = response.status;
-    if (errorBody) {
-      requestError.error = errorBody;
-    }
-    throw requestError;
+    const error = cloudTextRequestError(response, data);
+    if (!params.signal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+    throw error;
   }
 
-	if (data.status === "incomplete") {
-		throw new ElizaError(
-			"elizaOS Cloud returned an incomplete Responses API output.",
-			{
-				code: "MODEL_OUTPUT_INCOMPLETE",
-				context: {
-					provider: "elizacloud",
-					model: modelName,
-					reason: data.incomplete_details?.reason,
-				},
-			},
-		);
-	}
 
+  // Billed tokens are reported before an incomplete output is rejected.
   const usage = convertNativeUsage(data.usage);
+  const costUsd = extractCostUsd(data.usage, response);
   if (usage) {
     emitModelUsageEvent(
       runtime,
@@ -1528,11 +1659,30 @@ async function generateTextWithModel(
       toUsageEventTokens(usage),
       {
         modelName: getModelNameForType(runtime, modelType),
-        ...(() => {
-          const costUsd = extractCostUsd(data.usage, response);
-          return typeof costUsd === "number" ? { costUsd } : {};
-        })(),
+        ...(typeof costUsd === "number" ? { costUsd } : {}),
       }
+    );
+  }
+
+  if (data.status === "incomplete") {
+    const reason = data.incomplete_details?.reason;
+    throw new ElizaError(
+      "elizaOS Cloud returned an incomplete Responses API output.",
+      {
+        code: "MODEL_OUTPUT_INCOMPLETE",
+        context: {
+          provider: "elizacloud",
+          model: modelName,
+          reason,
+          finishReason: reason,
+          maxTokens:
+            typeof requestBody.max_output_tokens === "number"
+              ? requestBody.max_output_tokens
+              : null,
+          usage,
+          costUsd,
+        },
+      },
     );
   }
 
@@ -1599,7 +1749,10 @@ export async function generateNativeChatCompletion(
     },
     "chat/completions",
     params.signal
-  );
+  ).catch((error) => {
+    if (!params.signal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+    throw error;
+  });
   let data: ChatCompletionsResponse = {};
   if (responseText) {
     try {
@@ -1614,20 +1767,9 @@ export async function generateNativeChatCompletion(
   }
 
   if (!response.ok) {
-    const errorBody = typeof data === "object" && data ? data.error : undefined;
-    const errorMessage =
-      typeof errorBody?.message === "string" && errorBody.message.trim()
-        ? errorBody.message.trim()
-        : `elizaOS Cloud error ${response.status}`;
-    const requestError = new Error(errorMessage) as Error & {
-      status?: number;
-      error?: unknown;
-    };
-    requestError.status = response.status;
-    if (errorBody) {
-      requestError.error = errorBody;
-    }
-    throw requestError;
+    const error = cloudTextRequestError(response, data);
+    if (!params.signal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+    throw error;
   }
 
   const usage = convertNativeUsage(data.usage);
@@ -2050,6 +2192,7 @@ export async function streamNativeChatCompletion(
       });
     } catch (err) {
       releasePermit();
+      if (!abortSignal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, err);
       throw err;
     }
     if (response.status !== 503) break;
@@ -2069,21 +2212,16 @@ export async function streamNativeChatCompletion(
     }
     if (delayMs === undefined) {
       if (isWarmingUnavailableResponse(response.status, warmingBodyText)) {
-        throw new ElizaCloudGatewayWarmingExhaustedError(
+        const error = new ElizaCloudGatewayWarmingExhaustedError(
           "chat/completions:stream",
           warmingRetryState.attempt + 1
         );
+        if (!abortSignal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+        throw error;
       }
-      const errorBody = asRecord(parseJsonRecord(warmingBodyText)?.error);
-      const message =
-        firstString(errorBody.message) ?? `elizaOS Cloud error ${response.status}`;
-      const requestError = new Error(message) as Error & {
-        status?: number;
-        error?: unknown;
-      };
-      requestError.status = response.status;
-      if (Object.keys(errorBody).length > 0) requestError.error = errorBody;
-      throw requestError;
+      const error = cloudTextRequestError(response, parseJsonRecord(warmingBodyText));
+      if (!abortSignal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+      throw error;
     }
     logger.warn(
       `[ELIZAOS_CLOUD] cloud gateway is warming (503) on chat/completions:stream; retrying in ${delayMs}ms (attempt ${warmingRetryState.attempt}/${WARMING_RETRY_DELAYS_MS.length})`
@@ -2095,27 +2233,18 @@ export async function streamNativeChatCompletion(
   recordGatewayResponseTelemetry(response, "chat/completions:stream");
 
   if (!response.ok) {
-    let errorBody: { message?: string } | undefined;
+    let errorBody: Record<string, unknown> | undefined;
     try {
-      const errText = await response.text();
-      if (errText) {
-        errorBody = (JSON.parse(errText) as ChatCompletionsResponse).error;
-      }
+      // A non-JSON body leaves the status-coded message.
+      errorBody = parseJsonRecord(await response.text());
     } catch {
-      // Non-JSON error body — fall through to the status-coded message.
+      // error-policy:J3 an unreadable error body still surfaces the HTTP
+      // status (and the Retry-After header) through the error below.
     }
     releasePermit();
-    const message =
-      typeof errorBody?.message === "string" && errorBody.message.trim()
-        ? errorBody.message.trim()
-        : `elizaOS Cloud error ${response.status}`;
-    const requestError = new Error(message) as Error & {
-      status?: number;
-      error?: unknown;
-    };
-    requestError.status = response.status;
-    if (errorBody) requestError.error = errorBody;
-    throw requestError;
+    const error = cloudTextRequestError(response, errorBody);
+    if (!abortSignal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
+    throw error;
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -2142,20 +2271,24 @@ export async function streamNativeChatCompletion(
     const text = extractChatCompletionText(data);
     const toolCalls = extractNativeToolCalls(data);
     const usage = convertNativeUsage(data.usage);
+    const costUsd = extractCostUsd(data.usage, response);
+    // Billed tokens are reported before an incomplete output is rejected.
+    if (usage) {
+      emitModelUsageEvent(runtime, modelType, context.prompt, toUsageEventTokens(usage), {
+        modelName: context.modelName,
+        ...(typeof costUsd === "number" ? { costUsd } : {}),
+      });
+    }
 		assertModelOutputComplete({
 			finishReason: data.choices?.[0]?.finish_reason,
 			provider: "elizacloud",
 			model: context.modelName,
+			maxTokens: typeof requestBody.max_tokens === "number" ? requestBody.max_tokens : null,
+			finishReasonSource: "cloud-chat-completions",
+			emptyVisibleOutput: !text.trim() && toolCalls.length === 0,
+			usage,
+			costUsd,
 		});
-    if (usage) {
-      emitModelUsageEvent(runtime, modelType, context.prompt, toUsageEventTokens(usage), {
-        modelName: context.modelName,
-        ...(() => {
-          const costUsd = extractCostUsd(data.usage, response);
-          return typeof costUsd === "number" ? { costUsd } : {};
-        })(),
-      });
-    }
     if (!text.trim() && toolCalls.length === 0) {
       throw new Error("elizaOS Cloud returned no text or tool calls");
     }
@@ -2209,13 +2342,13 @@ export async function streamNativeChatCompletion(
     try {
       for await (const frame of parseOpenAiSseStream(body)) {
         if (frame.error) {
-          const message = asRecord(frame.error).message;
-          const providerError = new Error(
-            typeof message === "string" && message.trim()
-              ? message.trim()
-              : "elizaOS Cloud stream error"
-          );
-          throw invalidNativeStream("provider returned an error frame", providerError);
+          const errorBody = asRecord(frame.error);
+          const requestError = new Error(
+            firstString(errorBody.message) ?? "elizaOS Cloud stream error"
+          ) as Error & { status?: number; error?: unknown };
+          if (typeof errorBody.code === "number") requestError.status = errorBody.code;
+          if (Object.keys(errorBody).length > 0) requestError.error = errorBody;
+          throw requestError;
         }
         if (!Array.isArray(frame.choices)) {
           throw invalidNativeStream("each stream frame requires a choices array");
@@ -2315,10 +2448,17 @@ export async function streamNativeChatCompletion(
       if (!finishReason) {
         throw invalidNativeStream("stream ended without a terminal finish frame");
       }
+			// Before tool-call finalization: a truncated tool call is incomplete
+			// output, not an invalid one.
 			assertModelOutputComplete({
 				finishReason,
 				provider: "elizacloud",
 				model: context.modelName,
+				maxTokens: typeof requestBody.max_tokens === "number" ? requestBody.max_tokens : null,
+				finishReasonSource: "cloud-chat-completions",
+				emptyVisibleOutput: !accumulated.trim() && toolAcc.size === 0,
+				usage: nativeUsage,
+				costUsd: extractCostUsd(rawUsage, response),
 			});
       const toolCalls = finalizeStreamedToolCalls(toolAcc);
       if (!accumulated.trim() && toolCalls.length === 0) {
@@ -2335,6 +2475,7 @@ export async function streamNativeChatCompletion(
       // them before the original error propagates to the stream consumer.
       failed = true;
       const failure = nativeFundingFailure(selectedFundingSlot, error);
+      if (!abortSignal?.aborted) recordCloudInferenceFailure(runtime, modelType, requestBody, error);
       rejectDeferreds(failure);
       throw failure;
     } finally {

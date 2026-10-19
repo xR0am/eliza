@@ -80,6 +80,7 @@ import {
   sleepWithAbort,
   VISION_IMAGE_MAX_BYTES,
 } from "@elizaos/core";
+import { persistMediaStream } from "../api/media-store.ts";
 
 // ============================================================================
 // Fetch Utilities
@@ -91,6 +92,8 @@ const DEFAULT_AUDIO_TIMEOUT_MS = 120_000;
 
 const VEO_OPERATION_POLL_INTERVAL_MS = 10_000;
 const VEO_OPERATION_TIMEOUT_MS = 300_000;
+/** Consecutive unparseable 200 poll bodies tolerated before failing. */
+const VEO_MAX_CONSECUTIVE_POLL_PARSE_FAILURES = 3;
 
 interface VeoOperation {
   name?: string;
@@ -493,7 +496,21 @@ export class GoogleVideoProvider implements VideoGenerationProvider {
             "Google Veo error: operation completed without a video URI in the response",
         };
       }
-      return { success: true, data: { videoUrl: videoUri } };
+      const download = await fetchWithTimeout(videoUri, {
+        signal: options.signal,
+
+        method: "GET",
+        headers: { "x-goog-api-key": this.apiKey },
+      });
+      if (!download.ok || !download.body) {
+        const text = await download.text();
+        return { success: false, error: `Google Veo error: ${text}` };
+      }
+      const stored = await persistMediaStream(
+        download.body,
+        download.headers.get("content-type") ?? "video/mp4",
+      );
+      return { success: true, data: { videoUrl: stored.url } };
     });
   }
 
@@ -509,6 +526,7 @@ export class GoogleVideoProvider implements VideoGenerationProvider {
     if (started.done) return started;
     const deadline = Date.now() + VEO_OPERATION_TIMEOUT_MS;
     let operation = started;
+    let consecutiveParseFailures = 0;
     while (!operation.done) {
       if (Date.now() >= deadline) {
         throw new Error(
@@ -531,7 +549,35 @@ export class GoogleVideoProvider implements VideoGenerationProvider {
         const text = await pollResponse.text();
         throw new Error(`Google Veo error: ${text}`);
       }
-      operation = (await pollResponse.json()) as VeoOperation;
+      let parsed: VeoOperation;
+      try {
+        parsed = (await pollResponse.json()) as VeoOperation;
+      } catch (error) {
+        // A 200 with an unparseable body (proxy HTML page, truncated response)
+        // may be transient: tolerate a few in a row, then surface the cause.
+        consecutiveParseFailures += 1;
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          {
+            src: "media-provider:google-veo",
+            operation: operation.name,
+            contentType: pollResponse.headers.get("content-type"),
+            consecutiveParseFailures,
+            error: reason,
+          },
+          "Google Veo poll returned an unparseable response body",
+        );
+        if (
+          consecutiveParseFailures >= VEO_MAX_CONSECUTIVE_POLL_PARSE_FAILURES
+        ) {
+          throw new Error(
+            `Google Veo error: malformed poll response (${reason})`,
+          );
+        }
+        continue;
+      }
+      consecutiveParseFailures = 0;
+      operation = parsed;
       if (operation.error) {
         throw new Error(
           `Google Veo error: ${operation.error.message ?? "operation failed"}`,

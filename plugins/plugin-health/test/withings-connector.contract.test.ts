@@ -98,11 +98,11 @@ describe("Withings connector — recorded real API contract", () => {
     expect(steps?.startAt).toBe(dayAt);
     expect(steps?.sourceExternalId).toBe("2026-05-01:withings:steps");
 
-    // .active minutes -> active_minutes verbatim.
+    // .active is seconds (moderate 28 + intense 41 = 69 s) -> 1.15 min.
     const activeMinutes = payload.samples.find(
       (s) => s.metric === "active_minutes",
     );
-    expect(activeMinutes?.value).toBe(69);
+    expect(activeMinutes?.value).toBeCloseTo(69 / 60);
     expect(activeMinutes?.unit).toBe("min");
 
     // totalcalories preferred over calories.
@@ -208,12 +208,11 @@ describe("Withings connector — recorded real API contract", () => {
     expect(temp?.value).toBeCloseTo(36.51, 5);
     expect(temp?.unit).toBe("C");
 
-    // type 73 heart_rate_variability: 680 * 10^-1 = 68 ms.
-    const hrv = payload.samples.find(
-      (s) => s.metric === "heart_rate_variability",
-    );
-    expect(hrv?.value).toBe(68);
-    expect(hrv?.unit).toBe("ms");
+    // type 73 is Skin Temperature (celsius) in the Withings API, not heart
+    // rate variability. No health metric holds it, so it adds no sample.
+    expect(
+      payload.samples.some((s) => s.metric === "heart_rate_variability"),
+    ).toBe(false);
 
     // type 10 systolic / type 9 diastolic (unit 0 -> verbatim).
     const systolic = payload.samples.find(
@@ -240,5 +239,33 @@ describe("Withings connector — recorded real API contract", () => {
         expect(s.localDate).toBe(s.startAt.slice(0, 10));
       }
     }
+  });
+
+  it("files a weigh-in under the user's local day from the measures timezone", async () => {
+    // 2026-10-14T22:30:00Z is 07:30 on 2026-10-15 in Tokyo.
+    const measures = structuredClone(recorded.measures) as {
+      body: { timezone: string; measuregrps: Array<{ date: number }> };
+    };
+    measures.body.timezone = "Asia/Tokyo";
+    const tokyoMorning = Date.parse("2026-10-14T22:30:00Z") / 1000;
+    for (const group of measures.body.measuregrps) group.date = tokyoMorning;
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/v2/measure")) return jsonResponse(recorded.activity);
+      if (url.includes("/v2/sleep")) return jsonResponse(recorded.sleep);
+      if (url.includes("/measure")) return jsonResponse(measures);
+      throw new Error(`unexpected Withings fetch: ${url}`);
+    });
+
+    const payload = await syncHealthConnectorData({
+      token,
+      grantId: "grant-withings",
+      startDate: "2026-10-14",
+      endDate: "2026-10-15",
+    });
+
+    const weight = payload.samples.find((s) => s.metric === "weight_kg");
+    expect(weight?.startAt).toBe("2026-10-14T22:30:00.000Z");
+    expect(weight?.localDate).toBe("2026-10-15");
   });
 });

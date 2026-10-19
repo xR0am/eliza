@@ -45,7 +45,7 @@ Trusted native bootstrap may install `configureWorkflowProcessHost` before the f
 
 Without configuration, Node semantic checking and Bun worker/control/approval commands retain their existing arguments and environment. A Bun compiler host keeps the source/output/time limits but does **not** inherit Node's 512 MiB old-space flag; its memory/resource policy needs separate platform qualification. This process contract does not package or enable a mobile workflow engine, sandbox workflow code, or establish Android support.
 
-For offline packaging discovery, run `node packages/scripts/plugins/plugin-workflow/inventory-mobile-dependencies.ts` from the repository root after the pinned installation. It reports the physical declared dependency/peer graph, separate installed versions, missing edges and platform constraints without executing packages. This conservative inventory is not a minimal runtime closure or an authenticated mobile artifact; package contents, target binaries, declarations, safe extraction and real Android execution still require qualification.
+Offline packaging requires a complete dependency and peer inventory for the pinned installation. Check installed versions, missing dependencies and platform constraints. Package contents, target binaries, declarations, safe extraction and real Android execution still require qualification.
 
 A host may supply `compilerDependencyRoot` for a separate immutable compiler/declaration artifact; it defaults to the runtime `dependencyRoot`. Semantic checking anchors imports and type roots there while execution links stay on the runtime artifact. Both artifacts must describe the same supported workflow API. Host-owned workflow dependency symlinks are refreshed atomically when an artifact path changes; unexpected files/directories are rejected and preserved. This is private-directory maintenance, not protection against a hostile same-UID writer.
 
@@ -69,3 +69,19 @@ Notes and Calendar read scopes must match a previously selected draft scope;
 model-supplied device identities, source code and activation are rejected. An
 unsupported request returns a clarification error. Saving remains a separate,
 explicit typed mutation. This endpoint does not enable mobile workflow execution.
+
+### Scheduled native briefs
+
+A trusted host can provide selected Calendar events and reminders for morning
+and evening briefs through `configureHostedNativeSourceReader`. Evening read
+requests and responses include `template: "evening"`; morning requests retain
+the existing shape. The host must restrict completed reminders to the selected
+evening window. A completed status is not evidence of appointment attendance.
+
+The status route advertises `hostedNativeEveningProtocol: 1` when a native reader
+is installed, and `hostedDigestSourcePauseProtocol: 1` for schedule suspension.
+Loop listings report `sourceState` as `current`, `expired`, or `revoked`. A trigger
+with an expired or revoked source records an unavailable result and removes the
+schedule without reading fresh source data. Schedule reconciliation also removes
+lapsed schedules. Saving the loop with a new reviewed source revision re-arms
+the schedule.

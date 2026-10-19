@@ -726,31 +726,9 @@ export function ChatOverlay({
     },
     [handleChatEdit, stopSpeaking],
   );
-  // Durable reply recovery uses the same handler as the panel chat surface.
-  // Other failure kinds retain their existing resend contract. Read the live
-  // list through a ref to keep memoized transcript rows stable during streaming.
-  const messagesRef = React.useRef(messages);
-  messagesRef.current = messages;
-  const handleRetry = React.useCallback(
-    (assistantId: string) => {
-      const list = messagesRef.current;
-      const assistantIdx = list.findIndex(
-        (m) => m.id === assistantId && m.role === "assistant",
-      );
-      if (assistantIdx < 0) return;
-      if (list[assistantIdx].replyRecoveryAvailable === true) {
-        return handleChatRetry(assistantId);
-      }
-      for (let i = assistantIdx - 1; i >= 0; i -= 1) {
-        if (list[i].role === "user") {
-          const retryText = list[i].content.trim();
-          if (retryText) send(retryText);
-          return;
-        }
-      }
-    },
-    [send, handleChatRetry],
-  );
+  // Retry uses the same handler as the panel chat surface: it re-runs the
+  // failed turn in place and re-sends the turn's attachments.
+  const handleRetry = handleChatRetry;
   // Proactive suggestions (#8792) — same semantics as the composite ChatView:
   // dismiss removes the bubble from the live transcript only (the server-side
   // per-surface cooldown keeps the same offer from immediately re-appearing);
@@ -819,7 +797,7 @@ export function ChatOverlay({
     resetMessageHistory();
   }, [activeConversationId, resetMessageHistory]);
   // Live handle to the draft for callbacks that must read the current text
-  // without subscribing (dictation append), same pattern as messagesRef above.
+  // without subscribing (dictation append).
   const draftRef = React.useRef(draft);
   draftRef.current = draft;
   // Finalization drains the capture asynchronously. An immediate ref closes
@@ -1801,6 +1779,7 @@ export function ChatOverlay({
         isLastAssistant
           ? {
               turnStatus: isInFlight ? turnStatus : null,
+              streaming: responding,
             }
           : undefined;
       return (
@@ -5874,7 +5853,7 @@ export function ChatOverlay({
                       // gap on the sides as top/bottom.
                       // No divider above the composer — spacing separates it from the
                       // thread; the sheet is one continuous glass surface (#10710).
-                      "relative z-10 flex min-w-0 shrink-0 items-center gap-[clamp(0.125rem,1.25vw,0.5rem)] px-[clamp(0.25rem,1.5vw,0.5rem)] py-[clamp(0.125rem,0.75dvh,0.375rem)] [&_textarea]:max-h-[8.5rem] [&_textarea]:min-h-8 [&_textarea]:border-none [&_textarea]:bg-transparent [&_textarea]:px-1.5 [&_textarea]:py-1 [&_textarea]:text-left [&_textarea]:text-sm [&_textarea]:text-txt [&_textarea]:outline-none [&_textarea]:placeholder:text-muted-strong pointer-coarse:[&_textarea]:text-base",
+                      "relative z-10 flex min-w-0 shrink-0 items-center gap-[clamp(0.125rem,1.25vw,0.5rem)] px-[clamp(0.25rem,1.5vw,0.5rem)] py-[clamp(0.125rem,0.75dvh,0.375rem)] [&_textarea]:max-h-[8.5rem] [&_textarea]:min-h-8 [&_textarea]:border-none [&_textarea]:bg-transparent [&_textarea]:px-1.5 [&_textarea]:py-1 [&_textarea]:text-left [&_textarea]:text-sm [&_textarea]:text-txt [&_textarea]:outline-none [&_textarea]:placeholder:text-muted-strong pointer-coarse:[&_textarea]:text-base pointer-coarse:[&_textarea]:min-h-11",
                       // While INSET the composer dissolves into the sheet (one
                       // continuous glass surface, #10710) — border/fill are morph-
                       // driven inline (transparent at rest). At FULL-BLEED they fade

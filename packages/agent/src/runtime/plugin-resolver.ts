@@ -33,7 +33,7 @@ import {
   isMobilePlatform,
   type PluginInstallRecord,
 } from "@elizaos/host/protocol";
-import { saveElizaConfig } from "../config/config.ts";
+import { loadElizaConfig, saveElizaConfig } from "../config/config.ts";
 import {
   isDevCloudConfigAuthorityView,
   resolveDevCloudEnvAuthority,
@@ -110,6 +110,7 @@ const RUNTIME_APP_PLUGIN_SUBPATHS = new Set([
   "@elizaos/plugin-inbox",
   "@elizaos/plugin-personal-assistant",
   "@elizaos/plugin-native-phone",
+  "@elizaos/plugin-maps",
   "@elizaos/plugin-notes",
   "@elizaos/plugin-knowledge",
   "@elizaos/plugin-native-wifi",
@@ -1552,7 +1553,12 @@ const DEFAULT_PLUGIN_INSTANCE_KEEP = 3;
 function pluginInstanceKeepCount(): number {
   const raw = process.env.ELIZA_PLUGIN_INSTANCE_KEEP;
   if (!raw) return DEFAULT_PLUGIN_INSTANCE_KEEP;
-  const parsed = Number.parseInt(raw.trim(), 10);
+  // Number.parseInt stops at the first non-digit, so "5junk" parsed to a
+  // finite 5 and was accepted as a deliberate setting instead of falling
+  // back to the default. Require the whole trimmed value to be decimal,
+  // mirroring resolveGenerationTimeoutMs in the discord plugin.
+  const text = raw.trim();
+  const parsed = /^\+?\d+$/.test(text) ? Number(text) : Number.NaN;
   if (!Number.isFinite(parsed) || parsed < 1) {
     return DEFAULT_PLUGIN_INSTANCE_KEEP;
   }
@@ -2506,6 +2512,22 @@ function projectRoutingOnlyPlugin(plugin: Plugin): Plugin {
   };
 }
 
+/**
+ * Save only the repaired install records. The boot config passed to
+ * resolvePlugins holds vault-resolved secrets in `env`, so saving it would
+ * write them to disk in plaintext; the on-disk copy keeps its vault refs.
+ * @internal Exported for testing.
+ */
+export function persistRepairedInstallRecords(
+  pluginNames: Iterable<string>,
+): void {
+  const durable = loadElizaConfig();
+  for (const pluginName of pluginNames) {
+    repairBrokenInstallRecord(durable, pluginName);
+  }
+  saveElizaConfig(durable);
+}
+
 export async function resolvePlugins(
   config: ElizaConfig,
   opts?: {
@@ -3243,7 +3265,7 @@ export async function resolvePlugins(
       return plugins;
     }
     try {
-      saveElizaConfig(config);
+      persistRepairedInstallRecords(repairedInstallRecords);
       logger.info(
         `[eliza] Repaired ${repairedInstallRecords.size} plugin install record(s): ${Array.from(repairedInstallRecords).join(", ")}`,
       );

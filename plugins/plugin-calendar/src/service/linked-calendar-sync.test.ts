@@ -5,6 +5,7 @@
  */
 
 import { PGlite } from "@electric-sql/pglite";
+import { linkedCalendarSemanticDigest } from "@elizaos/contracts";
 import type { IAgentRuntime } from "@elizaos/core";
 import type { IGoogleWorkspaceService } from "@elizaos/plugin-google-workspace";
 import { drizzle } from "drizzle-orm/pglite";
@@ -13,7 +14,9 @@ import {
   GoogleLinkedCalendarProviderPort,
   type LinkedCalendarCheckpointStore,
   type LinkedCalendarEventRecord,
+  type LinkedCalendarLocalPort,
   type LinkedCalendarLocalSnapshot,
+  type LinkedCalendarProviderPort,
   type LinkedCalendarProviderSnapshot,
   LinkedCalendarReconciler,
   LinkedCalendarRepository,
@@ -32,6 +35,117 @@ const baseEvent: LinkedCalendarSemanticEvent = {
   isAllDay: false,
   attendees: [],
 };
+
+it("keeps semantic text and digest identical across English and Swedish default collation", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const path = fileURLToPath(
+    new URL(
+      "../../../../packages/contracts/src/calendar-linked-sync.ts",
+      import.meta.url,
+    ),
+  );
+  const event = {
+    ...baseEvent,
+    attendees: [
+      "z@example.com",
+      "ä@example.com",
+      "a@example.com",
+      "å@example.com",
+      "ö@example.com",
+    ].map((email) => ({ email })),
+  };
+  const script = `import {readFileSync} from 'node:fs';import {stripTypeScriptTypes} from 'node:module';const source=stripTypeScriptTypes(readFileSync(${JSON.stringify(path)},'utf8'),{mode:'transform'});const {linkedCalendarSemanticText,linkedCalendarSemanticDigest}=await import('data:text/javascript,'+encodeURIComponent(source));const event=${JSON.stringify(event)};console.log(JSON.stringify({collation:event.attendees.map(a=>a.email).sort((a,b)=>a.localeCompare(b)),text:linkedCalendarSemanticText(event),digest:await linkedCalendarSemanticDigest(event)}));`;
+  const run = (locale: string) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        ["--no-warnings", "--input-type=module", "-e", script],
+        {
+          encoding: "utf8",
+          env: { ...process.env, LANG: locale, LC_ALL: locale },
+        },
+      ),
+    );
+  const english = run("en_US.UTF-8"),
+    swedish = run("sv_SE.UTF-8");
+  expect(english.collation).not.toEqual(swedish.collation);
+  expect(english.text).toBe(swedish.text);
+  expect(english.digest).toBe(swedish.digest);
+});
+
+it("the shared engine preserves opaque phone revisions through push and pull", async () => {
+  let current: LinkedCalendarEventRecord<string> = {
+    ...record(),
+    localRevision: "phone-rev-1",
+  };
+  let local: LinkedCalendarLocalSnapshot<string> = {
+    eventId: current.localEventId,
+    revision: "phone-rev-1",
+    event: structuredClone(baseEvent),
+  };
+  let remote: LinkedCalendarProviderSnapshot | null = null,
+    creates = 0;
+  const checkpoints: LinkedCalendarCheckpointStore<string> = {
+    async save(expected, patch) {
+      expect(expected.updatedAt).toBe(current.updatedAt);
+      current = { ...current, ...patch, updatedAt: crypto.randomUUID() };
+      return current;
+    },
+  };
+  const localPort: LinkedCalendarLocalPort<string> = {
+    async get() {
+      return local;
+    },
+    async applyProviderEvent(id, event, expected) {
+      expect(id).toBe(local.eventId);
+      expect(expected).toBe(local.revision);
+      local = { eventId: id, event, revision: "phone-rev-2" };
+      return local;
+    },
+    async delete() {
+      throw Error("Not requested");
+    },
+  };
+  const provider: LinkedCalendarProviderPort<string> = {
+    async get() {
+      return remote;
+    },
+    async create(_record, event) {
+      creates++;
+      remote = { eventId: "google-event", etag: '"v1"', event };
+      return remote;
+    },
+    async update() {
+      throw Error("Not requested");
+    },
+    async delete() {
+      throw Error("Not requested");
+    },
+  };
+  const sync = new LinkedCalendarReconciler<string>(
+    checkpoints,
+    localPort,
+    provider,
+  );
+  expect(await sync.reconcile(current)).toBe("pushed");
+  expect(creates).toBe(1);
+  expect(current.localRevision).toBe("phone-rev-1");
+  expect(await linkedCalendarSemanticDigest(baseEvent)).toBe(
+    linkedCalendarSemanticHash(baseEvent),
+  );
+  expect(await sync.reconcile(current)).toBe("clean");
+  expect(creates).toBe(1);
+  if (!remote) throw new Error("Provider create was not captured");
+  remote = {
+    ...remote,
+    etag: '"v2"',
+    event: { ...baseEvent, title: "Updated in Google" },
+  };
+  expect(await sync.reconcile(current)).toBe("pulled");
+  expect(local.event.title).toBe("Updated in Google");
+  expect(current.localRevision).toBe("phone-rev-2");
+});
 
 function record(
   overrides: Partial<LinkedCalendarEventRecord> = {},
@@ -82,6 +196,7 @@ function ports(args: {
   local?: LinkedCalendarLocalSnapshot | null;
   provider?: LinkedCalendarProviderSnapshot | null;
   createError?: unknown;
+  updateExpectedEtag?: string;
   localApplyError?: unknown;
   localDeleteError?: unknown;
 }) {
@@ -129,6 +244,14 @@ function ports(args: {
         event: LinkedCalendarSemanticEvent,
       ) {
         updates += 1;
+        if (
+          args.updateExpectedEtag &&
+          _record.providerEtag !== args.updateExpectedEtag
+        )
+          throw Object.assign(new Error("Provider revision changed"), {
+            outcome: "precondition_failed",
+            code: "GOOGLE_CALENDAR_PRECONDITION_FAILED",
+          });
         provider = { eventId: "google-event-1", etag: '"g2"', event };
         return provider;
       },
@@ -724,6 +847,50 @@ describe("LinkedCalendarReconciler", () => {
     });
   });
 
+  it.each(['"g5"', null])(
+    "keeps the selected local value only against a fresh provider revision (%s)",
+    async (etag) => {
+      const store = new MemoryStore(
+        record({
+          state: "conflicted",
+          providerEventId: "google-event-1",
+          providerEtag: '"g1"',
+          lastCommonSemanticHash: "old",
+        }),
+      );
+      const testPorts = ports({
+        local: {
+          eventId: "local-1",
+          revision: 4,
+          event: { ...baseEvent, title: "Local wins" },
+        },
+        provider: {
+          eventId: "google-event-1",
+          etag,
+          event: { ...baseEvent, title: "Provider edit" },
+        },
+        updateExpectedEtag: '"g5"',
+      });
+      const result = await new LinkedCalendarReconciler(
+        store,
+        testPorts.localPort,
+        testPorts.providerPort,
+      ).resolveConflict(store.current, "keep_eliza");
+      expect(result).toBe(etag ? "pushed" : "quarantined");
+      expect(testPorts.counts().updates).toBe(etag ? 1 : 0);
+      if (etag)
+        expect(store.current).toMatchObject({
+          state: "clean",
+          localRevision: 4,
+          providerEtag: '"g2"',
+        });
+      else
+        expect(store.current.lastErrorCode).toBe(
+          "LINKED_PROVIDER_REVISION_MISSING",
+        );
+    },
+  );
+
   it("resolves a stale two-sided conflict using the owner's selected provider value", async () => {
     const store = new MemoryStore(
       record({
@@ -1007,6 +1174,32 @@ describe("GoogleLinkedCalendarProviderPort", () => {
     });
   });
 
+  it("never clears a provider recurrence when the local event has none", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const google = {
+      async updateEvent(input: Record<string, unknown>) {
+        calls.push(input);
+        return {
+          id: "google-series",
+          calendarId: "primary",
+          title: input.title,
+          start: input.start,
+          end: input.end,
+          recurrence: ["RRULE:FREQ=WEEKLY"],
+          metadata: { etag: '"series-2"' },
+        };
+      },
+    } as unknown as IGoogleWorkspaceService;
+    const port = new GoogleLinkedCalendarProviderPort(google);
+    const updated = await port.update(
+      record({ providerEventId: "google-series", providerEtag: '"series-1"' }),
+      { ...baseEvent, title: "Kept from Eliza" },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toHaveProperty("recurrence");
+    expect(updated.event.recurrence).toEqual(["RRULE:FREQ=WEEKLY"]);
+  });
+
   it("maps provider 410 to an absent snapshot for watch/full-resync reconciliation", async () => {
     const google = {
       async getEvent() {
@@ -1018,4 +1211,27 @@ describe("GoogleLinkedCalendarProviderPort", () => {
       port.get(record({ providerEventId: "deleted-google-event" })),
     ).resolves.toBeNull();
   });
+});
+
+it("recurrence changes are part of linked event semantics without changing ordinary checkpoints", async () => {
+  expect(linkedCalendarSemanticHash({ ...baseEvent, recurrence: [] })).toBe(
+    linkedCalendarSemanticHash(baseEvent),
+  );
+  expect(
+    linkedCalendarSemanticHash({
+      ...baseEvent,
+      recurrence: ["RRULE:FREQ=DAILY"],
+    }),
+  ).not.toBe(linkedCalendarSemanticHash(baseEvent));
+  expect(
+    await linkedCalendarSemanticDigest({
+      ...baseEvent,
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    }),
+  ).toBe(
+    linkedCalendarSemanticHash({
+      ...baseEvent,
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    }),
+  );
 });

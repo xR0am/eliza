@@ -20,7 +20,6 @@ import {
 } from "./credits";
 import {
   invalidateOrgBalanceHint,
-  lowerOrgBalanceHint,
   readOrgBalanceHint,
   writeOrgBalanceHint,
 } from "./inference-auth-cache";
@@ -304,6 +303,7 @@ export type InferenceDebitCollectionOutcome =
       attemptedAmountUsd: number;
       collectedAmountUsd: number;
       newBalanceUsd: number;
+      balanceRevision: string;
       transactionId: string;
     }
   | {
@@ -311,6 +311,7 @@ export type InferenceDebitCollectionOutcome =
       attemptedAmountUsd: number;
       collectedAmountUsd: 0;
       newBalanceUsd: number;
+      balanceRevision: string;
       transactionId: null;
       reason: "insufficient_balance" | "below_minimum" | "org_not_found";
     };
@@ -463,9 +464,9 @@ export async function debitInferenceCost(
       });
     }
     try {
-      if (options.preserveBalanceHintDuringFencedHandoff) {
-        await lowerOrgBalanceHint(ctx.organizationId, result.newBalance, Date.now());
-      }
+      // For fenced debits, the Durable Object already holds this revision.
+      // Publish its atomic observation directly; reading and lowering the old
+      // cache value first adds no authority and writes it with an old revision.
       await republishOrgBalanceHintAfterDebit(
         ctx.organizationId,
         result.newBalance,
@@ -494,6 +495,7 @@ export async function debitInferenceCost(
       attemptedAmountUsd: amountUsd,
       collectedAmountUsd: persistedAmountUsd,
       newBalanceUsd: result.newBalance,
+      balanceRevision: result.balanceRevision,
       transactionId: transaction.id,
     };
   }
@@ -525,6 +527,7 @@ export async function debitInferenceCost(
     attemptedAmountUsd: amountUsd,
     collectedAmountUsd: 0,
     newBalanceUsd: result.newBalance,
+    balanceRevision: result.balanceRevision,
     transactionId: null,
     reason: result.reason ?? "insufficient_balance",
   };
@@ -632,7 +635,7 @@ const SWEEP_LOCK_TTL_MS = 50_000; // < 60s cron interval; auto-expires if a run 
  * Single-flighted via a best-effort lock (real exclusion on atomic backends;
  * a no-op on Cloudflare KV, where overlapping sweeps plus non-atomic getAndDelete
  * remain a documented residual — the production-grade fix is a DB-backed ledger,
- * see packages/cloud/api/docs/inference-hot-path.md). `maxKeys` bounds work per
+ * see `lib/services/inference-billing-ledger.ts`). `maxKeys` bounds work per
  * run; a `capHit` means the backlog exceeds one run and is logged, not silently
  * dropped.
  */

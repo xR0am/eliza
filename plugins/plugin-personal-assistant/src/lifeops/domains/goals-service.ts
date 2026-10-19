@@ -36,7 +36,6 @@ import {
   scoreGoalSimilarity,
 } from "@elizaos/plugin-goals/goals-service";
 import { getGoalsCheckinService } from "@elizaos/plugin-goals/services/checkin";
-import { resolveDefaultTimeZone } from "../defaults.js";
 import {
   type buildGoalSemanticReviewMetadata,
   mergeGoalSemanticReviewMetadata,
@@ -45,6 +44,10 @@ import {
 } from "../goal-grounding.js";
 import { evaluateGoalProgressWithLlm } from "../goal-semantic-evaluator.js";
 import type { LifeOpsContext } from "../lifeops-context.js";
+import {
+  readOwnerTimeZoneResolver,
+  resolveOwnerTimeZone,
+} from "../owner/fact-store.js";
 import {
   createLifeOpsAuditEvent,
   type LifeOpsScheduleMergedStateRecord,
@@ -162,6 +165,8 @@ export class GoalsDomain {
         normalizeOwnership: (input, current) =>
           this.ctx.normalizeOwnership(input, current),
         checkinSync: () => getGoalsCheckinService(this.ctx.runtime),
+        releaseGoalReferences: (goalId) =>
+          this.ctx.repository.clearGoalReferences(this.ctx.agentId(), goalId),
       });
     }
     return this.goalsServiceInstance;
@@ -483,7 +488,24 @@ export class GoalsDomain {
     summary: LifeOpsGoalReview["summary"];
     now: Date;
   }): Promise<Record<string, unknown>> {
-    const timeZone = resolveDefaultTimeZone();
+    const timeZoneAt = await readOwnerTimeZoneResolver(this.ctx.runtime);
+    const timeZone = timeZoneAt(args.now);
+    // Each sleep edge is rendered in the owner zone in effect at that edge, so
+    // a night that straddles a travel boundary keeps its bedtime in the zone
+    // the owner fell asleep in. An absent or unparseable edge has no zone.
+    const localSleepEdge = (
+      isoValue: string | null,
+    ): { timeZone: string | null; local: string | null } => {
+      const instant = isoValue ? new Date(isoValue) : null;
+      if (!instant || Number.isNaN(instant.getTime())) {
+        return { timeZone: null, local: null };
+      }
+      const edgeTimeZone = timeZoneAt(instant);
+      return {
+        timeZone: edgeTimeZone,
+        local: this.formatLocalHourMinute(isoValue, edgeTimeZone),
+      };
+    };
     const linkedDefinitionSummaries = args.linkedDefinitions.map(
       (definition) => ({
         id: definition.id,
@@ -506,13 +528,17 @@ export class GoalsDomain {
         if (!sleep) {
           return null;
         }
+        const bedtime = localSleepEdge(sleep.asleepAt);
+        const wake = localSleepEdge(sleep.awakeAt);
         return {
           observedAt: signal.observedAt,
           asleepAt: sleep.asleepAt,
           awakeAt: sleep.awakeAt,
           durationMinutes: sleep.durationMinutes,
-          localBedtime: this.formatLocalHourMinute(sleep.asleepAt, timeZone),
-          localWakeTime: this.formatLocalHourMinute(sleep.awakeAt, timeZone),
+          bedtimeTimeZone: bedtime.timeZone,
+          localBedtime: bedtime.local,
+          wakeTimeZone: wake.timeZone,
+          localWakeTime: wake.local,
           stage: sleep.stage,
         };
       })
@@ -994,7 +1020,12 @@ export class GoalsDomain {
       "definition",
       definitionRecord.definition.id,
     );
-    const lastReminderAttempt = reminderInspection.attempts[0] ?? null;
+    // History is ordered by its planned slots; a delayed earlier slot can finish last.
+    const [lastReminderAttempt] =
+      await this.ctx.repository.listLatestReminderAttemptsForOccurrences(
+        this.ctx.agentId(),
+        [occurrence.id],
+      );
     const lastOccurrenceAudit = reminderInspection.audits[0] ?? null;
     const whyVisible =
       occurrence.state === "snoozed" && occurrence.snoozedUntil
@@ -1015,8 +1046,8 @@ export class GoalsDomain {
         source: definitionRecord.definition.source,
         whyVisible,
         lastReminderAt: lastReminderAttempt?.attemptedAt ?? null,
-        lastReminderChannel: lastReminderAttempt?.channel,
-        lastReminderOutcome: lastReminderAttempt?.outcome,
+        lastReminderChannel: lastReminderAttempt?.channel ?? null,
+        lastReminderOutcome: lastReminderAttempt?.outcome ?? null,
         lastActionSummary: lastOccurrenceAudit
           ? `${lastOccurrenceAudit.reason} at ${lastOccurrenceAudit.createdAt}`
           : null,
@@ -1050,7 +1081,7 @@ export class GoalsDomain {
 
   async getOverview(now = new Date()): Promise<LifeOpsOverview> {
     const schedule = await this.deps.refreshEffectiveScheduleState({
-      timezone: resolveDefaultTimeZone(),
+      timezone: await resolveOwnerTimeZone(this.ctx.runtime, now),
       now,
     });
     const definitions = await listCallerDefinitions(

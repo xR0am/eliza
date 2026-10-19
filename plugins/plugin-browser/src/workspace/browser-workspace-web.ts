@@ -17,6 +17,7 @@ import {
   queryAllBrowserWorkspaceSelector,
   resolveBrowserWorkspaceElement,
   resolveBrowserWorkspaceFindElement,
+  resolveBrowserWorkspaceFindElements,
   resolveWebBrowserWorkspaceCommandDocument,
 } from "./browser-workspace-elements.js";
 import {
@@ -991,20 +992,24 @@ export async function executeWebBrowserWorkspaceDomCommand(
             command,
             command.selector,
           );
+          let count: number;
+          if (semanticCommand?.findBy) {
+            count = resolveBrowserWorkspaceFindElements(
+              document,
+              semanticCommand,
+            ).length;
+          } else {
+            // Plain CSS, or the `css:` semantic spelling: count every match.
+            const cssSelector = semanticCommand?.selector ?? command.selector;
+            count = queryAllBrowserWorkspaceSelector(
+              document,
+              cssSelector,
+            ).length;
+          }
           return {
             mode: "web",
             subaction: command.subaction,
-            value: semanticCommand
-              ? Number(
-                  Boolean(
-                    resolveBrowserWorkspaceFindElement(
-                      document,
-                      semanticCommand,
-                    ),
-                  ),
-                )
-              : queryAllBrowserWorkspaceSelector(document, command.selector)
-                  .length,
+            value: count,
           };
         }
 
@@ -1320,8 +1325,79 @@ export async function executeWebBrowserWorkspaceDomCommand(
         const element = resolveTarget();
         const form = findClosestBrowserWorkspaceForm(element);
 
-        if (key === "Enter" && form) {
-          await submitWebBrowserWorkspaceForm(tab, form);
+        if (key === "Enter" && element?.tagName === "TEXTAREA") {
+          const textarea = element as HTMLTextAreaElement;
+          if (!textarea.readOnly && !textarea.matches(":disabled")) {
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            setBrowserWorkspaceControlValue(
+              textarea,
+              `${textarea.value.slice(0, start)}\n${textarea.value.slice(end)}`,
+            );
+            textarea.setSelectionRange(start + 1, start + 1);
+          }
+          return { mode: "web", subaction: command.subaction, value: { key } };
+        }
+        if (
+          key === "Enter" &&
+          (element?.tagName === "BUTTON" ||
+            (element?.tagName === "INPUT" &&
+              ["submit", "image", "button", "reset"].includes(
+                (element as HTMLInputElement).type,
+              )))
+        ) {
+          const result = await activateWebBrowserWorkspaceElement(
+            tab,
+            element,
+            "click",
+          );
+          return { ...result, subaction: command.subaction };
+        }
+        // Text controls submit through the default button. Without one, only
+        // a form with at most one control that blocks implicit submission does.
+        const blocksImplicitSubmission = (control: Element) =>
+          control.tagName === "INPUT" &&
+          [
+            "text",
+            "search",
+            "url",
+            "tel",
+            "email",
+            "password",
+            "date",
+            "month",
+            "week",
+            "time",
+            "datetime-local",
+            "number",
+          ].includes((control as HTMLInputElement).type);
+        const implicitSubmit =
+          key === "Enter" &&
+          form !== null &&
+          element !== null &&
+          blocksImplicitSubmission(element) &&
+          !element.matches(":disabled");
+        const submitter = implicitSubmit
+          ? Array.from(document.querySelectorAll("button, input")).find(
+              (control): control is HTMLButtonElement | HTMLInputElement =>
+                (control as HTMLButtonElement | HTMLInputElement).form ===
+                  form &&
+                ((control.tagName === "BUTTON" &&
+                  (control as HTMLButtonElement).type === "submit") ||
+                  (control.tagName === "INPUT" &&
+                    ["image", "submit"].includes(
+                      (control as HTMLInputElement).type,
+                    ))),
+            )
+          : undefined;
+        if (
+          implicitSubmit &&
+          !submitter?.matches(":disabled") &&
+          (submitter ||
+            Array.from(form.elements).filter(blocksImplicitSubmission).length <=
+              1)
+        ) {
+          await submitWebBrowserWorkspaceForm(tab, form, submitter);
           return {
             mode: "web",
             subaction: command.subaction,

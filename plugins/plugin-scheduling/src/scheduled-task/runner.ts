@@ -1280,15 +1280,62 @@ export function createScheduledTaskRunner(
     return { decision: { kind: "allow" } };
   }
 
-  async function shouldDeferForGlobalPause(
+  /**
+   * A skipped occurrence of a recurring task is used up: dueness counts the
+   * next occurrence from `firedAt`, so leaving it unchanged re-skips the same
+   * occurrence every tick and fires it at the first tick after the gate opens
+   * or the global pause ends. Record the occurrence instant, not the
+   * (possibly late) tick, so the schedule keeps its phase.
+   */
+  async function useUpRecurringOccurrence(task: ScheduledTask): Promise<void> {
+    if (!isRecurringTrigger(task.trigger)) return;
+    const skipped = await isScheduledTaskDue(task, {
+      now: now(),
+      ownerFacts: await deps.ownerFacts(),
+      anchors: deps.anchors,
+    });
+    task.state.firedAt = skipped.occurrenceAtIso ?? now().toISOString();
+  }
+
+  /**
+   * A tick after an ended pause window can still be firing an occurrence
+   * that fell inside it (no tick ran during the pause, e.g. the scheduler
+   * was offline). That occurrence belongs to the pause, so it is skipped,
+   * not caught up late. Recurring tasks only: skipping a one-time task is
+   * terminal, so it keeps the late catch-up instead of being lost.
+   */
+  async function occurredDuringPause(
     task: ScheduledTask,
-  ): Promise<{ paused: boolean; reason?: string }> {
+    pause: { startIso?: string; endIso?: string },
+  ): Promise<boolean> {
+    if (!pause.startIso || !pause.endIso) return false;
+    if (!isRecurringTrigger(task.trigger)) return false;
+    const due = await isScheduledTaskDue(task, {
+      now: now(),
+      ownerFacts: await deps.ownerFacts(),
+      anchors: deps.anchors,
+    });
+    if (!due.occurrenceAtIso) return false;
+    const occurrenceMs = Date.parse(due.occurrenceAtIso);
+    return (
+      occurrenceMs >= Date.parse(pause.startIso) &&
+      occurrenceMs < Date.parse(pause.endIso)
+    );
+  }
+
+  async function shouldDeferForGlobalPause(task: ScheduledTask): Promise<{
+    paused: boolean;
+    reason?: string;
+    endedPauseEndIso?: string;
+  }> {
     if (task.respectsGlobalPause === false) return { paused: false };
     const pause = await deps.globalPause.current(now());
-    if (!pause.active) return { paused: false };
+    const ended = !pause.active && (await occurredDuringPause(task, pause));
+    if (!pause.active && !ended) return { paused: false };
     return {
       paused: true,
       reason: pause.reason ? `global_pause: ${pause.reason}` : "global_pause",
+      ...(ended ? { endedPauseEndIso: pause.endIso } : {}),
     };
   }
 
@@ -1387,6 +1434,12 @@ export function createScheduledTaskRunner(
     return (await scheduleWithResult(input)).task;
   }
 
+  function scheduleWithResult(
+    input: Omit<ScheduledTask, "taskId" | "state">,
+  ): Promise<ScheduledTaskScheduleResult> {
+    return scheduleInput(input, true);
+  }
+
   async function creationCommit(
     task: ScheduledTask,
   ): Promise<ScheduledTaskLogEntry> {
@@ -1449,8 +1502,13 @@ export function createScheduledTaskRunner(
     return { task, commit: await creationCommit(task), replayed: true };
   }
 
-  async function scheduleWithResult(
+  /**
+   * `callerInput` is false for an inline pipeline child: its trigger was
+   * validated with the parent, or stored before cron triggers were checked.
+   */
+  async function scheduleInput(
     input: Omit<ScheduledTask, "taskId" | "state">,
+    callerInput: boolean,
   ): Promise<ScheduledTaskScheduleResult> {
     if (input.idempotencyKey) {
       const existing = await deps.store.findByIdempotencyKey(
@@ -1459,7 +1517,10 @@ export function createScheduledTaskRunner(
       if (existing) return replaySchedule(existing);
     }
 
-    const validationIssues = validateScheduledTaskInput(input, deps);
+    const validationIssues = validateScheduledTaskInput(input, deps, {
+      newTrigger: callerInput,
+      newPipeline: callerInput,
+    });
     if (validationIssues.length > 0) {
       throw new ScheduledTaskValidationError(validationIssues);
     }
@@ -1649,20 +1710,44 @@ export function createScheduledTaskRunner(
     detail?: Record<string, unknown>;
   }
 
-  function mutateSnooze(
+  async function snoozeBaseMs(task: ScheduledTask): Promise<number> {
+    const nowMs = now().getTime();
+    if (task.state.status !== "scheduled") return nowMs;
+    const pendingFireAtIso = await resolveNextFireAt(task);
+    const pendingFireMs =
+      pendingFireAtIso === null ? Number.NaN : Date.parse(pendingFireAtIso);
+    return Number.isFinite(pendingFireMs) && pendingFireMs > nowMs
+      ? pendingFireMs
+      : nowMs;
+  }
+
+  async function mutateSnooze(
     task: ScheduledTask,
     payload: { minutes?: number; untilIso?: string } | undefined,
-  ): LifecycleMutation {
+  ): Promise<LifecycleMutation> {
     const minutes = payload?.minutes;
     const untilIso = payload?.untilIso;
     let newFireAtIso: string;
     if (typeof untilIso === "string") {
-      newFireAtIso = new Date(untilIso).toISOString();
+      const untilMs = Date.parse(untilIso);
+      if (!Number.isFinite(untilMs) || untilMs <= now().getTime()) {
+        throw new ElizaError(
+          "snooze: untilIso must be a parseable timestamp in the future",
+          {
+            code: "SCHEDULED_TASK_SNOOZE_PROJECTION_INVALID",
+            context: { untilIso },
+          },
+        );
+      }
+      newFireAtIso = new Date(untilMs).toISOString();
     } else if (typeof minutes === "number") {
       if (minutes <= 0) {
         throw new Error("snooze: provide minutes or untilIso");
       }
-      const newFireMs = projectMinuteOffsetMs(now().getTime(), minutes);
+      const newFireMs = projectMinuteOffsetMs(
+        await snoozeBaseMs(task),
+        minutes,
+      );
       if (newFireMs === null) {
         throw new ElizaError(
           "snooze: minutes must be finite and project to a representable Date",
@@ -1722,7 +1807,7 @@ export function createScheduledTaskRunner(
     task: ScheduledTask,
     payload: { minutes?: number; untilIso?: string } | undefined,
   ): Promise<ScheduledTask> {
-    const mutation = mutateSnooze(task, payload);
+    const mutation = await mutateSnooze(task, payload);
     await persist(mutation.task);
     await logger.log(mutation.task.taskId, mutation.transition, {
       reason: mutation.reason,
@@ -1817,7 +1902,10 @@ export function createScheduledTaskRunner(
     const edited = structuredClone(task);
     Object.assign(edited, payload);
     const { taskId: _taskId, state: _state, ...input } = edited;
-    const validationIssues = validateScheduledTaskInput(input, deps);
+    const validationIssues = validateScheduledTaskInput(input, deps, {
+      newTrigger: Object.hasOwn(payload, "trigger"),
+      newPipeline: Object.hasOwn(payload, "pipeline"),
+    });
     if (validationIssues.length > 0) {
       throw new ScheduledTaskValidationError(validationIssues);
     }
@@ -1831,6 +1919,16 @@ export function createScheduledTaskRunner(
           );
         }
       }
+    }
+    if (
+      stableStringify(edited.trigger) !== stableStringify(task.trigger) &&
+      edited.state.status === "scheduled" &&
+      edited.state.firedAt !== undefined
+    ) {
+      const { firedAt: _staleOverride, ...state } = edited.state;
+      edited.state = state;
+      const nextFireAtIso = await resolveNextFireAt(edited);
+      if (nextFireAtIso !== null) edited.state.firedAt = nextFireAtIso;
     }
     const mutation = mutationSnapshots.get(task);
     if (mutation) mutationSnapshots.set(edited, mutation);
@@ -1876,11 +1974,11 @@ export function createScheduledTaskRunner(
     return task;
   }
 
-  function lifecycleMutation(
+  async function lifecycleMutation(
     task: ScheduledTask,
     verb: ScheduledTaskReceiptVerb,
     payload: unknown,
-  ): LifecycleMutation {
+  ): Promise<LifecycleMutation> {
     switch (verb) {
       case "snooze":
         return mutateSnooze(
@@ -1996,7 +2094,7 @@ export function createScheduledTaskRunner(
           task: structuredClone(existingTask),
           transition: transitionForReceiptVerb(verb),
         }
-      : lifecycleMutation(structuredClone(existingTask), verb, payload);
+      : await lifecycleMutation(structuredClone(existingTask), verb, payload);
     if (!replayCandidate) {
       writeApplyReceiptMarker(
         mutation.task,
@@ -2250,7 +2348,7 @@ export function createScheduledTaskRunner(
           index,
         ].join(":");
       }
-      const fresh = await schedule(childInput);
+      const fresh = (await scheduleInput(childInput, false)).task;
       fresh.state.pipelineParentId = parent.taskId;
       await persist(fresh);
       created.push(fresh);
@@ -2510,6 +2608,33 @@ export function createScheduledTaskRunner(
     // Global-pause check.
     const pause = await shouldDeferForGlobalPause(task);
     if (pause.paused) {
+      if (pause.endedPauseEndIso) {
+        const endMs = Date.parse(pause.endedPauseEndIso);
+        if (
+          task.trigger.kind === "interval" &&
+          Number.isFinite(task.trigger.everyMinutes) &&
+          task.trigger.everyMinutes > 0
+        ) {
+          // Interval due is firedAt + everyMinutes, so parking at end - 1ms
+          // would drop the occurrence exactly at the pause end and shift the
+          // phase forever. Advance whole intervals from the last firedAt to
+          // the first occurrence at or after the pause end, then park one
+          // interval before it so that occurrence fires and the phase keeps.
+          const intervalMs = task.trigger.everyMinutes * 60_000;
+          const lastFireMs = Date.parse(task.state.firedAt ?? "");
+          const baseMs = Number.isFinite(lastFireMs) ? lastFireMs : endMs;
+          const steps = Math.max(1, Math.ceil((endMs - baseMs) / intervalMs));
+          task.state.firedAt = new Date(
+            baseMs + (steps - 1) * intervalMs,
+          ).toISOString();
+        } else {
+          // Retire every occurrence inside the ended window in one step; the
+          // next one counted from here is the first at or after the pause end.
+          task.state.firedAt = new Date(endMs - 1).toISOString();
+        }
+      } else {
+        await useUpRecurringOccurrence(task);
+      }
       task.state.status = "skipped";
       task.state.lastDecisionLog = pause.reason ?? "global_pause";
       if (!(await persist(task))) return { kind: "raced", taskId };
@@ -2526,6 +2651,7 @@ export function createScheduledTaskRunner(
     // Gate check.
     const gateOutcome = await evaluateGates(task);
     if (gateOutcome.decision.kind === "deny") {
+      await useUpRecurringOccurrence(task);
       task.state.status = "skipped";
       task.state.lastDecisionLog = `${gateOutcome.gateKind ?? "gate"}: ${gateOutcome.decision.reason}`;
       if (!(await persist(task))) return { kind: "raced", taskId };

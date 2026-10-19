@@ -3,16 +3,18 @@ import {
   ElizaError,
   type InteractiveTask,
   sameTaskOwner,
+  TASK_ACTION_NOT_DISPATCHED,
   type TaskActionProposal,
   type TaskObservation,
   type TaskOwner,
 } from "@elizaos/core/protocol";
-import type {
-  NativeSocketBrowserTarget,
-  NativeTaskBinding,
-  NativeTaskContext,
-  NativeTaskGuideAnswer,
-  NativeTaskGuideTone,
+import {
+  type NativeSocketBrowserTarget,
+  type NativeTaskBinding,
+  type NativeTaskContext,
+  type NativeTaskGuideAnswer,
+  type NativeTaskGuideTone,
+  validActionText,
 } from "./native-socket-target.js";
 
 export interface TaskBrowserSnapshot {
@@ -32,6 +34,15 @@ export interface TaskBrowserPolicy {
 function fail(message: string): never {
   throw new ElizaError(message, { code: "TASK_ACTION_DENIED" });
 }
+/** The actuator or the browser refused the action before it reached the page. */
+function notDispatched(cause: unknown): never {
+  throw new ElizaError("The browser action was not sent", {
+    code: TASK_ACTION_NOT_DISPATCHED,
+    cause,
+  });
+}
+// The browser extension reports these kinds only before an effect runs.
+const PRE_EFFECT_REFUSALS = new Set(["STALE_REF", "POLICY_BLOCKED"]);
 
 export class NativeTaskActuator {
   readonly capabilities = [
@@ -99,6 +110,14 @@ export class NativeTaskActuator {
       now?: () => number;
       /** Product display name for the browser overlay; host configuration. */
       assistantName?: string;
+      /**
+       * Trusted host wording for the action preview, for example "I will
+       * choose your saved Visa." Without it the browser uses a generic line.
+       */
+      describeAction?: (
+        task: InteractiveTask,
+        proposal: TaskActionProposal,
+      ) => string | undefined;
     },
   ) {}
   private now() {
@@ -116,16 +135,17 @@ export class NativeTaskActuator {
   }
   private async bind(task: InteractiveTask, readOnly = false) {
     const cached = this.bindings.get(task.id);
+    // An active task renews an expired lease with a new binding revision when
+    // it observes again. An action still needs an observation under the
+    // current lease, so the lease cannot outlive the page facts it acted on.
     if (
       !readOnly &&
       cached &&
       !cached.readOnly &&
-      cached.context.epoch === task.epoch
-    ) {
-      if (cached.expiresAt <= this.now())
-        fail("Resume with a fresh task epoch after the browser lease expires");
+      cached.context.epoch === task.epoch &&
+      cached.expiresAt > this.now()
+    )
       return cached;
-    }
     const policy = structuredClone(this.options.policy(task));
     if (
       !task.allowedOrigins.includes(policy.origin) ||
@@ -270,9 +290,19 @@ export class NativeTaskActuator {
       tone?: NativeTaskGuideTone;
       answers?: NativeTaskGuideAnswer[];
       restore?: boolean;
+      /** Observed controls the label must not cover. */
+      keepClearRefs?: string[];
     },
     signal: AbortSignal,
-  ): Promise<{ tabId: string; revision: number }> {
+  ): Promise<{
+    tabId: string;
+    revision: number;
+    expiresAt: number;
+    /** Where the target was when shown; "scrolled" means it was brought into view. */
+    placement?: "in-view" | "scrolled" | "off-screen" | "hidden";
+    /** The person dismissed this step earlier; it stays hidden until restored. */
+    dismissed?: boolean;
+  }> {
     const task = this.task(taskId, owner);
     const { snapshot } = this.readObservation(taskId, owner);
     const binding = this.bindings.get(taskId);
@@ -281,13 +311,19 @@ export class NativeTaskActuator {
       task.status !== "active" ||
       !binding ||
       !guide ||
-      !snapshot.elements.some((element) => element.selector === input.targetRef)
+      !snapshot.elements.some(
+        (element) => element.selector === input.targetRef,
+      ) ||
+      input.keepClearRefs?.some(
+        (ref) => !snapshot.elements.some((element) => element.selector === ref),
+      )
     )
       fail("Guidance requires an active observed task target");
     signal.throwIfAborted();
     const revision = (this.guidanceRevisions.get(taskId) ?? 0) + 1;
     this.guidanceRevisions.set(taskId, revision);
     this.activeGuidance.add(taskId);
+    const expiresAt = Math.min(binding.expiresAt, this.now() + 60000);
     try {
       const reply = (await guide.call(
         this.options.target,
@@ -303,10 +339,13 @@ export class NativeTaskActuator {
           tone: input.tone,
           answers: input.answers,
           restore: input.restore,
-          expiresAt: Math.min(binding.expiresAt, this.now() + 60000),
+          ...(input.keepClearRefs?.length
+            ? { keepClear: input.keepClearRefs }
+            : {}),
+          expiresAt,
         },
         signal,
-      )) as { accepted?: boolean };
+      )) as { accepted?: boolean; placement?: unknown; dismissed?: unknown };
       const current = this.task(taskId, owner);
       if (
         reply?.accepted !== true ||
@@ -317,7 +356,23 @@ export class NativeTaskActuator {
         this.guidanceRevisions.get(taskId) !== revision
       )
         fail("Guidance context changed before acknowledgement");
-      return { tabId: binding.policy.tabId, revision };
+      return {
+        tabId: binding.policy.tabId,
+        revision,
+        expiresAt,
+        ...(["in-view", "scrolled", "off-screen", "hidden"].includes(
+          reply.placement as string,
+        )
+          ? {
+              placement: reply.placement as
+                | "in-view"
+                | "scrolled"
+                | "off-screen"
+                | "hidden",
+            }
+          : {}),
+        ...(reply.dismissed === true ? { dismissed: true } : {}),
+      };
     } catch (error) {
       if (this.guidanceRevisions.get(taskId) === revision)
         await this.quiesce({ owner, taskId });
@@ -457,6 +512,75 @@ export class NativeTaskActuator {
     | { status: "succeeded" | "failed"; evidenceRef: string }
     | { status: "unknown"; evidenceRef?: string }
   > {
+    let prepared: Awaited<ReturnType<NativeTaskActuator["prepareDispatch"]>>;
+    try {
+      prepared = await this.prepareDispatch(proposal, context);
+    } catch (error) {
+      // Nothing reached the browser yet.
+      notDispatched(error);
+    }
+    const {
+      task,
+      cached,
+      binding,
+      current,
+      command,
+      protectedValueKind,
+      actionText,
+    } = prepared;
+    // Preparation awaits host callbacks; authority may end before this continuation.
+    if (
+      !current() ||
+      this.now() >= proposal.expiresAt ||
+      binding.expiresAt <= this.now()
+    )
+      notDispatched(new Error("Action authority ended before dispatch"));
+    try {
+      await this.options.target.execute(command, {
+        taskContext: binding.context,
+        taskExpiresAt: proposal.expiresAt,
+        ...(protectedValueKind ? { protectedValueKind } : {}),
+        ...(actionText ? { actionText } : {}),
+        ...(proposal.expectedSelector === undefined
+          ? {}
+          : { expectedSelector: proposal.expectedSelector }),
+        signal: context.signal,
+      });
+    } catch (error) {
+      await this.quiesce({ owner: context.owner, taskId: task.id });
+      const kind = (error as { kind?: unknown } | null)?.kind;
+      if (typeof kind === "string" && PRE_EFFECT_REFUSALS.has(kind))
+        notDispatched(error);
+      throw error;
+    }
+    await this.quiesce({ owner: context.owner, taskId: task.id });
+    if (!current()) return { status: "unknown" };
+    const after = await this.snapshot(binding, context.signal);
+    if (!current()) return { status: "unknown" };
+    // The page tried to submit or leave because of this action. The browser
+    // stopped it, but the page state is no longer the one that was reviewed.
+    if (after.effectViolation !== undefined) return { status: "unknown" };
+    const status = await this.options.verify(proposal, cached.snapshot, after);
+    if (!current()) return { status: "unknown" };
+    const evidenceRef = await this.options.recordEvidence(
+      task,
+      proposal,
+      cached.snapshot,
+      after,
+      status,
+    );
+    return { status, evidenceRef };
+  }
+
+  /** Every check before the effect. A throw here means nothing was sent. */
+  private async prepareDispatch(
+    proposal: TaskActionProposal,
+    context: {
+      owner: TaskOwner;
+      signal: AbortSignal;
+      isCurrent: () => boolean;
+    },
+  ) {
     const task = this.task(proposal.taskId, context.owner);
     const cached = this.observations.get(task.id);
     const binding = this.bindings.get(task.id);
@@ -493,6 +617,19 @@ export class NativeTaskActuator {
       )
     )
       fail("Browser action is not authorized");
+    // A host-chosen reviewed target must be one this binding allows for this
+    // action. The browser then checks that the node is that target only.
+    if (
+      proposal.expectedSelector !== undefined &&
+      !binding.policy.targets.some(
+        (target) =>
+          target.selector === proposal.expectedSelector &&
+          (target.action === proposal.capability.split(".")[1] ||
+            (target.action === "fill-code" &&
+              proposal.capability === "browser.fill")),
+      )
+    )
+      fail("The expected target is not a reviewed target for this action");
     const direction = proposal.capability.split(".")[2] as
       | "up"
       | "down"
@@ -536,37 +673,23 @@ export class NativeTaskActuator {
     if (!current()) fail("Action cancelled before feedback");
     this.observations.delete(task.id); // Never reuse a consumed target after any dispatch attempt.
     this.activeGuidance.add(task.id);
-    try {
-      await this.options.target.execute(
-        {
-          subaction,
-          id: binding.policy.tabId,
-          selector: proposal.targetRef,
-          ...(text === undefined ? {} : { text }),
-          ...(subaction === "scroll" ? { direction } : {}),
-        },
-        {
-          taskContext: binding.context,
-          taskExpiresAt: proposal.expiresAt,
-          ...(protectedValueKind ? { protectedValueKind } : {}),
-          signal: context.signal,
-        },
-      );
-    } finally {
-      await this.quiesce({ owner: context.owner, taskId: task.id });
-    }
-    if (!current()) return { status: "unknown" };
-    const after = await this.snapshot(binding, context.signal);
-    if (!current()) return { status: "unknown" };
-    const status = await this.options.verify(proposal, cached.snapshot, after);
-    if (!current()) return { status: "unknown" };
-    const evidenceRef = await this.options.recordEvidence(
+    const actionText = this.options.describeAction?.(task, proposal);
+    if (actionText !== undefined && !validActionText(actionText))
+      fail("Invalid action sentence");
+    return {
       task,
-      proposal,
-      cached.snapshot,
-      after,
-      status,
-    );
-    return { status, evidenceRef };
+      cached,
+      binding,
+      current,
+      protectedValueKind,
+      actionText,
+      command: {
+        subaction,
+        id: binding.policy.tabId,
+        selector: proposal.targetRef,
+        ...(text === undefined ? {} : { text }),
+        ...(subaction === "scroll" ? { direction } : {}),
+      },
+    };
   }
 }

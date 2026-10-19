@@ -62,33 +62,51 @@ export type AndroidReminderStatus =
   | "permission-denied"
   | "scheduling-failed"
   | "completed"
-  | "cancelled";
-export interface AndroidReminderRecord {
+  | "cancelled"
+  /** Undated to-do (reminderTodoVersion 1): no instant, alarm or notification. */
+  | "todo";
+interface AndroidReminderRecordBase {
   id: string;
   title: string;
   body: string;
-  at: number;
-  dueAt: number;
-  alertMinutes?: number | null;
-  status: AndroidReminderStatus;
-  mode: "inexact" | "none";
   occurrenceId: string;
   target: AndroidReminderTarget;
   createdAt: number;
   recurrence?: AndroidReminderRecurrence;
   revision?: string;
-  history: Array<{
-    occurrenceId: string;
-    dueAt: number;
-    completedAt: number;
-    skippedDates: number;
-  }>;
   postedAt?: number;
   completedAt?: number;
   cancelledAt?: number;
   snoozedAt?: number;
   legacyAlarm?: boolean;
 }
+/** Narrow on undated before using reminder timestamps or alert history. */
+export type AndroidReminderRecord = AndroidReminderRecordBase &
+  (
+    | {
+        undated: true;
+        at?: never;
+        dueAt?: never;
+        alertMinutes?: never;
+        status: "todo" | "completed" | "cancelled";
+        mode: "none";
+        history: Array<{ occurrenceId: string; completedAt: number }>;
+      }
+    | {
+        undated?: false;
+        at: number;
+        dueAt: number;
+        alertMinutes?: number | null;
+        status: Exclude<AndroidReminderStatus, "todo">;
+        mode: "inexact" | "none";
+        history: Array<{
+          occurrenceId: string;
+          dueAt: number;
+          completedAt: number;
+          skippedDates: number;
+        }>;
+      }
+  );
 export type AndroidReminderResult = {
   version: 1;
   sourceId: string;
@@ -135,10 +153,20 @@ export interface AndroidReminderBoundOperation {
 }
 export interface AndroidReminderMessage {
   id: string;
-  status: "failed" | "past" | "permission-denied";
+  /** Stable refusal codes (reminderStatusVersion 1). storage-full is never reported as failed. */
+  status: "failed" | "past" | "permission-denied" | "storage-full";
   mode: "inexact";
   message: string;
 }
+export type AndroidTodoSaveResult =
+  | AndroidReminderMessage
+  | {
+      id: string;
+      status: "saved";
+      mode: "none";
+      target: AndroidReminderTarget;
+      message: string;
+    };
 export type AndroidReminderScheduleResult =
   | AndroidReminderMessage
   | {
@@ -151,8 +179,13 @@ export type AndroidReminderScheduleResult =
       message: string;
     };
 export type AndroidReminderPendingTap =
-  | { token: string; target: AndroidReminderTarget; retained: boolean }
-  | { token?: never; target?: never; retained?: never };
+  | {
+      token: string;
+      target: AndroidReminderTarget;
+      retained: boolean;
+      question?: boolean;
+    }
+  | { token?: never; target?: never; retained?: never; question?: never };
 /** Methods may reject; resolved unknown/failure statuses are not successful operations. */
 export interface AndroidRemindersPlugin {
   scheduleReminder(
@@ -194,8 +227,25 @@ export interface AndroidRemindersPlugin {
     mode: "inexact";
     message: string;
   }>;
+  /** Undated to-do; a retried save with the same ID and text is idempotent. */
+  saveTodo(options: {
+    id: string;
+    title: string;
+    body?: string;
+  }): Promise<AndroidTodoSaveResult>;
+  /** Rejects when the exact reviewed target changed. */
+  todoDecision(options: {
+    target: AndroidReminderTarget;
+    action: "done" | "reopen" | "cancel";
+  }): Promise<{
+    id: string;
+    status: "todo" | "completed" | "cancelled";
+    target: AndroidReminderTarget;
+  }>;
   pendingReminderTap(): Promise<AndroidReminderPendingTap>;
   consumeReminderTap(options: { token: string }): Promise<void>;
+  /** Cancel question review without consuming the notice; the same Ask action remains reusable. */
+  releaseReminderQuestion(options: { token: string }): Promise<void>;
   dismissReminderTap(options: { token: string }): Promise<void>;
   addListener(
     eventName: "appResumed" | "pendingReminderTap",

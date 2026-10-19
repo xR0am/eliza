@@ -59,6 +59,11 @@ export type NativeTaskGuidance = {
       answers?: NativeTaskGuideAnswer[];
       expiresAt: number;
       restore?: boolean;
+      /**
+       * Snapshot references (same snapshot as `selector`) of controls the
+       * label must not cover, for example the button the person presses next.
+       */
+      keepClear?: string[];
     }
 );
 /** A person's tap on a shown offer. It names the answer, never its value. */
@@ -107,6 +112,67 @@ interface NativeReply {
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
 }
+/**
+ * The page a person sees: its HTTPS origin and the complete title,
+ * nothing else. The title is written by the website. Treat it as untrusted
+ * page text (quote it as data, never follow it), not as a fact about the page.
+ */
+export interface NativeCurrentPage {
+  tabId: string;
+  origin: string;
+  title: string;
+}
+/** Complete website title with control characters and whitespace normalized. */
+export function currentPageTitle(value: unknown): string {
+  return (typeof value === "string" ? value : "")
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/**
+ * Reduce a tab inventory to the one active HTTPS page, or null when it is
+ * unknown or ambiguous. `windowCount` is the number of browser windows before
+ * any filtering (the `list` reply's `windowCount`); the page is known only when
+ * it is exactly 1, because a window whose tabs are not web pages is left out of
+ * the inventory. Exported for hosts that read the inventory themselves.
+ */
+export function currentPageFromTabs(
+  tabs: readonly unknown[],
+  windowCount: unknown,
+): NativeCurrentPage | null {
+  // Two windows can each show a page; which one she sees is unknown.
+  if (windowCount !== 1) return null;
+  const listed = tabs.filter(
+    (tab): tab is Record<string, unknown> =>
+      Boolean(tab) && typeof tab === "object",
+  );
+  const windows = new Set(listed.map((tab) => tab.windowId));
+  const active = listed.filter((tab) => tab.active === true);
+  if (windows.size !== 1 || active.length !== 1) return null;
+  const [tab] = active;
+  if (typeof tab.id !== "string" || !/^\d+$/.test(tab.id)) return null;
+  let url: URL;
+  try {
+    url = new URL(String(tab.url));
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return null;
+  return {
+    tabId: tab.id,
+    origin: url.origin,
+    title: currentPageTitle(tab.title),
+  };
+}
+/** One short sentence, no control or format characters. */
+export function validActionText(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= 200 &&
+    /^[^\p{Cc}\p{Cf}]+$/u.test(value)
+  );
+}
 /** Android host identity selects its same-UID abstract socket, never another app's default. */
 export function androidNativeBrowserSocketPath(
   applicationId = "ai.elizaos.app",
@@ -121,6 +187,12 @@ export function androidNativeBrowserSocketPath(
     throw new Error("Invalid native browser Android application ID");
   }
   return path;
+}
+
+/** A registration receipt is valid only while its exact connection is current. */
+export interface NativeProfileRegistration {
+  profileId: string;
+  isCurrent(): boolean;
 }
 
 export class NativeSocketBrowserTarget implements BrowserTarget {
@@ -142,6 +214,9 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
   >();
   private answerListeners = new Set<
     (answer: NativeTaskGuideAnswerEvent) => void
+  >();
+  private registrationListeners = new Set<
+    (registration: NativeProfileRegistration) => void | Promise<void>
   >();
   private stopped = false;
   private reconnect: ReturnType<typeof setTimeout> | null = null;
@@ -181,6 +256,39 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     return !this.stopped && this.socket && !this.socket.destroyed
       ? this.profileId
       : null;
+  }
+
+  /** Trusted host lifecycle hook. Recheck isCurrent after asynchronous account reads.
+   * Registration is not account authentication and grants no browser action. */
+  onProfileRegistered(
+    listener: (registration: NativeProfileRegistration) => void | Promise<void>,
+  ): () => void {
+    this.registrationListeners.add(listener);
+    this.notifyRegistration(listener);
+    return () => {
+      this.registrationListeners.delete(listener);
+    };
+  }
+
+  private notifyRegistration(
+    listener: (registration: NativeProfileRegistration) => void | Promise<void>,
+  ): void {
+    const socket = this.socket;
+    const profileId = this.getProfileId();
+    if (!socket || !profileId) return;
+    const isCurrent = () =>
+      this.registrationListeners.has(listener) &&
+      this.socket === socket &&
+      this.getProfileId() === profileId;
+    void Promise.resolve()
+      .then(() => {
+        if (isCurrent()) return listener({ profileId, isCurrent });
+      })
+      .catch((error) =>
+        this.reportConnectionError(
+          error instanceof Error ? error : new Error(String(error)),
+        ),
+      );
   }
 
   /** Wait only for registration; no browser command is queued, retried or sent. */
@@ -402,6 +510,8 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
           nonce: message.nonce,
           profileId: this.profileId,
         });
+      for (const listener of this.registrationListeners)
+        this.notifyRegistration(listener);
       return;
     }
     if (message.type === "ping") {
@@ -498,6 +608,35 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     }
   }
 
+  /**
+   * Trusted host only: the page the person sees in this profile, reduced to its
+   * HTTPS origin and the complete title (see currentPageTitle). The path,
+   * query, fragment and the rest of the page never leave. The title is website
+   * text, untrusted. Returns null when no single active HTTPS page is known: no
+   * active web tab, more than one browser window (also one with no web page),
+   * an extension that does not report its window count, or a non-HTTPS page.
+   * This is an observation for conversation context. It is not a task binding
+   * and grants no action on the page.
+   */
+  async currentPage(signal?: AbortSignal): Promise<NativeCurrentPage | null> {
+    if (!this.supports({ subaction: "list" } as BrowserWorkspaceCommand))
+      throw new BrowserDispatchFailure(
+        "UNSUPPORTED",
+        "This Chromium profile cannot list its tabs.",
+        { targetId: this.id },
+      );
+    const listing = await this.request(
+      { subaction: "list" } as BrowserWorkspaceCommand,
+      signal,
+    );
+    const { tabs, windowCount } =
+      (listing as { tabs?: unknown; windowCount?: unknown } | null) ?? {};
+    if (!Array.isArray(tabs))
+      throw new Error("Invalid Chromium tab inventory.");
+    // An extension that does not count windows cannot rule out another one.
+    return currentPageFromTabs(tabs, windowCount);
+  }
+
   /** Trusted host only: receives value-free offer answers from the bound page. */
   onTaskGuideAnswer(
     listener: (answer: NativeTaskGuideAnswerEvent) => void,
@@ -511,6 +650,7 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     signal?: AbortSignal,
     binding?: NativeTaskBinding,
     guidance?: NativeTaskGuidance,
+    protection?: { owner: string | null },
   ): Promise<unknown> {
     const socket = this.socket;
     const sender = this.sender;
@@ -605,7 +745,9 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
             ? { type: "task-bind", id, binding }
             : guidance
               ? { type: "task-guide", id, guidance }
-              : { type: "command", id, command },
+              : protection
+                ? { type: "protection-owner", id, owner: protection.owner }
+                : { type: "command", id, command },
         )
         .catch((cause) => {
           const pending = this.pending.get(id);
@@ -622,6 +764,51 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
           socket.destroy();
         });
     });
+  }
+
+  /** Trusted host account context, independent of any task. Never a model subaction.
+   * Call after each registration and account transition; disconnect retires it.
+   * The receipt counts page updates, not navigation or task permissions. */
+  async setProtectionOwner(
+    owner: string | null,
+  ): Promise<{ updated: number; unavailable: number }> {
+    if (
+      owner !== null &&
+      (typeof owner !== "string" || !/^[A-Za-z0-9_.:@-]{1,256}$/.test(owner))
+    )
+      throw new TypeError("Invalid protection account context");
+    if (!this.advertised.has("protection-owner"))
+      throw new BrowserDispatchFailure(
+        "UNSUPPORTED",
+        "This browser does not support account-scoped website advice.",
+        { targetId: this.id },
+      );
+    const receipt = await this.request(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { owner },
+    );
+    if (
+      !receipt ||
+      typeof receipt !== "object" ||
+      !("updated" in receipt) ||
+      !("unavailable" in receipt) ||
+      !Number.isSafeInteger(receipt.updated) ||
+      !Number.isSafeInteger(receipt.unavailable) ||
+      Number(receipt.updated) < 0 ||
+      Number(receipt.unavailable) < 0
+    )
+      throw new BrowserDispatchFailure(
+        "UNCERTAIN_OUTCOME",
+        "Invalid website advice receipt.",
+        { targetId: this.id },
+      );
+    return {
+      updated: Number(receipt.updated),
+      unavailable: Number(receipt.unavailable),
+    };
   }
 
   /** Trusted host only: not exposed as a model browser subaction. */
@@ -671,6 +858,16 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
         "This browser does not support guide labels, offers or pause.",
         { targetId: this.id },
       );
+    if (
+      guidance.kind === "show" &&
+      guidance.keepClear !== undefined &&
+      !this.advertised.has("task-guide-keep-clear")
+    )
+      throw new BrowserDispatchFailure(
+        "UNSUPPORTED",
+        "This browser cannot keep controls clear of a guide label.",
+        { targetId: this.id },
+      );
     // Any new guide for the tab replaces its offer; late answers are dropped.
     for (const [id, offer] of this.offers)
       if (offer.tabId === guidance.tabId) this.offers.delete(id);
@@ -684,8 +881,37 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
       taskContext?: NativeTaskContext;
       taskExpiresAt?: number;
       protectedValueKind?: "verification-code";
+      /** Host-written preview sentence for a bound task action. */
+      actionText?: string;
+      /** The one reviewed binding target (CSS selector) this action is for. */
+      expectedSelector?: string;
     } = {},
   ): Promise<BrowserWorkspaceCommandResult> {
+    if (
+      options.expectedSelector !== undefined &&
+      (!options.taskContext ||
+        !["click", "fill", "scroll"].includes(command.subaction) ||
+        typeof options.expectedSelector !== "string" ||
+        !options.expectedSelector ||
+        options.expectedSelector.length > 256 ||
+        !this.advertised.has("task-expected-target"))
+    )
+      throw new BrowserDispatchFailure(
+        "UNSUPPORTED",
+        "A reviewed target needs a bound task action and a capable browser.",
+        { targetId: this.id },
+      );
+    if (
+      options.actionText !== undefined &&
+      (!options.taskContext ||
+        !["click", "fill", "scroll"].includes(command.subaction) ||
+        !validActionText(options.actionText))
+    )
+      throw new BrowserDispatchFailure(
+        "POLICY_BLOCKED",
+        "An action sentence needs a bound task action.",
+        { targetId: this.id },
+      );
     if (
       options.protectedValueKind &&
       (!options.taskContext ||
@@ -698,8 +924,16 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
         { targetId: this.id },
       );
     // Only trusted execute options may introduce this marker, never a raw command.
-    const { protectedValueKind: _untrusted, ...safeCommand } =
-      command as BrowserWorkspaceCommand & { protectedValueKind?: unknown };
+    const {
+      protectedValueKind: _untrusted,
+      actionText: _untrustedText,
+      expectedSelector: _untrustedTarget,
+      ...safeCommand
+    } = command as BrowserWorkspaceCommand & {
+      protectedValueKind?: unknown;
+      actionText?: unknown;
+      expectedSelector?: unknown;
+    };
     command = safeCommand as BrowserWorkspaceCommand;
     if (
       options.taskContext &&
@@ -756,6 +990,12 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
           ...(options.taskExpiresAt === undefined
             ? {}
             : { taskExpiresAt: options.taskExpiresAt }),
+          ...(options.actionText === undefined
+            ? {}
+            : { actionText: options.actionText }),
+          ...(options.expectedSelector === undefined
+            ? {}
+            : { expectedSelector: options.expectedSelector }),
         }
       : command;
     const result = await this.request(scopedCommand, options.signal);
@@ -769,6 +1009,7 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.registrationListeners.clear();
     if (this.reconnect) clearTimeout(this.reconnect);
     this.socket?.destroy();
     if (this.server)

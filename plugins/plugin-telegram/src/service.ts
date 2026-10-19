@@ -39,6 +39,7 @@ import {
   type World,
   type WorldPayload,
 } from "@elizaos/core";
+import { lifeOpsPassiveConnectorsEnabled } from "@elizaos/host/protocol";
 import { type Context, Telegraf } from "telegraf";
 import type {
   Chat,
@@ -396,6 +397,8 @@ export class TelegramService extends Service {
   private accountStates: Map<string, TelegramAccountRuntime> = new Map();
   private stopping = false;
   private outboundCompletions = new Set<Promise<void>>();
+  /** Agent turns started by inbound updates that have not settled yet. */
+  private inboundTurnCompletions = new Set<Promise<void>>();
   private pollerRetryTimers = new Set<ReturnType<typeof setTimeout>>();
   private pollerCompletions = new Map<Telegraf<Context>, Promise<void>>();
 
@@ -654,6 +657,24 @@ export class TelegramService extends Service {
     return normalized === DEFAULT_ACCOUNT_ID ? key : `${normalized}:${key}`;
   }
 
+  /** The room id inbound messages for this chat (and topic) are stored under. */
+  private connectorRoomIdForChannel(
+    channelId: string,
+    threadId: string | undefined,
+    accountId: string,
+  ): UUID {
+    const parts = parseTelegramTargetParts(channelId, threadId);
+    return createUniqueUuid(
+      this.runtime,
+      this.scopedTelegramKey(
+        parts.threadId
+          ? `${parts.chatId}-${parts.threadId}`
+          : String(parts.chatId),
+        accountId,
+      ),
+    ) as UUID;
+  }
+
   private knownChatKeyMatchesAccount(
     key: string,
     chat: Chat,
@@ -692,6 +713,20 @@ export class TelegramService extends Service {
         "Service started without bot functionality",
       );
       return service;
+    }
+
+    const autoReplyRaw = runtime.getSetting("TELEGRAM_AUTO_REPLY");
+    const passiveConnectors = lifeOpsPassiveConnectorsEnabled(runtime);
+    if (
+      passiveConnectors ||
+      !(autoReplyRaw === true || autoReplyRaw === "true")
+    ) {
+      logger.warn(
+        { src: "plugin:telegram", agentId: runtime.agentId },
+        passiveConnectors
+          ? "Telegram will NOT auto-reply to messages: passive-connectors mode is ON. Inbound messages are stored only; slash commands still get a reply. Set ELIZA_LIFEOPS_PASSIVE_CONNECTORS=false and TELEGRAM_AUTO_REPLY=true to allow replies."
+          : "Telegram will NOT auto-reply to messages: TELEGRAM_AUTO_REPLY is not true. Inbound messages are stored only; slash commands still get a reply. Set TELEGRAM_AUTO_REPLY=true to allow replies.",
+      );
     }
 
     const maxRetries = 5;
@@ -878,6 +913,18 @@ export class TelegramService extends Service {
         if (token) releaseTelegramPollerToken(token, bot);
       }),
     );
+    // Polling has stopped, so a turn that waits for a later update (an
+    // Approve/Deny tap) can never receive it. Abort the turns this service
+    // started before draining them, as runtime shutdown does for all turns.
+    const messageManagers = states.length
+      ? states.map((state) => state.messageManager)
+      : this.messageManager
+        ? [this.messageManager]
+        : [];
+    for (const messageManager of messageManagers) {
+      messageManager.abortActiveTurns("telegram-service-stop");
+    }
+    await Promise.all(this.inboundTurnCompletions);
     await Promise.all(this.outboundCompletions);
     const failures = results
       .filter((result) => result.status === "rejected")
@@ -1496,25 +1543,18 @@ export class TelegramService extends Service {
     const messageManager = state?.messageManager ?? this.messageManager;
     const accountId = state?.accountId ?? this.defaultAccountId;
     // Regular message handler
-    bot?.on("message", async (ctx) => {
-      try {
-        const token = state?.account.botToken ?? this.botToken;
-        if (token) {
-          markTelegramPollerUpdate(token, bot);
-        }
-        // Preprocessing runs in the middleware chain; this only dispatches.
-        await messageManager?.handleMessage(ctx);
-      } catch (error) {
-        logger.error(
-          {
-            src: "plugin:telegram",
-            agentId: this.runtime.agentId,
-            accountId,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          "Error handling message",
-        );
+    bot?.on("message", (ctx) => {
+      const token = state?.account.botToken ?? this.botToken;
+      if (token) {
+        markTelegramPollerUpdate(token, bot);
       }
+      if (!messageManager) return;
+      // Preprocessing runs in the middleware chain; this only dispatches.
+      this.runInboundTurn(
+        () => messageManager.handleMessage(ctx),
+        accountId,
+        "Error handling message",
+      );
     });
 
     // Reaction handler
@@ -1540,14 +1580,38 @@ export class TelegramService extends Service {
 
     // Inline-keyboard button taps (choice / followup answers from the shared
     // interaction protocol). Foreign callbacks are acknowledged and ignored.
-    bot?.on("callback_query", async (ctx) => {
-      try {
-        const token = state?.account.botToken ?? this.botToken;
-        if (token) {
-          markTelegramPollerUpdate(token, bot);
-        }
-        await messageManager?.handleCallbackQuery(ctx);
-      } catch (error) {
+    bot?.on("callback_query", (ctx) => {
+      const token = state?.account.botToken ?? this.botToken;
+      if (token) {
+        markTelegramPollerUpdate(token, bot);
+      }
+      if (!messageManager) return;
+      this.runInboundTurn(
+        () => messageManager.handleCallbackQuery(ctx),
+        accountId,
+        "Error handling callback query",
+      );
+    });
+  }
+
+  /**
+   * Starts an agent turn for one update and returns before the turn settles.
+   *
+   * Telegraf fetches the next `getUpdates` batch only after every handler of
+   * the current batch settles. A turn that waits for a later update (an
+   * Approve/Deny tap for an approval it requested) would never receive it, so
+   * the turn must not hold the handler open. `stop()` drains the tracked turns.
+   */
+  private runInboundTurn(
+    turn: () => Promise<void>,
+    accountId: string,
+    failureMessage: string,
+  ): void {
+    const settled = Promise.resolve()
+      .then(turn)
+      .catch((error: unknown) => {
+        // error-policy:J1 The update boundary owns a failed turn; nothing
+        // awaits it after the handler has returned.
         logger.error(
           {
             src: "plugin:telegram",
@@ -1555,10 +1619,11 @@ export class TelegramService extends Service {
             accountId,
             error: error instanceof Error ? error.message : String(error),
           },
-          "Error handling callback query",
+          failureMessage,
         );
-      }
-    });
+      });
+    this.inboundTurnCompletions.add(settled);
+    void settled.then(() => this.inboundTurnCompletions.delete(settled));
   }
 
   /**
@@ -2599,7 +2664,8 @@ export class TelegramService extends Service {
     params: MessageConnectorCreateThreadParams,
   ): Promise<ThreadHandle> {
     const target = params.target as AccountScopedTargetInfo;
-    const accountId = target.accountId ?? this.defaultAccountId;
+    // Same account choice as send, edit and react: the room's bot owns the chat.
+    const accountId = await this.resolveAccountIdForTarget(runtime, target);
     const bot = this.getAccountState(accountId)?.bot ?? this.bot;
     if (!bot) {
       throw new Error("Telegram bot is not available — cannot create thread");
@@ -2628,11 +2694,11 @@ export class TelegramService extends Service {
 
   /** Post `params.content` into a forum topic created by createConnectorThread. */
   public async postToConnectorThread(
-    _runtime: IAgentRuntime,
+    runtime: IAgentRuntime,
     params: MessageConnectorPostToThreadParams,
   ): Promise<Memory | undefined> {
     const target = params.target as AccountScopedTargetInfo;
-    const accountId = target.accountId ?? this.defaultAccountId;
+    const accountId = await this.resolveAccountIdForTarget(runtime, target);
     const bot = this.getAccountState(accountId)?.bot ?? this.bot;
     if (!bot) {
       throw new Error("Telegram bot is not available — cannot post to thread");
@@ -2772,10 +2838,20 @@ export class TelegramService extends Service {
       target,
       { accountId: (context as AccountScopedConnectorContext).accountId },
     );
-    if (target?.roomId) {
+    // A target named only by channelId (and threadId) is still one chat.
+    const roomId =
+      target?.roomId ??
+      (target?.channelId
+        ? this.connectorRoomIdForChannel(
+            target.channelId,
+            target.threadId,
+            accountId,
+          )
+        : undefined);
+    if (roomId) {
       const memories = await loadAllTelegramRoomMemories(
         context.runtime,
-        target.roomId,
+        roomId,
       );
       const matches = memories.filter((memory) => {
         const metadata = memory.metadata as Record<string, unknown> | undefined;
@@ -2859,15 +2935,7 @@ export class TelegramService extends Service {
     const roomId =
       target.roomId ??
       room?.id ??
-      (createUniqueUuid(
-        this.runtime,
-        this.scopedTelegramKey(
-          parts.threadId
-            ? `${parts.chatId}-${parts.threadId}`
-            : String(parts.chatId),
-          accountId,
-        ),
-      ) as UUID);
+      this.connectorRoomIdForChannel(channelId, target.threadId, accountId);
     const memories = await loadAllTelegramRoomMemories(context.runtime, roomId);
     const recentMessages = memories
       .slice()
@@ -2975,12 +3043,14 @@ export class TelegramService extends Service {
         const state = normalizedAccountId
           ? serviceInstance.getAccountState(normalizedAccountId)
           : serviceInstance.getDefaultAccountState();
-        const sendHandler = async (
+        // Forward the delivery receipt: a handler that returns nothing reports
+        // "unknown" acceptance, and reminders then re-send on every tick.
+        const sendHandler = (
           handlerRuntime: IAgentRuntime,
           target: TargetInfo,
           content: Content,
-        ): Promise<Memory | undefined> => {
-          await serviceInstance.handleSendMessage(
+        ): SendHandlerResult =>
+          serviceInstance.handleSendMessage(
             handlerRuntime,
             normalizedAccountId &&
               !(target as AccountScopedTargetInfo).accountId
@@ -2988,8 +3058,6 @@ export class TelegramService extends Service {
               : target,
             content,
           );
-          return undefined;
-        };
         const withContextAccount = (
           context: MessageConnectorQueryContext,
         ): MessageConnectorQueryContext =>
@@ -3136,9 +3204,7 @@ export class TelegramService extends Service {
             }
             const entity =
               typeof handlerRuntime.getEntityById === "function"
-                ? await handlerRuntime
-                    .getEntityById(entityId as UUID)
-                    .catch(() => null)
+                ? await handlerRuntime.getEntityById(entityId as UUID)
                 : null;
             if (entity) {
               return entity;
@@ -3396,10 +3462,36 @@ export class TelegramService extends Service {
         text,
         threadId,
       );
-      // Telegram's editMessageText returns the edited Message; the orchestrator
-      // only needs the call to succeed for compact-edit mode, so no Memory is
-      // synthesized here (the original send already produced one).
-      return undefined;
+      // Return the stored message with the new text, so the caller updates the
+      // agent's memory of it like the Slack and Discord edits do.
+      const storedId = messageManager.messageMemoryId(chatId, params.messageId);
+      let stored: Memory | null;
+      try {
+        stored = await runtime.getMemoryById(storedId);
+      } catch (error) {
+        // error-policy:J4 the Telegram edit already happened; a failed lookup
+        // of the stored copy is reported, not turned into a failed edit.
+        runtime.reportError("telegram:edit-stored-copy", error, {
+          chatId,
+          messageId: params.messageId,
+        });
+        return undefined;
+      }
+      if (!stored) {
+        // A message sent before this agent stored it (or by another client)
+        // has no stored copy to update; the platform edit still happened.
+        logger.debug(
+          {
+            src: "plugin:telegram",
+            chatId,
+            messageId: params.messageId,
+            storedId,
+          },
+          "Edited Telegram message has no stored copy to update",
+        );
+        return undefined;
+      }
+      return { ...stored, content: { ...stored.content, text } };
     });
   }
 

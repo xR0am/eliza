@@ -22,11 +22,11 @@ const NON_SPEECH_TAGS = [...REASONING_TAG_NAMES, "tool_calls?", "tools?"].join(
 	"|",
 );
 const NON_SPEECH_BLOCK = new RegExp(
-	`<(${NON_SPEECH_TAGS})\\b[^>]*>[\\s\\S]*?(?:<\\/\\1>|$)`,
+	`<(${NON_SPEECH_TAGS})(?=[\\s/>])[^>]*>[\\s\\S]*?(?:<\\/\\1>|$)`,
 	"gi",
 );
 const INCOMPLETE_NON_SPEECH_TAG = new RegExp(
-	`<(?:${NON_SPEECH_TAGS})\\b[^>]*$`,
+	`<(?:${NON_SPEECH_TAGS})(?=[\\s/>]|$)[^>]*$`,
 	"gi",
 );
 
@@ -43,9 +43,11 @@ function stripThinkingAndMarkup(input: string): string {
 	text = text.replace(NON_SPEECH_BLOCK, " ");
 	text = text.replace(INCOMPLETE_NON_SPEECH_TAG, " ");
 	text = text.replace(/```[\s\S]*?```/g, " ");
+	// An unterminated fence swallows to end-of-input; TTS must never speak code.
+	text = text.replace(/```[\s\S]*$/, " ");
 	text = text.replace(/`([^`]+)`/g, "$1");
 	text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-	text = text.replace(/<[^>\n]+>/g, " ");
+	text = text.replace(/<(?:\/?[A-Za-z]|!)[^<>\n]*>/g, " ");
 	text = stripUrls(text);
 	return text;
 }

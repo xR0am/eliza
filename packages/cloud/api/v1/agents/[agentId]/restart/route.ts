@@ -34,6 +34,7 @@ import { elizaSandboxService } from "@elizaos/cloud-shared/lib/services/eliza-sa
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
+import { registerNudge } from "../_register-nudge";
 
 const app = new Hono<AppEnv>();
 
@@ -103,6 +104,19 @@ app.post("/", async (c) => {
       userId: agent.user_id,
       stateLossAcknowledged,
     });
+    if (enqueue.created) {
+      registerNudge(
+        c,
+        provisioningJobService.triggerImmediate(c.env).catch((error) => {
+          // error-policy:J7 the durable job remains visible to the polling worker.
+          logger.warn("[service-api] Restart worker nudge failed", {
+            agentId,
+            jobId: enqueue.job.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      );
+    }
 
     const existingJobCarriesWaiver =
       (enqueue.job.data as { stateLossAcknowledged?: unknown } | null)

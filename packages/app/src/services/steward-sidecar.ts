@@ -481,7 +481,7 @@ export class StewardSidecar {
     // instead of requiring built `dist` files. A packaged build resolves the
     // bundled `.js` entry, which must resolve its external dependencies from
     // their built `dist` files, so the condition is not passed there.
-    // (Matches packages/app/src/api/standalone-kokoro-service.ts.)
+    // (Matches packages/app/src/api/standalone-speech-service.ts.)
     const sourceConditions = entryPoint.endsWith(".ts")
       ? ["--conditions=eliza-source"]
       : [];
@@ -830,7 +830,15 @@ export function createDesktopStewardSidecar(
       overrides?.dataDir ||
       path.join(resolveDesktopStewardStateRoot(), "steward"),
     port:
-      parseInt(process.env.STEWARD_PORT || "", 10) ||
+      (() => {
+        // parseInt stops at the first non-digit ("8080junk" -> 8080), so a
+        // typo silently overrode overrides?.port and DEFAULT_PORT. Require
+        // the whole trimmed value to be decimal; malformed -> NaN falls
+        // through the || chain as before, mirroring parsePortPreference in
+        // packages/app/scripts/dev-platform.ts.
+        const raw = (process.env.STEWARD_PORT ?? "").trim();
+        return /^\+?\d+$/.test(raw) ? Number(raw) : Number.NaN;
+      })() ||
       overrides?.port ||
       DEFAULT_PORT,
     masterPassword:

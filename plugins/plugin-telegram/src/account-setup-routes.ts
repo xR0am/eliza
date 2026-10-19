@@ -19,7 +19,7 @@
  * canonical `/api/setup/telegram-account/*` paths without the plugin-name prefix.
  */
 
-import type { IAgentRuntime, SetupState } from "@elizaos/core";
+import { ElizaError, type IAgentRuntime, type SetupState } from "@elizaos/core";
 import type {
   Route,
   RouteRequest,
@@ -70,7 +70,9 @@ function sendSetupError(
   code: string,
   message: string,
 ): void {
-  res.status(status).json({ error: { code, message } });
+  // `message` is the string the UI client reads; `error` keeps the setup
+  // error contract ({ code, message }) for callers that read the code.
+  res.status(status).json({ error: { code, message }, message });
 }
 // ── Module-level auth session state ────────────────────────────────────
 const authSessions = new Map<IAgentRuntime, TelegramAccountAuthSessionLike>();
@@ -420,12 +422,15 @@ async function handleSubmitCode(
     res.status(200).json(statusFromState(runtime, freshConfig));
   } catch (err) {
     // error-policy:J1 auth route returns a visible setup failure.
-    sendSetupError(
-      res,
-      500,
-      "internal_error",
-      err instanceof Error ? err.message : String(err),
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    if (
+      err instanceof ElizaError &&
+      err.code === "TELEGRAM_ACCOUNT_INVALID_INPUT"
+    ) {
+      sendSetupError(res, 400, "bad_request", message);
+      return;
+    }
+    sendSetupError(res, 500, "internal_error", message);
   }
 }
 async function handleCancel(

@@ -91,7 +91,6 @@ import {
   normalizeSchemaForCerebras,
   sanitizeFunctionNameForCerebras,
 } from "../utils/schema-compat";
-import { countTokensForModel } from "../utils/tokenization";
 import { StructuredOutputProgressGuard } from "./structured-output-progress";
 
 // ============================================================================
@@ -366,16 +365,11 @@ function resolvePromptCacheOptions(
  * Forward `OPENAI_REASONING_EFFORT` (runtime setting / process.env) as
  * `reasoning_effort` on the outbound chat completions request. This is
  * the OpenAI-spec knob for reasoning-capable models (`o1-*`, `o3-*`,
- * `gpt-oss-*`, `deepseek-r1`, and similar families) — including
- * Cerebras and OpenRouter, which honor the same field. `"low"` keeps
- * reasoning short enough that visible content always fits inside
- * `max_tokens`, which is the failure mode on Cerebras gpt-oss-120b when
- * left unset.
+ * `gpt-oss-*`, `deepseek-r1`, and similar families), including compatible
+ * providers that honor the same field.
  *
- * In Cerebras mode the field defaults to `"low"` when unset only for the exact
- * models whose current provider contract exposes reasoning controls:
- * `gpt-oss-120b` and `zai-glm-4.7`. Qwen 3.8 defaults to `"none"` for
- * interactive latency; explicit reasoning settings remain authoritative.
+ * Cerebras defaults to its highest supported effort, `"high"`, for
+ * `gpt-oss-120b`, `zai-glm-4.7`, and `qwen-3.8-27b`.
  * Family-name lookalikes and models without the knob must not receive the
  * field because compatible endpoints reject unsupported request properties.
  * An explicit valid `OPENAI_REASONING_EFFORT` always wins.
@@ -459,10 +453,9 @@ function resolveCerebrasDefaultReasoningEffort(
 ): ReasoningEffort | "none" | undefined {
   if (!modelName) return undefined;
   const id = normalizeCerebrasModelId(modelName);
-  if (id === "gpt-oss-120b" || id === "zai-glm-4.7") return "low";
-  // Cerebras defaults Qwen to high reasoning. Keep ordinary interactive
-  // calls non-reasoning unless the caller explicitly requests otherwise.
-  if (id === "qwen-3.8-27b") return "none";
+  if (id === "gpt-oss-120b" || id === "zai-glm-4.7" || id === "qwen-3.8-27b") {
+    return "high";
+  }
   return undefined;
 }
 
@@ -2311,7 +2304,6 @@ function createOpenAIPreparedRequestGuard(args: {
     projectRequest,
     ...runtimePreparedBudget(args.providerOptions),
     ...(typeof maxOutputTokens === "number" ? { outputReserveTokens: maxOutputTokens } : {}),
-    countInputTokens: (body) => countTokensForModel(args.modelName, body),
   });
 }
 
@@ -3427,7 +3419,11 @@ async function generateTextAtEndpoint(
     ...(sanitizedToolChoice ? { toolChoice: sanitizedToolChoice } : {}),
     ...(sanitizedOutput ? { output: sanitizedOutput } : {}),
     ...(sanitizedProviderOptions ? { providerOptions: sanitizedProviderOptions } : {}),
-  };
+  }; // Output cap and usage go with MODEL_OUTPUT_INCOMPLETE so a truncated call
+  // keeps its billed tokens in core's failure evidence.
+  const outputCap =
+    params.omitMaxTokens || typeof params.maxTokens !== "number" ? null : params.maxTokens;
+
   const preparedRequestGuard = createOpenAIPreparedRequestGuard({
     modelName,
     generateParams,
@@ -3524,11 +3520,6 @@ async function generateTextAtEndpoint(
         if (result.usage) applyUsageToDetails(details, result.usage);
         return { ...result, text, toolCalls };
       });
-      assertModelOutputComplete({
-        finishReason: buffered.finishReason,
-        provider: usageProvider,
-        model: modelName,
-      });
       if (buffered.usage) {
         emitModelUsageEvent(
           runtime,
@@ -3540,6 +3531,13 @@ async function generateTextAtEndpoint(
           usageProvider
         );
       }
+      assertModelOutputComplete({
+        finishReason: buffered.finishReason,
+        provider: usageProvider,
+        model: modelName,
+        maxTokens: outputCap,
+        usage: convertUsage(buffered.usage),
+      });
       const canonicalBufferedText = shouldBufferArgumentEnvelope
         ? buffered.toolCalls?.length === 1
           ? JSON.stringify(buffered.toolCalls[0].arguments)
@@ -3769,15 +3767,23 @@ async function generateTextAtEndpoint(
       )
     );
     const usagePromise = handledMappedPromise(rawUsagePromise, convertUsage);
-    const finishReasonPromise = handledMappedPromise(rawFinishReasonPromise, (r) => {
-      const finishReason = r as string | undefined;
-      assertModelOutputComplete({
-        finishReason,
-        provider: usageProvider,
-        model: modelName,
-      });
-      return finishReason;
-    });
+    const finishReasonPromise = handledMappedPromise(
+      Promise.all([
+        rawFinishReasonPromise,
+        Promise.resolve(rawUsagePromise).then(convertUsage, () => undefined),
+      ]),
+      ([r, usage]) => {
+        const finishReason = r as string | undefined;
+        assertModelOutputComplete({
+          finishReason,
+          provider: usageProvider,
+          model: modelName,
+          maxTokens: outputCap,
+          usage,
+        });
+        return finishReason;
+      }
+    );
     const textPromise = handledMappedPromise(
       Promise.all([rawTextPromise, finishReasonPromise]),
       ([text]) => text
@@ -3815,6 +3821,8 @@ async function generateTextAtEndpoint(
             finishReason: finishReasonResult.value,
             provider: usageProvider,
             model: modelName,
+            maxTokens: outputCap,
+            usage: usageResult.status === "fulfilled" ? convertUsage(usageResult.value) : undefined,
           });
         } catch (error) {
           companionStreamError ??= error;
@@ -3994,12 +4002,6 @@ async function generateTextAtEndpoint(
     };
   });
 
-  assertModelOutputComplete({
-    finishReason: result.finishReason,
-    provider: usageProvider,
-    model: modelName,
-  });
-
   if (result.usage) {
     emitModelUsageEvent(
       runtime,
@@ -4011,6 +4013,14 @@ async function generateTextAtEndpoint(
       usageProvider
     );
   }
+
+  assertModelOutputComplete({
+    finishReason: result.finishReason,
+    provider: usageProvider,
+    model: modelName,
+    maxTokens: outputCap,
+    usage: convertUsage(result.usage),
+  });
 
   if (shouldReturnNativeResult) {
     return buildNativeTextResult(

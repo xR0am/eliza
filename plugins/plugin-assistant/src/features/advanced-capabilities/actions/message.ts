@@ -46,11 +46,13 @@ import {
   ModelType,
   markOwnerExclusiveDisclosureUsed,
   OWNER_PRIVATE_DESTINATION_DISCLOSURE_BASIS,
+  promoteSubactionsToActions,
   resolveCanonicalOwnerIdForMessage,
   revalidateOwnerExclusiveDisclosure,
   runWithActionRoutingContext,
   ServiceType,
   searchCanonicalConversationMemories,
+  selectBestRankedRecallItems,
   stringToUuid,
   toWellFormedUnicode,
 } from "@elizaos/core";
@@ -165,7 +167,7 @@ const MESSAGE_CONTEXTS = [
 ];
 
 const MESSAGE_DESCRIPTION =
-  "Addressed messaging action: DMs, groups, channels, rooms, threads, servers, users, inboxes, drafts, and authorized cross-world continuity. Use list_worlds to discover durable worlds shared by the verified requester and this agent, list_rooms to inspect the current or an authorized worldId, and read_message to page an exact provider message or email body. Use manage_server for structural server administration on a connector that supports it (create/edit/delete channels, categories, and roles, permission overwrites, member roles, invites, moderation, guild templates) — gated by connector configuration. Public feed publishing uses POST.";
+  "Addressed messaging action: DMs, groups, channels, rooms, threads, servers, users, inboxes, drafts, and authorized cross-world continuity. Use list_worlds to discover durable worlds shared by the verified requester and this agent, list_rooms to inspect the current or an authorized worldId, and read_message to page an exact provider message or email body. Use manage_server for structural server administration on a connector that supports it (create/edit/delete channels, categories, and roles, permission overwrites, member roles, invites, moderation, guild templates) — gated by connector configuration. Email uses send_draft with an exact preview and a later affirmative user reply. The send operation delivers through messaging connectors. Public feed publishing uses POST.";
 const MESSAGE_COMPRESSED =
   "primary message action send read_channel read_with_contact read_message search list_channels list_servers list_connections list_worlds list_rooms join leave react edit delete pin get_user manage_server triage list_inbox search_inbox draft_reply draft_followup respond send_draft schedule_draft_send manage dm group channel room thread user server world inbox draft connections platforms reachable";
 
@@ -1495,6 +1497,64 @@ async function collectHookTargets(
   return candidates;
 }
 
+/**
+ * Collects hook candidates from every considered connector. A connector whose
+ * discovery hooks all failed does not abort resolution while other connectors
+ * remain; the failure is rethrown only when every considered connector failed
+ * and none produced a candidate.
+ */
+async function collectConsideredHookTargets(
+  runtime: IAgentRuntime,
+  message: Memory,
+  state: State | undefined,
+  considered: readonly ConnectorWithHooks[],
+  query: string | undefined,
+  targetKind: MessageTargetKind | undefined,
+  sourceWasExact: boolean,
+  accountId?: string,
+): Promise<SendCandidate[]> {
+  const candidates: SendCandidate[] = [];
+  let firstFailure: unknown;
+  let failedConnectors = 0;
+  for (const connector of considered) {
+    const context = buildQueryContext(
+      runtime,
+      message,
+      state,
+      connector.source,
+      undefined,
+      connector,
+      accountId,
+    );
+    try {
+      candidates.push(
+        ...(await collectHookTargets(
+          runtime,
+          connector,
+          query,
+          context,
+          targetKind,
+          sourceWasExact,
+          accountId,
+        )),
+      );
+    } catch (error) {
+      // error-policy:J4 Other considered connectors may still resolve the
+      // target; collectHookTargets already reported each failed hook.
+      firstFailure ??= error;
+      failedConnectors += 1;
+    }
+  }
+  if (
+    candidates.length === 0 &&
+    failedConnectors > 0 &&
+    failedConnectors === considered.length
+  ) {
+    throw firstFailure;
+  }
+  return candidates;
+}
+
 function explicitSendTarget(
   connector: ConnectorWithHooks,
   rawTarget: string,
@@ -2394,52 +2454,32 @@ async function resolveSendTarget(
       claimEntityFound = true;
       candidates.push(...entityCandidates.candidates);
     } else {
-      for (const connector of considered) {
-        const context = buildQueryContext(
+      candidates.push(
+        ...(await collectConsideredHookTargets(
           runtime,
           message,
           state,
-          connector.source,
-          undefined,
-          connector,
-          params.accountId,
-        );
-        candidates.push(
-          ...(await collectHookTargets(
-            runtime,
-            connector,
-            params.target,
-            context,
-            params.targetKind,
-            sourceWasExact,
-            params.accountId,
-          )),
-        );
-      }
-    }
-  } else {
-    for (const connector of considered) {
-      const context = buildQueryContext(
-        runtime,
-        message,
-        state,
-        connector.source,
-        undefined,
-        connector,
-        params.accountId,
-      );
-      candidates.push(
-        ...(await collectHookTargets(
-          runtime,
-          connector,
+          considered,
           params.target,
-          context,
           params.targetKind,
           sourceWasExact,
           params.accountId,
         )),
       );
     }
+  } else {
+    candidates.push(
+      ...(await collectConsideredHookTargets(
+        runtime,
+        message,
+        state,
+        considered,
+        params.target,
+        params.targetKind,
+        sourceWasExact,
+        params.accountId,
+      )),
+    );
     candidates.push(
       ...(await collectLegacyEntityCandidates(
         runtime,
@@ -2700,7 +2740,7 @@ async function ensureOutboundRoom(
   target: TargetInfo,
   label: string,
   kind: MessageTargetKind | undefined,
-): Promise<{ roomId: UUID; worldId: UUID }> {
+): Promise<{ roomId: UUID; worldId: UUID | undefined }> {
   const serverPart = target.serverId ?? "default";
   const targetPart =
     target.roomId ??
@@ -2716,6 +2756,11 @@ async function ensureOutboundRoom(
     : (stringToUuid(
         `${runtime.agentId}:${source}:message-room:${serverPart}:${targetPart}`,
       ) as UUID);
+  const existingRoom = await runtime.getRoom(roomId);
+  if (existingRoom) {
+    await runtime.ensureParticipantInRoom(runtime.agentId, roomId);
+    return { roomId, worldId: existingRoom.worldId };
+  }
   await runtime.ensureWorldExists({
     id: worldId,
     name: `${source}${target.serverId ? ` ${target.serverId}` : ""}`,
@@ -3593,25 +3638,29 @@ function memoryScopeAllowsSameRoomRead(
   return false;
 }
 
-async function readAdapterlessStoredMemory(
+/**
+ * Loads a stored message by memory id for the requester: it must belong to
+ * this agent, be in the requester's current room, the requester must still be
+ * a participant, and its scope must allow a same-room read.
+ */
+async function authorizeStoredMessage(
   runtime: IAgentRuntime,
   message: Memory,
-  params: ParamRecord,
   memoryRef: UUID,
-): Promise<ActionResult> {
-  const stored = await runtime.getMemoryById(memoryRef);
+  candidate?: Memory,
+): Promise<{ stored: Memory } | { code: string; text: string }> {
+  const stored = candidate ?? (await runtime.getMemoryById(memoryRef));
   if (!stored || stored.agentId !== runtime.agentId) {
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_NOT_FOUND",
-      "The stored message was not found.",
-    );
+    return {
+      code: "MESSAGE_MEMORY_NOT_FOUND",
+      text: "The stored message was not found.",
+    };
   }
-  if (stored.roomId !== message.roomId) {
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_ACCESS_DENIED",
-      "The stored message is not readable from this room.",
-    );
-  }
+  const denied = {
+    code: "MESSAGE_MEMORY_ACCESS_DENIED",
+    text: "The stored message is not readable from this room.",
+  };
+  if (stored.roomId !== message.roomId) return denied;
   let stillParticipant = false;
   try {
     stillParticipant = (
@@ -3621,20 +3670,31 @@ async function readAdapterlessStoredMemory(
     runtime.reportError("MESSAGE.readStoredMemory.authorization", error, {
       roomId: stored.roomId,
     });
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_AUTHORIZATION_UNAVAILABLE",
-      "Stored-message authorization is unavailable.",
-    );
+    return {
+      code: "MESSAGE_MEMORY_AUTHORIZATION_UNAVAILABLE",
+      text: "Stored-message authorization is unavailable.",
+    };
   }
   if (
     !stillParticipant ||
     !memoryScopeAllowsSameRoomRead(stored, message.entityId, runtime.agentId)
   ) {
-    return memoryReadFailure(
-      "MESSAGE_MEMORY_ACCESS_DENIED",
-      "The stored message is not readable from this room.",
-    );
+    return denied;
   }
+  return { stored };
+}
+
+async function readAdapterlessStoredMemory(
+  runtime: IAgentRuntime,
+  message: Memory,
+  params: ParamRecord,
+  memoryRef: UUID,
+): Promise<ActionResult> {
+  const authorized = await authorizeStoredMessage(runtime, message, memoryRef);
+  if ("code" in authorized) {
+    return memoryReadFailure(authorized.code, authorized.text);
+  }
+  const { stored } = authorized;
   const offset = safeMemoryReadInteger(params.offset, "offset", 0);
   const limit = safeMemoryReadInteger(
     params.limit,
@@ -4136,15 +4196,26 @@ async function handleReadChannel(
       accountId?: string;
       count: number;
     }> = [];
-    for (const result of results) {
+    const failedSources: Array<{
+      source: string;
+      accountId?: string;
+      error: string;
+    }> = [];
+    for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
+        const connector = hookConnectors[index];
+        const error =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
         logger.warn(
-          `[MESSAGE/read_channel] recent connector read failed: ${
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason)
-          }`,
+          `[MESSAGE/read_channel] recent connector read failed: ${error}`,
         );
+        failedSources.push({
+          source: connector.source,
+          accountId: connector.accountId,
+          error,
+        });
         continue;
       }
       memories.push(...result.value.memories);
@@ -4154,14 +4225,29 @@ async function handleReadChannel(
         count: result.value.memories.length,
       });
     }
+    const failedLabels = failedSources
+      .map(({ source, error }) => `${source} (${error})`)
+      .join(", ");
+    // Every connector failed: that is a read failure, not an empty inbox.
+    if (sources.length === 0 && failedSources.length > 0) {
+      return opFailure(
+        "read_channel",
+        "MESSAGE_READ_CHANNEL_FAILED",
+        `MESSAGE op=read_channel failed: no connector could be read: ${failedLabels}`,
+        { failedSources },
+      );
+    }
     memories.sort(compareMemoryByCreatedAtDesc);
     const limited = limit === undefined ? memories : memories.slice(0, limit);
+    const readText = limited.length
+      ? `Read ${limited.length} recent messages across ${sources.length} connectors.`
+      : "No recent conversations found.";
     return opSuccess(
       "read_channel",
-      limited.length
-        ? `Read ${limited.length} recent messages across ${sources.length} connectors.`
-        : "No recent conversations found.",
-      { sources, memories: limited },
+      failedSources.length
+        ? `${readText} Could not read: ${failedLabels}.`
+        : readText,
+      { sources, memories: limited, failedSources },
     );
   }
 
@@ -4490,6 +4576,35 @@ async function handleSearch(
   // Channel-mode: when a connector source supports searchMessages and the user
   // asked for a connector-scoped search, passthrough.
   const connectors = connectorsWithHook(runtime, "searchMessages");
+  // A registered inbox adapter already owns provider-native search. Use it
+  // when there is no connector search hook, rather than requiring unrelated
+  // semantic-search routing for the same source.
+  const inboxAdapter = source
+    ? getDefaultTriageService().getAdapter(source as MessageSource)
+    : undefined;
+  if (
+    source &&
+    !entityId &&
+    inboxAdapter?.capabilities().search &&
+    !findConnectorBySource(connectors, source)
+  ) {
+    return delegateToTriage(
+      "search_inbox",
+      runtime,
+      message,
+      state,
+      {
+        parameters: {
+          ...params,
+          sources: [source],
+          content: query,
+          ...(limit === undefined ? {} : { limit }),
+        },
+      },
+      undefined,
+      undefined,
+    );
+  }
   if (source && connectors.length > 0) {
     const selection = selectConnectorForOp(
       connectors,
@@ -4581,11 +4696,14 @@ async function handleSearch(
       source,
     });
 
-    const matchingResults = recall.items
-      .map((item) => item.memory)
-      .filter((m) => m.content.text);
-    const results =
-      limit === undefined ? matchingResults : matchingResults.slice(0, limit);
+    const matchingItems = recall.items.filter(
+      (item) => item.memory.content.text,
+    );
+    const results = (
+      limit === undefined
+        ? matchingItems
+        : selectBestRankedRecallItems(matchingItems, limit)
+    ).map((item) => item.memory);
     return opSuccess(
       "search",
       conversationSearchText(query, results.length, recall.availability),
@@ -5185,13 +5303,64 @@ async function handleMessageMutation(
   params: ParamRecord,
   op: "react" | "edit" | "delete" | "pin",
 ): Promise<ActionResult> {
-  const messageId = textParam(params.messageId) ?? textParam(params.id);
+  let messageId = textParam(params.messageId) ?? textParam(params.id);
   if (!messageId) {
     return opFailure(
       op,
       "INVALID_PARAMETERS",
       `MESSAGE op=${op} requires messageId.`,
     );
+  }
+  // Native provider ids may also be UUIDs. Translate only ids that actually
+  // identify a stored memory, and retain that memory's destination binding.
+  let storedTarget: TargetInfo | undefined;
+  const candidate = isUuidLike(messageId)
+    ? await runtime.getMemoryById(messageId)
+    : null;
+  if (candidate && isUuidLike(messageId)) {
+    const authorized = await authorizeStoredMessage(
+      runtime,
+      message,
+      messageId,
+      candidate,
+    );
+    if ("code" in authorized) {
+      return opFailure(op, authorized.code, authorized.text);
+    }
+    const storedMetadata = (authorized.stored.metadata ?? {}) as Record<
+      string,
+      unknown
+    >;
+    // Same keys, in the same order, as the send result reads them.
+    const platformId =
+      typeof storedMetadata.platformMessageId === "string"
+        ? storedMetadata.platformMessageId
+        : storedMetadata.messageIdFull;
+    if (typeof platformId !== "string" || !platformId.trim()) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_NO_PLATFORM_ID",
+        "The stored message has no platform message id.",
+      );
+    }
+    const room = await runtime.getRoom(authorized.stored.roomId);
+    const source = trustedConnectorSource(authorized.stored) ?? room?.source;
+    if (!room || !source) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_ROUTING_UNAVAILABLE",
+        "The stored message's connector destination is unavailable.",
+      );
+    }
+    storedTarget = {
+      source,
+      roomId: authorized.stored.roomId,
+      channelId: room.channelId,
+      accountId:
+        trustedConnectorAccountId(authorized.stored) ??
+        textParam(room.metadata?.accountId),
+    };
+    messageId = platformId;
   }
   const hookName = (
     {
@@ -5204,13 +5373,37 @@ async function handleMessageMutation(
   const connectors = connectorsWithHook(runtime, hookName);
   const selection = selectConnectorForOp(
     connectors,
-    sourceFromParams(params, message),
+    storedTarget?.source ?? sourceFromParams(params, message),
     trustedConnectorSource(message),
     op,
-    accountIdFromParams(params, message),
+    storedTarget
+      ? storedTarget.accountId
+      : accountIdFromParams(params, message),
   );
   if ("error" in selection) return selection.error;
   const connector = selection.connector;
+  if (storedTarget) {
+    const requestedSource = sourceFromParams(params, message);
+    const requestedAccount =
+      textParam(params.accountId) ?? textParam(params.connectorAccountId);
+    if (
+      (requestedSource &&
+        !connectorAliases(connector).some(
+          (alias) =>
+            normalizeComparable(alias) === normalizeComparable(requestedSource),
+        )) ||
+      (requestedAccount && requestedAccount !== storedTarget.accountId) ||
+      (storedTarget.accountId &&
+        connector.accountId &&
+        connector.accountId !== storedTarget.accountId)
+    ) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_TARGET_MISMATCH",
+        "A stored message must be changed through its original connector and account.",
+      );
+    }
+  }
   const resolved = await resolveOptionalTarget(
     connector,
     runtime,
@@ -5220,10 +5413,46 @@ async function handleMessageMutation(
     op,
   );
   if (resolved.error) return resolved.error;
-  const target = resolved.target ?? {
-    source: connector.source,
-    accountId: connector.accountId ?? accountIdFromParams(params, message),
-  };
+  // Without a target parameter, the message being changed is in the current
+  // conversation when it runs on the connector and account the message came
+  // in on; every connector resolves a roomId to its channel.
+  const routedAccountId =
+    connector.accountId ?? accountIdFromParams(params, message);
+  const trustedSource = trustedConnectorSource(message);
+  const trustedAccountId = trustedConnectorAccountId(message);
+  const inCurrentRoom =
+    trustedSource !== undefined &&
+    normalizeComparable(trustedSource) ===
+      normalizeComparable(connector.source) &&
+    (routedAccountId === undefined ||
+      trustedAccountId === undefined ||
+      normalizeComparable(routedAccountId) ===
+        normalizeComparable(trustedAccountId));
+  if (storedTarget && resolved.target) {
+    const explicit = resolved.target;
+    if (
+      (explicit.roomId && explicit.roomId !== storedTarget.roomId) ||
+      (explicit.channelId && explicit.channelId !== storedTarget.channelId) ||
+      explicit.entityId ||
+      explicit.threadId ||
+      explicit.serverId ||
+      (explicit.accountId &&
+        storedTarget.accountId &&
+        explicit.accountId !== storedTarget.accountId)
+    ) {
+      return opFailure(
+        op,
+        "MESSAGE_MEMORY_TARGET_MISMATCH",
+        "A stored message must be changed in its original room. Omit target parameters to use that room.",
+      );
+    }
+  }
+  const target = storedTarget ??
+    resolved.target ?? {
+      source: connector.source,
+      accountId: routedAccountId,
+      ...(inCurrentRoom ? { roomId: message.roomId } : {}),
+    };
 
   try {
     if (op === "react") {
@@ -5597,6 +5826,7 @@ async function handleReadMessage(
         messageId,
         reference,
         worldId: textParam(params.accountId),
+        requester: message,
         requesterEntityId: message.entityId,
         requesterRoomId: message.roomId,
         offset: numberParam(params.offset),
@@ -5719,8 +5949,10 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "source",
     description:
-      "Connector source: discord, slack, whatsapp, telegram, x, imessage, matrix, line, google-chat, feishu, instagram, wechat, gmail.",
+      "Connector source: discord, slack, whatsapp, telegram, x, imessage, matrix, line, google-chat, feishu, instagram, wechat, gmail. " +
+      `Inbox and draft ops (triage, list_inbox, search_inbox, draft_reply, draft_followup, respond, send_draft, manage, read_message) accept only: ${ALL_MESSAGE_SOURCES.join(", ")}.`,
     required: false,
+    requiredForSubactions: ["draft_followup"],
     subactions: [
       "send",
       "read_channel",
@@ -5752,9 +5984,10 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "worldId",
     description:
-      "For op=list_rooms, an exact world UUID returned by list_worlds. Omit it to inspect the current room's world.",
+      "For op=list_rooms, an exact world UUID returned by list_worlds. Omit it to inspect the current room's world. " +
+      "For op=draft_followup and op=send_draft, the account or server scope of a new draft: the worldId shown on inbox messages (for gmail, the Google account id). Omit it for the default account.",
     required: false,
-    subactions: ["list_rooms"],
+    subactions: ["list_rooms", "draft_followup", "send_draft"],
     schema: { type: "string" },
   },
   {
@@ -5781,7 +6014,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "sources",
-    description: "Inbox sources for triage, list_inbox, search_inbox.",
+    description: `Inbox sources for triage, list_inbox, search_inbox. One or more of: ${ALL_MESSAGE_SOURCES.join(", ")}. triage and list_inbox reject a source that has no connected adapter able to list messages.`,
     required: false,
     subactions: [
       "triage",
@@ -5791,20 +6024,10 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
       "respond",
       "manage",
     ],
-    schema: { type: "array", items: { type: "string" } },
-  },
-  {
-    name: "folder",
-    description: "Inbox folder hint for triage/list/search/draft/respond.",
-    required: false,
-    subactions: [
-      "triage",
-      "list_inbox",
-      "search_inbox",
-      "draft_reply",
-      "respond",
-    ],
-    schema: { type: "string" },
+    schema: {
+      type: "array",
+      items: { type: "string", enum: [...ALL_MESSAGE_SOURCES] },
+    },
   },
   {
     name: "target",
@@ -5873,7 +6096,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "channelId",
-    description: "Platform channel ID.",
+    description:
+      "Platform channel ID. A new discord draft (draft_followup, send_draft) requires it.",
     required: false,
     subactions: [
       "read_channel",
@@ -5885,6 +6109,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
       "delete",
       "pin",
       "draft_followup",
+      "send_draft",
       "manage_server",
     ],
     schema: { type: "string" },
@@ -6131,7 +6356,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "sender",
-    description: "Sender identifier for inbox search or reply lookup.",
+    description:
+      "Sender for inbox search or reply lookup: a name, an email address, or the `from` value an inbox op returned.",
     required: false,
     subactions: ["search_inbox", "draft_reply", "respond", "manage"],
     schema: { type: "string" },
@@ -6141,6 +6367,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
     description:
       "Draft/response body for draft_reply, draft_followup, respond.",
     required: false,
+    requiredForSubactions: ["draft_followup"],
     subactions: ["draft_reply", "draft_followup", "respond", "send_draft"],
     schema: { type: "string" },
   },
@@ -6169,6 +6396,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
     name: "to",
     description: "Recipient identifiers for op=draft_followup.",
     required: false,
+    requiredForSubactions: ["draft_followup"],
     subactions: ["read_channel", "draft_followup", "send_draft"],
     schema: { type: "array", items: { type: "string" } },
   },
@@ -6188,7 +6416,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "sendAt",
-    description: "Scheduled send time for op=schedule_draft_send.",
+    description:
+      "Send time for op=schedule_draft_send, as an ISO 8601 timestamp (2026-10-12T09:00:00Z) or epoch milliseconds.",
     required: false,
     subactions: ["schedule_draft_send"],
     schema: { type: "string" },
@@ -6285,7 +6514,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "manageOperation",
     description:
-      "op=manage operation: archive, trash, spam, mark_read, label_add, label_remove, tag_add, tag_remove, mute_thread, unsubscribe.",
+      "op=manage operation: archive, trash, spam, mark_read, label_add, label_remove, tag_add, tag_remove, unsubscribe.",
     required: false,
     subactions: ["manage"],
     schema: { type: "string", enum: [...MANAGE_OPERATION_KINDS] },
@@ -6303,6 +6532,22 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
     required: false,
     subactions: ["manage"],
     schema: { type: "string" },
+  },
+  {
+    name: "tags",
+    description:
+      "For op=search_inbox: every hit must carry all of these tags, as the connector reports them in data.messages[].tags (Gmail label names).",
+    required: false,
+    subactions: ["search_inbox"],
+    schema: { type: "array", items: { type: "string" } },
+  },
+  {
+    name: "read",
+    description:
+      "For op=manage mark_read: false marks the message unread. Defaults to true.",
+    required: false,
+    subactions: ["manage"],
+    schema: { type: "boolean" },
   },
   {
     name: "attachments",
@@ -6341,7 +6586,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "limit",
-    description: "Max items.",
+    description: "Max items (at least 1).",
     required: false,
     subactions: [
       "read_channel",
@@ -6354,7 +6599,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
       "list_worlds",
       "list_rooms",
     ],
-    schema: { type: "number" },
+    schema: { type: "number", minimum: 1 },
   },
   {
     name: "range",
@@ -6379,7 +6624,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "channelIds",
-    description: "Channel/conversation scopes for inbox ops.",
+    description:
+      "Channel, conversation, label or folder ids that scope inbox ops.",
     required: false,
     subactions: ["triage", "list_inbox", "search_inbox"],
     schema: { type: "array", items: { type: "string" } },
@@ -6393,7 +6639,8 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "since",
-    description: "Start date for op=search_inbox.",
+    description:
+      "Start of the op=search_inbox window: ISO 8601 date/timestamp or epoch milliseconds.",
     required: false,
     subactions: ["search_inbox"],
     schema: { type: "string" },
@@ -6401,7 +6648,7 @@ export const MESSAGE_PARAMETERS: ActionParameter[] = [
   {
     name: "until",
     description:
-      "End date/timestamp for read_channel range=dates or search_inbox.",
+      "End date/timestamp for read_channel range=dates or search_inbox. For search_inbox: ISO 8601 date/timestamp or epoch milliseconds.",
     required: false,
     subactions: ["read_channel", "search_inbox"],
     schema: { type: "string" },
@@ -6587,7 +6834,7 @@ export const messageAction: Action = {
     "CHAT",
     "CHANNEL",
     // PRD action-catalog aliases. These resolve to MESSAGE subactions via
-    // handler argument routing; see packages/docs/action-prd-map.md.
+    // handler argument routing.
     "INBOX_LIST_UNREAD",
     "INBOX_TRIAGE_PRIORITY",
     "INBOX_SUMMARIZE_CHANNEL",
@@ -6636,7 +6883,16 @@ export const messageAction: Action = {
   ] as ActionExample[][],
   validate: async (runtime, message, state, options) => {
     refreshDescriptions(messageAction, runtime);
-    const explicitOp = inferOp(paramsFromOptions(options));
+    const parameters = paramsFromOptions(options);
+    const explicitOp = inferOp(parameters);
+    // One local registration read; no connector handshake or provider request.
+    if (
+      normalizeOp(parameters.action) === "send" &&
+      !listMessageConnectors(runtime).some((connector) =>
+        connector.capabilities.includes("send_message"),
+      )
+    )
+      return false;
     if (explicitOp === "list_worlds" || explicitOp === "list_rooms") {
       // Scenario and API callers may invoke an explicit topology read without
       // a model-composed routing state. The handlers still revalidate the
@@ -6712,5 +6968,29 @@ export const messageAction: Action = {
     }
   },
 };
+
+/** Both registrations expose the same authored distinction between connector
+ * sends and the owner-reviewed email draft flow. No handler or gate changes.
+ */
+export function promoteMessageActions(): readonly Action[] {
+  return promoteSubactionsToActions(messageAction, {
+    overrides: {
+      send: {
+        description:
+          "Send a direct message through a registered messaging connector. For Gmail or another email inbox, use MESSAGE_SEND_DRAFT to prepare an exact draft and obtain later user confirmation.",
+      },
+      send_draft: {
+        parameters: sendDraftAction.parameters,
+        description: sendDraftAction.description,
+        descriptionCompressed: sendDraftAction.descriptionCompressed,
+        similes: [
+          ...(sendDraftAction.similes ?? []),
+          "SEND_EMAIL",
+          "SEND_GMAIL",
+        ],
+      },
+    },
+  });
+}
 
 export default messageAction;

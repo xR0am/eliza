@@ -567,11 +567,22 @@ export async function getCachedSelfControlStatus(
   }
 
   const promise = getSelfControlStatus(config);
-  statusCache = {
+  const entry: StatusCacheEntry = {
     expiresAt: Date.now() + ttlMs,
     promise,
   };
-  return await promise;
+  statusCache = entry;
+  try {
+    return await promise;
+  } catch (error) {
+    // A failed read must not be replayed to later callers until the TTL
+    // expires: drop the entry so the next call retries the read. The
+    // app-blocker engine caches only fulfilled statuses the same way.
+    if (statusCache === entry) {
+      statusCache = undefined;
+    }
+    throw error;
+  }
 }
 
 export async function getSelfControlPermissionState(
@@ -694,7 +705,12 @@ export async function startSelfControlBlock(
   const nativeBackend = getNativeWebsiteBlockerBackend();
   if (nativeBackend) {
     resetSelfControlStatusCache();
-    return await nativeBackend.startBlock(request);
+    try {
+      return await nativeBackend.startBlock(request);
+    } finally {
+      // A status read made while the native call ran must not stay cached.
+      resetSelfControlStatusCache();
+    }
   }
 
   const normalizedRequest = normalizeSelfControlBlockRequest(request);
@@ -856,7 +872,11 @@ export async function stopSelfControlBlock(
   const nativeBackend = getNativeWebsiteBlockerBackend();
   if (nativeBackend) {
     resetSelfControlStatusCache();
-    return await nativeBackend.stopBlock();
+    try {
+      return await nativeBackend.stopBlock();
+    } finally {
+      resetSelfControlStatusCache();
+    }
   }
 
   const status = await reconcileSelfControlBlockState(config);

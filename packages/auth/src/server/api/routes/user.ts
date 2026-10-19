@@ -145,6 +145,7 @@ import {
   getImportSessionBackend,
   getPhoneAuth,
   releaseUnattemptedSmsVerifyClaim,
+  tenantSwitchLoginRefusal,
 } from "../services/auth-lifecycle";
 import {
   continueWithTenantDatabase,
@@ -947,7 +948,12 @@ function tenantUserCsvRow(
       const raw =
         field instanceof Date ? field.toISOString() : String(field ?? "");
       const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-      if (safe.includes(",") || safe.includes('"') || safe.includes("\n")) {
+      if (
+        safe.includes(",") ||
+        safe.includes('"') ||
+        safe.includes("\n") ||
+        safe.includes("\r")
+      ) {
         return `"${safe.replace(/"/g, '""')}"`;
       }
       return safe;
@@ -1140,14 +1146,15 @@ async function lockTenantOwnerLifecycle(
 
 function clampLimit(value: string | null, fallback = 50): number {
   const parsed = value ? Number(value) : fallback;
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), 100);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, 100);
 }
 
 function parseBoundedOffset(value: string | null): number {
   const parsed = value ? Number(value) : 0;
-  if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  return Math.min(Math.floor(parsed), 100_000);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return 0;
+  // Do not clamp large valid offsets: a ceiling repeats earlier pages.
+  return parsed;
 }
 
 function escapeLikePattern(value: string): string {
@@ -4127,7 +4134,12 @@ user.delete("/me/accounts/:provider/:providerAccountId", async (c) => {
         .select()
         .from(refreshTokens)
         .where(eq(refreshTokens.userId, userId));
-      await revocationStore.revokeUserTokens(userId, issuedBefore);
+      await revocationStore.revokeUserTokens(
+        userId,
+        issuedBefore,
+        undefined,
+        tx,
+      );
       const [deleted] = account
         ? await tx
             .delete(accounts)
@@ -4561,8 +4573,9 @@ user.get("/me/wallet", async (c) => {
     );
   }
 
-  const chainIdParam = c.req.query("chainId");
-  const chainId = chainIdParam ? parseInt(chainIdParam, 10) : undefined;
+  const chainId = parseOptionalChainId(c.req.query("chainId"));
+  if (typeof chainId === "string")
+    return c.json<ApiResponse>({ ok: false, error: chainId }, 400);
 
   try {
     const balance = await vault.getBalance(
@@ -5929,8 +5942,14 @@ user.post("/me/wallet/sign", async (c) => {
 
   const tenantId = `personal-${userId}`;
   const agentId = wallet.id;
+  // parseInt stops at the first non-digit ("1e3" -> 1), so a malformed
+  // CHAIN_ID silently switched the signing chain (e.g. to mainnet).
+  // Require the whole trimmed value to be decimal, mirroring the strict
+  // Number() parsing of this same env var in global-wallet.ts.
+  const chainIdRaw = (process.env.CHAIN_ID ?? "").trim();
   const chainId =
-    signBody.chainId ?? parseInt(process.env.CHAIN_ID || "84532", 10);
+    signBody.chainId ??
+    (/^\+?\d+$/.test(chainIdRaw) ? Number(chainIdRaw) : 84532);
   let codeResponse: Awaited<ReturnType<Vault["rpcPassthrough"]>>;
   try {
     codeResponse = await vault.rpcPassthrough({
@@ -7155,6 +7174,15 @@ user.post("/me/tenants/switch", async (c) => {
       { ok: false, error: "Not a member of this tenant" },
       403,
     );
+  }
+  // A switch is a sign-in to the target tenant: its login methods apply to
+  // the method this session signed in with, as on a refresh-token switch.
+  const loginRefusal = await tenantSwitchLoginRefusal(
+    membership.tenantId,
+    session as Record<string, unknown>,
+  );
+  if (loginRefusal) {
+    return c.json<ApiResponse>({ ok: false, error: loginRefusal }, 403);
   }
 
   if (typeof session.exp !== "number" || !Number.isFinite(session.exp)) {
@@ -8879,8 +8907,12 @@ user.patch(
           .limit(1);
         if (!previous) return null;
 
-        const issuedBefore =
-          await revocationStore.revokeUserTokens(targetUserId);
+        const issuedBefore = await revocationStore.revokeUserTokens(
+          targetUserId,
+          undefined,
+          undefined,
+          tx,
+        );
         await tx
           .update(users)
           .set({

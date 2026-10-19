@@ -2,7 +2,14 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { actionToTool } from "@elizaos/core";
+import {
+  type AgentRuntime,
+  actionToTool,
+  ModelType,
+  runWithTrajectoryContext,
+  withEvaluatorStep,
+  withProviderStep,
+} from "@elizaos/core";
 import { parseTrajectorySemanticStage } from "@elizaos/core/protocol";
 import {
   TrajectoriesService,
@@ -10,9 +17,11 @@ import {
   tryHandleTrajectoryReadRoutes,
 } from "@elizaos/plugin-assistant";
 import { createTestRuntime } from "@elizaos/testing/runtime";
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, expect, it, onTestFinished, vi } from "vitest";
 import { proposeDeviceAction } from "../../../plugins/plugin-assistant/src/services/device-actions/action.ts";
+import { handleTrajectoryManagementRoutes } from "../src/api/trajectory-management-routes.ts";
 import { runtimeTrajectoriesEnabled } from "../src/runtime/native-runtime-features.ts";
+import { installPromptOptimizations } from "../src/runtime/prompt-optimization.ts";
 import {
   createBaseTrajectory,
   ensureStep,
@@ -51,13 +60,25 @@ beforeAll(async () => {
   direct.setEnabled(true);
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    void tryHandleTrajectoryReadRoutes({
-      pathname: url.pathname,
-      method: req.method ?? "GET",
-      url,
-      runtime: fixture.runtime,
+    const method = req.method ?? "GET";
+    void handleTrajectoryManagementRoutes({
+      req,
       res,
+      method,
+      pathname: url.pathname,
+      runtime: fixture.runtime,
     })
+      .then(
+        (managed) =>
+          managed ||
+          tryHandleTrajectoryReadRoutes({
+            pathname: url.pathname,
+            method,
+            url,
+            runtime: fixture.runtime,
+            res,
+          }),
+      )
       .then((handled) => {
         if (!handled) {
           res.statusCode = 404;
@@ -695,3 +716,238 @@ it("validates deep semantic JSON without stack limits while retaining type, prot
   expect(Object.getPrototypeOf(ownProto)).toBe(Object.prototype);
   expect(Object.hasOwn(ownProto, "__proto__")).toBe(true);
 });
+
+it("records every planner, evaluator and concurrent provider model call with its own usage and prompt telemetry", async () => {
+  const { useModel } = fixture.runtime;
+  installPromptOptimizations(fixture.runtime as AgentRuntime);
+  // The later tests of this file use the runtime without the wrapper.
+  onTestFinished(() => {
+    fixture.runtime.useModel = useModel;
+  });
+  const usage = { promptTokens: 11, completionTokens: 5, totalTokens: 16 };
+  for (const modelType of [
+    ModelType.ACTION_PLANNER,
+    ModelType.TEXT_SMALL,
+    ModelType.TEXT_TOKENIZER_ENCODE,
+  ]) {
+    fixture.runtime.registerModel(
+      modelType,
+      async () => ({ text: "fixture reply", usage }),
+      "ledger-fixture",
+    );
+  }
+  const trajectoryId = await direct.startTrajectory(fixture.runtime.agentId, {
+    source: "model-call-ledger",
+    roomId: randomUUID(),
+  });
+  const stepId = direct.startStep(trajectoryId, { kind: "llm" });
+  await direct.flushWriteQueue(trajectoryId);
+  const prompts = [
+    "first planner request",
+    "second planner request, a little longer",
+    "evaluate the finished turn",
+    "summarize inside a provider",
+    "summarize again inside the same provider",
+    "summarize inside another provider",
+    "tokenize inside a third provider",
+  ];
+  await runWithTrajectoryContext(
+    { trajectoryId, trajectoryStepId: stepId },
+    async () => {
+      for (const prompt of prompts.slice(0, 2)) {
+        // As in a real turn, a queued provider capture delays the call's write.
+        direct.logProviderAccess({
+          stepId,
+          providerName: "LEDGER_PROVIDER",
+          purpose: "compose",
+          data: { text: "provider output" },
+        });
+        await fixture.runtime.useModel(ModelType.ACTION_PLANNER, { prompt });
+      }
+      await withEvaluatorStep(fixture.runtime, "LEDGER_EVALUATOR", () =>
+        fixture.runtime.useModel(ModelType.TEXT_SMALL, { prompt: prompts[2] }),
+      );
+      // Three providers run at once. One makes two concurrent calls on its own
+      // step, and the first call of another is not a text generation call.
+      await Promise.all([
+        withProviderStep(fixture.runtime, "LEDGER_PROVIDER", () =>
+          Promise.all(
+            prompts
+              .slice(3, 5)
+              .map((prompt) =>
+                fixture.runtime.useModel(ModelType.TEXT_SMALL, { prompt }),
+              ),
+          ),
+        ),
+        withProviderStep(fixture.runtime, "OTHER_PROVIDER", () =>
+          fixture.runtime.useModel(ModelType.TEXT_SMALL, {
+            prompt: prompts[5],
+          }),
+        ),
+        withProviderStep(fixture.runtime, "TOKENIZER_PROVIDER", () =>
+          fixture.runtime.useModel(ModelType.TEXT_TOKENIZER_ENCODE, {
+            prompt: prompts[6],
+            modelType: ModelType.TEXT_SMALL,
+          }),
+        ),
+      ]);
+    },
+  );
+  await direct.flushWriteQueue(trajectoryId);
+  const calls = (
+    await direct.getTrajectoryDetail(trajectoryId)
+  )?.steps?.flatMap((step) => step.llmCalls ?? []);
+  expect(
+    calls?.map((call) => [
+      call.userPrompt,
+      call.promptTokens,
+      call.completionTokens,
+      (
+        call.providerMetadata as
+          | { promptOptimization?: { originalPromptChars?: number } }
+          | undefined
+      )?.promptOptimization?.originalPromptChars,
+    ]),
+  ).toEqual(prompts.map((prompt) => [prompt, 11, 5, prompt.length]));
+  for (const call of calls ?? []) {
+    expect(call.providerMetadata).toMatchObject({
+      promptOptimization: {
+        originalPromptTokens: expect.any(Number),
+        finalPromptTokens: expect.any(Number),
+      },
+    });
+  }
+  await direct.endTrajectory(trajectoryId, "completed");
+});
+
+it("redacts the text that a model-call update fills in as it redacts a call record", async () => {
+  const trajectoryId = await direct.startTrajectory(fixture.runtime.agentId, {
+    source: "model-call-update-redaction",
+    roomId: randomUUID(),
+  });
+  const stepId = direct.startStep(trajectoryId, { kind: "llm" });
+  const callId = randomUUID();
+  const privateText = "write to ada@example.com, card 4111111111111111";
+  direct.logLlmCall({
+    stepId,
+    callId,
+    model: "fixture",
+    purpose: "action",
+    actionType: "runtime.useModel",
+    systemPrompt: privateText,
+    userPrompt: "",
+    response: "",
+  });
+  direct.updateLlmCall(stepId, callId, {
+    userPrompt: privateText,
+    response: privateText,
+    providerMetadata: {
+      promptOptimization: { budgetTokens: 1000, outputReserveTokens: 100 },
+      accessToken: "fixture-private-credential",
+    },
+  });
+  await direct.flushWriteQueue(trajectoryId);
+  const [call] =
+    (await direct.getTrajectoryDetail(trajectoryId))?.steps?.flatMap(
+      (step) => step.llmCalls ?? [],
+    ) ?? [];
+  expect([call?.systemPrompt, call?.userPrompt, call?.response]).toEqual(
+    Array(3).fill("write to <EMAIL>, card <CARD>"),
+  );
+  expect(call?.providerMetadata).toMatchObject({
+    promptOptimization: { budgetTokens: 1000, outputReserveTokens: 100 },
+    accessToken: "[REDACTED]",
+  });
+  await direct.endTrajectory(trajectoryId, "completed");
+});
+
+it("serves the viewer's config, export and delete requests from the registered service", async () => {
+  const send = (method: string, path: string, body?: unknown) =>
+    fetch(`${origin}${path}`, {
+      method,
+      ...(body === undefined
+        ? {}
+        : {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+    });
+
+  const config = await send("GET", "/api/trajectories/config");
+  expect(config.status).toBe(200);
+  expect(await config.json()).toEqual({ enabled: bridge.isEnabled() });
+  const disabled = await send("PUT", "/api/trajectories/config", {
+    enabled: false,
+  });
+  expect(await disabled.json()).toEqual({ enabled: false });
+  expect(bridge.isEnabled()).toBe(false);
+  const enabled = await send("PUT", "/api/trajectories/config", {
+    enabled: true,
+  });
+  expect(await enabled.json()).toEqual({ enabled: true });
+  expect(bridge.isEnabled()).toBe(true);
+  expect(
+    (await send("PUT", "/api/trajectories/config", { enabled: "yes" })).status,
+  ).toBe(400);
+
+  const source = `management-${randomUUID()}`;
+  const record = async (): Promise<string> => {
+    const id = await direct.startTrajectory(fixture.runtime.agentId, {
+      source,
+    });
+    direct.logLlmCall({
+      stepId: direct.startStep(id, { kind: "llm" }),
+      model: "fixture",
+      purpose: "action",
+      actionType: "runtime.useModel",
+      systemPrompt: "system",
+      userPrompt: "request",
+      response: "result",
+      promptTokens: 1,
+      completionTokens: 1,
+    });
+    await direct.flushWriteQueue(id);
+    await direct.endTrajectory(id, "completed");
+    return id;
+  };
+  const kept = await record();
+  const removed = await record();
+
+  const exported = await send("POST", "/api/trajectories/export", {
+    format: "json",
+    source,
+  });
+  expect(exported.status).toBe(200);
+  expect(exported.headers.get("content-disposition")).toContain("attachment");
+  const rows = (await exported.json()) as { trajectoryId: string }[];
+  expect(rows.map((row) => row.trajectoryId).sort()).toEqual(
+    [kept, removed].sort(),
+  );
+  const zip = await send("POST", "/api/trajectories/export", {
+    format: "zip",
+    source,
+  });
+  expect(zip.status).toBe(200);
+  expect(zip.headers.get("content-type")).toBe("application/zip");
+  expect(
+    Buffer.from(await zip.arrayBuffer())
+      .subarray(0, 2)
+      .toString("latin1"),
+  ).toBe("PK");
+  expect(
+    (await send("POST", "/api/trajectories/export", { format: "xml" })).status,
+  ).toBe(400);
+
+  // An empty selection is rejected rather than reported as a zero-row success.
+  expect((await send("DELETE", "/api/trajectories", {})).status).toBe(400);
+  expect(
+    (await send("DELETE", "/api/trajectories", { trajectoryIds: [] })).status,
+  ).toBe(400);
+  const deleted = await send("DELETE", "/api/trajectories", {
+    trajectoryIds: [removed],
+  });
+  expect(deleted.status).toBe(200);
+  expect(await deleted.json()).toEqual({ deleted: 1 });
+  const remaining = await bridge.listTrajectories({ source });
+  expect(remaining.trajectories.map((row) => row.id)).toEqual([kept]);
+}, 120_000);

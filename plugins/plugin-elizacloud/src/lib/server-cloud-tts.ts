@@ -13,6 +13,7 @@
  * `for (;;)` warming loop forever.
  */
 import type http from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
 import { ELIZA_CLOUD_TTS_MAX_TEXT_CHARS } from "../cloud-config/server-cloud-tts.js";
 import { _internalResolveCloudApiKey } from "../cloud-config/server-cloud-tts.js";
 import { logger } from "@elizaos/core";
@@ -27,10 +28,37 @@ import { ttsDebug } from "@elizaos/core";
 import { ttsDebugTextPreview } from "@elizaos/core";
 import { warmingRetryWaitSeconds } from "../utils/warming";
 /** Abort a proxy hop when set; `0` on the env key opts out (same as the SDK). */
-function cloudProxyAbortSignal(envKey: string): AbortSignal | undefined {
+function cloudProxyAbortSignal(envKey: string, clientSignal: AbortSignal): AbortSignal {
     const timeoutMs = resolveCloudTimeoutMs(envKey, 60000);
-    return timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs);
+    return timeoutMs === undefined ? clientSignal : AbortSignal.any([clientSignal, AbortSignal.timeout(timeoutMs)]);
 }
+
+/** Request EOF is normal. Only an aborted upload or an unfinished response close cancels the proxy. */
+function cloudProxyClient(req: http.IncomingMessage, res: http.ServerResponse) {
+    const controller = new AbortController();
+    const abort = () => controller.abort(new DOMException("Cloud speech client disconnected", "AbortError"));
+    const closed = () => { if (!res.writableEnded) abort(); };
+    req.once("aborted", abort);
+    res.once("close", closed);
+    if (req.aborted || (res.destroyed && !res.writableEnded)) abort();
+    return {
+        signal: controller.signal,
+        dispose() { req.off("aborted", abort); res.off("close", closed); },
+    };
+}
+
+/** Forward only actual upstream evidence. An omitted provider remains unverified. */
+function forwardCloudSpeechHeaders(upstream: Response, res: http.ServerResponse, kind: "tts" | "stt") {
+    const providerHeader = `X-Eliza-${kind.toUpperCase()}-Provider`;
+    for (const name of [providerHeader, "Server-Timing", "X-Eliza-Trace-Id", "X-Request-Id", "X-Trace-Id", "CF-Ray"]) {
+        const value = upstream.headers.get(name);
+        if (value) res.setHeader(name, value);
+    }
+    const provider = upstream.headers.get(providerHeader)?.trim();
+    if (provider) res.setHeader("X-Eliza-Speech-Provider", provider);
+    res.setHeader("X-Eliza-Speech-Route", "cloud");
+}
+
 export { __resetCloudBaseUrlCache, ELIZA_CLOUD_TTS_MAX_TEXT_CHARS, ensureCloudTtsApiKeyAlias, mirrorCompatHeaders, normalizeElizaCloudTtsModelId, resolveCloudProxyTtsModel, resolveCloudTtsBaseUrl, resolveCloudTtsCandidateUrls, resolveElevenLabsApiKeyForCloudMode, resolveElizaCloudTtsVoiceId, shouldRetryCloudTtsUpstream } from "../cloud-config/server-cloud-tts.js";
 /** Browser → API correlation (never forwarded to Eliza Cloud). */
 export function readTtsDebugClientHeaders(req: Pick<http.IncomingMessage, "headers">): {
@@ -175,7 +203,9 @@ export async function handleCloudTtsPreviewRoute(req: http.IncomingMessage, res:
         urlCandidates: cloudUrls.length,
         ...dbgExtra,
     });
+    const client = cloudProxyClient(req, res);
     try {
+        client.signal.throwIfAborted();
         let lastStatus = 0;
         let lastDetails = "unknown error";
         let cloudResponse: Response | null = null;
@@ -192,7 +222,8 @@ export async function handleCloudTtsPreviewRoute(req: http.IncomingMessage, res:
             let attempt: Response;
             let warmingRetries = 0;
             for (;;) {
-                const ttsSignal = cloudProxyAbortSignal("ELIZAOS_CLOUD_TTS_TIMEOUT_MS");
+                client.signal.throwIfAborted();
+                const ttsSignal = cloudProxyAbortSignal("ELIZAOS_CLOUD_TTS_TIMEOUT_MS", client.signal);
                 attempt = await fetch(cloudUrl, {
                     method: "POST",
                     headers: {
@@ -218,7 +249,7 @@ export async function handleCloudTtsPreviewRoute(req: http.IncomingMessage, res:
                     break;
                 warmingRetries++;
                 logger.warn(`[Cloud TTS] authorization cache warming (503), retry ${warmingRetries}/2 after ${waitSeconds}s`);
-                await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+                await delay(waitSeconds * 1000, undefined, { signal: client.signal });
             }
             if (attempt.ok) {
                 cloudResponse = attempt;
@@ -244,6 +275,7 @@ export async function handleCloudTtsPreviewRoute(req: http.IncomingMessage, res:
             }
         }
         if (!cloudResponse) {
+            client.signal.throwIfAborted();
             ttsDebug("server:cloud-tts:reject", {
                 reason: "upstream_failed",
                 lastStatus,
@@ -262,6 +294,8 @@ export async function handleCloudTtsPreviewRoute(req: http.IncomingMessage, res:
             return true;
         }
         const audioBuffer = Buffer.from(await cloudResponse.arrayBuffer());
+        client.signal.throwIfAborted();
+        forwardCloudSpeechHeaders(cloudResponse, res, "tts");
         ttsDebug("server:cloud-tts:success", {
             bytes: audioBuffer.length,
             preview: ttsPreview,
@@ -274,12 +308,15 @@ export async function handleCloudTtsPreviewRoute(req: http.IncomingMessage, res:
         return true;
     }
     catch (err) {
+        if (client.signal.aborted) return true;
         sendJsonErrorResponse(res, 502, `Eliza Cloud TTS request failed: ${err instanceof Error ? err.message : String(err)}`);
         return true;
     }
+    finally { client.dispose(); }
 }
 /** WAV bodies larger than this are rejected before proxying (cloud caps at 25MB). */
 const ELIZA_CLOUD_STT_MAX_BYTES = 25 * 1024 * 1024;
+export const ELIZA_CLOUD_STT_MAX_JSON_BODY_BYTES = Math.ceil(ELIZA_CLOUD_STT_MAX_BYTES / 3) * 4 + 1024;
 /**
  * Read the raw request body up to a byte cap, aborting past the limit. The STT
  * body is opaque audio bytes (a WAV), so it is streamed straight through rather
@@ -315,7 +352,28 @@ export async function handleCloudSttRoute(req: http.IncomingMessage, res: http.S
         sendJsonErrorResponse(res, 401, "Eliza Cloud is not connected. Connect your Eliza Cloud account first.");
         return true;
     }
-    const rawBody = await readCappedRequestBody(req, ELIZA_CLOUD_STT_MAX_BYTES);
+    const contentType = req.headers["content-type"];
+    const requestMime = typeof contentType === "string" && contentType.trim()
+        ? contentType.split(";", 1)[0]?.trim() || "audio/wav"
+        : "audio/wav";
+    const jsonBody = requestMime.toLowerCase() === "application/json";
+    let rawBody: Buffer | null;
+    if (jsonBody) {
+        let body: Record<string, unknown> | null;
+        try {
+            body = JSON.parse((await readRawRequestBody(req)).toString("utf8")) as Record<string, unknown> | null;
+        }
+        catch {
+            sendJsonErrorResponse(res, 400, "Invalid JSON request body");
+            return true;
+        }
+        rawBody = typeof body?.audioBase64 === "string" ? Buffer.from(body.audioBase64, "base64") : Buffer.alloc(0);
+        if (rawBody.length > ELIZA_CLOUD_STT_MAX_BYTES)
+            rawBody = null;
+    }
+    else {
+        rawBody = await readCappedRequestBody(req, ELIZA_CLOUD_STT_MAX_BYTES);
+    }
     if (rawBody === null) {
         sendJsonErrorResponse(res, 413, "Audio too large");
         return true;
@@ -324,14 +382,13 @@ export async function handleCloudSttRoute(req: http.IncomingMessage, res: http.S
         sendJsonErrorResponse(res, 400, "Missing audio body");
         return true;
     }
-    const contentType = req.headers["content-type"];
-    const mime = typeof contentType === "string" && contentType.trim()
-        ? contentType.split(";", 1)[0]?.trim() || "audio/wav"
-        : "audio/wav";
+    const mime = jsonBody ? "audio/wav" : requestMime;
     const filename = mime.includes("wav") ? "recording.wav" : "recording.bin";
     const cloudUrls = resolveCloudSttCandidateUrls();
     logger.debug(`[Cloud STT] proxying ${rawBody.length}B ${mime} to ${cloudUrls.length} candidate(s)`);
+    const client = cloudProxyClient(req, res);
     try {
+        client.signal.throwIfAborted();
         let lastStatus = 0;
         let lastDetails = "unknown error";
         let cloudResponse: Response | null = null;
@@ -342,9 +399,10 @@ export async function handleCloudSttRoute(req: http.IncomingMessage, res: http.S
             let attempt: Response;
             let warmingRetries = 0;
             for (;;) {
+                client.signal.throwIfAborted();
                 const form = new FormData();
                 form.append("audio", new Blob([new Uint8Array(rawBody)], { type: mime }), filename);
-                const sttSignal = cloudProxyAbortSignal("ELIZAOS_CLOUD_STT_TIMEOUT_MS");
+                const sttSignal = cloudProxyAbortSignal("ELIZAOS_CLOUD_STT_TIMEOUT_MS", client.signal);
                 attempt = await fetch(cloudUrl, {
                     method: "POST",
                     headers: {
@@ -361,7 +419,7 @@ export async function handleCloudSttRoute(req: http.IncomingMessage, res: http.S
                     break;
                 warmingRetries++;
                 logger.warn(`[Cloud STT] authorization cache warming (503), retry ${warmingRetries}/2 after ${waitSeconds}s`);
-                await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+                await delay(waitSeconds * 1000, undefined, { signal: client.signal });
             }
             if (attempt.ok) {
                 cloudResponse = attempt;
@@ -381,6 +439,7 @@ export async function handleCloudSttRoute(req: http.IncomingMessage, res: http.S
             }
         }
         if (!cloudResponse) {
+            client.signal.throwIfAborted();
             logger.warn(`[Cloud STT] upstream failed (${lastStatus || 502})`);
             if (lastStatus === 400 ||
                 lastStatus === 401 ||
@@ -412,13 +471,17 @@ export async function handleCloudSttRoute(req: http.IncomingMessage, res: http.S
             : typeof data?.transcript === "string"
                 ? data.transcript.trim()
                 : "";
+        client.signal.throwIfAborted();
+        forwardCloudSpeechHeaders(cloudResponse, res, "stt");
         logger.debug(`[Cloud STT] transcript ${text.length} chars`);
         sendJsonResponse(res, 200, { text });
         return true;
     }
     catch (err) {
+        if (client.signal.aborted) return true;
         // error-policy:J1 route boundary translates upstream/proxy failures.
         sendJsonErrorResponse(res, 502, `Eliza Cloud STT request failed: ${err instanceof Error ? err.message : String(err)}`);
         return true;
     }
+    finally { client.dispose(); }
 }

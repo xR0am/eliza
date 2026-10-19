@@ -26,6 +26,7 @@ import {
   type UUID,
 } from "@elizaos/core";
 import { sanitizeCompletionRelay } from "@elizaos/plugin-agent-orchestrator";
+import { agentIdentityName } from "../runtime/build-character-config.ts";
 import { generateChatResponse as generateChatResponseFromChatRoutes } from "./chat-routes.ts";
 import { resolveClientChatAdminEntityId } from "./client-chat-admin.ts";
 import type {
@@ -655,8 +656,9 @@ function removeLocalPathReferences(
     titles.push(title);
     const escapedPath = escapeRegExp(attachment.url);
     cleaned = cleaned
-      .replace(new RegExp(`\`${escapedPath}\``, "gu"), title)
-      .replace(new RegExp(escapedPath, "gu"), title);
+      // Function replacers insert the title literally; a string would expand "$&".
+      .replace(new RegExp(`\`${escapedPath}\``, "gu"), () => title)
+      .replace(new RegExp(escapedPath, "gu"), () => title);
   }
 
   const workdirs = payload.tasks
@@ -675,8 +677,8 @@ function removeLocalPathReferences(
     const title = path.basename(resolved);
     const escapedPath = escapeRegExp(localPath);
     cleaned = cleaned
-      .replace(new RegExp(`\`${escapedPath}\``, "gu"), title)
-      .replace(new RegExp(escapedPath, "gu"), title);
+      .replace(new RegExp(`\`${escapedPath}\``, "gu"), () => title)
+      .replace(new RegExp(escapedPath, "gu"), () => title);
   }
 
   const trimmed = cleaned.trim();
@@ -877,6 +879,7 @@ export function wireCoordinatorEventRouting(st: ServerState): boolean {
 
           // Ensure the legacy chat connection exists (creates room/world if needed).
           const agentName = runtime.character.name ?? "Eliza";
+          const identityName = agentIdentityName(runtime.character) ?? "Eliza";
           const existingLegacyChatRoom = st.chatRoomId
             ? await runtime.getRoom(st.chatRoomId).catch(() => null)
             : null;
@@ -886,10 +889,12 @@ export function wireCoordinatorEventRouting(st: ServerState): boolean {
             st.chatUserId = adminId;
             st.chatRoomId =
               st.chatRoomId ??
-              (stringToUuid(`${agentName}-web-chat-room`) as UUID);
-            const worldId = stringToUuid(`${agentName}-web-chat-world`) as UUID;
+              (stringToUuid(`${identityName}-web-chat-room`) as UUID);
+            const worldId = stringToUuid(
+              `${identityName}-web-chat-world`,
+            ) as UUID;
             const messageServerId = stringToUuid(
-              `${agentName}-web-server`,
+              `${identityName}-web-server`,
             ) as UUID;
             await runtime.ensureConnection({
               entityId: adminId,
@@ -897,7 +902,7 @@ export function wireCoordinatorEventRouting(st: ServerState): boolean {
               worldId,
               userName: resolveAppUserName(st.config),
               source: MESSAGE_SOURCE_CLIENT_CHAT,
-              channelId: `${agentName}-web-chat`,
+              channelId: `${identityName}-web-chat`,
               type: ChannelType.DM,
               messageServerId,
               metadata: { ownership: { ownerId: adminId } },

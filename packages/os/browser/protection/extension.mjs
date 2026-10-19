@@ -1,14 +1,16 @@
+import { createProtectionAdvisory } from "./advisory.mjs";
 import {
   downloadThreatFeed,
   exceptionRule,
   installThreatRules,
   parseThreatDomains,
-  validFeedTime,
+  plausibleTime,
 } from "./policy.mjs";
 /** Install one shared protection engine inside a host-owned extension worker. */
 export function installBrowserProtection({
   chrome: chromeApi,
   fetchImpl = globalThis.fetch,
+  advisory,
   feeds,
   warningPage = "warning.html",
   refreshAlarm = "eliza-protection-refresh",
@@ -21,8 +23,10 @@ export function installBrowserProtection({
   const chrome = chromeApi,
     fetch = fetchImpl,
     SOURCES = feeds;
+  const advice = advisory
+    ? createProtectionAdvisory(chrome, { ...advisory, warningPage })
+    : null;
   const HOUR = 3600000;
-  const validTime = (time) => validFeedTime(time);
   async function source(feed) {
     const { body, publishedAt } = await downloadThreatFeed(
       { ...feed, mirror: feed.mirror ?? feed.id === "phishing" },
@@ -30,6 +34,10 @@ export function installBrowserProtection({
     );
     return { domains: [...parseThreatDomains(body)], publishedAt };
   }
+  const installed = (rules, protection) =>
+    protection?.ruleCount > 0 &&
+    rules.filter((r) => r.id >= 10000 && r.id < 12000).length ===
+      protection.ruleCount;
   let refreshing;
   async function refresh() {
     if (refreshing) return refreshing;
@@ -38,13 +46,11 @@ export function installBrowserProtection({
       try {
         ({ protection } = await chrome.storage.local.get("protection"));
         const rules = await chrome.declarativeNetRequest.getDynamicRules();
+        // Age only schedules a refresh; it never makes saved rules unusable.
         if (
-          validTime(protection?.updatedAt) &&
+          plausibleTime(protection?.updatedAt) &&
           protection.updatedAt > Date.now() - 6 * HOUR &&
-          validTime(protection.publishedAt) &&
-          rules.filter((r) => r.id >= 10000 && r.id < 12000).length ===
-            protection.ruleCount &&
-          protection.ruleCount > 0
+          installed(rules, protection)
         )
           return;
         const sources = await Promise.all(SOURCES.map(source));
@@ -63,12 +69,24 @@ export function installBrowserProtection({
           },
         });
       } catch {
-        // Keep last-known deny rules during outages. Never describe stale rules as current.
+        // Keep last-known deny rules during outages. Saved rules count at any
+        // age ("current" means loaded); only missing rules are unavailable.
+        const rules = await chrome.declarativeNetRequest
+          .getDynamicRules()
+          .catch(() => []);
         await chrome.storage.local
-          .set({ protection: { ...protection, status: "unavailable" } })
+          .set({
+            protection: {
+              ...protection,
+              status: installed(rules, protection) ? "current" : "unavailable",
+            },
+          })
           .catch(() => {});
       }
     })().finally(() => {
+      void advice
+        ?.refreshAll()
+        .catch(() => console.warn("Protection advice refresh unavailable"));
       refreshing = null;
     });
     return refreshing;
@@ -140,5 +158,5 @@ export function installBrowserProtection({
   );
   void refresh();
 
-  return { refresh };
+  return { refresh, advisory: advice };
 }

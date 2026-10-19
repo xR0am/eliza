@@ -24,6 +24,7 @@ import {
   isChatFailureKind,
   PatchConversationRequestSchema,
   PostConversationCleanupEmptyRequestSchema,
+  PostConversationMessageHeardRequestSchema,
   PostConversationRequestSchema,
   PostConversationTruncateRequestSchema,
   PostSeedMessagesRequestSchema,
@@ -98,6 +99,7 @@ import {
   parseReplyRecoveryHistorySelection,
   projectToolResultForModel,
   resolvePlannedReplyEgress,
+  setDeviceReadReplyConversation,
   shouldSkipResponseMemoryPersistence,
   withDeviceActionTurn,
 } from "@elizaos/plugin-assistant";
@@ -106,6 +108,7 @@ import {
   isScheduledTask,
   type ScheduledTask,
 } from "@elizaos/plugin-scheduling";
+import { agentIdentityName } from "../runtime/build-character-config.ts";
 import {
   type AgentHttpRequestAuthorization,
   getAgentHostBridge,
@@ -117,6 +120,7 @@ import {
 import {
   deleteConversationMemories,
   deleteConversationMessage,
+  recordHeardAssistantMessage,
   truncateConversationMessages,
 } from "../services/conversation-message-service.ts";
 import {
@@ -148,8 +152,8 @@ import {
   resolveNoResponseFallback,
   resolveTrustedApiPrincipal,
   setChatMessageIdOutcome,
+  withoutLiveRateLimit,
 } from "./chat-routes.ts";
-
 import {
   createChatTokenStreamWriter,
   initSse,
@@ -184,7 +188,6 @@ import {
 } from "./conversation-trace.ts";
 import { deviceRequestCredential } from "./device-action-routes.ts";
 import { resolveHttpAccessContext } from "./http-access-context.ts";
-import { evictOldestConversation } from "./memory-bounds.ts";
 import { generateMessageCorpus, seedMessageCorpus } from "./message-corpus.ts";
 import {
   buildUserMessages,
@@ -667,7 +670,7 @@ function createRequestDisconnectAbortTracker({
  * token, the trusted-local bypass and cookie sessions keep the existing
  * disconnect-as-cancel behavior.
  */
-async function resolvePairedSessionToken(
+export async function resolvePairedSessionToken(
   req: http.IncomingMessage,
   principal: TrustedApiPrincipal,
   runtime: AgentRuntime | null | undefined,
@@ -1328,10 +1331,11 @@ function captureConversationConnection(
   requestFence?: () => void,
 ): ConversationConnectionDescriptor {
   const agentName = runtime.character.name ?? "Eliza";
+  const identityName = agentIdentityName(runtime.character) ?? "Eliza";
   const ownerId = ensureAdminEntityIdForRuntime(state, runtime);
-  const worldId = stringToUuid(`${agentName}-web-chat-world`);
-  const messageServerId = stringToUuid(`${agentName}-web-server`) as UUID;
-  return captureConversationConnectionDescriptor({
+  const worldId = stringToUuid(`${identityName}-web-chat-world`);
+  const messageServerId = stringToUuid(`${identityName}-web-server`) as UUID;
+  const descriptor = captureConversationConnectionDescriptor({
     runtime,
     conversationId: conv.id,
     roomId: conv.roomId,
@@ -1346,6 +1350,8 @@ function captureConversationConnection(
     callerUserName: caller.userName,
     requestFence,
   });
+  setDeviceReadReplyConversation(runtime, conv.id, conv.roomId);
+  return descriptor;
 }
 async function establishConversationConnection(
   descriptor: ConversationConnectionDescriptor,
@@ -2130,7 +2136,7 @@ async function persistDurableConversationChatOutcome(
           scope,
           clientMessageId,
           fingerprint,
-          outcomeJson: JSON.stringify(outcome),
+          outcomeJson: JSON.stringify(withoutLiveRateLimit(outcome)),
         } satisfies DurableConversationChatMarker,
       },
     });
@@ -2733,6 +2739,8 @@ type ConversationRouteMessageRecord = {
   from?: string;
   fromUserName?: string;
   avatarUrl?: string;
+  /** The sender's `clientMessageId`, so a client can find its own turn after a Stop. */
+  clientMessageId?: string;
   replyToMessageId?: string;
   replyToSenderName?: string;
   replyToSenderUserName?: string;
@@ -2989,6 +2997,11 @@ const conversationEndpoints = [
   },
   {
     method: "POST",
+    path: /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/heard$/,
+    handle: recordHeardConversationMessageRoute,
+  },
+  {
+    method: "POST",
     path: /^\/api\/conversations\/[^/]+\/messages\/stream$/,
     handle: streamConversationMessage,
   },
@@ -3102,7 +3115,7 @@ async function searchConversationMessages(
 ): Promise<boolean> {
   const { req, res, json, error, state, requestUrl } = ctx;
   if (!state.runtime) {
-    json(res, { results: [], count: 0 });
+    error(res, "Agent runtime not available", 503);
     return true;
   }
   const query = normalizeMessageSearchQuery(requestUrl.searchParams.get("q"));
@@ -3131,6 +3144,10 @@ async function searchConversationMessages(
   }
   const runtime = state.runtime;
   const waifuAccess = resolveWaifuChatAccess(req);
+  // The room scope below is read from the in-memory conversation list. Wait
+  // for the boot-time restore, or a search during startup would answer "no
+  // matches" for conversations that are not loaded yet.
+  await waitForConversationRestore(state);
   const conversationsByRoomId = new Map<UUID, ConversationMeta>();
   for (const conv of state.conversations.values()) {
     if (state.deletedConversationIds.has(conv.id)) continue;
@@ -3297,7 +3314,6 @@ async function seedConversationMessages(
       updatedAt: new Date(conv.lastMessageAt ?? conv.createdAt).toISOString(),
     });
   }
-  evictOldestConversation(state.conversations, 500);
   logger.info(
     {
       conversations: summary.conversations.length,
@@ -3404,9 +3420,6 @@ async function createConversation(
       return true;
     }
   }
-  // Soft cap: evict the oldest conversation when the map exceeds 500. Runs
-  // only after room setup succeeded so a failed create evicts nothing.
-  evictOldestConversation(state.conversations, 500);
   json(res, { conversation: conv, ...(greeting ? { greeting } : {}) });
   return true;
 }
@@ -3489,7 +3502,6 @@ export async function ensureOwnerConversation(
       }
       throw err;
     }
-    evictOldestConversation(state.conversations, 500);
     state.broadcastWs?.({ type: "conversation-updated", conversation: conv });
     return conv;
   })();
@@ -3546,6 +3558,7 @@ async function listConversationMessages(
       requestUrl.searchParams.get("limit"),
     );
     let hasMore = false;
+    let pageLimit = CONVERSATION_MESSAGE_WINDOW;
     let memories: Memory[];
     if (!aroundParam && beforeParam !== null) {
       const page = await loadConversationMessagesBefore(
@@ -3557,6 +3570,7 @@ async function listConversationMessages(
       );
       memories = page.memories;
       hasMore = page.hasMore;
+      pageLimit = olderLimit;
     } else {
       memories = aroundParam
         ? await loadConversationMessagesAround(
@@ -3569,237 +3583,273 @@ async function listConversationMessages(
             tableName: "messages",
             limit: CONVERSATION_MESSAGE_WINDOW,
           });
+      hasMore = !aroundParam && memories.length === CONVERSATION_MESSAGE_WINDOW;
     }
-    // Sort by createdAt ascending
-    memories.sort(compareMemoriesByCreatedAt);
     const agentId = runtime.agentId;
     // Per-viewer attachment disclosure (#14781): a boundary-role viewer
     // token (WaifuChat, artifact share-viewer) carries a principal; trunk
     // owner tokens match no resolver, so the local dashboard resolves no
     // context and serves the full DTO unchanged.
     const viewerAccessContext = resolveHttpAccessContext(req);
-    const messages = memories
-      // Scheduler instructions are model input, not a user-authored chat turn.
-      // Project them out only here; stored history and assistant replies stay intact.
-      .filter(
-        (m) =>
-          m.entityId === agentId ||
-          m.content.source !== MESSAGE_SOURCE_TRIGGER_PROMPT,
-      )
-      .map((m) => {
-        const contentSource = (m.content as Record<string, unknown>)?.source;
-        const content = m.content as Record<string, unknown>;
-        const meta = m.metadata as Record<string, unknown> | undefined;
-        const entityName = meta?.entityName;
-        const replyToAuthor =
-          meta?.replyToAuthor && typeof meta.replyToAuthor === "object"
-            ? (meta.replyToAuthor as Record<string, unknown>)
-            : null;
-        const normalizedSource =
-          typeof contentSource === "string" &&
-          contentSource.length > 0 &&
-          contentSource !== MESSAGE_SOURCE_CLIENT_CHAT
-            ? contentSource
-            : undefined;
-        const actionName =
-          typeof content.action === "string" && content.action.length > 0
-            ? content.action
-            : undefined;
-        const actionCallbackHistory = normalizeActionCallbackHistory(
-          content.actionCallbackHistory,
-        );
-        const transcriptVisibility =
-          content.transcriptVisibility === "internal"
-            ? ("internal" as const)
-            : undefined;
-        // The failed assistant turn carries its classification on the live
-        // result (`content.failureKind`) or, for synthetic fallbacks, on
-        // `metadata.chatFailureKind` (markSyntheticChatFailureContent). Round
-        // it back so the renderer's provider/credits gate + Retry survive the
-        // GET /messages full-replace instead of vanishing.
-        const rawFailureKind =
-          typeof content.failureKind === "string"
-            ? content.failureKind
-            : typeof meta?.chatFailureKind === "string"
-              ? meta.chatFailureKind
+    // Rows arrive sorted oldest first (see the reads below).
+    const projectMessages = (rows: Memory[]) =>
+      rows
+        // Scheduler instructions are model input, not a user-authored chat turn.
+        // Project them out only here; stored history and assistant replies stay intact.
+        .filter(
+          (m) =>
+            m.entityId === agentId ||
+            m.content.source !== MESSAGE_SOURCE_TRIGGER_PROMPT,
+        )
+        .map((m) => {
+          const contentSource = (m.content as Record<string, unknown>)?.source;
+          const content = m.content as Record<string, unknown>;
+          const meta = m.metadata as Record<string, unknown> | undefined;
+          const entityName = meta?.entityName;
+          const replyToAuthor =
+            meta?.replyToAuthor && typeof meta.replyToAuthor === "object"
+              ? (meta.replyToAuthor as Record<string, unknown>)
+              : null;
+          const normalizedSource =
+            typeof contentSource === "string" &&
+            contentSource.length > 0 &&
+            contentSource !== MESSAGE_SOURCE_CLIENT_CHAT
+              ? contentSource
               : undefined;
-        const legacyNotice =
-          m.entityId === agentId &&
-          content.metadata &&
-          typeof content.metadata === "object" &&
-          "escalation" in content.metadata &&
-          content.metadata.escalation === true &&
-          typeof content.text === "string"
-            ? projectLegacySystemNotice(content.text)
-            : undefined;
-        const systemNotice =
-          m.entityId === agentId
-            ? (readSystemNotice(content.systemNotice) ??
-              legacyNotice?.systemNotice ??
-              (contentSource === "lifeops-scheduled-task" &&
-              typeof content.text === "string" &&
-              isLegacyUnavailableCheckin(content.text)
-                ? "runtime-error"
-                : undefined))
-            : undefined;
-        const failureKind =
-          systemNotice === "model-unavailable" ||
-          systemNotice === "model-and-runtime-error"
-            ? "no_provider"
-            : parseChatFailureKind(rawFailureKind);
-        const terminalFailure = parseChatTerminalFailure(
-          content.terminalFailure,
-        );
-        // The CONNECT_ACCOUNT action stamps `content.accountConnect` on the
-        // assistant memory. Validate + round-trip it so the inline
-        // AddAccountDialog entry point survives the GET /messages replace.
-        const accountConnect = normalizeAccountConnectRequest(
-          content.accountConnect,
-        );
-        const role = m.entityId === agentId ? "assistant" : "user";
-        const userTextFormat =
-          role === "user"
-            ? parseChatUserTextFormat(
-                isRecord(content.metadata)
-                  ? content.metadata.userTextFormat
-                  : undefined,
-              )
-            : undefined;
-        const interrupted = content.interrupted === true;
-        const rawText = formatConversationMessageText(
-          (
-            m.content as {
-              text?: string;
-            }
-          )?.text ?? "",
-          actionCallbackHistory,
-        );
-        // An interrupted receipt may intentionally have no model text. Keep
-        // its exact partial reply; the interruption metadata owns its status.
-        const text =
-          transcriptVisibility === "internal"
-            ? ""
-            : systemNotice
-              ? systemNoticeText(systemNotice)
-              : legacyNotice
-                ? legacyNotice.text
-                : role === "assistant" &&
-                    isIntentionalNoResponseResult(
-                      { responseContent: m.content },
-                      rawText,
-                    )
-                  ? ""
-                  : role === "assistant" && !interrupted
-                    ? normalizeChatResponseText(
+          const actionName =
+            typeof content.action === "string" && content.action.length > 0
+              ? content.action
+              : undefined;
+          const actionCallbackHistory = normalizeActionCallbackHistory(
+            content.actionCallbackHistory,
+          );
+          const transcriptVisibility =
+            content.transcriptVisibility === "internal"
+              ? ("internal" as const)
+              : undefined;
+          // The failed assistant turn carries its classification on the live
+          // result (`content.failureKind`) or, for synthetic fallbacks, on
+          // `metadata.chatFailureKind` (markSyntheticChatFailureContent). Round
+          // it back so the renderer's provider/credits gate + Retry survive the
+          // GET /messages full-replace instead of vanishing.
+          const rawFailureKind =
+            typeof content.failureKind === "string"
+              ? content.failureKind
+              : typeof meta?.chatFailureKind === "string"
+                ? meta.chatFailureKind
+                : undefined;
+          const legacyNotice =
+            m.entityId === agentId &&
+            content.metadata &&
+            typeof content.metadata === "object" &&
+            "escalation" in content.metadata &&
+            content.metadata.escalation === true &&
+            typeof content.text === "string"
+              ? projectLegacySystemNotice(content.text)
+              : undefined;
+          const systemNotice =
+            m.entityId === agentId
+              ? (readSystemNotice(content.systemNotice) ??
+                legacyNotice?.systemNotice ??
+                (contentSource === "lifeops-scheduled-task" &&
+                typeof content.text === "string" &&
+                isLegacyUnavailableCheckin(content.text)
+                  ? "runtime-error"
+                  : undefined))
+              : undefined;
+          const failureKind =
+            systemNotice === "model-unavailable" ||
+            systemNotice === "model-and-runtime-error"
+              ? "no_provider"
+              : parseChatFailureKind(rawFailureKind);
+          const terminalFailure = parseChatTerminalFailure(
+            content.terminalFailure,
+          );
+          // The CONNECT_ACCOUNT action stamps `content.accountConnect` on the
+          // assistant memory. Validate + round-trip it so the inline
+          // AddAccountDialog entry point survives the GET /messages replace.
+          const accountConnect = normalizeAccountConnectRequest(
+            content.accountConnect,
+          );
+          const role = m.entityId === agentId ? "assistant" : "user";
+          const userTextFormat =
+            role === "user"
+              ? parseChatUserTextFormat(
+                  isRecord(content.metadata)
+                    ? content.metadata.userTextFormat
+                    : undefined,
+                )
+              : undefined;
+          // Only a marker bound to this row's own ID names its client turn.
+          const chatMarker =
+            role === "user"
+              ? readDurableConversationChatMarker(content.chatIdempotency)
+              : undefined;
+          const clientMessageId =
+            chatMarker &&
+            conversationClientUserMemoryId(
+              chatMarker.scope,
+              chatMarker.clientMessageId,
+            ) === m.id
+              ? chatMarker.clientMessageId
+              : undefined;
+          const interrupted = content.interrupted === true;
+          const rawText = formatConversationMessageText(
+            (
+              m.content as {
+                text?: string;
+              }
+            )?.text ?? "",
+            actionCallbackHistory,
+          );
+          // An interrupted receipt may intentionally have no model text. Keep
+          // its exact partial reply; the interruption metadata owns its status.
+          const text =
+            transcriptVisibility === "internal"
+              ? ""
+              : systemNotice
+                ? systemNoticeText(systemNotice)
+                : legacyNotice
+                  ? legacyNotice.text
+                  : role === "assistant" &&
+                      isIntentionalNoResponseResult(
+                        { responseContent: m.content },
                         rawText,
-                        state.logBuffer,
-                        runtime,
                       )
-                    : rawText;
-        const attachments = selectAttachmentsForViewer(
-          m,
-          viewerAccessContext,
-          agentId,
-        );
-        const topics =
-          Array.isArray(meta?.topics) && meta.topics.length > 0
-            ? (meta.topics as unknown[]).filter(
-                (topic): topic is string => typeof topic === "string",
-              )
-            : undefined;
-        return {
-          id: m.id ?? "",
-          role,
-          text,
-          ...(userTextFormat ? { userTextFormat } : {}),
-          ...(role === "assistant" &&
-          typeof content.planningAcknowledgment === "string"
-            ? { planningAcknowledgment: content.planningAcknowledgment }
-            : {}),
-          timestamp: m.createdAt ?? 0,
-          ...(content.replyRecoveryAvailable === true
-            ? { replyRecoveryAvailable: true as const }
-            : {}),
-          ...(transcriptVisibility ? { transcriptVisibility } : {}),
-          ...(attachments ? { attachments } : {}),
-          ...(topics && topics.length > 0 ? { topics } : {}),
-          source: normalizedSource,
-          actionName,
-          actionCallbackHistory:
-            actionCallbackHistory.length > 0
-              ? [...actionCallbackHistory]
-              : undefined,
-          from:
-            typeof entityName === "string" && entityName.length > 0
-              ? entityName
-              : undefined,
-          fromUserName:
-            typeof meta?.entityUserName === "string" &&
-            meta.entityUserName.length > 0
-              ? meta.entityUserName
-              : undefined,
-          avatarUrl:
-            typeof meta?.entityAvatarUrl === "string" &&
-            meta.entityAvatarUrl.length > 0
-              ? meta.entityAvatarUrl
-              : undefined,
-          replyToMessageId:
-            typeof content.inReplyTo === "string" &&
-            content.inReplyTo.length > 0
-              ? content.inReplyTo
-              : typeof meta?.replyToMessageId === "string" &&
-                  meta.replyToMessageId.length > 0
-                ? meta.replyToMessageId
+                    ? ""
+                    : role === "assistant" && !interrupted
+                      ? normalizeChatResponseText(
+                          rawText,
+                          state.logBuffer,
+                          runtime,
+                        )
+                      : rawText;
+          const attachments = selectAttachmentsForViewer(
+            m,
+            viewerAccessContext,
+            agentId,
+          );
+          const topics =
+            Array.isArray(meta?.topics) && meta.topics.length > 0
+              ? (meta.topics as unknown[]).filter(
+                  (topic): topic is string => typeof topic === "string",
+                )
+              : undefined;
+          return {
+            id: m.id ?? "",
+            role,
+            text,
+            ...(userTextFormat ? { userTextFormat } : {}),
+            ...(clientMessageId ? { clientMessageId } : {}),
+            ...(role === "assistant" &&
+            typeof content.planningAcknowledgment === "string"
+              ? { planningAcknowledgment: content.planningAcknowledgment }
+              : {}),
+            timestamp: m.createdAt ?? 0,
+            ...(content.replyRecoveryAvailable === true
+              ? { replyRecoveryAvailable: true as const }
+              : {}),
+            ...(transcriptVisibility ? { transcriptVisibility } : {}),
+            ...(attachments ? { attachments } : {}),
+            ...(topics && topics.length > 0 ? { topics } : {}),
+            source: normalizedSource,
+            actionName,
+            actionCallbackHistory:
+              actionCallbackHistory.length > 0
+                ? [...actionCallbackHistory]
                 : undefined,
-          replyToSenderName:
-            typeof meta?.replyToSenderName === "string" &&
-            meta.replyToSenderName.length > 0
-              ? meta.replyToSenderName
-              : typeof replyToAuthor?.displayName === "string" &&
-                  replyToAuthor.displayName.length > 0
-                ? replyToAuthor.displayName
+            from:
+              typeof entityName === "string" && entityName.length > 0
+                ? entityName
+                : undefined,
+            fromUserName:
+              typeof meta?.entityUserName === "string" &&
+              meta.entityUserName.length > 0
+                ? meta.entityUserName
+                : undefined,
+            avatarUrl:
+              typeof meta?.entityAvatarUrl === "string" &&
+              meta.entityAvatarUrl.length > 0
+                ? meta.entityAvatarUrl
+                : undefined,
+            replyToMessageId:
+              typeof content.inReplyTo === "string" &&
+              content.inReplyTo.length > 0
+                ? content.inReplyTo
+                : typeof meta?.replyToMessageId === "string" &&
+                    meta.replyToMessageId.length > 0
+                  ? meta.replyToMessageId
+                  : undefined,
+            replyToSenderName:
+              typeof meta?.replyToSenderName === "string" &&
+              meta.replyToSenderName.length > 0
+                ? meta.replyToSenderName
+                : typeof replyToAuthor?.displayName === "string" &&
+                    replyToAuthor.displayName.length > 0
+                  ? replyToAuthor.displayName
+                  : typeof replyToAuthor?.username === "string" &&
+                      replyToAuthor.username.length > 0
+                    ? replyToAuthor.username
+                    : undefined,
+            replyToSenderUserName:
+              typeof meta?.replyToSenderUserName === "string" &&
+              meta.replyToSenderUserName.length > 0
+                ? meta.replyToSenderUserName
                 : typeof replyToAuthor?.username === "string" &&
                     replyToAuthor.username.length > 0
                   ? replyToAuthor.username
                   : undefined,
-          replyToSenderUserName:
-            typeof meta?.replyToSenderUserName === "string" &&
-            meta.replyToSenderUserName.length > 0
-              ? meta.replyToSenderUserName
-              : typeof replyToAuthor?.username === "string" &&
-                  replyToAuthor.username.length > 0
-                ? replyToAuthor.username
-                : undefined,
-          rawDiscordChannelId: extractConversationMetaString(
-            m,
-            "discordChannelId",
-          ),
-          rawDiscordMessageId: extractConversationMetaString(
-            m,
-            "discordMessageId",
-          ),
-          rawSenderId: extractConversationMetaString(m, "fromId"),
-          senderEntityId:
-            typeof m.entityId === "string" ? m.entityId : undefined,
-          ...(failureKind ? { failureKind } : {}),
-          ...(terminalFailure ? { terminalFailure } : {}),
-          ...(accountConnect ? { accountConnect } : {}),
-          ...(interrupted ? { interrupted: true } : {}),
-        } satisfies ConversationRouteMessageRecord;
-      })
-      // Drop action-log memories that have no visible text (e.g.
-      // plugin action logs with only `thought` / `actions` fields).
-      // Without this filter they appear as blank chat bubbles. Image-only
-      // turns (uploaded or generated media with no caption) are kept.
-      .filter(
-        (m) =>
-          m.text.trim().length > 0 ||
-          (m.attachments?.length ?? 0) > 0 ||
-          // A zero-token interrupted receipt has no text but IS the turn's
-          // terminal state; dropping it would leave the user turn unanswered
-          // on reload and invite regeneration.
-          m.interrupted === true,
+            rawDiscordChannelId: extractConversationMetaString(
+              m,
+              "discordChannelId",
+            ),
+            rawDiscordMessageId: extractConversationMetaString(
+              m,
+              "discordMessageId",
+            ),
+            rawSenderId: extractConversationMetaString(m, "fromId"),
+            senderEntityId:
+              typeof m.entityId === "string" ? m.entityId : undefined,
+            ...(failureKind ? { failureKind } : {}),
+            ...(terminalFailure ? { terminalFailure } : {}),
+            ...(accountConnect ? { accountConnect } : {}),
+            ...(interrupted ? { interrupted: true } : {}),
+          } satisfies ConversationRouteMessageRecord;
+        })
+        // Drop action-log memories that have no visible text (e.g.
+        // plugin action logs with only `thought` / `actions` fields).
+        // Without this filter they appear as blank chat bubbles. Image-only
+        // turns (uploaded or generated media with no caption) are kept.
+        .filter(
+          (m) =>
+            m.text.trim().length > 0 ||
+            (m.attachments?.length ?? 0) > 0 ||
+            // A zero-token interrupted receipt has no text but IS the turn's
+            // terminal state; dropping it would leave the user turn unanswered
+            // on reload and invite regeneration.
+            m.interrupted === true,
+        );
+    memories.sort(compareMemoriesByCreatedAt);
+    let messages = projectMessages(memories);
+    // The projection hides scheduler prompts and textless action logs after the
+    // read, so a window of only those rows came back empty and the client took
+    // it as the start of history. Keep reading older rows until a visible turn
+    // or the start of history. The around window is a fixed read (hasMore stays false).
+    while (messages.length === 0 && hasMore) {
+      // memories is sorted oldest first, so the next page starts below [0].
+      const oldestRead = memories[0];
+      if (!oldestRead?.id || typeof oldestRead.createdAt !== "number") break;
+      const page = await loadConversationMessagesBefore(
+        runtime,
+        conv.roomId,
+        oldestRead.createdAt,
+        pageLimit,
+        oldestRead.id,
       );
+      memories = page.memories.sort(compareMemoriesByCreatedAt);
+      hasMore = page.hasMore;
+      messages = projectMessages(memories);
+    }
     const discordMessages = messages.filter((message) =>
       mayNeedDiscordMessageEnrichment(message.source),
     );
@@ -3977,6 +4027,15 @@ async function importConversation(
       } => m !== null,
     );
   const sourceIds = importMessages.map((message) => message.sourceId);
+  // A lone surrogate cannot be encoded into the deterministic message id.
+  if (sourceIds.some((sourceId) => sourceId && !sourceId.isWellFormed())) {
+    error(
+      res,
+      "Imported message sourceIds must contain well-formed Unicode",
+      400,
+    );
+    return true;
+  }
   const exactImport = sourceIds.length > 0 && sourceIds.every(Boolean);
   if (sourceIds.some(Boolean) && !exactImport) {
     error(res, "Every imported message must include a sourceId", 400);
@@ -4145,9 +4204,6 @@ async function importConversation(
         500,
       );
       return true;
-    }
-    if (createdConversation) {
-      evictOldestConversation(state.conversations, 500);
     }
     if (!exactImport && importTasks.length === 0 && !todoSnapshot) {
       // Legacy imports predate source ids. Preserve their room-level
@@ -4554,6 +4610,119 @@ async function deleteConversationMessageRoute(
               status: number;
             }
           ).status
+        : 500;
+    error(res, getErrorMessage(err), status);
+  } finally {
+    await historyLease.release();
+  }
+  return true;
+}
+/**
+ * `POST /api/conversations/:id/messages/:messageId/heard` keeps only the part
+ * of an assistant reply that the user heard before they interrupted playback.
+ *
+ * Body: `{ heardText }`, non-empty. It must be a prefix of either the stored
+ * reply text or its spoken form (`sanitizeSpeechText` from `@elizaos/core`,
+ * the text TTS speaks); whitespace runs compare as one space. A spoken-form
+ * prefix is stored as the matching stored-text prefix, rounded up to the end
+ * of the word. Anything else is 409; nothing can extend the reply.
+ * Response: `{ ok, messageId, text, truncated, changed }`.
+ */
+async function recordHeardConversationMessageRoute(
+  ctx: ConversationHandlerContext,
+): Promise<boolean> {
+  const { req, res, pathname, readJsonBody, json, error, state } = ctx;
+  const segments = pathname.split("/");
+  const convId = decodePathComponent(segments[3], res, "conversation id");
+  if (convId === null) return true;
+  const rawMessageId = decodePathComponent(
+    segments[5],
+    res,
+    "conversation message id",
+  );
+  if (rawMessageId === null) return true;
+  const messageId = validateUuid(rawMessageId);
+  if (!messageId) {
+    error(res, "Invalid assistant message id", 400);
+    return true;
+  }
+  const conv = await getConversationWithRestore(state, convId);
+  if (!conv) {
+    error(res, "Conversation not found", 404);
+    return true;
+  }
+  if (rejectWaifuConversationAccessIfNeeded(req, conv, error, res)) {
+    return true;
+  }
+  if (rejectWaifuNonAdminMutationIfNeeded(req, error, res)) return true;
+  const rawBody = await readJsonBody<Record<string, unknown>>(req, res);
+  if (rawBody === null) return true;
+  const parsed = PostConversationMessageHeardRequestSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    error(res, parsed.error.issues[0]?.message ?? "Invalid request body", 400);
+    return true;
+  }
+  const runtime = state.runtime;
+  if (!runtime) {
+    error(res, "Agent is not running", 503);
+    return true;
+  }
+  const admission = createRequestDisconnectAbortTracker({
+    req,
+    res,
+    operation: "Conversation heard-text admission",
+  });
+  let historyLease: RoomHandlerLease;
+  try {
+    historyLease = await runtime.roomHandlerQueue.acquire(
+      conv.roomId,
+      admission.signal,
+    );
+  } catch (err) {
+    admission.dispose();
+    if (admission.isAborted()) return true;
+    error(
+      res,
+      isRoomQueueBackpressureError(err)
+        ? "Conversation is busy; retry after the pending turns finish"
+        : `Failed to serialize conversation history: ${getErrorMessage(err)}`,
+      roomQueueAdmissionStatus(err),
+    );
+    return true;
+  }
+  admission.markCompleted();
+  admission.dispose();
+  try {
+    if (
+      state.conversations.get(conv.id) !== conv ||
+      state.deletedConversationIds.has(conv.id)
+    ) {
+      error(res, "Conversation was deleted", 404);
+      return true;
+    }
+    const result = await runtime.roomHandlerQueue.runInLease(
+      conv.roomId,
+      historyLease,
+      () =>
+        recordHeardAssistantMessage(
+          runtime,
+          conv,
+          messageId,
+          parsed.data.heardText,
+        ),
+    );
+    if (result.changed) {
+      conv.updatedAt = new Date().toISOString();
+      state.broadcastWs?.({
+        type: "conversation-updated",
+        conversation: conv,
+      });
+    }
+    json(res, { ok: true, messageId, ...result });
+  } catch (err) {
+    const status =
+      typeof (err as { status?: unknown }).status === "number"
+        ? (err as { status: number }).status
         : 500;
     error(res, getErrorMessage(err), status);
   } finally {
@@ -6940,11 +7109,14 @@ async function patchConversation(
     return true;
   }
   const body = parsedPatch.data;
+  // A title or metadata change is persisted on the conversation's room, so it
+  // needs the runtime: changing only the in-process record would show the
+  // new value until the next restart and then serve the old one.
+  if (!state.runtime) {
+    error(res, "Agent is not running", 503);
+    return true;
+  }
   if (body.generate) {
-    if (!state.runtime) {
-      error(res, "Agent is not running", 503);
-      return true;
-    }
     // Get the last user message to use as the prompt for generation
     let prompt = "A generic conversation";
     const memories = await state.runtime.getMemories({
@@ -7026,7 +7198,7 @@ async function cleanupEmptyConversations(
   await waitForConversationRestore(state);
   const runtime = state.runtime;
   if (!runtime) {
-    json(res, { deleted: [] });
+    error(res, "Agent runtime not available", 503);
     return true;
   }
   const keepId = parsedCleanup.data.keepId;
@@ -7110,6 +7282,13 @@ async function deleteConversation(
   if (convId === null) return true;
   const conv = await getConversationWithRestore(state, convId);
   const runtime = state.runtime;
+  if (conv?.roomId && !runtime) {
+    // The room and its messages can only be deleted through the runtime. A
+    // tombstone without that deletion would hide the conversation until the
+    // tombstone expires and keep its messages in search and the memory feed.
+    error(res, "Agent is not running", 503);
+    return true;
+  }
   if (conv?.roomId && runtime) {
     const deleteConversationAbortTracker = createRequestDisconnectAbortTracker({
       req,

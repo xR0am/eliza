@@ -3,6 +3,24 @@ import { createNativeAccountMethods } from "./account-methods.mjs";
 
 const fail = (message, status = 400, code) =>
   Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
+/**
+ * A 429 with the wait in whole seconds, when it is known: the service's
+ * `Retry-After` delta-seconds, or this host's own resend gate. An HTTP-date or
+ * a malformed value is left out, so a caller never shows an invented time.
+ */
+const tooMany = (message, seconds) =>
+  Object.assign(
+    fail(message, 429),
+    Number.isSafeInteger(seconds) && seconds >= 0
+      ? { retryAfter: seconds }
+      : {},
+  );
+const retryAfterHeader = (response) => {
+  const value = response.headers?.get?.("retry-after")?.trim();
+  return value && /^\d{1,9}$/.test(value) ? Number(value) : undefined;
+};
+const secondsUntil = (time) =>
+  Math.max(0, Math.ceil((time - Date.now()) / 1000));
 const opaque = () => randomBytes(32).toString("base64url");
 const validTime = (value) =>
   typeof value === "string" &&
@@ -72,6 +90,7 @@ export function createNativeCloudAuth({
   messages = {},
   pendingStore,
   activate,
+  activateVerified,
   readActive = async () => null,
   clearActive = async () => {},
   beforeStart = async () => {},
@@ -91,6 +110,8 @@ export function createNativeCloudAuth({
     throw new TypeError(
       "Explicit native application configuration is required",
     );
+  if (activateVerified !== undefined && typeof activateVerified !== "function")
+    throw new TypeError("Verified activation callback must be a function");
   const redirect = new URL(binding.redirectUri);
   if (
     redirect.protocol !== "https:" ||
@@ -132,12 +153,12 @@ export function createNativeCloudAuth({
     check(ticket);
     if (!response.ok) {
       if (response.status === 429)
-        throw fail(
+        throw tooMany(
           message(
             "error2",
             "Too many attempts. Please wait before trying again.",
           ),
-          429,
+          retryAfterHeader(response),
         );
       if (response.status === 400 || response.status === 401)
         throw fail(
@@ -257,6 +278,12 @@ export function createNativeCloudAuth({
       );
     return {
       id: value.id,
+      // Cloud keeps its own user id and names the Auth user separately. A personal
+      // session's subject is the Auth user, so that is the id it must be compared with.
+      authUserId:
+        typeof value.steward_user_id === "string" && value.steward_user_id
+          ? value.steward_user_id
+          : value.id,
       organizationId: value.organization_id,
       email: typeof value.email === "string" ? value.email : null,
       phone: typeof value.phone_number === "string" ? value.phone_number : null,
@@ -315,7 +342,7 @@ export function createNativeCloudAuth({
       verified.id !== expected.account.id ||
       verified.organizationId !== expected.account.organizationId ||
       (expected.purpose === "account" &&
-        personalSessionUser(value.token) !== verified.id)
+        personalSessionUser(value.token) !== verified.authUserId)
     ) {
       clearBilling();
       throw fail(
@@ -364,12 +391,12 @@ export function createNativeCloudAuth({
           "billing_not_enrolled",
         );
       if (billingAttempt && Date.now() < billingAttempt.resendAt)
-        throw fail(
+        throw tooMany(
           message(
             "error28",
             "Please wait a minute before requesting another code.",
           ),
-          429,
+          secondsUntil(billingAttempt.resendAt),
         );
       if (
         input.method !== undefined &&
@@ -540,7 +567,7 @@ export function createNativeCloudAuth({
       latest.token !== expectedToken ||
       original.id !== replacement.id ||
       original.organizationId !== replacement.organizationId ||
-      personalSessionUser(token) !== replacement.id
+      personalSessionUser(token) !== replacement.authUserId
     ) {
       clearBilling();
       throw fail(
@@ -583,7 +610,47 @@ export function createNativeCloudAuth({
         502,
       );
     check(ticket);
-    await activate(pending.proof.secret, () => check(ticket));
+    if (activateVerified) {
+      // Resolve with the newly acknowledged credential itself, not the interactive
+      // Auth session, a decoded token subject, or any renderer-provided identity.
+      const verified = await account(pending.proof.secret, ticket);
+      check(ticket);
+      const owner = Object.freeze({
+        authority: new URL(api).origin,
+        userId: verified.id,
+        organizationId: verified.organizationId,
+      });
+      if (
+        pending.verifiedOwner !== undefined &&
+        (typeof pending.verifiedOwner !== "object" ||
+          pending.verifiedOwner === null ||
+          Object.keys(pending.verifiedOwner).length !== 3 ||
+          Object.entries(owner).some(
+            ([key, value]) => pending.verifiedOwner[key] !== value,
+          ))
+      )
+        throw fail("Saved sign-in owner changed", 409, "account_owner_changed");
+      if (pending.verifiedOwner === undefined) {
+        pending.verifiedOwner = owner;
+        const saved = JSON.stringify(pending);
+        await pendingStore.write(saved);
+        check(ticket);
+        if ((await pendingStore.read()) !== saved)
+          throw fail("Verified sign-in receipt was not stored", 503);
+        check(ticket);
+      }
+      await activateVerified(
+        Object.freeze({
+          version: 1,
+          credential: pending.proof.secret,
+          credentialId: pending.proof.credentialId,
+          owner,
+        }),
+        () => check(ticket),
+      );
+    } else {
+      await activate(pending.proof.secret, () => check(ticket));
+    }
     check(ticket);
     await pendingStore.clear();
     check(ticket);
@@ -591,7 +658,15 @@ export function createNativeCloudAuth({
     // The session that just minted this credential is also current billing authority.
     if (session && scope === billingScope)
       retainBilling(session, pending.proof.secret);
-    return { status: "authenticated", connected: true };
+    // Cloud says whether this sign-in made the account. A sign-in saved before
+    // Cloud sent this fact has no flag, and the reply then has no `created`.
+    return {
+      status: "authenticated",
+      connected: true,
+      ...(typeof pending.accountCreated === "boolean"
+        ? { created: pending.accountCreated }
+        : {}),
+    };
   }
   async function exchange(value, ticket, scope) {
     if (value.mfaRequired === true) {
@@ -688,6 +763,10 @@ export function createNativeCloudAuth({
         credentialId: credential.credentialId,
         secret: credential.secret,
       },
+      // Kept with the receipt, so a resumed acknowledgement reports it too.
+      ...(typeof grant.accountCreated === "boolean"
+        ? { accountCreated: grant.accountCreated }
+        : {}),
     };
     check(ticket);
     await pendingStore.write(JSON.stringify(pending));
@@ -931,12 +1010,12 @@ export function createNativeCloudAuth({
           )
             throw fail(message("error27", "Enter a valid email address."));
           if (attempt && Date.now() < attempt.resendAt)
-            throw fail(
+            throw tooMany(
               message(
                 "error28",
                 "Please wait a minute before requesting another code.",
               ),
-              429,
+              secondsUntil(attempt.resendAt),
             );
           await config(ticket);
           await beforeStart();

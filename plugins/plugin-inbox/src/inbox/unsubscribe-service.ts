@@ -175,9 +175,18 @@ function parseMailtoUnsubscribe(value: string): {
   if (!recipient) {
     return null;
   }
-  const params = new URLSearchParams(queryPart);
-  const subject = params.get("subject");
-  const body = params.get("body");
+  // RFC 6068: "+" in a mailto URI is the character "+", and a header field
+  // name is case-insensitive. URLSearchParams reads "+" as a space, which
+  // damages an unsubscribe token, so each "+" is protected first.
+  const params = new URLSearchParams(queryPart.replaceAll("+", "%2B"));
+  const headerField = (name: string): string | null => {
+    for (const [fieldName, fieldValue] of params) {
+      if (fieldName.toLowerCase() === name) return fieldValue;
+    }
+    return null;
+  };
+  const subject = headerField("subject");
+  const body = headerField("body");
   return {
     recipient,
     subject: subject?.trim() ? subject : null,
@@ -464,6 +473,20 @@ export class InboxUnsubscribeService {
     let errorMessage: string | null = null;
 
     try {
+      // Validate every requested Gmail mutation before the unsubscribe effect.
+      // Otherwise an HTTP or mailto unsubscribe can succeed, then a missing
+      // manage grant turns the combined request into a recorded failure. A
+      // caller may retry that false failure and repeat the irreversible effect.
+      if (
+        (request.blockAfter || request.trashExisting) &&
+        !grant.capabilities.includes("google.gmail.manage")
+      ) {
+        fail(
+          403,
+          "Blocking or trashing subscription email requires Gmail manage access.",
+        );
+      }
+
       if (sender.unsubscribeHttpUrl) {
         const http = await performHttpUnsubscribe({
           url: sender.unsubscribeHttpUrl,
@@ -487,15 +510,6 @@ export class InboxUnsubscribeService {
         status = "succeeded";
       }
 
-      if (request.blockAfter || request.trashExisting) {
-        if (!grant.capabilities.includes("google.gmail.manage")) {
-          fail(
-            403,
-            "Blocking or trashing subscription email requires Gmail manage access.",
-          );
-        }
-      }
-
       if (request.blockAfter) {
         const filter = await this.gmail.createGmailFilterForSender(
           accountId,
@@ -503,7 +517,8 @@ export class InboxUnsubscribeService {
         );
         filterCreated = true;
         filterId = filter.filterId;
-        status = "succeeded";
+        // A filter hides later mail; it does not undo a failed unsubscribe.
+        if (status !== "failed") status = "succeeded";
       }
 
       if (request.trashExisting) {
@@ -512,7 +527,7 @@ export class InboxUnsubscribeService {
           await this.gmail.trashGmailThread(accountId, threadId);
           threadsTrashed += 1;
         }
-        if (threadIds.length > 0) {
+        if (threadIds.length > 0 && status !== "failed") {
           status = "succeeded";
         }
       }

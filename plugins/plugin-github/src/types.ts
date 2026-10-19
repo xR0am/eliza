@@ -44,6 +44,8 @@ type GitHubReviewResult = {
 type GitHubIssueResult = {
   number: number;
   html_url: string;
+  labels?: Array<GitHubLabelSummary | null> | null;
+  assignees?: Array<GitHubUserSummary | null> | null;
 };
 
 type GitHubAssigneesResult = {
@@ -206,5 +208,4 @@ export interface RateLimitError {
 export interface BaseActionOptions {
   as?: GitHubIdentity;
   accountId?: string;
-  confirmed?: boolean;
 }

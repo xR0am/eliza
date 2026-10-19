@@ -44,6 +44,7 @@ import {
   isTextGenerationModelType,
   type AgentLogEntry as LogEntry,
   MESSAGE_SOURCE_CLIENT_CHAT,
+  type Media,
   type Memory,
   type MessageReplyRecoveryContext,
   ModelType,
@@ -84,6 +85,7 @@ import {
   persistInferenceTimingSummary,
   shouldSkipResponseMemoryPersistence,
 } from "@elizaos/plugin-assistant";
+import { agentIdentityName } from "../runtime/build-character-config.ts";
 import type { AgentHttpRequestAuthorization } from "../runtime/host-bridge.ts";
 import {
   type CapturedModelUsage,
@@ -139,13 +141,11 @@ import {
   resolveAppUserName,
   validateChatImages,
 } from "./server-helpers.ts";
-
 import {
   isAuthorized,
   isServerTokenAuthorized,
 } from "./server-helpers-auth.ts";
 import { readUiLanguageHeader } from "./server-helpers-config.ts";
-
 import { listViews } from "./views-registry.ts";
 import { updateWorldMetadataWithRetry } from "./world-metadata-retry.ts";
 
@@ -360,13 +360,29 @@ export function getChatMessageIdFirstSeenAt(
  * after that result is durable; a retry can then replay this exact outcome
  * without starting another model turn or borrowing a neighboring turn.
  */
+/**
+ * A provider wait counts from the failed attempt, so an idempotent replay must
+ * not repeat it. Replays keep the typed failure without `rateLimit`.
+ */
+export function withoutLiveRateLimit(
+  outcome: ChatMessageIdOutcome,
+): ChatMessageIdOutcome {
+  if (!outcome.terminalFailure?.rateLimit) return outcome;
+  const { rateLimit: _rateLimit, ...terminalFailure } = outcome.terminalFailure;
+  return { ...outcome, terminalFailure };
+}
 export function setChatMessageIdOutcome(
   scope: string,
   clientMessageId: string | null,
   outcome: ChatMessageIdOutcome,
   reservation: ChatMessageIdReservation | null,
 ): void {
-  chatIdempotency.settle(scope, clientMessageId, outcome, reservation);
+  chatIdempotency.settle(
+    scope,
+    clientMessageId,
+    withoutLiveRateLimit(outcome),
+    reservation,
+  );
 }
 /** Return the durable outcome bound to an exact idempotency key, if settled. */
 export function getChatMessageIdOutcome(
@@ -1069,7 +1085,14 @@ function buildRuntimeActionNameLookup(
   }
   return lookup;
 }
-function readRuntimeActionResults(
+/**
+ * Returns the action results recorded for `messageId`, or `[]` when the caller
+ * asked about no message or the runtime exposes no reader. A reader that throws
+ * rejects with `ElizaError` (`ACTION_RESULTS_READ_FAILED`) rather than
+ * resolving `[]`: downstream `[]` means "no action succeeded", so a failed read
+ * would be reported as unexecuted model actions instead of a read failure.
+ */
+export function readRuntimeActionResults(
   runtime: AgentRuntime,
   messageId: UUID | undefined,
 ): unknown[] {
@@ -1085,9 +1108,18 @@ function readRuntimeActionResults(
     return [];
   }
   try {
-    return getActionResults(messageId);
-  } catch {
-    return [];
+    // AgentRuntime.getActionResults reads `this.stateCache`; keep the receiver.
+    return getActionResults.call(runtime, messageId);
+  } catch (error) {
+    // error-policy:J2 context-adding rethrow — downstream `[]` means "no
+    // action succeeded", so swallowing a read failure would make the route
+    // fail a completed turn closed with a false "actions were not executed"
+    // reply instead of reporting the read failure.
+    throw new ElizaError("Failed to read action results for message", {
+      code: "ACTION_RESULTS_READ_FAILED",
+      cause: error,
+      context: { messageId },
+    });
   }
 }
 function readActionResultName(result: unknown): string {
@@ -1337,7 +1369,12 @@ function resolveChatGenerationTimeoutMs(explicit?: number): number {
   }
   const fromEnv = readAliasedEnv("ELIZA_CHAT_GENERATION_TIMEOUT_MS");
   if (fromEnv) {
-    const parsed = Number.parseInt(fromEnv, 10);
+    // Number.parseInt stops at the first non-digit, so "60000junk" parsed to
+    // a finite 60000 and was accepted as a deliberate setting instead of
+    // falling back to the default. Require the whole trimmed value to be
+    // decimal, mirroring resolveGenerationTimeoutMs in the discord plugin.
+    const text = fromEnv.trim();
+    const parsed = /^\+?\d+$/.test(text) ? Number(text) : Number.NaN;
     if (Number.isFinite(parsed) && parsed > 0) {
       return Math.max(1000, parsed);
     }
@@ -2402,6 +2439,7 @@ async function generateChatResponseWithTiming(
     let blockedUnexecutedActionPayload = false;
     let activeStreamSource: StreamSource = "unset";
     let visibleCallbackDeliveries = 0;
+    const deliveredActionAttachments: Media[] = [];
     const deliveredActionCallbacks: Array<{
       actionName: string;
       text?: string;
@@ -2699,6 +2737,9 @@ async function generateChatResponseWithTiming(
                       : chunk;
                     const attributedActionName =
                       normalizeActionName(actionName);
+                    if (attributedActionName && content.attachments?.length) {
+                      deliveredActionAttachments.push(...content.attachments);
+                    }
                     const progressCallback = isProgressActionCallback(content);
                     if (!visibleChunk) {
                       if (attributedActionName) {
@@ -3215,6 +3256,14 @@ async function generateChatResponseWithTiming(
             const content = {
               ...result.responseContent,
               text: finalText,
+              ...(deliveredActionAttachments.length > 0
+                ? {
+                    attachments: [
+                      ...(result.responseContent.attachments ?? []),
+                      ...deliveredActionAttachments,
+                    ],
+                  }
+                : {}),
               ...(terminalFailureKind
                 ? { failureKind: terminalFailureKind }
                 : {}),
@@ -3241,6 +3290,9 @@ async function generateChatResponseWithTiming(
         : finalText
           ? ({
               text: finalText,
+              ...(deliveredActionAttachments.length > 0
+                ? { attachments: [...deliveredActionAttachments] }
+                : {}),
               ...(terminalFailureKind
                 ? { failureKind: terminalFailureKind }
                 : {}),
@@ -3561,7 +3613,8 @@ export function resolveChatAdminEntityId(state: ChatRouteState): UUID {
 export async function ensureCompatChatConnection(
   state: ChatRouteState,
   runtime: AgentRuntime,
-  agentName: string,
+  /** agentIdentityName(runtime.character): stays the same after a rename. */
+  identityName: string,
   channelIdPrefix: string,
   roomKey: string,
   principal: TrustedApiPrincipal,
@@ -3575,16 +3628,16 @@ export async function ensureCompatChatConnection(
   const userId = ownerPrincipal
     ? ensureAdminEntityIdForChat(state)
     : (stringToUuid(
-        `${agentName}:${channelIdPrefix}:external:${principal.principalId}`,
+        `${identityName}:${channelIdPrefix}:external:${principal.principalId}`,
       ) as UUID);
   const principalScopedRoomKey = ownerPrincipal
     ? roomKey
     : `${principal.kind}:${principal.principalId}:${roomKey}`;
   const roomId = stringToUuid(
-    `${agentName}-${channelIdPrefix}-room-${principalScopedRoomKey}`,
+    `${identityName}-${channelIdPrefix}-room-${principalScopedRoomKey}`,
   ) as UUID;
-  const worldId = stringToUuid(`${agentName}-web-chat-world`) as UUID;
-  const messageServerId = stringToUuid(`${agentName}-web-server`) as UUID;
+  const worldId = stringToUuid(`${identityName}-web-chat-world`) as UUID;
+  const messageServerId = stringToUuid(`${identityName}-web-server`) as UUID;
   await runtime.ensureConnection({
     entityId: userId,
     roomId,
@@ -3898,7 +3951,7 @@ export async function handleChatRoutes(
         {
           const runtime = state.runtime;
           if (!runtime) throw new Error("Agent is not running");
-          const agentName = runtime.character.name ?? "Eliza";
+          const agentName = agentIdentityName(runtime.character) ?? "Eliza";
           const { userId, roomId } = await ensureCompatChatConnection(
             state,
             runtime,
@@ -4046,7 +4099,7 @@ export async function handleChatRoutes(
           return true;
         }
         const runtime = state.runtime;
-        const agentName = runtime.character.name ?? "Eliza";
+        const agentName = agentIdentityName(runtime.character) ?? "Eliza";
         const { userId, roomId } = await ensureCompatChatConnection(
           state,
           runtime,
@@ -4292,7 +4345,7 @@ export async function handleChatRoutes(
         {
           const runtime = state.runtime;
           if (!runtime) throw new Error("Agent is not running");
-          const agentName = runtime.character.name ?? "Eliza";
+          const agentName = agentIdentityName(runtime.character) ?? "Eliza";
           const { userId, roomId } = await ensureCompatChatConnection(
             state,
             runtime,
@@ -4431,7 +4484,7 @@ export async function handleChatRoutes(
           return true;
         }
         const runtime = state.runtime;
-        const agentName = runtime.character.name ?? "Eliza";
+        const agentName = agentIdentityName(runtime.character) ?? "Eliza";
         const { userId, roomId } = await ensureCompatChatConnection(
           state,
           runtime,
@@ -4572,7 +4625,7 @@ export async function handleChatRoutes(
     }
     try {
       const runtime = state.runtime;
-      const agentName = runtime.character.name ?? "Eliza";
+      const agentName = agentIdentityName(runtime.character) ?? "Eliza";
       const messagePrincipal: TrustedApiPrincipal =
         trustedApiPrincipal.kind === "service_gateway"
           ? {

@@ -13,12 +13,34 @@ export async function createConfiguredBillHelper({
   runtimeModule,
   credentialGate,
   evidenceDirectory,
+  evidenceCodec,
   environment = process.env,
   onUnavailable = () => {},
   googleReadPort,
   documentRuntime,
   documentImages,
 }) {
+  // Optional host encoding of each evidence record (for example, encryption
+  // under a host-held key). The record file is `<id><extension>`.
+  if (
+    evidenceCodec !== undefined &&
+    (!evidenceCodec ||
+      typeof evidenceCodec.encode !== "function" ||
+      !/^\.[a-z0-9]{1,16}$/.test(evidenceCodec.extension ?? ""))
+  )
+    throw new BillHostError("Invalid bill evidence codec");
+  const evidenceFile = (id, record) => {
+    const text = `${JSON.stringify(record)}\n`;
+    if (!evidenceCodec)
+      return { path: join(evidenceDirectory, `${id}.json`), text };
+    const encoded = evidenceCodec.encode(text);
+    if (typeof encoded !== "string" || !encoded)
+      throw new BillHostError("Invalid bill evidence codec");
+    return {
+      path: join(evidenceDirectory, `${id}${evidenceCodec.extension}`),
+      text: encoded,
+    };
+  };
   const readback =
     hostPolicy.reconcileMethod != null ||
     hostPolicy.reconciliationEvidenceRecord != null;
@@ -30,6 +52,16 @@ export async function createConfiguredBillHelper({
   )
     throw new BillHostError("Incomplete bill reconciliation policy");
   const config = hostPolicy.validateConfiguration(configuration);
+  // Optional emailed sign-in codes: the reviewed provider parser and
+  // challenge reader come from host policy; reads use the same Google port.
+  const googleCode = hostPolicy.googleCode;
+  if (
+    googleCode != null &&
+    (!config.googleSource ||
+      typeof googleCode.challengeForBill !== "function" ||
+      typeof googleCode.parse !== "function")
+  )
+    throw new BillHostError("Incomplete Google verification configuration");
   const controls = validateBillControls(config.controls);
   const extraction = config.googleSource?.extractionProfile
     ? createLabelledBillExtractor(config.googleSource.extractionProfile)
@@ -84,6 +116,40 @@ export async function createConfiguredBillHelper({
     )
       throw new Error("Unconfigured bill task");
   };
+  // A configured grantId is fixed. Otherwise each task epoch reads the Google
+  // account that was connected when it first searched, and every read checks
+  // that this is still the connected account.
+  const grants = new Map();
+  const bindGrant = async (task) => {
+    requireTask(task);
+    const bound = grants.get(task.id);
+    if (bound?.epoch === task.epoch) return bound;
+    if (
+      typeof googleReadPort.currentAccount !== "function" &&
+      typeof googleReadPort.currentAccountId !== "function"
+    )
+      throw new BillHostError("Google account binding unavailable");
+    // The connected account's address, when the port reports it, lets bill
+    // search say that another account is connected.
+    const account =
+      typeof googleReadPort.currentAccount === "function"
+        ? await googleReadPort.currentAccount()
+        : { accountId: await googleReadPort.currentAccountId() };
+    const current = grants.get(task.id);
+    if (current?.epoch === task.epoch) return current;
+    const entry = {
+      epoch: task.epoch,
+      accountId: account.accountId,
+      ...(typeof account.email === "string" ? { email: account.email } : {}),
+    };
+    grants.set(task.id, entry);
+    return entry;
+  };
+  const grantForTask = async (task) => {
+    requireTask(task);
+    if (config.googleSource.grantId) return config.googleSource.grantId;
+    return (await bindGrant(task)).accountId;
+  };
   let host;
   let closing;
   const close = () => {
@@ -132,21 +198,52 @@ export async function createConfiguredBillHelper({
                   }
                 : {}),
               scopeForTask: async (task) => {
-                requireTask(task);
                 const source = config.googleSource;
+                const accountId = await grantForTask(task);
+                const email = source.grantId
+                  ? undefined
+                  : (await bindGrant(task)).email;
+                // A fixed range stops finding bills that arrive after it.
+                // `windowDays` searches the last days up to now; `after`
+                // remains an optional earliest time.
+                const now = Date.now();
+                const window =
+                  source.windowDays === undefined
+                    ? { after: source.after, before: source.before }
+                    : {
+                        after: Math.max(
+                          source.after ?? 0,
+                          now - source.windowDays * 24 * 60 * 60 * 1000,
+                        ),
+                        before: now + 60 * 1000,
+                      };
                 return {
-                  accountId: source.grantId,
+                  accountId,
+                  ...(email ? { accountEmail: email } : {}),
                   billingAccountRef: source.billingAccountRef,
                   recipient: source.recipient,
                   senders: source.senders,
                   searchQuery: source.query,
-                  after: source.after,
-                  before: source.before,
+                  ...window,
                   company: config.bill.company,
                   accountLabel: config.bill.accountLabel,
                   providerOrigin: config.bill.origin,
                 };
               },
+            },
+          }
+        : {}),
+      ...(googleCode
+        ? {
+            google: {
+              service: googleReadPort,
+              parse: googleCode.parse,
+              challengeForBill: googleCode.challengeForBill,
+              accountForTask: grantForTask,
+              // Uncached, to name why a code search failed.
+              ...(typeof googleReadPort.currentAccountId === "function"
+                ? { checkAccount: () => googleReadPort.currentAccountId() }
+                : {}),
             },
           }
         : {}),
@@ -170,11 +267,11 @@ export async function createConfiguredBillHelper({
                 ...input,
                 status: result.status,
               });
-              await writeFile(
-                join(evidenceDirectory, `${id}.json`),
-                `${JSON.stringify(record)}\n`,
-                { mode: 0o600, flag: "wx" },
-              );
+              const file = evidenceFile(id, record);
+              await writeFile(file.path, file.text, {
+                mode: 0o600,
+                flag: "wx",
+              });
               return {
                 status: result.status,
                 evidenceRef: `${hostPolicy.evidenceNamespace}:${id}`,
@@ -192,11 +289,8 @@ export async function createConfiguredBillHelper({
           after,
           status,
         });
-        await writeFile(
-          join(evidenceDirectory, `${id}.json`),
-          `${JSON.stringify(record)}\n`,
-          { mode: 0o600, flag: "wx" },
-        );
+        const file = evidenceFile(id, record);
+        await writeFile(file.path, file.text, { mode: 0o600, flag: "wx" });
         return `${hostPolicy.evidenceNamespace}:${id}`;
       },
     });
@@ -225,6 +319,41 @@ export async function createConfiguredBillHelper({
       )
         return null;
       return hostPolicy.describeHelper(config);
+    },
+    /**
+     * The page open in the configured browser profile: HTTPS origin and a
+     * complete title only (see NativeSocketBrowserTarget.currentPage).
+     * The title is untrusted website text. Null for another owner, a changed
+     * account or profile, a closed helper, an older browser, or an unknown
+     * page. It is conversation context, never task authority.
+     */
+    async currentPage(owner) {
+      const current = () =>
+        !closing &&
+        owner?.actorId === config.actorId &&
+        native.getProfileId() === config.profileId;
+      if (
+        !current() ||
+        typeof native.currentPage !== "function" ||
+        (await credentialGate()) !== config.actorId ||
+        !current()
+      )
+        return null;
+      let page;
+      try {
+        page = await native.currentPage();
+      } catch {
+        // error-policy:J1 An unreadable page is reported as unknown, never guessed.
+        return null;
+      }
+      if (
+        !current() ||
+        !page ||
+        (await credentialGate()) !== config.actorId ||
+        !current()
+      )
+        return null;
+      return { origin: page.origin, title: page.title };
     },
     close,
   };

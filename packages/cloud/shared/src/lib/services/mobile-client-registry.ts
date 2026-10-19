@@ -4,10 +4,19 @@ export interface RegisteredMobileClient {
   appId: string;
   redirectUri: string;
   enabled: boolean;
+  /**
+   * Lifetime of the `eliza_mobile_` credential this client receives. Optional;
+   * the service default (30 days) applies when absent. Bounded to 90 days so a
+   * registry edit can never mint an effectively permanent key.
+   */
+  credentialTtlSeconds?: number;
 }
 export type MobileClientSelection =
   | { ok: true; registration: RegisteredMobileClient }
   | { ok: false; code: "invalid_client" | "server_configuration_error" };
+export const MOBILE_CLIENT_MIN_CREDENTIAL_TTL_SECONDS = 24 * 60 * 60;
+export const MOBILE_CLIENT_MAX_CREDENTIAL_TTL_SECONDS = 90 * 24 * 60 * 60;
+const REGISTRATION_KEYS = ["clientId", "appId", "redirectUri", "enabled", "credentialTtlSeconds"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function selectRegisteredMobileClient(
@@ -36,9 +45,7 @@ export function selectRegisteredMobileClient(
       !item ||
       typeof item !== "object" ||
       Array.isArray(item) ||
-      Object.keys(item).some(
-        (key) => !["clientId", "appId", "redirectUri", "enabled"].includes(key),
-      ) ||
+      Object.keys(item).some((key) => !REGISTRATION_KEYS.includes(key)) ||
       typeof item.clientId !== "string" ||
       !/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_-]*)+$/.test(item.clientId) ||
       item.clientId.length > 200 ||
@@ -46,7 +53,12 @@ export function selectRegisteredMobileClient(
       !UUID.test(item.appId) ||
       typeof item.redirectUri !== "string" ||
       item.redirectUri.length > 2_000 ||
-      typeof item.enabled !== "boolean"
+      typeof item.enabled !== "boolean" ||
+      (item.credentialTtlSeconds !== undefined &&
+        (typeof item.credentialTtlSeconds !== "number" ||
+          !Number.isInteger(item.credentialTtlSeconds) ||
+          item.credentialTtlSeconds < MOBILE_CLIENT_MIN_CREDENTIAL_TTL_SECONDS ||
+          item.credentialTtlSeconds > MOBILE_CLIENT_MAX_CREDENTIAL_TTL_SECONDS))
     )
       return { ok: false, code: "server_configuration_error" };
     let url: URL;
@@ -72,7 +84,17 @@ export function selectRegisteredMobileClient(
     clients.add(item.clientId);
     apps.add(item.appId.toLowerCase());
     redirects.add(item.redirectUri);
-    if (item.clientId === clientId && item.enabled) selected = item;
+    if (item.clientId === clientId && item.enabled) {
+      selected = {
+        clientId: item.clientId,
+        appId: item.appId,
+        redirectUri: item.redirectUri,
+        enabled: item.enabled,
+        ...(item.credentialTtlSeconds !== undefined
+          ? { credentialTtlSeconds: item.credentialTtlSeconds }
+          : {}),
+      };
+    }
   }
   return selected ? { ok: true, registration: selected } : { ok: false, code: "invalid_client" };
 }

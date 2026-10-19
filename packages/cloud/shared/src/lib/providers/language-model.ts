@@ -11,6 +11,7 @@ import {
   isGroqNativeModel,
   isVastNativeModel,
 } from "../models";
+import { observeCerebrasFetch } from "../observability/cloud-backend-observability";
 import { getCloudBinding } from "../runtime/cloud-bindings";
 import type { SharedModelCallSelection } from "../services/shared-runtime/shared-runtime-timing";
 import type { PooledDirectProvider } from "../services/team-credential-pool/provider-map";
@@ -161,6 +162,7 @@ function getCerebrasClient() {
     cerebrasClient = createOpenAI({
       apiKey,
       baseURL: "https://api.cerebras.ai/v1",
+      fetch: observeCerebrasFetch as typeof fetch,
     });
   }
 
@@ -206,7 +208,12 @@ function getOpenRouterClient() {
  * router when BitRouter is not configured.
  */
 function getOpenRouterLanguageModel(model: string) {
-  return getOpenRouterClient().chat(toBitRouterModelId(model));
+  // `openrouter:<id>` forces OpenRouter (see pricing.ts); the prefix is ours,
+  // not part of the OpenRouter model id.
+  const openRouterModel = model.startsWith("openrouter:")
+    ? model.slice("openrouter:".length)
+    : model;
+  return getOpenRouterClient().chat(toBitRouterModelId(openRouterModel));
 }
 
 const CEREBRAS_OPENROUTER_FALLBACK_MODELS: Readonly<Record<string, string>> = {
@@ -835,13 +842,14 @@ export function getInteractiveCerebrasLanguageModel(
 
 /**
  * True for OpenRouter-catalog ids that NO native provider can serve directly —
- * routing-suffix variants (`:nitro`/`:floor`), the free tier, and `openai/gpt-oss-120b`
+ * forced `openrouter:` ids, routing-suffix variants (`:nitro`/`:floor`), the free tier, and `openai/gpt-oss-120b`
  * (an OpenRouter id, not an OpenAI-API model). These must go to the OpenRouter
  * backup even though they carry an `openai/` prefix.
  */
 function requiresGatewayRouting(model: string): boolean {
   const catalogModel = toBitRouterModelId(model);
   return (
+    model.startsWith("openrouter:") ||
     catalogModel === BITROUTER_NITRO_TEXT_MODEL ||
     catalogModel === BITROUTER_DEFAULT_FREE_MODEL ||
     catalogModel === "openai/gpt-oss-120b" ||

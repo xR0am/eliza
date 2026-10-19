@@ -192,10 +192,14 @@ function resolveDueAt(
   if (Number.isNaN(base.getTime())) return null;
   const { year, month, day } = getZonedDateParts(base, timeZone);
   const observedDay: LocalDate = { year, month, day };
-  if (/\btomorrow\b/i.test(text)) {
-    return dueAtOnLocalDate(addDaysToLocalDate(observedDay, 1), timeZone);
-  }
   const weekdayNames = WEEKDAYS.join("|");
+  const tomorrow = () =>
+    dueAtOnLocalDate(addDaysToLocalDate(observedDay, 1), timeZone);
+  // A plain "tomorrow" is the committed day, even when a "by"/"before"
+  // weekday elsewhere in the sentence gives context. The possessive
+  // ("tomorrow's agenda") names a thing, not a day, so it only counts when
+  // the sentence names no weekday at all.
+  if (/\btomorrow\b(?!['’]s)/i.test(text)) return tomorrow();
   // "by Friday ... on Monday" is a Friday deadline. A later "on"/"next"
   // day must not override an earlier "by"/"before" day.
   const deadlineWeekday = [
@@ -208,13 +212,13 @@ function resolveDueAt(
       new RegExp(`\\b(?:on|next)\\s+(${weekdayNames})\\b`, "gi"),
     ),
   ].at(-1)?.[1];
-  const weekday =
+  const dueDay =
     deadlineWeekday ??
     scheduledWeekday ??
     text.match(new RegExp(`\\b(${weekdayNames})\\b`, "i"))?.[1];
-  if (!weekday) return null;
+  if (!dueDay) return /\btomorrow\b/i.test(text) ? tomorrow() : null;
   const target = WEEKDAYS.indexOf(
-    weekday.toLowerCase() as (typeof WEEKDAYS)[number],
+    dueDay.toLowerCase() as (typeof WEEKDAYS)[number],
   );
   const delta = (target - getWeekdayForLocalDate(observedDay) + 7) % 7 || 7;
   return dueAtOnLocalDate(addDaysToLocalDate(observedDay, delta), timeZone);

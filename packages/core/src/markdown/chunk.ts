@@ -64,7 +64,7 @@ export function chunkText(text: string, limit: number): string[] {
 			breakIdx = limit;
 		}
 
-		breakIdx = avoidSurrogateSplit(remaining, breakIdx);
+		breakIdx = avoidGraphemeSplit(remaining, breakIdx);
 
 		const rawChunk = remaining.slice(0, breakIdx);
 		const chunk = rawChunk.trimEnd();
@@ -260,14 +260,14 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
 					: undefined;
 		}
 
-		breakIdx = avoidSurrogateSplit(remaining, breakIdx);
+		breakIdx = avoidGraphemeSplit(remaining, breakIdx);
 		if (fenceToSplit && breakIdx < minimumFenceProgress) {
-			// A surrogate-safe backoff can move the cut before the first byte of
+			// A grapheme-safe backoff can move the cut before the first byte of
 			// fence content. Closing and reopening there would consume only the
 			// opening line and prepend that same line forever. Preserve progress by
 			// taking the existing hard-cap fallback without synthetic fence lines.
 			fenceToSplit = undefined;
-			breakIdx = avoidSurrogateSplit(remaining, limit);
+			breakIdx = avoidGraphemeSplit(remaining, limit);
 		}
 
 		const closer = fenceToSplit
@@ -325,6 +325,52 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
 		chunks.push(remaining);
 	}
 	return chunks;
+}
+
+// The pinned runtimes provide Intl.Segmenter, while the declaration library
+// does not expose its type.
+const GraphemeSegmenter = (
+	Intl as unknown as {
+		Segmenter: new (
+			locale: string,
+			options: { granularity: "grapheme" },
+		) => { segment(text: string): Iterable<{ segment: string }> };
+	}
+).Segmenter;
+
+const graphemeSegmenter = new GraphemeSegmenter("en", {
+	granularity: "grapheme",
+});
+
+/**
+ * A hard break at an arbitrary UTF-16 index can land inside a grapheme
+ * cluster (a ZWJ emoji sequence, a regional-indicator flag, a combining mark,
+ * or a skin-tone modifier), so the two halves render as different characters
+ * in the two emitted chunks even though neither half is a lone surrogate.
+ * Back the break off to the previous grapheme boundary so the cluster stays
+ * whole in one chunk. When a single cluster alone is longer than the index
+ * (an oversized cluster at the very start of the remaining text), no earlier
+ * boundary exists, so the surrogate-safe boundary below is the fallback: it
+ * is the only case with no clean boundary.
+ */
+function avoidGraphemeSplit(text: string, index: number): number {
+	if (index <= 0 || index >= text.length) {
+		return index;
+	}
+	let boundary = 0;
+	for (const { segment } of graphemeSegmenter.segment(text)) {
+		if (boundary + segment.length > index) {
+			break;
+		}
+		boundary += segment.length;
+	}
+	if (boundary === index) {
+		return index;
+	}
+	if (boundary > 0) {
+		return boundary;
+	}
+	return avoidSurrogateSplit(text, index);
 }
 
 /**
@@ -401,10 +447,27 @@ function scanParenAwareBreakpoints(
 	window: string,
 	isAllowed: (index: number) => boolean = () => true,
 ): { lastNewline: number; lastWhitespace: number } {
-	let lastNewline = -1;
-	let lastWhitespace = -1;
-	let depth = 0;
+	// Breaks outside every "(" keep a parenthetical whole. A "(" that never
+	// closes in the window (":(", "(see below:") blocks every later break, so
+	// when no such break exists, fall back to breaks outside closed pairs only
+	// instead of cutting mid-word or inside a code fence.
+	const closes = new Map<number, number>();
+	const open: number[] = [];
+	for (let i = 0; i < window.length; i++) {
+		if (!isAllowed(i)) {
+			continue;
+		}
+		if (window[i] === "(") {
+			open.push(i);
+		} else if (window[i] === ")" && open.length > 0) {
+			closes.set(open.pop() as number, i);
+		}
+	}
 
+	const outside = { lastNewline: -1, lastWhitespace: -1 };
+	const outsideClosed = { lastNewline: -1, lastWhitespace: -1 };
+	let depth = 0;
+	let closedUntil = -1;
 	for (let i = 0; i < window.length; i++) {
 		if (!isAllowed(i)) {
 			continue;
@@ -412,23 +475,29 @@ function scanParenAwareBreakpoints(
 		const char = window[i];
 		if (char === "(") {
 			depth += 1;
+			closedUntil = Math.max(closedUntil, closes.get(i) ?? -1);
 			continue;
 		}
 		if (char === ")" && depth > 0) {
 			depth -= 1;
 			continue;
 		}
-		if (depth !== 0) {
+		const key =
+			char === "\n" ? "lastNewline" : /\s/.test(char) ? "lastWhitespace" : null;
+		if (!key) {
 			continue;
 		}
-		if (char === "\n") {
-			lastNewline = i;
-		} else if (/\s/.test(char)) {
-			lastWhitespace = i;
+		if (depth === 0) {
+			outside[key] = i;
+		}
+		if (i > closedUntil) {
+			outsideClosed[key] = i;
 		}
 	}
 
-	return { lastNewline, lastWhitespace };
+	return outside.lastNewline > 0 || outside.lastWhitespace > 0
+		? outside
+		: outsideClosed;
 }
 
 function describeInvalidLimit(limit: number): string {

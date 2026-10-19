@@ -49,7 +49,7 @@ const server = createServer(
   (_req, res) => {
     res.setHeader("Content-Type", "text/html");
     res.end(
-      '<!doctype html><style>button{margin:100px;padding:20px;font:24px system-ui}</style><button id="target" type="button" onclick="window.clicks++">Continue</button><input id="manual" aria-label="Manual input"><button id="pay" type="button" onclick="window.clicks++">Pay</button><script>window.clicks=0</script>',
+      '<!doctype html><style>button{margin:100px;padding:20px;font:24px system-ui}</style><button id="target" type="button" onclick="window.clicks++">Show details</button><input id="manual" aria-label="Manual input"><button id="pay" type="button" onclick="window.clicks++">Pay</button><script>window.clicks=0</script>',
     );
   },
 );
@@ -149,7 +149,8 @@ try {
         tabId: "1",
         bindingRevision: context.epoch + 1,
         origin,
-        expiresAt: Date.now() + 60000,
+        // This long walkthrough tests expiry separately below.
+        expiresAt: Date.now() + 300000,
         targets,
         revoked: false,
         ...extra,
@@ -163,7 +164,7 @@ try {
     });
     assert.equal(snapshot.ok, true);
     const selector = snapshot.result.frames[0].elements.find(
-      (e) => e.label === "Continue",
+      (e) => e.label === "Show details",
     ).selector;
     const id = `guide-${sequence++}`;
     const reply = await send({
@@ -391,7 +392,7 @@ try {
     ).ok,
     true,
   );
-  const startAction = async (extra = {}, label = "Continue") => {
+  const startAction = async (extra = {}, label = "Show details") => {
     const read = await send({
       type: "command",
       id: `action-read-${sequence++}`,
@@ -428,8 +429,17 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   };
-  const cancelledAction = await startAction();
+  const cancelledAction = await startAction({
+    actionText: "I will show the bill details.",
+  });
   await waitPointer();
+  // The host's own sentence replaces the generic preview line.
+  assert.equal(
+    await evaluate(
+      "globalThis.__elizaPageGuidanceV1.shadow.querySelector('.title').textContent",
+    ),
+    "I will show the bill details.",
+  );
   await page.screenshot({ path: join(output, "action-preview.png") });
   await send({ type: "cancel", id: cancelledAction.id });
   assert.equal((await cancelledAction.pending).ok, false);
@@ -488,7 +498,8 @@ try {
   };
   const approvedAction = await startAction();
   await waitPointer();
-  assert.equal((await approvedAction.pending).ok, true);
+  const approvedReply = await approvedAction.pending;
+  assert.equal(approvedReply.ok, true, JSON.stringify(approvedReply));
   assert.equal(await page.evaluate(() => window.clicks), 1);
   assert.equal(await pointerVisible(), false);
   await page.setViewport({ width: 640, height: 960 });
@@ -503,6 +514,146 @@ try {
     await page.$eval("#manual", (node) => node.value),
     "approved fixture value",
   );
+  // A host can name the one reviewed target an action is for. Another
+  // reviewed target, or a selector the binding does not hold, is refused
+  // before any pointer or effect.
+  const wrongTarget = await startAction({ expectedSelector: "#manual" });
+  assert.equal((await wrongTarget.pending).error.kind, "POLICY_BLOCKED");
+  const unboundTarget = await startAction({ expectedSelector: "#other" });
+  assert.equal((await unboundTarget.pending).error.kind, "POLICY_BLOCKED");
+  assert.equal(await page.evaluate(() => window.clicks), 1);
+  const boundTarget = await startAction({ expectedSelector: "#target" });
+  await waitPointer();
+  assert.equal((await boundTarget.pending).ok, true);
+  assert.equal(await page.evaluate(() => window.clicks), 2);
+  // A reviewed control that the provider disabled is refused before any
+  // pointer or effect, and stays disabled.
+  for (const attribute of ["aria-disabled", "disabled"]) {
+    await page.$eval(
+      "#target",
+      (node, name) => node.setAttribute(name, "true"),
+      attribute,
+    );
+    const disabledAction = await startAction();
+    assert.equal((await disabledAction.pending).error.kind, "POLICY_BLOCKED");
+    assert.equal(await pointerVisible(), false);
+    assert.equal(await page.evaluate(() => window.clicks), 2);
+    assert.equal(
+      await page.$eval(
+        "#target",
+        (node, name) => node.getAttribute(name),
+        attribute,
+      ),
+      "true",
+    );
+    await page.$eval(
+      "#target",
+      (node, name) => node.removeAttribute(name),
+      attribute,
+    );
+  }
+  // The person's Dismiss holds for the step after a reload of the page.
+  const showStep = async (extra = {}) => {
+    const read = await send({
+      type: "command",
+      id: `dismiss-read-${sequence++}`,
+      command: { subaction: "snapshot", id: "1", taskContext: context },
+    });
+    assert.equal(read.ok, true);
+    return send({
+      type: "task-guide",
+      id: `dismiss-${sequence++}`,
+      guidance: {
+        tabId: "1",
+        taskContext: context,
+        revision: sequence,
+        kind: "show",
+        stepId: "details",
+        selector: read.result.frames[0].elements.find(
+          (e) => e.label === "Show details",
+        ).selector,
+        text: "Show the details when you are ready.",
+        expiresAt: Date.now() + 30000,
+        ...extra,
+      },
+    });
+  };
+  await page.setViewport({ width: 1280, height: 800 });
+  // A fresh document: the earlier cases moved the target.
+  await page.reload();
+  assert.equal((await showStep()).result.dismissed, false);
+  await evaluate(
+    "globalThis.chrome={runtime:{sendMessage:async(m)=>{(globalThis.__dismissals??=[]).push(m);return {recorded:true}}}};true",
+  );
+  const shownDeadline = Date.now() + 5000;
+  while (
+    !(await evaluate(
+      "globalThis.__elizaPageGuidanceV1.visible && globalThis.__elizaPageGuidanceV1.shadow.querySelector('.label').classList.contains('shown')",
+    ))
+  ) {
+    assert.ok(Date.now() < shownDeadline, "Step guide did not appear");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const close = await evaluate(
+    "(()=>{const r=globalThis.__elizaPageGuidanceV1.shadow.querySelector('.close').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await page.mouse.click(close[0], close[1]);
+  const [dismissal] = await evaluate("globalThis.__dismissals");
+  assert.deepEqual(Object.keys(dismissal).sort(), ["guideId", "type"]);
+  const dismissSender = {
+    id: "test-extension",
+    tab: { id: 1 },
+    frameId: 0,
+    documentId: (await frame()).loaderId,
+    url: page.url(),
+  };
+  assert.throws(() =>
+    handler.dismissGuide(dismissal, { ...dismissSender, frameId: 2 }),
+  );
+  assert.deepEqual(handler.dismissGuide(dismissal, dismissSender), {
+    recorded: true,
+  });
+  await page.reload();
+  const reloaded = await showStep();
+  assert.equal(reloaded.ok, true, JSON.stringify(reloaded));
+  assert.equal(reloaded.result.dismissed, true);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(
+    await evaluate("globalThis.__elizaPageGuidanceV1.visible"),
+    false,
+  );
+  const restored = await showStep({ restore: true });
+  assert.equal(restored.result.dismissed, false);
+  // Expiry renews the same authorization; it must not grant a changed scope.
+  context = { ...context, epoch: context.epoch + 10 };
+  assert.equal((await bind([], { expiresAt: Date.now() + 1000 })).ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const renewalRevision = context.epoch + 2;
+  for (const change of [
+    { actorId: "other-actor" },
+    { accountId: "other-account" },
+    { origin: "https://different.example" },
+    { targets: [{ selector: "#target", action: "click" }] },
+    { assistantName: "Other" },
+    { bindingRevision: renewalRevision - 1 },
+  ])
+    assert.equal(
+      (await bind([], { bindingRevision: renewalRevision, ...change })).ok,
+      false,
+    );
+  assert.equal((await bind([], { bindingRevision: renewalRevision })).ok, true);
+  await show();
+  context = { ...context, epoch: context.epoch + 10 };
+  assert.equal(
+    (await bind([], { revoked: true, expiresAt: Date.now() + 1000 })).ok,
+    true,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(
+    (await bind([], { bindingRevision: context.epoch + 2 })).ok,
+    false,
+  );
   await page.close();
   const closed = await hide();
   assert.equal(closed.ok, true);
@@ -515,6 +666,7 @@ try {
         browser: await browser.version(),
         cases: [
           "bound target display",
+          "expired lease renews at identical scope; changed permissions, stale revisions and revoked leases reject",
           "cancel removes acknowledged guide",
           "new epoch removes old guide",
           "disconnect removes guide and revokes old binding",
@@ -528,6 +680,8 @@ try {
           "approved native action shows pointer before one actual click and tap after dispatch",
           "configured assistant name; offer tap becomes one answer-ID event; forged, repeated and cross-document answers rejected",
           "pause keeps a grey paused cursor, ends the offer and cancels a pending action",
+          "an expected reviewed target admits only that control",
+          "a dismissed step stays dismissed after a page reload until restored",
         ],
         scope:
           "actual Chromium + command handler; not installed native transport or Android",

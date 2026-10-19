@@ -7,6 +7,8 @@
  * `lifeops/defaults.ts` for historical import paths).
  */
 
+import { LIFEOPS_TIME_ZONE_ALIASES } from "../lifeops-constants/service-constants.js";
+
 export function resolveDefaultTimeZone(): string {
   const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return resolved && resolved.trim().length > 0 ? resolved : "UTC";
@@ -34,13 +36,29 @@ export function isValidTimeZone(timeZone: string): boolean {
 const UTC_ALIAS_RE =
   /^(?:z|zulu|utc|gmt|etc\/utc|etc\/gmt|utc[+-]0{1,2}(?::?00)?|gmt[+-]0{1,2}(?::?00)?|[+-]00:?00)$/i;
 
-export function normalizeTimeZone(timeZone?: string | null): string {
-  const candidate = typeof timeZone === "string" ? timeZone.trim() : "";
+/**
+ * The IANA zone a supplied spelling names: a UTC spelling, a valid IANA zone,
+ * or a known alias. Returns null for anything else, so a caller that was given
+ * a value can refuse it instead of using the host default.
+ */
+export function resolveKnownTimeZone(timeZone: string): string | null {
+  const candidate = timeZone.trim();
   if (UTC_ALIAS_RE.test(candidate)) {
     return "UTC";
   }
   if (candidate && isValidTimeZone(candidate)) {
     return candidate;
   }
-  return resolveDefaultTimeZone();
+  const aliasKey = candidate.toLowerCase();
+  if (Object.hasOwn(LIFEOPS_TIME_ZONE_ALIASES, aliasKey)) {
+    return LIFEOPS_TIME_ZONE_ALIASES[aliasKey];
+  }
+  return null;
+}
+
+export function normalizeTimeZone(timeZone?: string | null): string {
+  return (
+    (typeof timeZone === "string" ? resolveKnownTimeZone(timeZone) : null) ??
+    resolveDefaultTimeZone()
+  );
 }

@@ -12,6 +12,7 @@ import { gmailThreadSourceLink } from "./gmail-source-link.js";
 
 import { Buffer } from "node:buffer";
 import { ElizaError, stripHtmlRawTextElements } from "@elizaos/core";
+import { decodeBasicHtmlEntities } from "@elizaos/plugin-assistant/html-entities";
 import type { gmail_v1 } from "googleapis";
 import type { GoogleApiClientFactory } from "./client-factory.js";
 import {
@@ -21,7 +22,9 @@ import {
   MAX_GMAIL_ATTACHMENT_BYTES,
 } from "./gmail-attachments.js";
 import {
+  decodeGmailPartData,
   extractGmailMimeBody,
+  gmailPartCharset,
   snapshotGmailMimePart,
   walkGmailMimeParts,
 } from "./gmail-mime-parts.js";
@@ -47,7 +50,6 @@ import type {
   GoogleSendEmailInput,
 } from "./types.js";
 
-const MESSAGE_METADATA_HEADERS = ["Subject", "From", "To", "Date"];
 const GMAIL_METADATA_HEADERS = [
   "Subject",
   "From",
@@ -101,6 +103,17 @@ function nextGmailPageToken(
   }
   state.seenPageTokens.add(token);
   return token;
+}
+
+function requireGmailSendMessageId(value: string | null | undefined): string {
+  const messageId = value?.trim();
+  if (!messageId) {
+    throw new ElizaError("Gmail send returned no provider message id.", {
+      code: "GOOGLE_GMAIL_SEND_RECEIPT_MISSING",
+      severity: "fatal",
+    });
+  }
+  return messageId;
 }
 
 export class GoogleGmailClient {
@@ -217,7 +230,7 @@ export class GoogleGmailClient {
     });
 
     return {
-      id: response.data.id ?? "",
+      id: requireGmailSendMessageId(response.data.id),
       threadId: response.data.threadId ?? undefined,
     };
   }
@@ -822,12 +835,12 @@ export class GoogleGmailClient {
         criteria: { from: params.fromAddress },
         action: params.trash
           ? { removeLabelIds: ["INBOX"], addLabelIds: ["TRASH"] }
-          : { addLabelIds: ["TRASH"], removeLabelIds: ["INBOX", "UNREAD"] },
+          : { removeLabelIds: ["INBOX", "UNREAD"] },
       },
     });
     return {
       filterId: response.data.id ?? null,
-      trashed: true,
+      trashed: params.trash === true,
     };
   }
 
@@ -880,7 +893,7 @@ export class GoogleGmailClient {
       userId: "me",
       id: params.messageId,
       format: params.includeBody ? "full" : "metadata",
-      metadataHeaders: MESSAGE_METADATA_HEADERS,
+      metadataHeaders: [...GMAIL_METADATA_HEADERS],
     });
 
     return mapMessage(response.data, Boolean(params.includeBody));
@@ -918,7 +931,7 @@ export class GoogleGmailClient {
       requestBody: threadId ? { raw, threadId } : { raw },
     });
     return {
-      messageId: response.data.id ?? null,
+      messageId: requireGmailSendMessageId(response.data.id),
       threadId: response.data.threadId ?? null,
       labelIds: response.data.labelIds ?? [],
     };
@@ -1038,7 +1051,7 @@ function mapRichMessage(
     return null;
   }
   const headers = message.payload?.headers ?? [];
-  const subject = decodeHtmlEntities(headerValue(headers, "Subject") || "") || "(no subject)";
+  const subject = decodeBasicHtmlEntities(headerValue(headers, "Subject") || "") || "(no subject)";
   const fromMailbox = parseEmailAddresses(headerValue(headers, "From"))[0] ?? null;
   const replyTo = headerValue(headers, "Reply-To");
   const replyToMailbox = parseEmailAddresses(replyTo)[0] ?? null;
@@ -1524,7 +1537,9 @@ function collectMessagePart(
   body: Pick<GoogleMessageSummary, "bodyHtml" | "bodyText">
 ): void {
   walkGmailMimeParts(part, (node) => {
-    const data = node.body?.data ? decodeBase64Url(node.body.data) : undefined;
+    const data = node.body?.data
+      ? decodeGmailPartData(node.body.data, gmailPartCharset(node))
+      : undefined;
 
     if (data && node.mimeType === "text/plain" && !body.bodyText) {
       body.bodyText = data;
@@ -1556,10 +1571,6 @@ function formatEmailAddresses(addresses: readonly GoogleEmailAddress[]): string 
   return addresses
     .map((address) => (address.name ? `"${address.name}" <${address.email}>` : address.email))
     .join(", ");
-}
-
-function decodeBase64Url(value: string): string {
-  return Buffer.from(value, "base64url").toString("utf8");
 }
 
 function normalizedLimit(value: number | undefined, fallback: number, max: number): number {
@@ -1674,31 +1685,9 @@ function formatAddressValue(address: GoogleEmailAddress): string {
 }
 
 function normalizeSnippet(value: string | null | undefined): string {
-  return decodeHtmlEntities(value ?? "")
+  return decodeBasicHtmlEntities(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function decodeHtmlEntities(value: string): string {
-  const namedEntities: Record<string, string> = {
-    amp: "&",
-    gt: ">",
-    lt: "<",
-    nbsp: " ",
-    quot: '"',
-  };
-  return value.replace(/&(nbsp|amp|lt|gt|quot|#x[0-9a-f]+|#\d+);/gi, (entity, name: string) => {
-    const key = name.toLowerCase();
-    const named = namedEntities[key];
-    if (named !== undefined) return named;
-    // Gmail HTML writes apostrophes as &#x27; and other characters as numeric references.
-    const hex = /^#x([0-9a-f]+)$/.exec(key);
-    const code = Number.parseInt(hex ? hex[1] : key.slice(1), hex ? 16 : 10);
-    if (!Number.isInteger(code) || code <= 0 || code > 0x10ffff) return entity;
-    if (code >= 0xd800 && code <= 0xdfff) return entity;
-    if (code === 0xa0) return " ";
-    return String.fromCodePoint(code);
-  });
 }
 
 function internalDateToIso(value: string | null | undefined): string {
@@ -1879,7 +1868,7 @@ function extractGoogleGmailBody(payload: gmail_v1.Schema$MessagePart | undefined
   const snapshot = snapshotGmailMimePart(payload);
   const directBody = snapshot.body?.data;
   if (typeof directBody === "string") {
-    const decoded = decodeBase64Url(directBody);
+    const decoded = decodeGmailPartData(directBody, gmailPartCharset(snapshot));
     return snapshot.mimeType === "text/html" ? htmlToPlainText(decoded) : decoded.trim();
   }
   return "";
@@ -1892,17 +1881,17 @@ function extractGoogleGmailBodyByMime(
   return extractGmailMimeBody(payload, mimeType, (node) => {
     const directBody = node.body?.data;
     if (typeof directBody !== "string") return "";
-    const decoded = decodeBase64Url(directBody);
+    const decoded = decodeGmailPartData(directBody, gmailPartCharset(node));
     return mimeType === "text/html" ? htmlToPlainText(decoded) : decoded.trim();
   });
 }
 
 function htmlToPlainText(value: string): string {
-  return decodeHtmlEntities(
+  return decodeBasicHtmlEntities(
     stripHtmlRawTextElements(value)
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<\/(?:p|div|section|article|li|tr|table|h[1-6])>/gi, "\n")
-      .replace(/<(?:li)[^>]*>/gi, "- ")
+      .replace(/<li(?=[\s/>])[^>]*>/gi, "- ")
       .replace(/<[^>]+>/g, " ")
   )
     .replace(/\r/g, "")

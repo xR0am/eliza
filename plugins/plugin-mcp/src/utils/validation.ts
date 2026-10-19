@@ -1,8 +1,8 @@
 /**
  * Validators for model-produced tool/resource selections and the feedback prompts
- * used to re-prompt on failure. A selection must target a connected server and an
- * existing tool/resource, and tool arguments must satisfy the tool's own input
- * schema; an explicit noTool/noResourceAvailable signal is accepted as valid.
+ * used to re-prompt on failure. Selections target a connected server. Tools must
+ * exist and their arguments must satisfy the tool schema; resource URIs are
+ * resolved by the server. Explicit noTool/noResourceAvailable signals are valid.
  */
 
 import { createRequire } from "node:module";
@@ -66,14 +66,23 @@ const SCHEMA_WORKER_SOURCE = `
         }
         Ajv = AjvLegacy;
       }
+      // "format" is an annotation by default; without format definitions Ajv
+      // refuses the whole schema ("unknown format"), so every call fails.
+      // Unknown keywords ("discriminator", vendor "x-*" keys) are ignored per
+      // JSON Schema; strict mode refused to compile such a tool schema at all.
+      const options = {
+        allErrors: true,
+        validateFormats: false,
+        strictSchema: false,
+      };
       let validate;
       try {
-        validate = new Ajv({ allErrors: true }).compile(schema);
+        validate = new Ajv(options).compile(schema);
       } catch (error) {
         // error-policy:J3 undeclared legacy schemas keep their original constraints.
         // Only compilation can fall back; failed argument validation never does.
         if (dialect !== undefined) throw error;
-        validate = new AjvLegacy({ allErrors: true }).compile(schema);
+        validate = new AjvLegacy(options).compile(schema);
       }
       const valid = validate(data);
       parentPort.postMessage({ success: Boolean(valid), errors: validate.errors ?? [] });
@@ -311,8 +320,28 @@ export async function validateToolSelectionArgument(
   }
   return { success: true, data };
 }
-export function validateResourceSelection(selection: unknown): ValidationResult<ResourceSelection> {
-  return validateMcpResourceSelection(selection) as ValidationResult<ResourceSelection>;
+export function validateResourceSelection(
+  selection: unknown,
+  state: State
+): ValidationResult<ResourceSelection> {
+  const basicResult = validateMcpResourceSelection(
+    selection
+  ) as ValidationResult<ResourceSelection>;
+  if (basicResult.success === false || basicResult.data.noResourceAvailable) {
+    return basicResult;
+  }
+  const data = basicResult.data;
+  // Resource links and template-derived URIs need not appear in resources/list.
+  // Validate the selected connection here; the server resolves the resource.
+  const mcpData = (state.values.mcp ?? {}) as Record<string, McpServerInfo>;
+  const name = data.serverName ?? "";
+  if (!Object.hasOwn(mcpData, name) || mcpData[name]?.status !== "connected") {
+    return {
+      success: false,
+      error: `Server "${data.serverName}" not found or not connected`,
+    };
+  }
+  return basicResult;
 }
 interface ToolDescription {
   readonly description?: string;

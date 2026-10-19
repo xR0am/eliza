@@ -24,6 +24,7 @@ import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
 import { z } from "zod";
+import { registerNudge } from "../_register-nudge";
 
 const app = new Hono<AppEnv>();
 
@@ -83,9 +84,12 @@ app.post("/", async (c) => {
       authorization: "user_request",
     });
 
-    void provisioningJobService.triggerImmediate(c.env).catch(() => {
-      // error-policy:J5 fire-and-forget provisioning kick; the rejection is observed and logged inside provisioningJobService.
-    });
+    registerNudge(
+      c,
+      provisioningJobService.triggerImmediate(c.env).catch(() => {
+        // error-policy:J5 fire-and-forget provisioning kick; the rejection is observed and logged inside provisioningJobService.
+      }),
+    );
 
     return c.json(
       {

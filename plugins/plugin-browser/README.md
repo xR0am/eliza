@@ -27,6 +27,17 @@ before binding a task after restart. It waits at most 10 seconds by default
 stops on cancellation or transport shutdown. It sends no commands and never
 retries dispatched work. Hosts must recheck task/account authority after waiting.
 
+For an advisory-enabled peer, trusted hosts can call
+`NativeSocketBrowserTarget.setProtectionOwner(opaqueOwnerOrNull)` after profile
+registration and every account transition. `onProfileRegistered(listener)` notifies
+the host after each registration, including a current connection when subscribed.
+The receipt's `isCurrent()` must be checked again after asynchronous account reads;
+a disconnect, replacement, unsubscribe or stop invalidates it. Registration itself
+is not account authentication. This is not a model browser action.
+Disconnect retires the extension's account context; reconnection does not restore
+it automatically. The receipt counts updated/unavailable tabs. It grants no task
+permission and does not override blacklist rules. Missing capability rejects.
+
 `NativeTaskActuator` composes the core task journal with this transport. The host
 supplies task lookup, reviewed page policy, durable binding revisions, protected
 value resolution, outcome verification and redacted evidence storage. It checks
@@ -102,6 +113,39 @@ password fields and Verify/submit clicks remain denied. The value still travels
 only on the authenticated native channel and is excluded from DOM snapshots;
 host evidence/screenshot pipelines must also preserve secret redaction. This
 primitive does not resolve codes, grant account access, or qualify a live provider.
+
+A proposal can set `expectedSelector` to the one reviewed binding target it is
+for. The actuator refuses it before dispatch unless the binding holds that
+selector for the action, and the browser (`task-expected-target`) accepts no
+other node. For 30 seconds after a task fill or click (or until the next one), the browser
+stops any form submit or move to another document that the person's own input
+did not start (a link click still opens its link). It also records, without
+being able to stop them, a same-document address change (`history.pushState`)
+and a fetch, XMLHttpRequest or beacon to the page's own site, such as a code
+field that verifies itself with `fetch()`. A snapshot then reports
+`effectViolation` (`submit`, `navigation` or `request`); the actuator records
+such an action as an unknown outcome, and the bill workflow pauses on any later
+snapshot that carries it. A request still in flight when the actuator reads its
+after-action snapshot appears only in a later snapshot, and anything the page
+does after the 30 seconds is not watched. `showGuidance` accepts
+`keepClearRefs` (controls the label must not cover, peer capability
+`task-guide-keep-clear`) and returns `placement` and `dismissed`.
+
+`NativeSocketBrowserTarget.currentPage()` is a trusted host read of the page the
+person sees in the connected profile. It sends one `list` command and returns the
+single active HTTPS tab as `{ tabId, origin, title }`: the origin without path,
+query or fragment, and the complete title from `currentPageTitle()`, with control
+characters and whitespace normalized. This preserves the authorized source
+context without truncation or heuristic replacement. The title is written by
+the website, so hosts pass it to a model as quoted data, never as instructions.
+It returns `null` when no single active HTTPS page is known: no active web tab,
+more than one browser window (the extension's `list` reply counts windows before
+it drops non-web tabs, so a window showing only a new-tab or settings page
+counts), an extension that does not report `windowCount`, or a non-HTTPS page.
+Which window has focus is not read, so with one window the active tab is taken
+as the page she sees. Incognito windows are counted only when the extension is
+allowed in incognito; otherwise she may be looking at one that is not counted.
+The result is conversation context only. It binds no task and permits no action.
 
 Android hosts set `ELIZA_BROWSER_ANDROID_APPLICATION` to their application ID
 when starting the native target. It connects and reconnects only to that app's

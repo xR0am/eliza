@@ -153,6 +153,13 @@ export async function activateWebBrowserWorkspaceElement(
     throw new Error("Target element is disabled.");
   }
   const tag = element.tagName.toLowerCase();
+  // A click on a label activates its control, as in a browser: "Remember me"
+  // toggles the checkbox it names or wraps.
+  const control =
+    tag === "label" ? (element as HTMLLabelElement).control : null;
+  if (control) {
+    return activateWebBrowserWorkspaceElement(tab, control, subaction);
+  }
   if (tag === "a") {
     const href = element.getAttribute("href")?.trim();
     if (!href) {
@@ -284,8 +291,20 @@ export async function submitWebBrowserWorkspaceForm(
 ): Promise<void> {
   const state = getBrowserWorkspaceRuntimeState("web", tab.id);
   const dom = ensureBrowserWorkspaceDom(tab);
-  const action = form.getAttribute("action")?.trim() || tab.url;
-  const method = (form.getAttribute("method")?.trim() || "get").toLowerCase();
+  // A submit button's formaction/formmethod override the form's own.
+  const attr = (name: string) =>
+    submitter?.hasAttribute(`form${name}`)
+      ? submitter.getAttribute(`form${name}`)
+      : form.getAttribute(name);
+  // HTML method keywords: "dialog" closes the form's dialog and sends nothing;
+  // a missing or invalid value means GET.
+  const methodKeyword = attr("method")?.trim().toLowerCase();
+  if (methodKeyword === "dialog") {
+    form.closest("dialog[open]")?.removeAttribute("open");
+    return;
+  }
+  const method = methodKeyword === "post" ? "post" : "get";
+  const action = attr("action")?.trim() || tab.url;
   const submitUrl = new URL(action, form.baseURI).toString();
   // Submit interception (issue #19882): the resolved submit URL is only known
   // here, after the form's action/base resolution — so per-domain policies get

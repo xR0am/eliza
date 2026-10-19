@@ -1,4 +1,5 @@
 export * from "./calendar.js";
+export * from "./calendar-linked-sync.js";
 export * from "./contracts/agent-backup-capture-v2.js";
 export * from "./contracts/agent-backup-manifest.js";
 export * from "./contracts/agent-backup-manifest-v3.js";
@@ -14,7 +15,6 @@ export * from "./contracts/apps-lifecycle-routes.js";
 export * from "./contracts/apps-loading-routes.js";
 export * from "./contracts/apps-runs-routes.js";
 export * from "./contracts/auth-routes.js";
-export * from "./contracts/automation-nodes.js";
 export * from "./contracts/character-routes.js";
 export * from "./contracts/chat.js";
 export * from "./contracts/cloud-coding-containers.js";
@@ -66,6 +66,7 @@ export {
 export * from "./contracts/wallet-routes.js";
 export * from "./contracts/wallet-types.js";
 export * from "./contracts/workbench-routes.js";
+export * from "./device-reviews.js";
 export type {
   BuiltInEntityType,
   Entity as KnowledgeGraphEntity,
@@ -88,6 +89,8 @@ export {
   defaultEntityTypeRegistry,
   EntityTypeRegistry,
   normalizeEntityConnectorAccountId,
+  normalizeEntityIdentityHandle,
+  normalizeEntityIdentityPlatform,
   SELF_ENTITY_ID,
 } from "./knowledge-graph/entity-types.js";
 export type {

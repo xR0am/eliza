@@ -8,7 +8,7 @@
 
 import { participantTable } from "@elizaos/plugin-sql";
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "../db/client";
+import { writeTransaction } from "../db/helpers";
 import type { AnonymousSession } from "../db/schemas/index";
 import {
   anonymousSessions,
@@ -21,6 +21,8 @@ import {
 import { organizationConfig } from "../db/schemas/organization-config";
 import { userIdentities } from "../db/schemas/user-identities";
 import { anonymousSessionsService } from "./services/anonymous-sessions";
+import { charactersService } from "./services/characters";
+import { ensureInferencePolicyMutation } from "./services/inference-policy-fence";
 import { SIGNUP_CREDIT_POLICY } from "./signup-credits";
 import type { UserWithOrganization } from "./types";
 import { logger } from "./utils/logger";
@@ -131,8 +133,9 @@ export async function migrateAnonymousSession(
     charactersTransferred: 0,
     roomMappingsTransferred: 0,
   };
+  const transferredCharacterIds: string[] = [];
 
-  await db.transaction(async (tx) => {
+  await writeTransaction(async (tx) => {
     let [anonUser] = await tx
       .select()
       .from(users)
@@ -183,6 +186,10 @@ export async function migrateAnonymousSession(
       .where(eq(userIdentities.steward_user_id, stewardUserId))
       .limit(1)
       .then((rows) => rows.map((r) => r.users));
+
+    if (anonUser.organization_id) await ensureInferencePolicyMutation(tx, anonUser.organization_id);
+    if (realUser?.organization_id)
+      await ensureInferencePolicyMutation(tx, realUser.organization_id);
 
     let targetUserId: string;
     let targetOrgId: string | null = null;
@@ -253,6 +260,7 @@ export async function migrateAnonymousSession(
         .returning({ id: userCharacters.id });
 
       mergedData.charactersTransferred = charResult.length;
+      transferredCharacterIds.push(...charResult.map((row) => row.id));
     } else {
       if (!realUser.organization_id) {
         throw new Error(`Cannot migrate to user ${realUser.id} without organization`);
@@ -281,9 +289,10 @@ export async function migrateAnonymousSession(
           updated_at: new Date(),
         })
         .where(eq(userCharacters.user_id, anonymousUserId))
-        .returning();
+        .returning({ id: userCharacters.id });
 
       mergedData.charactersTransferred = charResult.length;
+      transferredCharacterIds.push(...charResult.map((row) => row.id));
 
       const roomCharResult = await tx
         .update(elizaRoomCharactersTable)
@@ -354,6 +363,10 @@ export async function migrateAnonymousSession(
         .where(eq(anonymousSessions.id, anonSession.id));
     }
   });
+
+  // After commit: the moved characters' cached rows still carry the anonymous
+  // owner/org, which getById callers (publish, monetization, runtime) trust.
+  await Promise.all(transferredCharacterIds.map((id) => charactersService.invalidateCache(id)));
 
   logger.info(`${logPrefix} Migration complete`, mergedData);
 

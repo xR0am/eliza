@@ -17,6 +17,7 @@ import {
   parseHostExternalSpecifiers,
   wrapBundleAsHostExternalFactory,
 } from "../../agent/src/api/dynamic-view-host-external.ts";
+import { handleInteractionsRoutes } from "../../agent/src/api/interactions-routes.ts";
 import { fixtureAgentStatus } from "../test/fixtures/agent-status.ts";
 // The declarations + provenance decision live in one place so a removed plugin
 // cannot linger in the stub and a fabricated bundle can never masquerade as the
@@ -494,29 +495,6 @@ const emptyWalletBalances = {
 const emptyWalletNfts = {
   evm: [],
   solana: null,
-};
-
-const emptyWalletTradingProfile = {
-  window: "30d",
-  source: "all",
-  generatedAt: new Date(0).toISOString(),
-  summary: {
-    totalSwaps: 0,
-    buyCount: 0,
-    sellCount: 0,
-    settledCount: 0,
-    successCount: 0,
-    revertedCount: 0,
-    tradeWinRate: null,
-    txSuccessRate: null,
-    winningTrades: 0,
-    evaluatedTrades: 0,
-    realizedPnlBnb: "0",
-    volumeBnb: "0",
-  },
-  pnlSeries: [],
-  tokenBreakdown: [],
-  recentSwaps: [],
 };
 
 const emptyWalletMarketSource = {
@@ -3539,23 +3517,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/wallet/os-store") {
-    sendJson(req, res, 200, {
-      available: true,
-      backend: "in-house",
-      evmKeyInOsStore: true,
-      solanaKeyInOsStore: true,
-      envKeysPresent: false,
-    });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/wallet/os-store") {
-    const body = (await readJsonBody(req)) || {};
-    sendJson(req, res, 200, { ok: true, action: body.action ?? null });
-    return;
-  }
-
   if (req.method === "POST" && url.pathname === "/api/wallet/refresh-cloud") {
     sendJson(req, res, 200, {
       ok: true,
@@ -3595,19 +3556,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (
-    req.method === "POST" &&
-    url.pathname === "/api/wallet/production-defaults"
-  ) {
-    await readJsonBody(req);
-    sendJson(req, res, 200, {
-      ok: true,
-      updated: true,
-      warnings: [],
-    });
-    return;
-  }
-
   if (req.method === "GET" && url.pathname === "/api/wallet/balances") {
     sendJson(req, res, 200, emptyWalletBalances);
     return;
@@ -3615,11 +3563,6 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/wallet/nfts") {
     sendJson(req, res, 200, emptyWalletNfts);
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/wallet/trading/profile") {
-    sendJson(req, res, 200, emptyWalletTradingProfile);
     return;
   }
 
@@ -3690,7 +3633,17 @@ const server = http.createServer(async (req, res) => {
   // route's designed-empty response instead of surfacing the catch-all 501 as
   // a product console error in lifecycle, interaction, and visual coverage.
   if (req.method === "GET" && url.pathname === "/api/computer-use/sessions") {
-    sendJson(req, res, 200, { sessions: [] });
+    sendJson(req, res, 200, {
+      sessions: [],
+      events: [],
+      readiness: {
+        capture: { available: false, tool: "unavailable" },
+        input: { available: false, tool: "unavailable" },
+        browser: { available: false, tool: "unavailable" },
+        vision: { available: false, modelType: "unavailable" },
+        approvalMode: "disabled",
+      },
+    });
     return;
   }
 
@@ -4029,19 +3982,6 @@ const server = http.createServer(async (req, res) => {
 
   if (
     req.method === "GET" &&
-    url.pathname === "/api/coding-agents/coordinator/status"
-  ) {
-    sendJson(req, res, 200, {
-      supervisionLevel: "autonomous",
-      taskCount: 0,
-      tasks: [],
-      pendingConfirmations: 0,
-    });
-    return;
-  }
-
-  if (
-    req.method === "GET" &&
     url.pathname === "/api/coding-agents/coordinator/threads"
   ) {
     sendJson(req, res, 200, { threads: [], total: 0 });
@@ -4061,6 +4001,25 @@ const server = http.createServer(async (req, res) => {
       safariPackagePath: null,
       releaseManifest: null,
     });
+    return;
+  }
+
+  if (url.pathname === "/api/interactions/composer") {
+    await handleInteractionsRoutes({
+      req,
+      res,
+      method: req.method ?? "GET",
+      pathname: url.pathname,
+      runtime: null,
+      json: (_res, data, status = 200) => sendJson(req, res, status, data),
+      error: (_res, message, status = 500) =>
+        sendJson(req, res, status, { error: message }),
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/lifeops/reminders") {
+    sendJson(req, res, 200, { reminders: [] });
     return;
   }
 
@@ -4436,7 +4395,6 @@ const server = http.createServer(async (req, res) => {
   ) {
     sendJson(req, res, 200, {
       preferences: SMOKE_NETWORK_POLICY_PREFERENCES,
-      isOwner: true,
     });
     return;
   }

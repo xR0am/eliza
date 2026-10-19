@@ -120,8 +120,6 @@ interface DocActionParameters {
   assetKind?: string;
   /** Optional signing portal URL (DocuSign / HelloSign / etc.). */
   signatureUrl?: string;
-  /** Approval-class label for `request_approval`. */
-  approvalReason?: string;
   /** Free-form note recorded on the DocumentRequest. */
   note?: string;
   /** close_request: outcome ("completed" | "expired" | "cancelled"). */
@@ -209,6 +207,41 @@ function missing(name: string, subaction: Subaction): ActionResult {
     success: false,
     text: `I need ${name} to ${subaction.replace("_", " ")}.`,
     data: { subaction, error: `MISSING_${name.toUpperCase()}` },
+  };
+}
+
+/** Operations that store `deadline` and schedule its watcher. */
+const DEADLINE_SUBACTIONS: ReadonlySet<Subaction> = new Set([
+  "request_signature",
+  "request_approval",
+  "track_deadline",
+  "upload_asset",
+  "collect_id",
+]);
+
+/**
+ * The deadline becomes a `once` trigger, which the scheduler refuses unless it
+ * parses as a timestamp. That refusal arrives after the approval row is queued
+ * or the stored request is patched, so an unparseable deadline is refused here,
+ * by the scheduler's own test, before any of those writes.
+ */
+export function unschedulableDeadlineText(deadline: string): string | null {
+  if (!Number.isNaN(new Date(deadline).getTime())) return null;
+  return `"${deadline}" is not a deadline I can schedule. Give the deadline as an ISO-8601 timestamp, for example 2026-11-06T17:00:00Z.`;
+}
+
+function invalidDeadline(
+  params: DocActionParameters,
+  subaction: Subaction,
+): ActionResult | null {
+  if (!DEADLINE_SUBACTIONS.has(subaction)) return null;
+  const deadline = params.deadline?.trim();
+  const text = deadline ? unschedulableDeadlineText(deadline) : null;
+  if (!text) return null;
+  return {
+    success: false,
+    text,
+    data: { subaction, error: "INVALID_DEADLINE" },
   };
 }
 
@@ -332,6 +365,25 @@ async function scheduleDeadlineTask(
     ownerVisible: true,
   });
   return task.taskId;
+}
+
+async function replaceDeadlineTask(
+  scope: RunnerScope,
+  doc: DocumentRequest,
+): Promise<string | undefined> {
+  if (!doc.deadline) return undefined;
+  if (doc.scheduledTaskId) {
+    const activeTask = (await scope.runner.list({ status: "scheduled" })).find(
+      (task) => task.taskId === doc.scheduledTaskId,
+    );
+    if (activeTask) {
+      const edited = await scope.runner.apply(activeTask.taskId, "edit", {
+        trigger: { kind: "once", atIso: doc.deadline },
+      });
+      return edited.taskId;
+    }
+  }
+  return scheduleDeadlineTask(scope, doc);
 }
 
 async function persistDocumentObligation(
@@ -580,7 +632,7 @@ async function handleRequestApproval(
   });
 
   logger.info(
-    `[OWNER_DOCUMENTS] request_approval id=${saved.id} title="${documentTitle}" reason=${params.approvalReason ?? "(none)"}`,
+    `[OWNER_DOCUMENTS] request_approval id=${saved.id} title="${documentTitle}"`,
   );
 
   return {
@@ -615,7 +667,10 @@ async function handleTrackDeadline(
     status: existing.status === "draft" ? "pending" : existing.status,
   });
   if (!patched) return notFound(documentRequestId, subaction);
-  const scheduledTaskId = await scheduleDeadlineTask(scope, patched);
+  // A pending watcher is the durable identity of this deadline. Edit it in
+  // place so the previous date cannot still notify the owner. A terminal or
+  // missing watcher cannot fire again, so replace only that settled row.
+  const scheduledTaskId = await replaceDeadlineTask(scope, patched);
   await persistDocumentObligation(scope, patched, scheduledTaskId);
   const next = patchDocument(scope.runtime, documentRequestId, {
     ...(scheduledTaskId ? { scheduledTaskId } : {}),
@@ -933,12 +988,14 @@ export const ownerDocumentsAction: Action & {
     },
     {
       name: "documentTitle",
-      description: "Short doc label.",
+      description:
+        "Short doc label; required request_signature/request_approval.",
       schema: { type: "string" as const },
     },
     {
       name: "deadline",
-      description: "Deadline ISO-8601.",
+      description:
+        "Deadline as an ISO-8601 timestamp, e.g. 2026-11-06T17:00:00Z; required request_signature, and track_deadline when the stored request has none. A relative phrase such as 'next Friday' fails with INVALID_DEADLINE.",
       schema: { type: "string" as const },
     },
     {
@@ -963,13 +1020,9 @@ export const ownerDocumentsAction: Action & {
       schema: { type: "string" as const },
     },
     {
-      name: "approvalReason",
-      description: "request_approval reason label.",
-      schema: { type: "string" as const },
-    },
-    {
       name: "note",
-      description: "Free-form DocumentRequest note.",
+      description:
+        "Free-form DocumentRequest note, e.g. why an approval is needed.",
       schema: { type: "string" as const },
     },
     {
@@ -1019,6 +1072,16 @@ export const ownerDocumentsAction: Action & {
         text: "Tell me which document operation: request_signature, request_approval, track_deadline, upload_asset, collect_id, close_request, or guarantee_class.",
         data: { error: "MISSING_SUBACTION" },
       };
+    }
+
+    const deadlineFailure = invalidDeadline(params, subaction);
+    if (deadlineFailure) {
+      await callback?.({
+        text: deadlineFailure.text,
+        source: "action",
+        action: ACTION_NAME,
+      });
+      return deadlineFailure;
     }
 
     const scope = makeScope(runtime, message);

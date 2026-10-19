@@ -8,6 +8,7 @@ import type {
   Memory,
   MessageHandlerResult,
   MessageReplyRecoveryContext,
+  ProviderRateLimit,
   RoomHandlerLease,
   RunTerminalOwner,
   RuntimeFailure,
@@ -72,8 +73,8 @@ export interface StrategyResult {
 export type FailureReplyAttempt =
   | { kind: "text"; value: string }
   | { kind: "noProvider" }
-  | { kind: "creditsExhausted" }
-  | { kind: "rateLimited" }
+  | { kind: "creditsExhausted"; rateLimit?: ProviderRateLimit }
+  | { kind: "rateLimited"; rateLimit?: ProviderRateLimit }
   | { kind: "authFailed" }
   | { kind: "schemaRejected" };
 

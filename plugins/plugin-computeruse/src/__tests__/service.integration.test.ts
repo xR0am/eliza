@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentRuntime } from "@elizaos/core";
+import type { AgentRuntime, Content, Memory } from "@elizaos/core";
 import {
   afterAll,
   afterEach,
@@ -22,6 +22,15 @@ import {
   startComputerUseRuntime,
   stopComputerUseRuntime,
 } from "../../test/helpers/service-runtime.ts";
+import { clipboardAction } from "../actions/clipboard.js";
+import {
+  type ComputerUseAgentReport,
+  computerUseAgentAction,
+  runComputerUseAgentLoop,
+} from "../actions/use-computer-agent.js";
+import type { AgentLoop } from "../actor/agent-loop.js";
+import type { ComputerInterface } from "../actor/computer-interface.js";
+import type { Scene } from "../scene/scene-types.js";
 import {
   ComputerUseService,
   parseComputerUseActionTimeoutMs,
@@ -380,12 +389,170 @@ describe("ComputerUseService validates input before the approval gate", () => {
     expect(result.error).not.toContain("paused");
   }, 10_000);
 
+  it("rejects a non-left click_with_modifiers button at validation, not the gate", async () => {
+    const result = await service.executeDesktopAction({
+      action: "click_with_modifiers",
+      coordinate: [400, 300],
+      modifiers: ["cmd"],
+      button: "right",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("only clicks the left button");
+    expect(result.error).not.toContain("paused");
+  }, 10_000);
+
+  it("rejects an unsupported click modifier at validation, not the gate", async () => {
+    const result = await service.executeDesktopAction({
+      action: "click_with_modifiers",
+      coordinate: [400, 300],
+      modifiers: ["hyper"],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unsupported modifier: "hyper"');
+    expect(result.error).not.toContain("paused");
+  }, 10_000);
+
+  it("rejects an unknown displayId at validation, not the gate", async () => {
+    const result = await service.executeDesktopAction({
+      action: "click",
+      coordinate: [10, 10],
+      displayId: 987654,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown displayId 987654");
+    expect(result.error).not.toContain("paused");
+  }, 10_000);
+
+  it("rejects a drag path point without two numbers at validation, not the gate", async () => {
+    const result = await service.executeDesktopAction({
+      action: "drag",
+      path: [[1], [2]] as unknown as [number, number][],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("drag path point 0 must be [x, y]");
+    expect(result.error).not.toContain("paused");
+  }, 10_000);
+
+  it("rejects an unsupported window arrangement at validation, not the gate", async () => {
+    const result = await service.executeWindowAction({
+      action: "arrange",
+      arrangement: "side_by_side",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(
+      'Unsupported window arrangement "side_by_side"',
+    );
+    expect(result.error).not.toContain("paused");
+  }, 10_000);
+
   it("rejects a targetless window focus at validation, not the gate", async () => {
     const result = await service.executeWindowAction({ action: "focus" });
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("windowId");
     expect(result.error).not.toContain("paused");
+  }, 10_000);
+
+  it("blocks a COMPUTER_USE_AGENT step while computer use is paused", async () => {
+    const display = {
+      id: 1,
+      bounds: [0, 0, 800, 600] as [number, number, number, number],
+      scaleFactor: 1,
+      primary: true,
+      name: "test-display",
+    };
+    const scene: Scene = {
+      timestamp: Date.now(),
+      displays: [display],
+      focused_window: null,
+      apps: [],
+      ocr: [],
+      ax: [],
+      vlm_scene: null,
+      vlm_elements: null,
+    };
+    // Scene and display reads are fixed so no host capture runs; the approval
+    // gate is the real service's.
+    const gatedService = {
+      refreshScene: async () => scene,
+      getCurrentScene: () => scene,
+      getDisplays: () => [display],
+      setSceneVlmAnnotations: () => {},
+      awaitApproval: service.awaitApproval.bind(service),
+    } as unknown as ComputerUseService;
+    const driverCalls: string[] = [];
+    const computerInterface = new Proxy(
+      {},
+      {
+        get: (_target, name) => async () => {
+          driverCalls.push(String(name));
+        },
+      },
+    ) as ComputerInterface;
+    const loop: AgentLoop = {
+      name: "fixed-click",
+      predictStep: async () => ({
+        scene_summary: "a dialog with a save button",
+        proposed: {
+          kind: "click",
+          displayId: display.id,
+          x: 10,
+          y: 10,
+          rationale: "click save",
+        },
+        rois: [],
+      }),
+      predictClick: async () => null,
+    };
+
+    const report = await runComputerUseAgentLoop(
+      runtime,
+      { goal: "click the save button" },
+      gatedService,
+      {
+        loop,
+        computerInterface,
+        captureAll: async () => [{ display, frame: Buffer.from("frame") }],
+      },
+    );
+
+    expect(report.reason).toBe("error");
+    expect(report.error).toContain("paused");
+    expect(driverCalls).toEqual([]);
+  }, 10_000);
+
+  it("blocks CLIPBOARD read and write while computer use is paused", async () => {
+    for (const parameters of [
+      { action: "read" },
+      { action: "write", text: "must not reach the clipboard" },
+    ]) {
+      const result = await clipboardAction.handler(
+        runtime,
+        { content: {} } as Memory,
+        undefined,
+        { parameters },
+      );
+
+      expect(result?.success).toBe(false);
+      expect(result?.text).toContain("paused");
+    }
+  }, 10_000);
+
+  it("does not use the chat message as an omitted CLIPBOARD text argument", async () => {
+    const result = await clipboardAction.handler(
+      runtime,
+      { content: { text: "copy my email address" } } as Memory,
+      undefined,
+      { parameters: { action: "write" } },
+    );
+
+    expect(result?.success).toBe(false);
+    expect(result?.text).toContain("text is required for clipboard write");
   }, 10_000);
 });
 
@@ -798,6 +965,26 @@ describe("ComputerUseService file and terminal execution (real host I/O)", () =>
     }
   }, 20_000);
 
+  // The WINDOW action declares only windowId / windowTitle, so these verbs must
+  // read windowTitle: an app query lists that app's windows, and a named window
+  // that does not exist is an error, not the focused window's bounds.
+  it("resolves windowTitle for application-window and bounds getters", async () => {
+    const windowTitle = "computeruse-nonexistent-window-title";
+
+    const appWindows = await service.executeWindowAction({
+      action: "get_application_windows",
+      windowTitle,
+    });
+    expect(appWindows.success).toBe(true);
+    expect(appWindows.windows).toEqual([]);
+
+    for (const action of ["get_window_size", "get_window_position"] as const) {
+      const result = await service.executeWindowAction({ action, windowTitle });
+      expect(result.success).toBe(false);
+      expect(result.bounds).toBeUndefined();
+    }
+  }, 20_000);
+
   // Window management verbs against a window id that matches nothing: the verb
   // dispatch, its approval-command lookup, and the platform call all run and
   // fail fast (no window to act on) — no real window is moved or closed on the
@@ -833,6 +1020,112 @@ describe("ComputerUseService file and terminal execution (real host I/O)", () =>
       height: 100,
     });
     expect(typeof bounded.success).toBe("boolean");
+
+    // The platform backends resize only when both dimensions are present, so a
+    // lone width is rejected instead of moving the window and reporting success.
+    const oneSided = await service.executeWindowAction({
+      action: "set_bounds",
+      windowId,
+      x: 0,
+      y: 0,
+      width: 800,
+    });
+    expect(oneSided.success).toBe(false);
+    expect(oneSided.error).toContain("width and height together");
+  }, 20_000);
+
+  it("drops a pending approval when the caller's signal aborts", async () => {
+    const target = path.join(workdir, "cancelled.txt");
+    expect(service.setApprovalMode("smart_approve")).toBe("smart_approve");
+    try {
+      const controller = new AbortController();
+      const pending = service.executeCommand(
+        "file_write",
+        { path: target, content: "must not be written" },
+        controller.signal,
+      );
+      await expect
+        .poll(() => service.getApprovalSnapshot().pendingCount)
+        .toBe(1);
+      const [approval] = service.getApprovalSnapshot().pendingApprovals;
+
+      controller.abort();
+      const result = await pending;
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("approval cancelled");
+      expect(service.getApprovalSnapshot().pendingCount).toBe(0);
+      // A late Approve click must not run the cancelled action.
+      expect(service.resolveApproval(approval.id, true)).toBeNull();
+      expect(fs.existsSync(target)).toBe(false);
+    } finally {
+      service.setApprovalMode("full_control");
+    }
+  }, 20_000);
+
+  it("relays a pending CLIPBOARD approval to the chat callback", async () => {
+    expect(service.setApprovalMode("smart_approve")).toBe("smart_approve");
+    try {
+      const relayed: Array<{ content: Content; actionName?: string }> = [];
+      const pending = clipboardAction.handler(
+        runtime,
+        {
+          content: {},
+          metadata: { telegramUserId: "4242" },
+        } as unknown as Memory,
+        undefined,
+        { parameters: { action: "write", text: "must not be written" } },
+        async (content, actionName) => {
+          relayed.push({ content, actionName });
+          return [];
+        },
+      );
+      await expect
+        .poll(() => service.getApprovalSnapshot().pendingCount)
+        .toBe(1);
+      const [approval] = service.getApprovalSnapshot().pendingApprovals;
+      await expect.poll(() => relayed.length).toBe(1);
+
+      expect(approval.command).toBe("clipboard_write");
+      expect(relayed[0].actionName).toBe("COMPUTER_USE_APPROVAL");
+      // The connector parses these callback values to resolve the approval.
+      expect(relayed[0].content.text).toContain(
+        `cua:${approval.id}:approve:u4242=Approve`,
+      );
+      expect(relayed[0].content.text).toContain(
+        `cua:${approval.id}:deny:u4242=Deny`,
+      );
+
+      // Deny, so the host clipboard is not written.
+      service.resolveApproval(approval.id, false);
+      const result = await pending;
+
+      expect(result?.success).toBe(false);
+      expect(result?.text).toContain("approval rejected");
+    } finally {
+      service.setApprovalMode("full_control");
+    }
+  }, 20_000);
+
+  it("ends COMPUTER_USE_AGENT when the turn's signal is aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await computerUseAgentAction.handler(
+      runtime,
+      { content: {} } as Memory,
+      undefined,
+      {
+        parameters: { goal: "click the save button" },
+        abortSignal: controller.signal,
+      },
+    );
+
+    expect(result?.success).toBe(false);
+    expect(result?.error).toContain("cancelled by its owner");
+    const report = result?.data?.report as ComputerUseAgentReport;
+    expect(report.reason).toBe("cancelled");
+    expect(report.steps).toEqual([]);
   }, 20_000);
 
   it("exposes approval and display introspection", () => {

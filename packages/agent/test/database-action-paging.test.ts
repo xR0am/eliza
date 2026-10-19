@@ -65,7 +65,51 @@ it("returns every tied row once and ignores another schema's primary key", async
       return (rows ?? []).map((row) => Number(row.id));
     }
 
-    for (const sortBy of ["kind", "item_key", undefined] as const) {
+    // list_tables counts the rows in each table. The statistics view it used
+    // before reads 0 for freshly written tables, which dropped both of these.
+    const counted = await handler(
+      runtime,
+      {} as never,
+      undefined,
+      {
+        parameters: {
+          action: "list_tables",
+          filter: "action_paging_ties",
+          includeEmpty: false,
+        },
+      },
+      undefined,
+    );
+    expect(counted.success, counted.text).toBe(true);
+    expect(counted.text).toContain(
+      "plugin_x.action_paging_ties (2 cols, 1 rows)",
+    );
+    expect(counted.text).toContain(
+      "public.action_paging_ties (3 cols, 40 rows)",
+    );
+
+    // item_key is a column of plugin_x.action_paging_ties only. The read of the
+    // public table must refuse it, not fall back to primary-key order.
+    const foreignSort = await handler(
+      runtime,
+      {} as never,
+      undefined,
+      {
+        parameters: {
+          action: "get_table",
+          tableName: "action_paging_ties",
+          sortBy: "item_key",
+          limit: 8,
+        },
+      },
+      undefined,
+    );
+    expect(foreignSort.success).toBe(false);
+    expect(foreignSort.text).toBe(
+      'sortBy "item_key" is not a column of "public.action_paging_ties". Columns: room_id, id, kind.',
+    );
+
+    for (const sortBy of ["kind", undefined] as const) {
       const seen: number[] = [];
       for (let offset = 0; offset < 40; offset += 8) {
         if (offset === 8) {

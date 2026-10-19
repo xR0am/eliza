@@ -15,7 +15,6 @@ import { resolveActionContexts } from "@elizaos/core";
 const PAGE_KEYS = [
   "browser",
   "wallet",
-  "character",
   "settings",
   "connectors",
   "automation",
@@ -28,7 +27,6 @@ type PageKey = (typeof PAGE_KEYS)[number];
 const PAGE_CONTEXTS: Record<PageKey, AgentContext[]> = {
   browser: ["browser"],
   wallet: ["wallet"],
-  character: ["character"],
   settings: ["settings"],
   connectors: ["connectors"],
   automation: ["automation"],
@@ -396,16 +394,9 @@ export const pageDelegateAction: PageActionGroup = {
     {
       name: "action",
       description:
-        "Child action name to run, e.g. BROWSER, CHECK_BALANCE, MODIFY_CHARACTER, UPDATE_AI_PROVIDER, LIST_CONNECTORS.",
+        "Child action name to run. PAGE_DELEGATE consumes `action`, so the child never receives it: select a child operation with the <CHILD>_<operation> name, e.g. WALLET_TOKEN_INFO, SETTINGS_UPDATE_AI_PROVIDER, PLUGIN_LIST, CHARACTER_MODIFY. A bare child name (e.g. BROWSER) runs the child with only the other top-level fields.",
       required: true,
       schema: { type: "string" as const },
-    },
-    {
-      name: "parameters",
-      description:
-        "Parameters forwarded to the selected child action. Use the child action's parameter names.",
-      required: false,
-      schema: { type: "object" as const, additionalProperties: true },
     },
   ],
   examples: [
@@ -427,15 +418,15 @@ export const pageDelegateAction: PageActionGroup = {
     [
       {
         name: "{{name1}}",
-        content: { text: "Show my wallet balance." },
+        content: { text: "What is the price of SOL?" },
       },
       {
         name: "{{agentName}}",
         content: {
-          text: "Pulling wallet balances.",
+          text: "Looking up SOL.",
           actions: ["PAGE_DELEGATE"],
           thought:
-            "Balance request maps to the wallet page; PAGE_DELEGATE dispatches to the CHECK_BALANCE child action.",
+            "Token price request maps to the wallet page; PAGE_DELEGATE dispatches to the WALLET_TOKEN_INFO child.",
         },
       },
     ],
@@ -450,7 +441,7 @@ export const pageDelegateAction: PageActionGroup = {
           text: "Pulling tomorrow's events.",
           actions: ["PAGE_DELEGATE"],
           thought:
-            "Calendar query falls under the owner page; PAGE_DELEGATE dispatches to the CALENDAR action=feed child.",
+            "Calendar query falls under the owner page; PAGE_DELEGATE dispatches to the CALENDAR_FEED child.",
         },
       },
     ],

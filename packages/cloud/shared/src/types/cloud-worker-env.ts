@@ -29,6 +29,21 @@ export interface Bindings {
   /** Private server-owned Network HTTP service binding; no public fetch fallback. */
   NETWORK_MEMBERSHIP?: import("../lib/services/shared-runtime/network-membership-client").NetworkMembershipFetcher;
   NETWORK_MEMBERSHIP_SERVER_TOKEN?: string;
+  /** Default off. Enable only after legacy Network history inventory/migration and staging qualification. */
+  NETWORK_PERSONAL_CONTINUITY_ENABLED?: string;
+  /** Exact server-owned canonical Shared ingress scope; absent refuses supplied Network envelopes. */
+  NETWORK_OWNED_INGRESS_POLICY?: string;
+  /** Canonical service endpoint and shared server signing key; never client-visible. */
+  NETWORK_SERVICE_URL?: string;
+  SERVICE_TURN_SECRET?: string;
+  NETWORK_RELAY_ENABLED?: string;
+  NETWORK_AGENT_VOICE?: string;
+  /** Default off. Destination-bound phone handoff is admitted only in staging. */
+  NETWORK_SITE_AUTH_ENABLED?: string;
+  /** One exact loopback Network site origin for staging qualification. */
+  NETWORK_SITE_AUTH_ORIGIN?: string;
+  /** Confidential Network server authority. Worker secret; never a public/Vite variable. */
+  NETWORK_SITE_AUTH_SERVER_TOKEN?: string;
   /** Trusted execution environment for app inference; must match the registered app client mode. */
   APP_INFERENCE_EXECUTION_ENVIRONMENT?: "test" | "live";
   /** Inactive by default: reviewed server-owned owner/room capture policy JSON. */
@@ -80,6 +95,12 @@ export interface Bindings {
   ELIZA_MOBILE_APP_AUTH_ENABLED?: string;
   /** Server-owned registrations for independently branded native clients. */
   ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON?: string;
+  /**
+   * Digital Asset Links statements served at `/.well-known/assetlinks.json`:
+   * a JSON array of `{ package_name, sha256_cert_fingerprints[], relations? }`.
+   * Malformed config is served as `[]`.
+   */
+  ELIZA_ANDROID_ASSET_LINKS_JSON?: string;
 
   // ---- Database (Railway Postgres via the Hyperdrive binding in cloud, PGlite locally) ----
   DATABASE_URL: string;
@@ -638,6 +659,9 @@ export interface Bindings {
   INFERENCE_AUTH_CACHE_ENABLED?: string;
   /** Strong Durable Object boundary required before positive auth caching can activate. */
   INFERENCE_STRONG_REVOCATION_ENABLED?: string;
+  /** Delegated, primary-backed inference budgets; enroll organizations only after validation. */
+  INFERENCE_FUNDED_BUDGET_ADMISSION?: string;
+  INFERENCE_FUNDING_BUDGET_SEAL_SECRET?: string;
   /**
    * "true" serves warm Worker admission from the published admission snapshot:
    * no policy or dispatch-policy transaction runs before provider dispatch. The
@@ -699,6 +723,12 @@ export interface Variables {
   apiKeyId?: string;
   /** Registered app that issued a mobile lifecycle credential. */
   apiKeySourceAppId?: string;
+  /**
+   * The Steward session of this request made the Cloud user's organization: this
+   * request created it, or it was created after the session was issued. Set
+   * server-side only, so retries of one sign-in get the same answer.
+   */
+  stewardAccountCreated?: true;
 }
 
 export type AppEnv = {

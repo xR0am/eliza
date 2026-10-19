@@ -126,12 +126,12 @@ export const extractChain = (
   const trimmedText = text.trim();
 
   // Check for SUI address (0x followed by 64 hex chars)
-  if (trimmedText.match(/^0x[a-fA-F0-9]{64}$/)) {
+  if (trimmedText.match(/^0[xX][a-fA-F0-9]{64}$/)) {
     return "sui";
   }
 
   // Check for EVM address (0x followed by 40 hex chars)
-  if (trimmedText.match(/^0x[a-fA-F0-9]{40}$/)) {
+  if (trimmedText.match(/^0[xX][a-fA-F0-9]{40}$/)) {
     // Build EVM chain list dynamically from supported chains (exclude solana and sui)
     const evmChains = BIRDEYE_SUPPORTED_CHAINS.filter(
       (chain) => chain !== "solana" && chain !== "sui",
@@ -158,18 +158,18 @@ export const extractAddresses = (text: string): BaseAddress[] => {
 
   // Sui addresses (0x followed by 64 hex chars). Extract first so the EVM
   // matcher does not take the 40-char prefix of a Sui address.
-  const suiAddresses = text.match(/0x[a-fA-F0-9]{64}(?![a-fA-F0-9])/g);
+  const suiAddresses = text.match(/0[xX][a-fA-F0-9]{64}(?![a-fA-F0-9])/g);
   if (suiAddresses) {
     addresses.push(
       ...suiAddresses.map((address) => ({
-        address,
+        address: `0x${address.slice(2)}`,
         chain: "sui" as BirdeyeSupportedChain,
       })),
     );
   }
 
   // EVM-compatible chains (Ethereum, Arbitrum, Avalanche, BSC, Optimism, Polygon, Base, zkSync)
-  const evmAddresses = text.match(/0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/g);
+  const evmAddresses = text.match(/0[xX][a-fA-F0-9]{40}(?![a-fA-F0-9])/g);
   if (evmAddresses) {
     addresses.push(
       ...evmAddresses
@@ -178,11 +178,11 @@ export const extractAddresses = (text: string): BaseAddress[] => {
             !addresses.some(
               (existing) =>
                 existing.chain === "sui" &&
-                existing.address.startsWith(address),
+                existing.address.startsWith(`0x${address.slice(2)}`),
             ),
         )
         .map((address) => ({
-          address,
+          address: `0x${address.slice(2)}`,
           chain: "evm" as BirdeyeSupportedChain, // we don't yet know the chain but can assume it's EVM-compatible
         })),
     );
@@ -258,7 +258,12 @@ export const extractTimeRange = (
   if (dateRangeMatch) {
     const start = new Date(dateRangeMatch[1]).getTime() / 1000;
     const end = new Date(dateRangeMatch[2]).getTime() / 1000;
-    return { start, end };
+    // The regex accepts impossible dates (month 13, day 45); new Date()
+    // yields NaN for those. Fall through to the other strategies instead
+    // of returning a NaN-poisoned range.
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      return { start, end };
+    }
   }
 
   const timeRegex = /(\d+)\s*(second|minute|hour|day|week|month)s?\s*ago/i;
@@ -320,7 +325,9 @@ export const extractLimit = (text: string): number => {
 };
 
 export const formatValue = (value?: number): string => {
-  if (!value) return "N/A";
+  // A real zero is data, not missing data: only nullish/NaN means "N/A".
+  if (value === undefined || value === null || Number.isNaN(value))
+    return "N/A";
   const abs = Math.abs(value);
   const tiers: Array<[number, string]> = [
     [1_000_000_000, "B"],
@@ -465,8 +472,8 @@ export const extractSymbols = (
           /\$([A-Z0-9]{2,10})\b/gi,
           // After articles (a/an)
           /\b(?:a|an)\s+([A-Z0-9]{2,10})\b/gi,
-          // Standalone caps
-          /\b[A-Z0-9]{2,10}\b/g,
+          // Bare candidates need a letter; explicit symbol syntax can be numeric.
+          /\b(?=[A-Z0-9]{0,9}[A-Z])[A-Z0-9]{2,10}\b/g,
           // Quoted symbols
           /["']([A-Z0-9]{2,10})["']/gi,
           // Common price patterns

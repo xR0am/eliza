@@ -60,6 +60,31 @@ async function read() {
   const unsafe: string = result.result.revision;
   void unsafe;
   const tap = await bridge.pendingReminderTap();
-  if (tap.token) await bridge.consumeReminderTap({ token: tap.token });
+  if (tap.token) {
+    if (tap.question)
+      await bridge.releaseReminderQuestion({ token: tap.token });
+    else await bridge.consumeReminderTap({ token: tap.token });
+  }
 }
 void read;
+
+async function readTasks() {
+  const { reminders } = await bridge.listReminders();
+  for (const record of reminders) {
+    if (record.undated) {
+      const noAlarm: "none" = record.mode;
+      // @ts-expect-error An undated to-do has no due time.
+      const date: number = record.dueAt;
+      void [noAlarm, date];
+      await bridge.todoDecision({ target: record.target, action: "done" });
+    } else {
+      const date: number = record.dueAt;
+      void date;
+    }
+    // @ts-expect-error Inspect undated before using the timestamp.
+    const assumedTime: number = record.at;
+    void assumedTime;
+  }
+  await bridge.saveTodo({ id: "todo", title: "Undated task" });
+}
+void readTasks;

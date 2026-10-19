@@ -28,7 +28,7 @@ import type {
   X402PaymentRequirements,
   X402TransactionLog,
 } from "./types.js";
-import { DEFAULT_SUPPORTED_NETWORKS } from "./types.js";
+import { DEFAULT_SUPPORTED_NETWORKS, USDC_ADDRESSES } from "./types.js";
 
 export const DEFAULT_X402_FETCH_TIMEOUT_MS = 10_000;
 const X402_PROTOCOL_FEE_BPS = 77n;
@@ -48,6 +48,10 @@ export class X402Client {
   private config: X402ClientConfig;
   private budget: X402BudgetTracker;
   private supportedNetworks: Set<string>;
+  // Budget caps are base units of one token (USDC from x402FromEnv). Without
+  // an explicit asset list, a capped client pays only in USDC, so another
+  // token's amount is never checked against a USDC cap.
+  private usdcOnly: boolean;
 
   constructor(wallet: AgentWallet, config: X402ClientConfig = {}) {
     this.wallet = wallet;
@@ -59,18 +63,30 @@ export class X402Client {
     };
     this.budget = new X402BudgetTracker(config);
     this.supportedNetworks = new Set(this.config.supportedNetworks);
+    this.usdcOnly =
+      config.globalDailyLimit !== undefined ||
+      config.globalPerRequestMax !== undefined ||
+      (config.serviceBudgets?.length ?? 0) > 0;
   }
 
   /**
    * Make an x402-aware fetch request. Automatically handles 402 responses.
    */
-  async fetch(url: string | URL, init?: RequestInit): Promise<Response> {
-    const urlStr = url.toString();
+  async fetch(
+    url: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const request = url instanceof Request ? new Request(url, init) : null;
+    const retryRequest = request?.clone();
+    const urlStr = request ? request.url : url.toString();
+    const callerSignal = request?.signal ?? init?.signal;
     const timeoutSignal = AbortSignal.timeout(DEFAULT_X402_FETCH_TIMEOUT_MS);
-    const signal = init?.signal
-      ? AbortSignal.any([init.signal, timeoutSignal])
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, timeoutSignal])
       : timeoutSignal;
-    const response = await globalThis.fetch(url, { ...init, signal });
+    const response = request
+      ? await globalThis.fetch(request, { signal })
+      : await globalThis.fetch(url, { ...init, signal });
 
     if (response.status !== 402) {
       return response;
@@ -175,18 +191,18 @@ export class X402Client {
     this.config.onPaymentComplete?.(log, attempt);
 
     // Retry request with payment proof
-    const retryHeaders = new Headers(init?.headers);
+    const retryHeaders = new Headers(retryRequest?.headers ?? init?.headers);
     const payloadB64 = btoa(JSON.stringify(paymentPayload));
     retryHeaders.set("X-PAYMENT", payloadB64);
 
     const retryTimeoutSignal = AbortSignal.timeout(
       DEFAULT_X402_FETCH_TIMEOUT_MS,
     );
-    const retrySignal = init?.signal
-      ? AbortSignal.any([init.signal, retryTimeoutSignal])
+    const retrySignal = callerSignal
+      ? AbortSignal.any([callerSignal, retryTimeoutSignal])
       : retryTimeoutSignal;
-    const retryResponse = await globalThis.fetch(url, {
-      ...init,
+    const retryResponse = await globalThis.fetch(retryRequest ?? url, {
+      ...(retryRequest ? undefined : init),
       headers: retryHeaders,
       signal: retrySignal,
     });
@@ -259,7 +275,11 @@ export class X402Client {
 
       // v6: resolve via TokenRegistry — accept any known ERC-20 on this network
       const resolved = resolveAssetAddress(req.asset, req.network);
-      return resolved != null;
+      if (resolved == null) return false;
+      return (
+        !this.usdcOnly ||
+        resolved.toLowerCase() === USDC_ADDRESSES[req.network]?.toLowerCase()
+      );
     });
 
     if (compatible.length === 0) return null;

@@ -27,13 +27,19 @@
       "types": "./dist/native-notes-query.d.ts",
       "import": "./dist/native-notes-query.js",
       "default": "./dist/native-notes-query.js"
+    },
+    "./calendar-linked-sync": {
+      "eliza-source": "./src/calendar-linked-sync.ts",
+      "types": "./dist/calendar-linked-sync.d.ts",
+      "import": "./dist/calendar-linked-sync.js",
+      "default": "./dist/calendar-linked-sync.js"
     }
   },
   "scripts": {
     "build": "tsc6 --noCheck -p tsconfig.emit.json && node ../scripts/rewrite-dist-relative-imports-node-esm.ts packages/contracts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint:check": "bunx @biomejs/biome check src *.ts",
-    "lint": "bunx @biomejs/biome check --write src *.ts",
+    "lint:check": "bunx @biomejs/biome check src",
+    "lint": "bunx @biomejs/biome check --write src",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {

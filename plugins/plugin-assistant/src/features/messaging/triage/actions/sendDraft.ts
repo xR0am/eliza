@@ -4,8 +4,8 @@
  * supplied it extracts the target platform, recipient, and body from the user's
  * request (via `outboundDraftOptionsFromMessage`, which is model-driven so it
  * works in any language) and persists a draft; when a draft id is supplied it
- * sends that draft. If the TriageService adapter cannot create a draft it falls
- * back to a locally stored draft so the confirmation flow still works.
+ * sends that draft. A source whose adapter cannot send a new message is
+ * refused before any draft or preview is created.
  *
  * Two independent gates guard every send. The user-confirmation gate refuses to
  * send without a later user confirmation bound to the preview; the
@@ -15,7 +15,6 @@
  * `outboundDraftOptionsFromMessage` is exported for the unit tests in
  * `sendDraft.test.ts`.
  */
-import crypto from "node:crypto";
 import type {
   Action,
   ActionExample,
@@ -28,14 +27,14 @@ import type {
   State,
 } from "@elizaos/core";
 import { logger, ModelType, parseKeyValueXml } from "@elizaos/core";
-import { draftConsentDigest, requireSendConsent } from "../send-consent.ts";
+import {
+  draftConsentDigest,
+  pendingSendDraft,
+  requireSendConsent,
+} from "../send-consent.ts";
 import { getSendPolicy } from "../send-policy.ts";
 import { getDefaultTriageService } from "../triage-service.ts";
-import {
-  type DraftRecord,
-  type DraftRequest,
-  NotYetImplementedError,
-} from "../types.ts";
+import type { DraftRecord, DraftRequest } from "../types.ts";
 import {
   bodyParameter,
   draftIdParameter,
@@ -48,7 +47,7 @@ const OUTBOUND_DRAFT_PARAMETERS: ActionParameter[] = [
   {
     name: "source",
     description:
-      "Message source for a new outbound draft, such as gmail, discord, telegram, imessage, whatsapp, or twitter.",
+      "Message source for a new outbound draft. Its connected adapter must support sending a new message (the gmail, discord and twitter adapters do).",
     required: false,
     schema: { type: "string" as const },
   },
@@ -71,7 +70,22 @@ const OUTBOUND_DRAFT_PARAMETERS: ActionParameter[] = [
   },
   {
     name: "threadId",
-    description: "Optional existing thread identifier.",
+    description:
+      "Existing thread ID returned by the selected message source. Omit for a new email; never use the current conversation ID.",
+    required: false,
+    schema: { type: "string" as const },
+  },
+  {
+    name: "channelId",
+    description:
+      "Platform channel ID returned by the selected source. A new discord draft requires it. Omit for Gmail.",
+    required: false,
+    schema: { type: "string" as const },
+  },
+  {
+    name: "worldId",
+    description:
+      "Exact account/server scope ID returned by the selected adapter. Omit for the default account. An email address or conversation ID is not a scope ID; never invent one.",
     required: false,
     schema: { type: "string" as const },
   },
@@ -112,7 +126,12 @@ function normalizeSource(value: unknown): string | undefined {
 async function extractOutboundDraftFromText(
   runtime: IAgentRuntime,
   text: string,
-): Promise<{ source?: string; recipient?: string; body?: string }> {
+): Promise<{
+  source?: string;
+  recipient?: string;
+  subject?: string;
+  body?: string;
+}> {
   if (!text.trim()) return {};
   const prompt = `A user asked the agent to send an outbound message. Extract the parts of the request — this must work in any language, so do not rely on English keywords.
 
@@ -123,6 +142,7 @@ Return ONLY this XML, leaving a field empty when the request does not specify it
 <response>
 <source>the platform/app to send on — one of telegram, discord, whatsapp, imessage, gmail, twitter — or empty</source>
 <recipient>who to send to (a name, @handle, or contact), or empty</recipient>
+<subject>the exact email subject requested by the user, or empty</subject>
 <body>the exact message text to send, or empty</body>
 </response>`;
   const raw = await runtime.useModel(ModelType.TEXT_LARGE, { prompt });
@@ -136,6 +156,7 @@ Return ONLY this XML, leaving a field empty when the request does not specify it
   return {
     source: nonEmptyString(parsed.source),
     recipient: nonEmptyString(parsed.recipient),
+    subject: nonEmptyString(parsed.subject),
     body: nonEmptyString(parsed.body),
   };
 }
@@ -174,6 +195,7 @@ export async function outboundDraftOptionsFromMessage(
 
   const source = paramSource ?? normalizeSource(extracted.source);
   const body = paramBody ?? extracted.body;
+  const subject = nonEmptyString(params.subject) ?? extracted.subject;
   const rawTo = paramTo ?? extracted.recipient;
   const to = Array.isArray(rawTo)
     ? rawTo
@@ -187,6 +209,7 @@ export async function outboundDraftOptionsFromMessage(
       ...params,
       ...(source ? { source } : {}),
       ...(body ? { body } : {}),
+      ...(subject ? { subject } : {}),
       ...(to ? { to } : {}),
     },
   };
@@ -206,39 +229,6 @@ function previewOutboundDraft(
   return `[${record.source}${record.worldId ? ` account ${record.worldId}` : ""}] To: ${recipients}\n${subject}${record.body}`;
 }
 
-function saveLocalOutboundDraft(args: {
-  service: ReturnType<typeof getDefaultTriageService>;
-  source: DraftRecord["source"];
-  to: DraftRecord["to"];
-  body: string;
-  subject?: string;
-  threadId?: string;
-  worldId?: string;
-  channelId?: string;
-}): DraftRecord {
-  const partial = {
-    source: args.source,
-    to: args.to,
-    body: args.body,
-    subject: args.subject,
-  };
-  const record: DraftRecord = {
-    draftId: `local:${crypto.randomUUID()}`,
-    source: args.source,
-    to: args.to,
-    body: args.body,
-    subject: args.subject,
-    threadId: args.threadId,
-    worldId: args.worldId,
-    channelId: args.channelId,
-    preview: previewOutboundDraft(partial),
-    createdAtMs: Date.now(),
-    sent: false,
-  };
-  args.service.getStore().saveDraft(record);
-  return record;
-}
-
 /**
  * SAFETY INVARIANT: MESSAGE must never send without an explicit
  * user confirmation on a later turn. When confirmation is missing the handler
@@ -249,9 +239,9 @@ export const sendDraftAction: Action = {
   contexts: ["messaging", "email", "contacts"],
   roleGate: { minRole: "ADMIN" },
   description:
-    "Create or send an owner-scoped outbound message draft. Use this for first-turn requests like 'send a Telegram message to Jane saying I am late', 'DM Bob on Discord', 'email Alice the notes', and 'text Sam that I am outside'. It previews the exact draft and requires a later affirmative user reply before sending.",
+    "Create or send an owner-scoped outbound message draft. Use this for first-turn requests like 'DM Bob on Discord' and 'email Alice the notes'. The source's adapter must support sending a new message. It previews the exact draft and requires a later affirmative user reply before sending. For a plain later confirmation, omit draftId and message fields: the host resolves and checks the reviewed draft. Never invent an ID or restore history just to find one.",
   descriptionCompressed:
-    "outbound draft/send Telegram|Discord|email|SMS|iMessage|WhatsApp|DM; requires a later user confirmation",
+    "outbound draft/send Discord|email|X DM; requires a later user confirmation",
   similes: [
     "DISPATCH_DRAFT",
     "CONFIRM_AND_SEND",
@@ -291,8 +281,18 @@ export const sendDraftAction: Action = {
     options?: HandlerOptions,
     callback?: HandlerCallback,
   ): Promise<ActionResult> => {
-    const parsed = parseSendDraftParams(options);
+    let parsed = parseSendDraftParams(options);
     const service = getDefaultTriageService();
+    // A whole-turn affirmation refers to the host's latest reviewed draft.
+    // Planner content or an invented ID cannot redirect it. A different draft
+    // the planner names explicitly is kept: the digest gate below then
+    // re-previews it instead of sending the earlier armed draft.
+    const pendingId = await pendingSendDraft(runtime, _message);
+    if (pendingId && service.getDraft(runtime, pendingId)) {
+      const named = "error" in parsed ? undefined : parsed.draftId;
+      if (!named || named === pendingId || !service.getDraft(runtime, named))
+        parsed = { draftId: pendingId };
+    }
     if ("error" in parsed) {
       const draftParsed = parseDraftFollowupParams(
         await outboundDraftOptionsFromMessage(runtime, _message, options),
@@ -313,38 +313,41 @@ export const sendDraftAction: Action = {
         };
       }
 
-      let record: DraftRecord;
-      try {
-        record = await service.draftFollowup(runtime, {
-          source: draftParsed.source,
-          to: draftParsed.to,
-          subject: draftParsed.subject,
-          body: draftParsed.body,
-          threadId: draftParsed.threadId,
-          worldId: draftParsed.worldId,
-          channelId: draftParsed.channelId,
-        });
-      } catch (error) {
-        if (!(error instanceof NotYetImplementedError)) {
-          throw error;
-        }
-        // error-policy:J4 Adapters may explicitly decline remote draft creation;
-        // a `local:` draft is a visibly distinct, sendable confirmation artifact.
-        runtime.reportError("SendDraft.remoteDraftUnavailable", error, {
-          source: draftParsed.source,
-        });
-        record = saveLocalOutboundDraft({
-          service,
-          source: draftParsed.source,
-          to: draftParsed.to,
-          subject: draftParsed.subject,
-          body: draftParsed.body,
-          threadId: draftParsed.threadId,
-          worldId: draftParsed.worldId,
-          channelId: draftParsed.channelId,
-        });
+      // Refuse before the preview: a draft that no adapter can deliver would
+      // ask the user to confirm a send that then fails.
+      const adapter = service.getAdapter(draftParsed.source);
+      const unsupported = !adapter
+        ? "no adapter is connected"
+        : !adapter.isAvailable(runtime)
+          ? "its adapter is unavailable"
+          : adapter.capabilities().send.new !== true
+            ? "its adapter does not support sending a new message"
+            : undefined;
+      if (unsupported) {
+        const text = `${draftParsed.source} cannot send a new message from a draft: ${unsupported}. Use action=send for a direct connector send.`;
+        logger.warn(`[SendDraft] ${text}`);
+        return {
+          success: false,
+          text,
+          error: text,
+          continueChain: false,
+          data: { actionName: "MESSAGE", error: "DRAFT_SEND_UNSUPPORTED" },
+        };
       }
-      await requireSendConsent(runtime, _message, draftConsentDigest(record));
+
+      const record = await service.draftFollowup(runtime, {
+        requester: _message,
+        source: draftParsed.source,
+        to: draftParsed.to,
+        subject: draftParsed.subject,
+        body: draftParsed.body,
+        threadId: draftParsed.threadId,
+        worldId: draftParsed.worldId,
+        channelId: draftParsed.channelId,
+      });
+      await requireSendConsent(runtime, _message, draftConsentDigest(record), {
+        draftId: record.draftId,
+      });
       const recipients = record.to
         .map((recipient) =>
           recipient.displayName
@@ -376,7 +379,7 @@ export const sendDraftAction: Action = {
       };
     }
 
-    const existing = service.getStore().getDraft(parsed.draftId);
+    const existing = service.getDraft(runtime, parsed.draftId);
     if (!existing) {
       const msg = `No draft found for id ${parsed.draftId}`;
       logger.warn(`[SendDraft] ${msg}`);
@@ -384,7 +387,9 @@ export const sendDraftAction: Action = {
     }
 
     const consentDigest = draftConsentDigest(existing);
-    const consent = await requireSendConsent(runtime, _message, consentDigest);
+    const consent = await requireSendConsent(runtime, _message, consentDigest, {
+      draftId: existing.draftId,
+    });
     if (consent === "cancelled")
       return {
         success: false,
@@ -437,7 +442,7 @@ export const sendDraftAction: Action = {
       if (required) {
         const enq = await policy.enqueueApproval(runtime, draftReq, () =>
           service
-            .sendDraft(runtime, parsed.draftId, consentDigest)
+            .sendDraft(runtime, parsed.draftId, consentDigest, _message)
             .then((rec) => ({
               externalId: rec.sentExternalId ?? `pending:${rec.draftId}`,
             })),
@@ -476,6 +481,7 @@ export const sendDraftAction: Action = {
       runtime,
       parsed.draftId,
       consentDigest,
+      _message,
     );
     // The sent confirmation is the complete answer to a single-operation
     // turn: verified + turnComplete make it the sole delivery; the draftId

@@ -48,6 +48,7 @@ import type {
   TaskGateContribution,
 } from "@elizaos/plugin-scheduling";
 import {
+  configuredDefaultTimeZone,
   createAnchorRegistry,
   createCompletionCheckRegistry,
   createConsolidationRegistry,
@@ -109,6 +110,7 @@ import {
   getLocalDateKey,
   getZonedDateParts,
 } from "../time.js";
+import { withWorkThreadFollowupAdmission } from "../work-threads/followup-admission.js";
 import {
   behaviouralBaselineFromProfile,
   readActivityProfile,
@@ -360,6 +362,9 @@ function defaultOwnerFactsProvider(
     // whether the owner is inside a booked/declared travel window at this
     // instant, which is exactly what the `during_travel` gate needs each tick.
     const view = ownerFactsToView(await store.read(), new Date());
+    // With no owner timezone on file, owner_local triggers use the zone saved
+    // in the scheduling plugin settings instead of UTC.
+    view.timezone ??= configuredDefaultTimeZone(runtime);
     const timezone = view.timezone ?? resolveDefaultTimeZone();
     try {
       const repo = new LifeOpsRepository(runtime);
@@ -657,11 +662,18 @@ function isFamilyMonthlyDispatch(record: ScheduledTaskDispatchRecord): boolean {
 const TARGET_RESOLUTION_RETRY_MINUTES = 5;
 
 function targetNeedsOwnerResolution(
+  runtime: IAgentRuntime,
   channelKey: string,
   target: string | undefined,
 ): boolean {
   const normalized = normalizeChannelTarget(channelKey, target);
-  return !normalized || normalized === channelKey;
+  if (!normalized || normalized === channelKey) return true;
+  if (normalized !== target) return false;
+  const [targetChannelKey] = normalized.split(":", 1);
+  return (
+    normalized.includes(":") &&
+    getChannelRegistry(runtime)?.get(targetChannelKey) != null
+  );
 }
 
 async function resolveOwnerChannelTarget(
@@ -717,7 +729,13 @@ async function resolveScheduledTaskChannelTarget(
   runtime: IAgentRuntime,
   record: ScheduledTaskDispatchRecord,
 ): Promise<string | null> {
-  if (!targetNeedsOwnerResolution(record.channelKey, record.output?.target)) {
+  if (
+    !targetNeedsOwnerResolution(
+      runtime,
+      record.channelKey,
+      record.output?.target,
+    )
+  ) {
     return (
       normalizeChannelTarget(record.channelKey, record.output?.target) ?? null
     );
@@ -1487,7 +1505,9 @@ function buildLifeOpsRunnerDeps(
     },
 
     executionBoundary: (task, execute) =>
-      withFamilyScheduledExecution(opts.runtime, task, execute, opts.agentId),
+      withWorkThreadFollowupAdmission(opts.runtime, task, () =>
+        withFamilyScheduledExecution(opts.runtime, task, execute, opts.agentId),
+      ),
     logStore: stores.logStore,
     gates,
     completionChecks,
@@ -1515,7 +1535,15 @@ function buildLifeOpsRunnerDeps(
       try {
         const status = await connector.status();
         return status.state !== "disconnected";
-      } catch {
+      } catch (error) {
+        // error-policy:J1 boundary translation — a connector whose status
+        // probe throws cannot carry the escalation step, so the ladder skips
+        // it. Report the probe failure so the skipped channel has a cause.
+        opts.runtime.reportError(
+          "lifeops:scheduled-task:channel-status",
+          error,
+          { channelKey, connectorKind: channel.connectorKind },
+        );
         return false;
       }
     },

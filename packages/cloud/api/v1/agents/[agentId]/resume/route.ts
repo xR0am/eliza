@@ -18,6 +18,7 @@ import { isContainerBackedExecutionTier } from "@elizaos/cloud-shared/lib/servic
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
+import { registerNudge } from "../_register-nudge";
 
 const app = new Hono<AppEnv>();
 
@@ -59,14 +60,17 @@ app.post("/", async (c) => {
       userId: agent.user_id,
     });
     if (enqueueResult.created) {
-      void provisioningJobService.triggerImmediate(c.env).catch((error) => {
-        // error-policy:J7 the durable job remains visible to the polling worker.
-        logger.warn("[service-api] Resume worker nudge failed", {
-          agentId,
-          jobId: enqueueResult.job.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      registerNudge(
+        c,
+        provisioningJobService.triggerImmediate(c.env).catch((error) => {
+          // error-policy:J7 the durable job remains visible to the polling worker.
+          logger.warn("[service-api] Resume worker nudge failed", {
+            agentId,
+            jobId: enqueueResult.job.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      );
     }
 
     return c.json(

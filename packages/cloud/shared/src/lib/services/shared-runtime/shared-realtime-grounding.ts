@@ -161,8 +161,8 @@ function classifyPublicStandalone(text: string): SharedRealtimeDomain | undefine
   return isSharedPublicSearchSafe(text) ? classifyPublicIntent(text) : undefined;
 }
 
-/** Denies Shared public-network tools when the authenticated utterance is private or sensitive. */
-export function isSharedPublicSearchSafe(message: string): boolean {
+/** All literal/control/network guards remain independent of product or private-tool intent. */
+function isSharedPublicSearchLiteralSafe(message: string): boolean {
   if (INVISIBLE_OR_CONTROL.test(message)) return false;
   const normalized = message.normalize("NFKC");
   const networkLiteral = normalized.match(NETWORK_TARGET_LITERAL)?.[0];
@@ -172,18 +172,78 @@ export function isSharedPublicSearchSafe(message: string): boolean {
       .replace(/^\[/u, "")
       .split(/[\]/?#]/u)[0]
       .split(":")[0];
-    // Canonical helpers remain the authority for private/blocked network
-    // targets; public network literals are also denied because user-supplied
-    // targets must never become an SSRF-capable search-provider query.
     if (isBlockedHostname(hostname) || isPrivateIpAddress(hostname)) return false;
     return false;
   }
   return (
-    !PRIVATE_STATE.test(normalized) &&
     !SENSITIVE_LITERAL.test(normalized) &&
     !PHONE_LITERAL.test(normalized) &&
     !STREET_ADDRESS_LITERAL.test(normalized) &&
     !COORDINATE_LITERAL.test(normalized)
+  );
+}
+
+/** Complete public product topic from this utterance only; private/mixed intent wins. */
+export function sharedPublicGoogleProductQuery(message: string): string | undefined {
+  const text = message.normalize("NFKC").trim();
+  if (!isSharedPublicSearchLiteralSafe(text) || !/\b(?:gmail|google calendar)\b/iu.test(text))
+    return undefined;
+  const rest = text.replace(/\b(?:gmail|google calendar)\b/giu, "");
+  if (
+    PRIVATE_STATE.test(rest) ||
+    /\b(?:your|their|his|her)\b/iu.test(rest) ||
+    /(?:\band\b|\bthen\b|[;.!?])\s*(?:connect|link|send|manage|update|delete|cancel|create|book|schedule|move|reschedule)\b/iu.test(
+      rest,
+    )
+  )
+    return undefined;
+  // A provider-directed inbox/account operation is not a public documentation query.
+  if (
+    /\b(?:connect|link)\s+(?:gmail|google calendar)\b/iu.test(text) ||
+    /\b(?:read|search|find|check|show|list|summari[sz]e)\s+(?:gmail|google calendar)\s+(?:for|in|inbox|mail|emails?|messages?|events?)\b/iu.test(
+      text,
+    )
+  )
+    return undefined;
+  const explicitWeb =
+    /\b(?:search|find|look up|check|read)\b[^.!?]{0,60}\b(?:web|internet|online)\b/iu.test(text);
+  const publicProductTopic =
+    /\b(?:api|docs?|documentation|sdk|pricing|prices?|help|support|tutorials?|features?|limits?|quotas?|reviews?|news)\b/iu.test(
+      text,
+    );
+  if (!explicitWeb && !publicProductTopic) return undefined;
+  const topic = (text.match(EXPLICIT_PUBLIC_SEARCH)?.[1] ?? text)
+    .trim()
+    .replace(/[.!?]+$/u, "")
+    .trim();
+  // Intent classification must not call the public guard that calls this classifier.
+  return checkPublicSearchTopicSize(topic);
+}
+
+/** One private-Google recognizer shared by registration and public-network admission. */
+export function isSharedPrivateGoogleContextRequest(message: string): boolean {
+  const text = message.normalize("NFKC").trim();
+  if (sharedPublicGoogleProductQuery(text)) return false;
+  return (
+    /^(?:please\s+)?(?:connect|link)\s+(?:(?:my|the)\s+)?google(?:\s+account)?[.!?]*$/iu.test(
+      text,
+    ) ||
+    /\b(?:connect|link|read|search|find|check|show|list|summari[sz]e)\b[^.!?]{0,80}\b(?:gmail|google calendar)\b/iu.test(
+      text,
+    ) ||
+    /\b(?:what|when|which|read|search|find|check|show|list|summari[sz]e)\b[^.!?]{0,60}\bmy (?:[\p{L}\p{N}]+ ){0,3}(?:inbox|mail|emails?|calendar)\b/iu.test(
+      text,
+    )
+  );
+}
+
+/** Denies private/sensitive material; the product exception changes no literal/network guard. */
+export function isSharedPublicSearchSafe(message: string): boolean {
+  const normalized = message.normalize("NFKC");
+  return (
+    isSharedPublicSearchLiteralSafe(normalized) &&
+    !isSharedPrivateGoogleContextRequest(normalized) &&
+    (!PRIVATE_STATE.test(normalized) || Boolean(sharedPublicGoogleProductQuery(normalized)))
   );
 }
 
@@ -280,19 +340,22 @@ const EXPLICIT_PUBLIC_SEARCH =
   /^\s*(?:(?:please|can you|could you|would you)\s+)?(?:search(?:\s+(?:the\s+)?(?:web|internet|online))?(?:\s+for)?|look\s+up|find(?:\s+me)?)\s+(.+)$/iu;
 const GENERAL_PUBLIC_RESEARCH =
   /\b(?:research|papers?|studies|documentation|reviews?|recommendations?|best|compare|comparison|products?|prices?|versions?|models?|context limits?|benchmarks?)\b/iu;
-function boundedPublicSearchTopic(value: string | undefined): string | undefined {
-  const topic = value
-    ?.trim()
-    .replace(/[.!?]+$/u, "")
-    .trim()
-    .replace(/\s+/gu, " ");
-  if (!topic || !isSharedPublicSearchSafe(topic)) return undefined;
+function checkPublicSearchTopicSize(topic: string | undefined): string | undefined {
+  if (!topic) return undefined;
   if ([...topic].length > 2048) {
     throw new ElizaError("Public search topics must not exceed 2048 characters", {
       code: "PUBLIC_SEARCH_QUERY_TOO_LARGE",
     });
   }
   return topic;
+}
+function boundedPublicSearchTopic(value: string | undefined): string | undefined {
+  const topic = value
+    ?.trim()
+    .replace(/[.!?]+$/u, "")
+    .trim()
+    .replace(/\s+/gu, " ");
+  return topic && isSharedPublicSearchSafe(topic) ? checkPublicSearchTopicSize(topic) : undefined;
 }
 /** Authority comes only from a standalone authenticated public utterance, never history text. */
 export function resolveSharedPublicSearchIntent(
@@ -301,6 +364,8 @@ export function resolveSharedPublicSearchIntent(
 ): SharedPublicSearchIntent | undefined {
   const normalized = message.normalize("NFKC").trim();
   if (!isSharedPublicSearchSafe(normalized)) return undefined;
+  const googlePublicTopic = sharedPublicGoogleProductQuery(normalized);
+  if (googlePublicTopic) return { kind: "general", topic: googlePublicTopic };
   const requirement = resolveSharedRealtimeRequirement(normalized, history);
   if (requirement) return { kind: "prefetched", requirement };
   // Preserve unsupported/missing-location current-data gates instead of broadening them.
@@ -332,7 +397,9 @@ export function hasSharedRealtimeIntent(
 ): boolean {
   const normalized = message.normalize("NFKC").trim();
   return Boolean(
-    classifyPublicIntent(normalized) || sharedSelectedGroundingMetadata(history, normalized),
+    (isSharedPublicSearchSafe(normalized) && sharedPublicGoogleProductQuery(normalized)) ||
+      classifyPublicIntent(normalized) ||
+      sharedSelectedGroundingMetadata(history, normalized),
   );
 }
 
@@ -343,6 +410,8 @@ export function resolveSharedRealtimeRequirement(
 ): SharedRealtimeRequirement | undefined {
   const normalized = message.normalize("NFKC").trim();
   if (!isSharedPublicSearchSafe(normalized)) return undefined;
+  // Public Google product queries use the canonical complete-topic general path.
+  if (sharedPublicGoogleProductQuery(normalized)) return undefined;
   const direct = classifyPublicStandalone(normalized);
   const correction = CORRECTION.test(normalized);
   if (direct) {
@@ -773,15 +842,58 @@ export function validateSharedRealtimeReply(reply: string, grounding: AvailableG
   return count > 0 && reply.slice(cursor).trim().length === 0;
 }
 
+/**
+ * Rewrites a natural citation (Markdown link, `<url>`, `(url)` or bare URL) as
+ * the internal source marker, only when the URL is a complete source in the
+ * current receipt. The claim before it is still checked by `claimSupported`,
+ * so citation spelling grants no source or factual authority. URLs outside the
+ * receipt are left in place and keep failing the claim's URL check.
+ */
+export function normalizeSharedPublicCitations(
+  reply: string,
+  grounding: AvailableGrounding,
+): string {
+  SOURCE_MARKER.lastIndex = 0;
+  // A malformed explicit marker is rejected as before, never repaired.
+  if (/\[\[SOURCE_URL:/iu.test(reply.replace(SOURCE_MARKER, ""))) return reply;
+  return reply.replace(
+    /\[\[SOURCE_URL:https?:\/\/[^\]\s]+\]\]|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s<>]+)>|\((https?:\/\/[^\s<>()]+)\)|https?:\/\/[^\s<>"'\]]+/giu,
+    (
+      token: string,
+      label: string | undefined,
+      markdownUrl: string | undefined,
+      angleUrl: string | undefined,
+      parenthesizedUrl: string | undefined,
+    ) => {
+      if (token.startsWith("[[")) return token;
+      const wrapped = markdownUrl ?? angleUrl ?? parenthesizedUrl;
+      const url = wrapped ?? token.replace(/[),.;]+$/u, "");
+      const source = sourceForUrl(grounding, url);
+      if (!source) return token;
+      // A link label that could assert a fact stays in the checked claim.
+      const text = label?.trim() ?? "";
+      const host = new URL(source.url).hostname.replace(/^www\./u, "");
+      const neutral =
+        !text ||
+        /^(?:source|sources|link|\d+)$/iu.test(text) ||
+        text.toLowerCase() === host ||
+        text.toLowerCase() === host.split(".")[0];
+      return `${neutral ? "" : text} [[SOURCE_URL:${source.url}]]${wrapped ? "" : token.slice(url.length)}`;
+    },
+  );
+}
+
 function supportedRealtimeReply(
   reply: string,
   grounding: AvailableGrounding,
   onRefusal?: (diagnostic: SharedRealtimeBindingDiagnostic) => void,
 ): { reply: string; selectedUrls: string[]; omittedUnsupported: boolean } | undefined {
   if (!hasTraceableRealtimeGrounding(grounding)) return undefined;
+  reply = normalizeSharedPublicCitations(reply, grounding);
   SOURCE_MARKER.lastIndex = 0;
   let cursor = 0;
   let omittedUnsupported = false;
+  let lastSegmentAccepted = false;
   const diagnostic = {
     markerCount: 0,
     knownSourceMarkerCount: 0,
@@ -799,12 +911,21 @@ function supportedRealtimeReply(
     if (source && claimSupported(claim, source, diagnostic)) {
       segments.push(claim);
       selectedUrls.push(marker[1]);
+      lastSegmentAccepted = true;
     } else {
       omittedUnsupported = true;
+      lastSegmentAccepted = false;
     }
     cursor = (marker.index ?? 0) + marker[0].length;
   }
-  if (reply.slice(cursor).trim()) omittedUnsupported = true;
+  const tail = reply.slice(cursor).trim();
+  if (tail && /^[.!?,;:…)\]]+$/u.test(tail)) {
+    // Closing punctuation after the last citation is not an uncited claim. It
+    // is kept only with an accepted segment, never with omitted text.
+    if (lastSegmentAccepted) segments[segments.length - 1] += tail;
+  } else if (tail) {
+    omittedUnsupported = true;
+  }
   if (segments.length === 0 && onRefusal) {
     try {
       onRefusal({

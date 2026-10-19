@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { buildCompiledShim, locateCompiledShim } from "./aosp/compile-shim.ts";
 import {
   resolvePinnedBunArtifact,
   stagePinnedBunArtifact,
@@ -382,11 +383,19 @@ test("SIGSYS shim restaging preserves the real loader when the wrapper exceeds 2
     // loader on a second staging pass and overwrote `<ldName>.real` with it.
     const wrapper = elfImage(2 /* ET_EXEC */, 1_064_168);
     const loader = elfImage(3 /* ET_DYN */, 600 * 1024);
-    fs.writeFileSync(path.join(abiCacheDir, ldName), wrapper);
-    fs.writeFileSync(
-      path.join(abiCacheDir, "libsigsys-handler.so"),
-      Buffer.from("shim"),
-    );
+    buildCompiledShim({
+      cacheDir,
+      abi: "arm64-v8a",
+      zigVersion: "0.13.0",
+      log: () => {},
+      spawn: (_command, args) => {
+        const out = args[args.indexOf("-o") + 1];
+        fs.writeFileSync(
+          out,
+          path.basename(out) === ldName ? wrapper : Buffer.from("shim"),
+        );
+      },
+    });
     // Fresh assets dir holds the extracted Alpine loader.
     fs.writeFileSync(path.join(abiAssetsDir, ldName), loader);
 
@@ -762,5 +771,114 @@ test("Alpine apk extraction failures propagate and are not cached as extracted",
     assert.equal(fs.existsSync(path.join(archCache, ".extracted")), false);
   } finally {
     removePathRecursive(cacheDir);
+  }
+});
+
+test("staging refuses legacy and changed shim pairs before modifying assets", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "eliza-seccomp-stale-"));
+  try {
+    const cacheDir = path.join(tmp, "cache"),
+      abiAssetsDir = path.join(tmp, "assets");
+    const abi = "x86_64",
+      ldName = "ld-musl-x86_64.so.1";
+    const directory = path.join(cacheDir, abi);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(abiAssetsDir);
+    const loader = elfImage(3, 1024);
+    fs.writeFileSync(path.join(abiAssetsDir, ldName), loader);
+    fs.writeFileSync(path.join(directory, ldName), elfImage(2, 1024));
+    fs.writeFileSync(
+      path.join(directory, "libsigsys-handler.so"),
+      "old compiled shim",
+    );
+    const stage = () =>
+      stageSeccompShimForAbi({
+        androidAbi: abi,
+        ldName,
+        abiAssetsDir,
+        cacheDir,
+      });
+    withEnv({ ELIZA_SECCOMP_SHIM_NO_AUTOPROVISION: "1" }, () => {
+      assert.throws(stage, /cache source\/output identity is stale/);
+      assert.deepEqual(
+        fs.readFileSync(path.join(abiAssetsDir, ldName)),
+        loader,
+      );
+      buildCompiledShim({
+        cacheDir,
+        abi,
+        zigVersion: "0.13.0",
+        log: () => {},
+        spawn: (_command, args) => {
+          fs.writeFileSync(
+            args[args.indexOf("-o") + 1],
+            "new compiled artifact",
+          );
+        },
+      });
+      assert.ok(locateCompiledShim({ cacheDir, abi }));
+      fs.appendFileSync(
+        path.join(directory, "libsigsys-handler.so"),
+        "changed",
+      );
+      assert.throws(stage, /cache source\/output identity is stale/);
+      assert.deepEqual(
+        fs.readFileSync(path.join(abiAssetsDir, ldName)),
+        loader,
+      );
+    });
+  } finally {
+    removePathRecursive(tmp);
+  }
+});
+
+test("staging keeps the admitted pair when another worktree replaces the cache", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "eliza-seccomp-race-"));
+  try {
+    const cacheDir = path.join(tmp, "cache"),
+      abiAssetsDir = path.join(tmp, "assets");
+    const abi = "x86_64",
+      ldName = "ld-musl-x86_64.so.1";
+    fs.mkdirSync(abiAssetsDir);
+    const loader = elfImage(3, 1024);
+    fs.writeFileSync(path.join(abiAssetsDir, ldName), loader);
+    const admitted = buildCompiledShim({
+      cacheDir,
+      abi,
+      zigVersion: "0.13.0",
+      log: () => {},
+      spawn: (_command, args) =>
+        fs.writeFileSync(args[args.indexOf("-o") + 1], "admitted artifact"),
+    });
+    let replaced = false;
+    stageSeccompShimForAbi({
+      androidAbi: abi,
+      ldName,
+      abiAssetsDir,
+      cacheDir,
+      log: (message) => {
+        if (!message.startsWith("Renamed Alpine")) return;
+        fs.writeFileSync(admitted.shim, "other worktree shim");
+        fs.writeFileSync(admitted.wrap, "other worktree wrapper");
+        replaced = true;
+      },
+    });
+    assert.equal(
+      replaced,
+      true,
+      "replace cache after admission, before output staging",
+    );
+    for (const name of [ldName, "libsigsys-handler.so"])
+      assert.equal(
+        fs.readFileSync(path.join(abiAssetsDir, name), "utf8"),
+        "admitted artifact",
+      );
+    assert.deepEqual(
+      fs.readFileSync(path.join(abiAssetsDir, `${ldName}.real`)),
+      loader,
+    );
+    assert.equal(locateCompiledShim({ cacheDir, abi }), null);
+  } finally {
+    removePathRecursive(tmp);
   }
 });

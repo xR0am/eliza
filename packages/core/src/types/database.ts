@@ -1434,6 +1434,7 @@ export interface IDatabaseAdapter<DB extends object = object> {
 			entityId: UUID;
 			roomId: UUID;
 			type: string;
+			createdAt?: Date;
 		}>,
 	): Promise<void>;
 
@@ -2109,5 +2110,6 @@ export const VECTOR_DIMS = {
 	LARGE: 768,
 	XL: 1024,
 	XXL: 1536,
+	XXL2: 2048,
 	XXXL: 3072,
 } as const;

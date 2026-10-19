@@ -365,12 +365,6 @@
         "default": "nova",
         "sensitive": false
       },
-      "ELIZAOS_CLOUD_TTS_INSTRUCTIONS": {
-        "type": "string",
-        "description": "Optional instructions to control the style or behavior of the text-to-speech request.",
-        "required": false,
-        "sensitive": false
-      },
       "ELIZAOS_CLOUD_EXPERIMENTAL_TELEMETRY": {
         "type": "boolean",
         "description": "Enable experimental telemetry features for enhanced debugging and usage analytics.",
@@ -380,16 +374,9 @@
       },
       "ELIZAOS_CLOUD_ENABLED": {
         "type": "boolean",
-        "description": "Enable ElizaCloud container provisioning, device auth, bridge, and backup services. When false, only inference model handlers are active.",
+        "description": "Enable ElizaCloud container provisioning and bridge services. When false, only inference model handlers are active.",
         "required": false,
         "default": false,
-        "sensitive": false
-      },
-      "ELIZAOS_CLOUD_APP_VERSION": {
-        "type": "string",
-        "description": "Application version sent during device authentication.",
-        "required": false,
-        "default": "2.0.0-beta.0",
         "sensitive": false
       }
     }

@@ -333,3 +333,47 @@ checks organization/source restrictions, and inspects complete bounded applied
 origin history. Matching origins must agree on nominal terms; all matches are
 retained deterministically. It can join the caller's transaction for publication
 revalidation, but writes no decision or allowance and enables no maintenance lane.
+
+Network turns retain server-owned app authority while using the account's original
+Personal assistant and canonical history. `NETWORK_PERSONAL_CONTINUITY_ENABLED`
+defaults off pending legacy history/todo/reminder inventory, reviewed migration
+receipts and staging qualification. This code creates no alias or migration.
+
+The canonical conversation owner persists delivery intent before gateway I/O,
+serializes sends with cutover/deletion, stores verified provider receipts before
+history append, and replays completion without resending. Unknown outcomes permit
+only read-only receipt recovery through the existing room alarm. Pending delivery
+fences lifecycle changes until resolved. Dedicated ownership refuses before send.
+
+Gateway handled turns require authenticated channel provenance and a signed service
+admission. Eligible first contacts use the existing phone account owner and record
+inbound plus accepted replies in that same history. Proactive/relay traffic never
+creates accounts. Ineligible policy acknowledgements create no Cloud account or
+history. STOP remains line-wide; a newer scoped START permits only its own app.
+
+Network membership, invitations, availability, and consent are owned by the signed
+Network service. Cloud keeps no parallel Network membership tables or invitation
+fallback. Legacy spike schemas and separate histories remain saved on the original
+integration branch; this candidate performs no database migration or history import.
+
+Sponsored pilot admission uses the append-only campaign, invitation and redemption
+ledger in migration 0541. The internal repository locks the existing app billing
+scope, validates its current administrator, and records six UTC calendar months
+from the post-lock database time. One account principal can redeem once per app
+and environment; retries retain the original dates. Campaign terms are immutable
+and revocation is permanent. Operators must provision unguessable random codes,
+store only their digest, select a published monthly plan and invite eligible
+principals. No campaign is seeded by the migration.
+
+Migration 0543 publishes access and six separate monthly, non-rollover allowances
+in the redemption transaction. Each month receives the immutable selected plan's
+paid allowance for one seat. No Stripe subscription or invoice is fabricated.
+App inference reserves participant allowance and real developer infrastructure
+funds together. It rechecks revocation and time before dispatch; settlement and
+release retain their original accounting after expiry or revocation. Active pilot
+access prevents a paid checkout. Usage records identify pilot funding explicitly.
+
+A failed publication rolls back redemption and campaign capacity. The public
+redemption/readback API and product UI are still required before enabling a
+pilot campaign. Real providers, registered app configuration and device/user
+acceptance remain separate gates.

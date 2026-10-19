@@ -4,8 +4,9 @@
  * explicit messageId or a natural-language lookup through the TriageService),
  * drafts a reply, and then either sends immediately or, when a SendPolicy is
  * registered, hands the draft off for owner approval. When the request omits a
- * concrete body it synthesizes a conservative, approval-gated acknowledgment
- * from the original message's subject/snippet rather than guessing content.
+ * concrete body it synthesizes a conservative acknowledgment from the original
+ * message's subject/snippet; that reply is always held for approval, and is
+ * refused when no SendPolicy is registered to hold it.
  */
 
 import type {
@@ -77,7 +78,7 @@ export const respondToMessageAction: Action = {
   description:
     "Reply to a message in one step. Use this when the user asks to send/respond/reply now, including natural-language targets like last email from finance; pass messageId when known, otherwise pass sender/content hints. Drafts the reply, then sends or queues it for owner approval per the registered SendPolicy.",
   descriptionCompressed:
-    "reply to message by messageId/latest/sender/content; send policy-gated",
+    "reply to message by messageId or sender/content hint; send policy-gated",
   similes: ["REPLY_TO_MESSAGE", "QUICK_REPLY", "ONE_SHOT_REPLY"],
   parameters: [
     { ...messageIdParameter, required: false },
@@ -137,6 +138,14 @@ export const respondToMessageAction: Action = {
       return { success: false, text: parsed.error, error: parsed.error };
     }
 
+    const policy = getSendPolicy(runtime);
+    if (parsed.body === undefined && !policy) {
+      const text =
+        "body is required: no send policy is registered to hold a generated acknowledgment for approval";
+      logger.warn(`[RespondToMessage] ${text}`);
+      return { success: false, text, error: text };
+    }
+
     const service = getDefaultTriageService();
     const messageId = await resolveTargetMessageId(runtime, service, parsed);
     if (!messageId) {
@@ -144,12 +153,12 @@ export const respondToMessageAction: Action = {
       logger.warn(`[RespondToMessage] ${text}`);
       return { success: false, text, error: text };
     }
-    const original = service.getStore().getMessage(messageId) ?? undefined;
+    const original =
+      service.getStore().getMessage(messageId, runtime.agentId) ?? undefined;
     const body = parsed.body ?? fallbackReplyBody(original);
-    const record = await service.draftReply(runtime, messageId, body);
+    const record = await service.draftReply(runtime, messageId, body, _message);
 
     const consentDigest = draftConsentDigest(record);
-    const policy = getSendPolicy(runtime);
     if (policy) {
       const draftReq: DraftRequest = {
         source: record.source,
@@ -162,11 +171,14 @@ export const respondToMessageAction: Action = {
         channelId: record.channelId,
         metadata: record.metadata,
       };
-      const required = await policy.shouldRequireApproval(runtime, draftReq);
+      // A generated acknowledgment was never seen by the owner: always hold it.
+      const required =
+        parsed.body === undefined ||
+        (await policy.shouldRequireApproval(runtime, draftReq));
       if (required) {
         const enq = await policy.enqueueApproval(runtime, draftReq, () =>
           service
-            .sendDraft(runtime, record.draftId, consentDigest)
+            .sendDraft(runtime, record.draftId, consentDigest, _message)
             .then((r) => ({
               externalId: r.sentExternalId ?? `pending:${r.draftId}`,
             })),
@@ -205,6 +217,7 @@ export const respondToMessageAction: Action = {
       runtime,
       record.draftId,
       consentDigest,
+      _message,
     );
     const text = `Replied on ${sent.source}.`;
     logger.info(

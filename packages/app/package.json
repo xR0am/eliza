@@ -9,7 +9,7 @@
     "typecheck": "bun run typecheck:host && bun run typecheck:renderer && bun run typecheck:consumer-build",
     "check:source-artifacts": "node scripts/check-source-artifacts.ts",
     "test": "bun run test:renderer && bun run test:host",
-    "test:script-suites": "bun run test:consumer-host && python3 scripts/local-speech/test-runner.py && node scripts/run-script-tests.ts && bun test ./src/runtime/mobile-auth-composition.integration.test.ts ./src/runtime/mobile-workflow-process-host.integration.test.ts",
+    "test:script-suites": "bun run test:consumer-host && node scripts/run-script-tests.ts && bun test ./src/runtime/mobile-auth-composition.integration.test.ts ./src/runtime/mobile-workflow-process-host.integration.test.ts",
     "test:auth": "node ../scripts/run-vitest.ts run --config vitest.host.config.ts --no-file-parallelism src/api/auth src/api/auth-bootstrap-routes src/services/auth-store src/services/auth-record-store src/cli/program/register.auth",
     "test:local-provisioning": "node scripts/run-node-tsx.ts scripts/check-real-local-provisioning.ts",
     "test:local-chat": "node scripts/run-node-tsx.ts scripts/check-real-local-chat.ts",
@@ -205,14 +205,14 @@
     "test:host": "node ../scripts/run-vitest.ts run --config vitest.host.config.ts && bun run test:script-suites",
     "typecheck:renderer": "tsc --noEmit -p tsconfig.typecheck.json",
     "typecheck:host": "tsc --noEmit -p tsconfig.host.json",
-    "test:tts:standalone": "bun --no-install --conditions=eliza-source scripts/qualify-standalone-kokoro.ts",
+    "test:speech:standalone": "bun --no-install --conditions=eliza-source scripts/qualify-standalone-speech.ts",
     "build:consumer-tasks": "node scripts/build-consumer-task-runtime.mjs",
     "typecheck:consumer-build": "tsc --noEmit -p scripts/tsconfig.consumer-build.json",
     "test:consumer-host": "node --test test/native-host/*.test.mjs scripts/mobile/android/build-consumer.test.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.0",
-    "@capacitor/android": "8.5.0",
+    "@capacitor/android": "8.5.1",
     "@capacitor/app": "8.1.1",
     "@capacitor/background-runner": "^3.0.0",
     "@capacitor/barcode-scanner": "3.1.2",
@@ -221,7 +221,7 @@
     "@capacitor/device": "8.0.3",
     "@capacitor/filesystem": "^8.0.0",
     "@capacitor/haptics": "8.0.2",
-    "@capacitor/ios": "8.5.0",
+    "@capacitor/ios": "8.5.3",
     "@capacitor/keyboard": "8.0.5",
     "@capacitor/local-notifications": "^8.0.0",
     "@capacitor/network": "^8.0.0",
@@ -329,11 +329,11 @@
     "@elizaos/voice": "workspace:*"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.5.2",
+    "@capacitor/cli": "8.5.3",
     "@elizaos/cloud-sdk": "workspace:*",
     "@elizaos/plugin-sqlite": "workspace:*",
     "@elizaos/testing": "workspace:*",
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.0",
     "@tailwindcss/postcss": "^4.3.1",
     "@tailwindcss/vite": "^4.3.1",
     "@testing-library/user-event": "^14.6.7",
@@ -341,7 +341,7 @@
     "@types/react-dom": "^19.3.0",
     "@types/ws": "^8.18.1",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@vitejs/plugin-react": "^6.1.1",
+    "@vitejs/plugin-react": "^6.1.2",
     "adze": "^2.3.0",
     "ai": "^6.0.23",
     "bun-types": "1.4.2",
@@ -353,9 +353,9 @@
     "jsdom": "^30.1.2",
     "nodemailer": "^10.0.12",
     "pathe": "^2.0.3",
-    "playwright": "^1.63.0",
+    "playwright": "^1.64.0",
     "playwright-core": "^1.58.2",
-    "postcss": "^8.5.16",
+    "postcss": "^8.5.29",
     "puppeteer-core": "^24.43.1",
     "react-test-renderer": "19.2.7",
     "rollup-plugin-visualizer": "^7.0.1",
@@ -369,7 +369,7 @@
     "viem": "^2.56.9",
     "vite": "^8.3.0",
     "vitest": "^5.0.3",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.1"
   },
   "elizaos": {
     "app": {

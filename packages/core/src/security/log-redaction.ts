@@ -68,15 +68,19 @@ const SENSITIVE_KEY_EXACT: ReadonlySet<string> = new Set([
  * shared by log sinks and model-output redaction.
  */
 const NON_SECRET_TOKEN_METADATA_KEYS: ReadonlySet<string> = new Set([
+	"budgettokens",
 	"cachecreationinputtokens",
 	"cachereadinputtokens",
 	"completiontokens",
 	"compactionthresholdtokens",
 	"contextwindowtokens",
 	"estimatedinputtokens",
+	"finalprompttokens",
 	"inputtokens",
 	"maxtokens",
 	"maxtokensomitted",
+	"originalprompttokens",
+	"outputreservetokens",
 	"outputtokens",
 	"prompttokens",
 	"reasoningtokens",
@@ -172,8 +176,11 @@ export const SENSITIVE_TEXT_PATTERNS: readonly string[] = [
 	String.raw`\bBearer\s+([A-Za-z0-9._\-+=]{18,})\b`,
 	// URI userinfo (database URLs, curl arguments, remotes carrying passwords).
 	String.raw`\b[a-z][a-z0-9+.-]*:\/\/([^\s/@]+)@`,
-	// PEM blocks.
-	String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----`,
+	// PEM blocks. The body stops at the next BEGIN header, and a block with no
+	// END before that header ends there, so each header scans only to its END
+	// or the next header. An unbounded body rescanned the rest of the text for
+	// every header without an END: quadratic on untrusted log text.
+	String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S])+?(?:-----END [A-Z ]*PRIVATE KEY-----|(?=-----BEGIN [A-Z ]*PRIVATE KEY-----))|-----BEGIN [A-Z ]*PRIVATE KEY-----(?=-----BEGIN [A-Z ]*PRIVATE KEY-----)`,
 	// Common token prefixes.
 	String.raw`\b(sk-[A-Za-z0-9_-]{8,})\b`,
 	String.raw`\b(csk-[A-Za-z0-9_-]{8,})\b`,
@@ -189,7 +196,9 @@ export const SENSITIVE_TEXT_PATTERNS: readonly string[] = [
 	String.raw`\b(AIza[0-9A-Za-z\-_]{20,})\b`,
 	String.raw`\b(pplx-[A-Za-z0-9_-]{10,})\b`,
 	String.raw`\b(npm_[A-Za-z0-9]{10,})\b`,
-	String.raw`\b(\d{6,}:[A-Za-z0-9_-]{20,})\b`,
+	// Bot tokens (`<bot id>:<secret>`). A digit run after a UUID group and `-`
+	// is the last group of a UUID, as in `<uuid>:<uuid>` receipt IDs, not a bot id.
+	String.raw`(?<![0-9A-Fa-f]{4}-)\b(\d{6,}:[A-Za-z0-9_-]{20,})\b`,
 	// Google OAuth refresh (`1//0…`) and access (`ya29.…`) tokens; neither shape
 	// survives a `\b`-anchored alphanumeric pattern.
 	String.raw`/(1\/\/[A-Za-z0-9_\-]{10,})/g`,

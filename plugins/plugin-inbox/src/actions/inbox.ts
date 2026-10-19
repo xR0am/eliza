@@ -106,6 +106,11 @@ export interface InboxItem {
   readonly snippet: string;
   readonly receivedAt: string;
   readonly threadTopic?: string;
+  /**
+   * The conversation this message belongs to, scoped to its account
+   * (`worldId:threadId`); absent when the source has no thread.
+   */
+  readonly threadKey?: string;
   readonly deepLink?: string;
   readonly unread?: boolean;
 }
@@ -181,14 +186,13 @@ export type InboxSendAuthorization =
  */
 export type InboxFetcher = (args: {
   runtime: IAgentRuntime;
+  requester?: Memory;
   since?: string;
   limit?: number;
   query?: string;
 }) => Promise<readonly InboxItem[]>;
 
 export type InboxFetchers = Record<InboxPlatform, InboxFetcher>;
-
-const noopFetcher: InboxFetcher = async () => [];
 
 const PLATFORM_TO_MESSAGE_SOURCE: Partial<
   Record<InboxPlatform, MessageSource>
@@ -211,6 +215,9 @@ function mapMessageRefToInboxItem(ref: MessageRef): InboxItem | null {
     snippet: ref.snippet,
     receivedAt: new Date(ref.receivedAtMs).toISOString(),
     ...(ref.subject ? { threadTopic: ref.subject } : {}),
+    ...(ref.threadId
+      ? { threadKey: `${ref.worldId ?? ""}:${ref.threadId}` }
+      : {}),
     ...(typeof ref.metadata?.htmlLink === "string"
       ? { deepLink: ref.metadata.htmlLink }
       : {}),
@@ -235,8 +242,14 @@ function canonicalSince(value: unknown): string | undefined {
 
 function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
   const source = PLATFORM_TO_MESSAGE_SOURCE[platform];
-  if (!source) return noopFetcher;
-  return async ({ runtime, since, limit, query }) => {
+  if (!source) {
+    // No triage source exists for this platform (slack). It was never
+    // checked, so it must land in `degraded`, not read as an empty feed.
+    return async () => {
+      throw new Error(`no inbox source registered for ${platform}`);
+    };
+  }
+  return async ({ runtime, since, limit, query, requester }) => {
     if (typeof runtime.getService !== "function") return [];
     try {
       const service = getDefaultTriageService();
@@ -249,14 +262,20 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
         );
       }
       const refs = query
-        ? await service.search(runtime, {
-            sources: [source],
-            content: query,
-            sinceMs: parseSinceMs(since),
-            ...(limit === undefined ? {} : { limit }),
-          })
+        ? await service.search(
+            runtime,
+            {
+              sources: [source],
+              requester,
+              content: query,
+              sinceMs: parseSinceMs(since),
+              ...(limit === undefined ? {} : { limit }),
+            },
+            { probeOverflow: false },
+          )
         : await service.triage(runtime, {
             sources: [source],
+            requester,
             sinceMs: parseSinceMs(since),
             ...(limit === undefined ? {} : { limit }),
           });
@@ -278,7 +297,7 @@ function createDefaultPlatformFetcher(platform: InboxPlatform): InboxFetcher {
 
 const defaultFetchers: InboxFetchers = {
   gmail: createDefaultPlatformFetcher("gmail"),
-  slack: noopFetcher,
+  slack: createDefaultPlatformFetcher("slack"),
   discord: createDefaultPlatformFetcher("discord"),
   telegram: createDefaultPlatformFetcher("telegram"),
   imessage: createDefaultPlatformFetcher("imessage"),
@@ -343,9 +362,14 @@ function resolvePlatforms(
   return [...seen];
 }
 
+/**
+ * One row per conversation: messages of one thread collapse to the newest. A
+ * subject is not a thread (two senders can both write "Quick question"), so
+ * only the source's own thread id groups messages.
+ */
 function dedupeKey(item: InboxItem): string {
-  if (item.threadTopic && item.threadTopic.length > 0) {
-    return `topic:${item.threadTopic.toLowerCase()}::${item.platform}::${item.channel}`;
+  if (item.threadKey) {
+    return `thread:${item.platform}::${item.threadKey}`;
   }
   return `id:${item.platform}::${item.id}`;
 }
@@ -394,6 +418,7 @@ export function dedupeAndOrder(
  */
 async function fetchInboxItems(args: {
   runtime: IAgentRuntime;
+  requester?: Memory;
   platforms: readonly InboxPlatform[];
   since?: string;
   limit?: number;
@@ -410,6 +435,7 @@ async function fetchInboxItems(args: {
       const fetcher = activeFetchers[platform];
       return fetcher({
         runtime: args.runtime,
+        requester: args.requester,
         ...(args.since ? { since: args.since } : {}),
         ...(probeLimit === undefined ? {} : { limit: probeLimit }),
         ...(args.query ? { query: args.query } : {}),
@@ -477,8 +503,13 @@ function fetchScopeSuffix(args: {
  * contract, enriching from the canonical {@link MessageRef} in the core triage
  * store when one exists (full body text, group/DM shape, thread + room ids).
  */
-function toInboundMessage(item: InboxItem): InboundMessage {
-  const ref = getDefaultTriageService().getStore().getMessage(item.id);
+function toInboundMessage(
+  runtime: IAgentRuntime,
+  item: InboxItem,
+): InboundMessage {
+  const ref = getDefaultTriageService()
+    .getStore()
+    .getMessage(item.id, runtime.agentId);
   const timestamp = ref?.receivedAtMs ?? Date.parse(item.receivedAt);
   if (!Number.isFinite(timestamp)) {
     throw new Error(
@@ -636,32 +667,35 @@ function seedMessageRefForEntry(
   const messageId = ensureSourceMessageId(entry);
   const threadId = entry.sourceRoomId ?? entry.sourceMessageId;
   const service = getDefaultTriageService();
-  if (service.getStore().getMessage(messageId)) return;
-  service.getStore().saveMessage({
-    id: messageId,
-    source,
-    externalId: messageId,
-    from: {
-      identifier: entry.sourceEntityId ?? entry.senderName ?? messageId,
-      ...(entry.senderName ? { displayName: entry.senderName } : {}),
+  if (service.getStore().getMessage(messageId, runtime.agentId)) return;
+  service.getStore().saveMessage(
+    {
+      id: messageId,
+      source,
+      externalId: messageId,
+      from: {
+        identifier: entry.sourceEntityId ?? entry.senderName ?? messageId,
+        ...(entry.senderName ? { displayName: entry.senderName } : {}),
+      },
+      to: [{ identifier: runtime.agentId }],
+      snippet: entry.snippet,
+      body: entry.threadContext?.join("\n") ?? entry.snippet,
+      receivedAtMs: inboxReceivedAtMs(entry.createdAt),
+      hasAttachments: false,
+      isRead: false,
+      metadata: {
+        inboxEntryId: entry.id,
+        deepLink: entry.deepLink,
+        triageReasoning: entry.triageReasoning,
+      },
+      ...(threadId ? { threadId } : {}),
+      ...(entry.source === "gmail" ? { subject: entry.channelName } : {}),
+      ...(entry.sourceRoomId
+        ? { worldId: entry.sourceRoomId, channelId: entry.sourceRoomId }
+        : {}),
     },
-    to: [{ identifier: runtime.agentId }],
-    snippet: entry.snippet,
-    body: entry.threadContext?.join("\n") ?? entry.snippet,
-    receivedAtMs: inboxReceivedAtMs(entry.createdAt),
-    hasAttachments: false,
-    isRead: false,
-    metadata: {
-      inboxEntryId: entry.id,
-      deepLink: entry.deepLink,
-      triageReasoning: entry.triageReasoning,
-    },
-    ...(threadId ? { threadId } : {}),
-    ...(entry.source === "gmail" ? { subject: entry.channelName } : {}),
-    ...(entry.sourceRoomId
-      ? { worldId: entry.sourceRoomId, channelId: entry.sourceRoomId }
-      : {}),
-  });
+    runtime.agentId,
+  );
 }
 
 async function replyToEntry(args: {
@@ -809,18 +843,43 @@ export async function executeInboxQueueOperation(args: {
       //    `classification` narrows the queue returned below; it must not skip
       //    the LLM classifier for a fresh triage request.
       const since = canonicalSince(args.params.since);
+      // An empty resolved list means every named platform was unknown. Fetching
+      // nothing would report the old queue as a completed triage.
+      const platforms = resolvePlatforms(args.params.platforms);
+      if (platforms.length === 0) {
+        return {
+          success: false,
+          text: "No supported platforms were specified.",
+          data: { subaction: "triage", error: "NO_PLATFORMS" },
+        };
+      }
       const { merged, degraded, capped } = await fetchInboxItems({
         runtime: args.runtime,
-        platforms: resolvePlatforms(args.params.platforms),
+        requester:
+          args.authorization.kind === "turn"
+            ? args.authorization.message
+            : undefined,
+        platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),
       });
-      const alreadyTriaged = await repo.getBySourceMessageIds(
-        merged.map((item) => item.id),
+      const alreadyTriagedByPlatform = new Map<InboxPlatform, Set<string>>();
+      await Promise.all(
+        platforms.map(async (platform) => {
+          const ids = merged
+            .filter((item) => item.platform === platform)
+            .map((item) => item.id);
+          alreadyTriagedByPlatform.set(
+            platform,
+            await repo.getBySourceMessageIds(platform, ids),
+          );
+        }),
       );
       const freshMessages = merged
-        .filter((item) => !alreadyTriaged.has(item.id))
-        .map((item) => toInboundMessage(item));
+        .filter(
+          (item) => !alreadyTriagedByPlatform.get(item.platform)?.has(item.id),
+        )
+        .map((item) => toInboundMessage(args.runtime, item));
       if (freshMessages.length > 0) {
         const service = new InboxService(args.runtime);
         const { triaged } = await service.triage(freshMessages);
@@ -1016,9 +1075,9 @@ export const inboxAction: Action & {
     "surface:internal",
   ],
   description:
-    "Inbox: Gmail, Slack, Discord, Telegram, iMessage, WhatsApp. Merge recency feed and operate the persisted triage queue. Subactions: list, search, summarize, triage (AI-classify new messages into urgent / needs_reply / notify / info / ignore, then return the prioritized queue), reply, snooze, archive, approve.",
+    "Inbox: Gmail, Discord, Telegram, iMessage, WhatsApp. Merge recency feed and operate the persisted triage queue. Subactions: list, search, summarize, triage (AI-classify new messages into urgent / needs_reply / notify / info / ignore, then return the prioritized queue), reply, snooze, archive, approve.",
   descriptionCompressed:
-    "INBOX list|search|summarize|triage(classify urgent/needs_reply/noise)|reply|snooze|archive|approve gmail|slack|discord|telegram|imessage|whatsapp",
+    "INBOX list|search|summarize|triage(classify urgent/needs_reply/noise)|reply|snooze|archive|approve gmail|discord|telegram|imessage|whatsapp",
   routingHint:
     'cross-channel inbox ("show inbox", "all messages", "search every channel", "summarize inboxes") -> INBOX; "triage my inbox" / "what needs my attention" -> INBOX triage; per-channel -> MESSAGE',
   contexts: ["inbox", "messaging", "cross-channel"],
@@ -1036,7 +1095,10 @@ export const inboxAction: Action & {
       name: "platforms",
       description:
         "Optional platform filter: gmail | slack | discord | telegram | imessage | whatsapp. Default all.",
-      schema: { type: "array" as const, items: { type: "string" as const } },
+      schema: {
+        type: "array" as const,
+        items: { type: "string" as const, enum: [...PLATFORMS] },
+      },
     },
     {
       name: "since",
@@ -1045,7 +1107,8 @@ export const inboxAction: Action & {
     },
     {
       name: "limit",
-      description: "Limit per platform. Default 50.",
+      description:
+        "Optional limit per platform. No limit is applied when omitted.",
       schema: { type: "number" as const },
     },
     {
@@ -1188,6 +1251,7 @@ export const inboxAction: Action & {
     const { merged, totalBeforeDedupe, degraded, capped } =
       await fetchInboxItems({
         runtime,
+        requester: message,
         platforms,
         ...(since ? { since } : {}),
         ...(limit === undefined ? {} : { limit }),

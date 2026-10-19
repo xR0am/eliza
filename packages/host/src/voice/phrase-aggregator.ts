@@ -41,6 +41,8 @@ export interface PhraseAggregatorOptions {
 export class PhraseAggregator {
   private buffer = "";
   private emittedCount = 0;
+  /** A "." after a digit waits one char: "3.50" is a number, "3. " ends a sentence. */
+  private dotAfterDigit = false;
   private readonly maxBufferChars: number;
   private readonly minEmitChars: number;
   private readonly preferWordBoundaryAtMax: boolean;
@@ -65,8 +67,19 @@ export class PhraseAggregator {
     if (!delta) return [];
     const phrases: string[] = [];
     for (const ch of delta) {
+      if (this.dotAfterDigit) {
+        this.dotAfterDigit = false;
+        if (!/\p{Nd}/u.test(ch)) {
+          const phrase = this.take();
+          if (phrase) phrases.push(phrase);
+        }
+      }
       this.buffer += ch;
       if (TERMINATORS.has(ch)) {
+        if (ch === "." && /\p{Nd}\.$/u.test(this.buffer)) {
+          this.dotAfterDigit = true;
+          continue;
+        }
         const phrase = this.take();
         if (phrase) phrases.push(phrase);
         continue;
@@ -105,17 +118,25 @@ export class PhraseAggregator {
    * the remaining text or null if nothing speakable is left.
    */
   flush(): string | null {
+    const tail = this.buffer.trim();
+    if (tail.length > 0 && tail.length < this.minEmitChars) {
+      this.reset();
+      this.emittedCount += 1;
+      return tail;
+    }
     return this.take();
   }
 
   /** Discard buffered text without emitting — used on interruption. */
   reset(): void {
     this.buffer = "";
+    this.dotAfterDigit = false;
   }
 
   private take(): string | null {
     const trimmed = this.buffer.trim();
     this.buffer = "";
+    this.dotAfterDigit = false;
     if (trimmed.length < this.minEmitChars) {
       return null;
     }

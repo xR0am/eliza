@@ -30,6 +30,7 @@ import type {
   ProvisioningRecoverySummary,
   RecoveryResult,
 } from "@elizaos/cloud-shared/node";
+import { parsePositiveInt } from "./config-integer";
 
 type WorkerLogger =
   typeof import("@elizaos/cloud-shared/lib/utils/logger").logger;
@@ -202,33 +203,6 @@ const DEFAULT_DB_LIVENESS_MAX_AGE_HOURS = 24;
 // is synchronous, the shared module is loaded lazily).
 const DEFAULT_DB_HEARTBEAT_MAX_AGE_MINUTES = 15;
 const workerStartedAt = new Date();
-
-function parsePositiveInt(
-  value: string | undefined,
-  fallback: number,
-  label = "integer",
-  maximum = Number.MAX_SAFE_INTEGER,
-): number {
-  if (!value) return fallback;
-  if (/^[1-9]\d*$/.test(value)) {
-    const parsed = Number(value);
-    if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > maximum) {
-      throw new Error(
-        `${label} must be a canonical positive integer no greater than ${maximum} (received ${JSON.stringify(value)})`,
-      );
-    }
-    return parsed;
-  }
-  // Preserve the old parser's boundary: anything it could prefix-coerce,
-  // including after leading whitespace, must now fail closed. Fully
-  // non-numeric "nope"/"soon" values retain their documented fallback.
-  if (!Number.isNaN(Number.parseInt(value, 10))) {
-    throw new Error(
-      `${label} must be a canonical positive integer (received ${JSON.stringify(value)})`,
-    );
-  }
-  return fallback;
-}
 
 function hasFlag(argv: readonly string[], flag: string): boolean {
   return argv.includes(flag);
@@ -637,7 +611,7 @@ export async function assertProvisioningWorkerPreflight(
   try {
     const kms = createKmsClient({ env });
     // Use the systemKey() helper so the key id matches the KEY_RE regex in
-    // packages/core/src/security/kms/key-namespace.ts (`/v<digit>` suffix required).
+    // packages/auth/src/kms/key-namespace.ts (`/v<digit>` suffix required).
     // Bare strings like "system:..." now throw `malformed key id` since the
     // strict namespace regex landed in 0330ba3d64.
     const { systemKey } = await import("@elizaos/auth/kms");

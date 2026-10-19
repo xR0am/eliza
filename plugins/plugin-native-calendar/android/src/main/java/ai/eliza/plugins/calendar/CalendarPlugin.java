@@ -28,7 +28,7 @@ public abstract class CalendarPlugin extends Plugin {
   Long begin=c.getLong("begin"),end=c.getLong("end");
   if(begin==null||end==null||begin<0||end<=begin||end-begin>370L*86400000){c.reject("A valid calendar range of at most 370 days is required");return;}
   try{
-   ai.eliza.plugins.calendar.read.CalendarReadAccess reader=new ai.eliza.plugins.calendar.read.CalendarReadAccess(getContext().getContentResolver());
+   ai.eliza.plugins.calendar.read.CalendarReadAccess reader=new ai.eliza.plugins.calendar.read.CalendarReadAccess(getContext().getContentResolver(),getContext().getPackageName(),configuration.creationUriPrefix);
    JSObject value=new JSObject();value.put("status","ready");value.put("calendars",reader.calendars());value.put("events",reader.events(begin,end));value.put("truncated",false);c.resolve(value);
   }catch(Exception e){c.reject("Calendar provider could not be read");}
  }
@@ -89,7 +89,7 @@ public abstract class CalendarPlugin extends Plugin {
     try{
     if(!workflowForeground()||!allowed()||!unlocked()){deleting.set(false);status(c,"unavailable");return;}
     String title=snapshot.event.getAsString("title"),zone=snapshot.event.getAsString("eventTimezone");
-    String message=(title==null?"Untitled event":title)+"\n"+configuration.displayName+"\n"+eventTimeDescription(snapshot.event.getAsLong("dtstart"),snapshot.event.getAsLong("dtend"),zone)+"\n\nDelete this one local event? This cannot be undone.";
+    String message=(title==null?"Untitled event":title)+"\n"+calendarIdentity()+"\n"+eventTimeDescription(snapshot.event.getAsLong("dtstart"),snapshot.event.getAsLong("dtend"),zone)+"\n"+NO_ATTENDEES+"\n\nDelete this one local event? This cannot be undone.";
     deleteDialog=new android.app.AlertDialog.Builder(getActivity()).setTitle("Delete calendar event?").setMessage(message).setNegativeButton("Cancel",(dialog,which)->{}).setPositiveButton("Delete event",(dialog,which)->{
      resolved[0]=true;
      if(!allowed()||!unlocked()){outcome[0]=statusValue("permission-required");return;}
@@ -112,6 +112,10 @@ public abstract class CalendarPlugin extends Plugin {
   if(!allowed()){status(c,"permission-required");return;}if(!workflowForeground()||!unlocked()){status(c,"unavailable");return;}
   try{JSObject value=new JSObject(defaultAgentSource().toString());value.put("status","ready");c.resolve(value);}catch(Exception failure){status(c,"unavailable");}
  }
+ /** Direct changes only touch events with no attendees, and never add any (see CalendarEventGuard). */
+ private static final String NO_ATTENDEES="No attendees are invited, changed or notified.";
+ /** Reviews name the calendar and its account. Direct changes only reach the host's local calendar. */
+ private String calendarIdentity(){return "Calendar: "+configuration.displayName+"\nAccount: "+configuration.accountName+" (this phone only)";}
  private static String eventTimeDescription(long start,long end,String timeZone){
   String zone=timeZone==null||timeZone.isEmpty()?"UTC":timeZone;
   String pattern="EEE, MMM d yyyy h:mm"+(start%60000!=0||end%60000!=0?":ss":"")+(start%1000!=0||end%1000!=0?".SSS":"")+" a z";
@@ -176,10 +180,11 @@ public abstract class CalendarPlugin extends Plugin {
    getActivity().runOnUiThread(()->{final java.util.concurrent.atomic.AtomicBoolean delivered=new java.util.concurrent.atomic.AtomicBoolean();final android.app.AlertDialog[] ownedDialog={null};final boolean[] resolved={false};final JSObject[] outcome={null};try{
     if(!workflowForeground()||!allowed()||!unlocked()||!operationId.equals(activeAgentOperation)){activeAgentOperation=null;deleting.set(false);status(c,"unavailable");return;}
     String action=create?"Create":update?"Update":remove?"Delete":"Share selected";
-    String message=(localCreate?"On this phone\n":"")+configuration.displayName+"\n"+reviewed.optString("title")+"\n"+eventTimeDescription(agentInstant(reviewed,"start"),agentInstant(reviewed,"end"),reviewed.optString("timeZone"));
+    String message=calendarIdentity()+"\n"+reviewed.optString("title")+"\n"+eventTimeDescription(agentInstant(reviewed,"start"),agentInstant(reviewed,"end"),reviewed.optString("timeZone"));
     String location=reviewed.optString("location"),description=reviewed.optString("description");
     if(!location.trim().isEmpty())message+="\nLocation: "+location;
     if(!description.trim().isEmpty())message+="\n\n"+description;
+    if(!read)message+="\n\n"+NO_ATTENDEES;
     message+=read?"\n\nShare this event with the connected agent?":remove?"\n\nDelete this event from this phone? This cannot be undone.":"\n\nSave this event on this phone?";
     android.widget.TextView text=new android.widget.TextView(getActivity());text.setText(message);text.setPadding(32,16,32,16);android.widget.ScrollView scroll=new android.widget.ScrollView(getActivity());scroll.addView(text);
     deleteDialog=new android.app.AlertDialog.Builder(getActivity()).setTitle(action+" calendar event?").setView(scroll).setNegativeButton("Cancel",(dialog,which)->{}).setPositiveButton(read?"Share with agent":action+" event",(dialog,which)->{
@@ -200,14 +205,8 @@ public abstract class CalendarPlugin extends Plugin {
    }catch(Exception unavailable){if(deleteDialog==ownedDialog[0]){deleteDialog=null;deleting.set(false);}if(delivered.compareAndSet(false,true))c.resolve(outcome[0]!=null?outcome[0]:statusValue("unavailable"));}});
   }catch(Exception invalid){deleting.set(false);status(c,"conflict");}
  }
- private long localCalendar(){
-  String where=CalendarContract.Calendars.ACCOUNT_NAME+"=? AND "+CalendarContract.Calendars.ACCOUNT_TYPE+"=? AND "+CalendarContract.Calendars.NAME+"=?";
-  try(Cursor rows=getContext().getContentResolver().query(CalendarContract.Calendars.CONTENT_URI,new String[]{CalendarContract.Calendars._ID},where,new String[]{configuration.accountName,CalendarContract.ACCOUNT_TYPE_LOCAL,configuration.localCalendarName},null)){if(rows!=null&&rows.moveToFirst())return rows.getLong(0);}
-  ContentValues v=new ContentValues();v.put(CalendarContract.Calendars.ACCOUNT_NAME,configuration.accountName);v.put(CalendarContract.Calendars.ACCOUNT_TYPE,CalendarContract.ACCOUNT_TYPE_LOCAL);v.put(CalendarContract.Calendars.NAME,configuration.localCalendarName);v.put(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,configuration.displayName);v.put(CalendarContract.Calendars.CALENDAR_COLOR,configuration.color);v.put(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,CalendarContract.Calendars.CAL_ACCESS_OWNER);v.put(CalendarContract.Calendars.OWNER_ACCOUNT,configuration.accountName);v.put(CalendarContract.Calendars.CALENDAR_TIME_ZONE,TimeZone.getDefault().getID());v.put(CalendarContract.Calendars.VISIBLE,1);v.put(CalendarContract.Calendars.SYNC_EVENTS,1);
-  Uri uri=CalendarContract.Calendars.CONTENT_URI.buildUpon().appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER,"true").appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME,configuration.accountName).appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE,CalendarContract.ACCOUNT_TYPE_LOCAL).build();
-  Uri inserted=getContext().getContentResolver().insert(uri,v);if(inserted==null)throw new IllegalStateException("Calendar insert returned no URI");return ContentUris.parseId(inserted);
- }
- private boolean writable(long id){try(Cursor row=getContext().getContentResolver().query(ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI,id),new String[]{CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL},null,null,null)){return row!=null&&row.moveToFirst()&&row.getInt(0)>=CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR;}}
+ private long localCalendar(){return ai.eliza.plugins.calendar.write.CalendarDestinations.local(getContext().getContentResolver(),configuration);}
+ private boolean writable(long id){return ai.eliza.plugins.calendar.write.CalendarDestinations.writable(getContext().getContentResolver(),id);}
  @PluginMethod public void pendingCreations(PluginCall c){
   if(!allowed()){status(c,"permission-required");return;}
   try{c.resolve(creations.pendingCreations(getContext()));}catch(Exception unavailable){c.reject("Calendar creation recovery unavailable. Nothing was retried.");}

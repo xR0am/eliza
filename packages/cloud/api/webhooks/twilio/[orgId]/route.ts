@@ -7,6 +7,7 @@
 
 import {
   calculateTwilioSmsBilling,
+  classifyTwilioSmsCostConfig,
   resolveTwilioSmsCostPerSegment,
 } from "@elizaos/cloud-shared/billing";
 import {
@@ -19,6 +20,7 @@ import { usageService } from "@elizaos/cloud-shared/lib/services/usage";
 import { processOnce } from "@elizaos/cloud-shared/lib/utils/idempotency";
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import {
+  extractMedia,
   extractMediaUrls,
   parseTwilioWebhookEvent,
   type TwilioWebhookEvent,
@@ -66,14 +68,11 @@ function resolveTwilioVerificationUrl(c: AppContext): string {
 
 function resolveSmsCostPerSegment(env: AppContext["env"]): number {
   const raw = env.TWILIO_SMS_COST_PER_SEGMENT_USD;
-  if (raw) {
-    const parsed = Number.parseFloat(raw);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      logger.warn(
-        "[TwilioWebhook] Invalid TWILIO_SMS_COST_PER_SEGMENT_USD; using default",
-        { configured: true },
-      );
-    }
+  if (classifyTwilioSmsCostConfig(raw).status === "invalid") {
+    logger.warn(
+      "[TwilioWebhook] Invalid TWILIO_SMS_COST_PER_SEGMENT_USD; using default",
+      { configured: true },
+    );
   }
   return resolveTwilioSmsCostPerSegment(raw);
 }
@@ -204,7 +203,8 @@ async function handleIncomingMessage(
   const from = event.From;
   const to = event.To;
   const body = event.Body?.trim();
-  const mediaUrls = extractMediaUrls(event);
+  const media = extractMedia(event);
+  const mediaUrls = media.map((item) => item.url);
 
   if (!body && mediaUrls.length === 0) {
     logger.info("[TwilioWebhook] Skipping empty message", { orgId });
@@ -244,6 +244,10 @@ async function handleIncomingMessage(
     body: body || "",
     providerMessageId: event.MessageSid,
     mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
+    mediaTypes:
+      mediaUrls.length > 0
+        ? media.map((item) => item.contentType ?? "")
+        : undefined,
     metadata: messageContext.metadata,
   });
 
@@ -287,7 +291,7 @@ async function handleIncomingMessage(
           provider: "twilio",
           input_tokens: 0,
           output_tokens: 0,
-          input_cost: String(billing.rawCost),
+          input_cost: String(billing.billedCost),
           output_cost: String(0),
           markup: String(billing.markup),
           request_id: event.MessageSid,

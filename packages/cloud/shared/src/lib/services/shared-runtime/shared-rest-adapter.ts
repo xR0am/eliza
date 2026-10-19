@@ -17,17 +17,18 @@
  */
 
 import { ChannelType, MESSAGE_SOURCE_CLIENT_CHAT } from "@elizaos/core";
-import { type SharedReminderDelivery } from "@elizaos/plugin-scheduling";
-import { type RuntimeDurableObjectNamespace } from "../../../types/cloud-worker-env";
+import type { SharedReminderDelivery } from "@elizaos/plugin-scheduling";
+import type { RuntimeDurableObjectNamespace } from "../../../types/cloud-worker-env";
 import { InsufficientCreditsError } from "../../api/errors";
 import { logger } from "../../utils/logger";
-import { type BridgeRequest } from "../eliza-sandbox";
+import type { BridgeRequest } from "../eliza-sandbox";
 import { coordinateSharedBridge, coordinateSharedHistory } from "./conversation-coordinator";
+import type { NetworkAdmissionEnvelope } from "./network-shared-admission";
 import type { NetworkSharedTurnObservation } from "./network-shared-context";
-import { type PersonalSharedFallbackAccountState } from "./personal-fallback-account-state";
-import { type SharedAgentCharacter } from "./run-shared-agent-turn";
-import { type SharedRuntimeAgent } from "./shared-runtime-agent";
-import { type SharedRuntimeChannel } from "./shared-runtime-channel";
+import type { PersonalSharedFallbackAccountState } from "./personal-fallback-account-state";
+import type { SharedAgentCharacter } from "./run-shared-agent-turn";
+import type { SharedRuntimeAgent } from "./shared-runtime-agent";
+import type { SharedRuntimeChannel } from "./shared-runtime-channel";
 import { type BridgeExecutionContext, sharedRuntimeChatService } from "./shared-runtime-chat";
 import {
   parseSharedProviderTimingReceipt,
@@ -73,7 +74,13 @@ function makeConversation(
 ): SharedRestConversation {
   const id = canonicalConversationId(agentId);
   // updatedAt === createdAt: the canonical conversation is never renamed/moved.
-  return { id, title: agentName || "Chat", roomId: id, createdAt, updatedAt: createdAt };
+  return {
+    id,
+    title: agentName || "Chat",
+    roomId: id,
+    createdAt,
+    updatedAt: createdAt,
+  };
 }
 /** GET .../api/health — the agent is in-Worker; if it resolves, it's up. */
 export function sharedRestHealth(): {
@@ -95,7 +102,11 @@ export function sharedRestStatus(agentName: string): {
   agentName: string;
   canRespond: true;
 } {
-  return { state: "running", agentName: agentName || "Eliza", canRespond: true };
+  return {
+    state: "running",
+    agentName: agentName || "Eliza",
+    canRespond: true,
+  };
 }
 // ---------------------------------------------------------------------------
 // Shell-endpoint defaults (mobile/web startup-coordinator unblock)
@@ -427,7 +438,12 @@ export function sharedRestAuthMe(
       kind: "machine",
     },
     session: { id: "bearer", kind: "machine", expiresAt: null },
-    access: { mode: "bearer", role: "USER", passwordConfigured: false, ownerConfigured: false },
+    access: {
+      mode: "bearer",
+      role: "USER",
+      passwordConfigured: false,
+      ownerConfigured: false,
+    },
   };
 }
 /**
@@ -547,7 +563,9 @@ export async function sharedRestMessagesGet(
 ): Promise<{
   messages: SharedRestMessage[];
 }> {
-  const history = await coordinateSharedHistory(agentId, conversationId, { namespace });
+  const history = await coordinateSharedHistory(agentId, conversationId, {
+    namespace,
+  });
   // Lifecycle system events shape model continuity but are not authored chat
   // bubbles, so keep them private to the canonical history/prompt boundary.
   const visibleHistory = history.filter(
@@ -590,6 +608,9 @@ export async function sharedRestMessageSend(
   traceId?: string,
   abortSignal?: AbortSignal,
   trustedNetworkContext?: NetworkSharedTurnObservation,
+  /** The Network service's open-turn context (takeover); read only for personal shared turns. */
+  trustedNetworkTurn?: unknown,
+  trustedNetworkAdmission?: NetworkAdmissionEnvelope,
 ): Promise<{
   text: string;
   agentName: string;
@@ -623,6 +644,8 @@ export async function sharedRestMessageSend(
     ...(trustedUserUtterance ? { trustedUserUtterance } : {}),
     ...(trustedAccountState ? { trustedAccountState } : {}),
     ...(trustedNetworkContext ? { trustedNetworkContext } : {}),
+    ...(trustedNetworkTurn !== undefined ? { trustedNetworkTurn } : {}),
+    ...(trustedNetworkAdmission ? { trustedNetworkAdmission } : {}),
     channel: trustedChannel ?? {
       type: ChannelType.DM,
       source: trustedDelivery?.platform ?? MESSAGE_SOURCE_CLIENT_CHAT,

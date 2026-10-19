@@ -306,6 +306,13 @@ function formatMinutes(totalMs: number): number {
   return Math.round(totalMs / 60_000);
 }
 
+/** Rounded minutes, or whole seconds when it would round to "0m"/"1m" from under a minute. */
+function formatTotalMs(totalMs: number): string {
+  return totalMs > 0 && totalMs < 59_500
+    ? `${Math.max(1, Math.round(totalMs / 1000))}s`
+    : `${formatMinutes(totalMs)}m`;
+}
+
 function clampDays(value: number | undefined, fallback: number): number {
   const raw =
     typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -333,7 +340,7 @@ function buildReportSummary(
   return apps
     .map(
       (app) =>
-        `- ${app.appName || app.bundleId}: ${formatMinutes(app.totalMs)}m`,
+        `- ${app.appName || app.bundleId}: ${formatTotalMs(app.totalMs)}`,
     )
     .join("\n");
 }
@@ -420,9 +427,9 @@ export const SCREEN_TIME_PARAMETERS: readonly ActionParameter[] = [
   {
     name: "days",
     description:
-      "Number of days back from now for weekly / weekly_average_by_app windows.",
+      "Number of days back from now for weekly / weekly_average_by_app windows, 1 to 31 (default 7). Other subactions do not read it; use windowDays for summary / by_app / by_website.",
     required: false,
-    schema: { type: "number" as const },
+    schema: { type: "number" as const, minimum: 1, maximum: 31 },
   },
   {
     name: "limit",
@@ -433,16 +440,17 @@ export const SCREEN_TIME_PARAMETERS: readonly ActionParameter[] = [
   },
   {
     name: "windowDays",
-    description: "Window in days for by_app / by_website summary queries.",
+    description:
+      "Window in days for summary / by_app / by_website, 1 to 31 (default 1). weekly / weekly_average_by_app do not read it; use days.",
     required: false,
-    schema: { type: "number" as const },
+    schema: { type: "number" as const, minimum: 1, maximum: 31 },
   },
   {
     name: "windowHours",
     description:
-      "Window in hours for activity_report / time_on_app / time_on_site (default 24, max 720).",
+      "Window in hours for activity_report / time_on_app / time_on_site, 0.25 to 720 (default 24).",
     required: false,
-    schema: { type: "number" as const },
+    schema: { type: "number" as const, minimum: 0.25, maximum: 720 },
   },
   {
     name: "appNameOrBundleId",
@@ -758,7 +766,7 @@ export function createScreenTimeActionRunner(
         const report = await adapters.getActivityReport(runtime, agentId, {
           windowMs,
         });
-        const fallback = `Activity report (${formatMinutes(report.totalMs)}m total):\n${buildReportSummary(report.apps)}`;
+        const fallback = `Activity report (${formatTotalMs(report.totalMs)} total):\n${buildReportSummary(report.apps)}`;
         return respond({
           success: true,
           scenario: "activity_report_summary",
@@ -811,12 +819,17 @@ export function createScreenTimeActionRunner(
         const fallback =
           result.matchedBy === "none"
             ? `No focus events recorded for ${target} in that window.`
-            : `${target}: ${minutes}m (matched by ${result.matchedBy}).`;
+            : `${target}: ${formatTotalMs(result.totalMs)} (matched by ${result.matchedBy}).`;
         return respond({
           success: true,
           scenario: "time_on_app",
           fallback,
-          context: { app: target, minutes, matchedBy: result.matchedBy },
+          context: {
+            app: target,
+            minutes,
+            totalMs: result.totalMs,
+            matchedBy: result.matchedBy,
+          },
           data: {
             app: target,
             minutes,
@@ -869,7 +882,7 @@ export function createScreenTimeActionRunner(
         }
         const fallback =
           result.totalMs > 0
-            ? `${domain}: ${minutes}m.`
+            ? `${domain}: ${formatTotalMs(result.totalMs)}.`
             : `No browser activity recorded for ${domain} in that window.`;
         return respond({
           success: true,

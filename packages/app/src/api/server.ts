@@ -16,7 +16,6 @@ import { handleCloudGoogleDelegationRoute } from "./cloud-google-delegation-rout
 import fs from "node:fs";
 import type http from "node:http";
 import { createRequire } from "node:module";
-import path from "node:path";
 import {
   AGENT_EVENT_ALLOWED_STREAMS,
   CONFIG_WRITE_ALLOWED_TOP_KEYS,
@@ -39,10 +38,12 @@ import {
   loadElizaConfig,
   normalizeWsClientId,
   persistConversationRoomTitle,
+  type RuntimeRestartOptions,
   removeResetCredentialsFromVault,
   resolveDefaultAgentWorkspaceDir,
   resolveMcpServersRejection,
   resolvePluginConfigMutationRejections,
+  resolveResetPgliteDataDir,
   routeAutonomyTextToUser,
   saveElizaConfig,
   streamResponseBodyWithByteLimit,
@@ -57,9 +58,9 @@ import {
 } from "@elizaos/auth/auth";
 import {
   type AgentRuntime,
+  ElizaError,
   logger,
   resolveStateDir,
-  resolveUserPath,
 } from "@elizaos/core";
 // Override the wallet export rejection function with the hardened version
 // that adds rate limiting, audit logging, and a forced confirmation delay.
@@ -71,7 +72,7 @@ import {
   resolveLinkedAccountsInConfig,
   settingsDebugCloudSummary,
 } from "@elizaos/host/protocol";
-import { authStoreForRuntime } from "../services/auth-store";
+import { authStoreForHost } from "../services/auth-store";
 import { sharedVault } from "../services/vault-mirror";
 import { handleAccountPoolStatusRoute } from "./account-pool-status-routes";
 import {
@@ -84,6 +85,7 @@ import { findActiveSession, SESSION_COOKIE_NAME } from "./auth/sessions";
 import {
   ensureCompatSensitiveRouteAuthorized,
   ensureRouteAuthorized,
+  ensureRouteMinRole,
 } from "./auth.ts";
 import {
   type CompatRouteChainEntry,
@@ -98,11 +100,11 @@ import { enforceCompatRouteAuthPolicy } from "./route-auth-policy";
 import { handleRuntimeModeRoute } from "./runtime-mode-routes";
 import { createSelfHostedVoice } from "./self-hosted-voice";
 import {
-  closeStandaloneKokoro,
-  handleStandaloneKokoroRoute,
-  stopStandaloneKokoro,
-  warmStandaloneKokoro,
-} from "./standalone-kokoro-routes";
+  closeStandaloneSpeech,
+  handleStandaloneSpeechRoute,
+  stopStandaloneSpeech,
+  warmStandaloneSpeech,
+} from "./standalone-speech-routes";
 import { handleStandaloneWhisperRoute } from "./standalone-whisper-routes";
 
 export {
@@ -275,22 +277,6 @@ function hydrateWalletOsStoreFlagFromConfig(): void {
 
 const RUNTIME_STOP_RESET_TIMEOUT_MS = 20_000;
 
-function resolveCompatPgliteDataDir(config: ElizaConfig): string {
-  const explicitDataDir = process.env.PGLITE_DATA_DIR?.trim();
-  if (explicitDataDir) {
-    return resolveUserPath(explicitDataDir);
-  }
-
-  const configuredDataDir = config.database?.pglite?.dataDir?.trim();
-  if (configuredDataDir) {
-    return resolveUserPath(configuredDataDir);
-  }
-
-  const workspaceDir =
-    config.agents?.defaults?.workspace ?? resolveDefaultAgentWorkspaceDir();
-  return path.join(resolveUserPath(workspaceDir), ".elizadb");
-}
-
 /**
  * Reset hop for `POST /api/agent/reset`. Deliberately operates entirely
  * in-process: stops the runtime then removes the PGlite data dir.
@@ -306,6 +292,11 @@ async function clearCompatPgliteDataDir(
   runtime: AgentRuntime | null,
   config: ElizaConfig,
 ): Promise<void> {
+  // Throws before the runtime stops when Reset cannot erase the active store.
+  const dataDir = resolveResetPgliteDataDir(
+    config,
+    resolveDefaultAgentWorkspaceDir(),
+  );
   if (typeof runtime?.stop === "function") {
     // `runtime.stop()` releases plugins/services to drop the PGlite write lock
     // before we delete the data dir. On mobile CPU with many plugins loaded it
@@ -331,11 +322,6 @@ async function clearCompatPgliteDataDir(
         clearTimeout(timeoutHandle);
       }
     }
-  }
-
-  const dataDir = resolveCompatPgliteDataDir(config);
-  if (path.basename(dataDir) !== ".elizadb") {
-    throw new Error(`Refusing to delete unexpected PGlite dir: ${dataDir}`);
   }
 
   if (fs.existsSync(dataDir)) {
@@ -703,9 +689,9 @@ const COMPAT_ROUTE_CHAIN: readonly CompatRouteChainEntry[] = [
     // (app must not statically import plugin packages). This replaces the
     // former inline hardwired block that enumerated the four plugin handlers
     // directly in the dispatcher body (#12089 item 5).
-    id: "standalone-kokoro",
+    id: "standalone-speech",
     handler: ({ req, res, state }) =>
-      handleStandaloneKokoroRoute(req, res, state),
+      handleStandaloneSpeechRoute(req, res, state),
   },
   {
     id: "standalone-whisper",
@@ -720,8 +706,19 @@ const COMPAT_ROUTE_CHAIN: readonly CompatRouteChainEntry[] = [
         handleLocalInferenceAsrRoute,
         handleLocalInferenceCompatRoutes,
         handleLocalInferenceTtsRoute,
+        handleVoiceModelsRoutes,
       } = await getLocalInferenceRoutes();
       if (await handleLocalInferenceCompatRoutes(req, res, state)) return true;
+      // Served here, not by the upstream agent listener, so the owner-only
+      // voice-update toggles are decided by the app's role resolver.
+      if (
+        await handleVoiceModelsRoutes(req, res, {
+          authorizeOwnerRequest: (request, response) =>
+            ensureRouteMinRole(request, response, state, "OWNER"),
+        })
+      ) {
+        return true;
+      }
       // Voice routes share the app AuthStore/CSRF resolver. Configuration and
       // sensitive model-management routes retain their existing token policy.
       const voiceState = {
@@ -820,9 +817,14 @@ const COMPAT_ROUTE_CHAIN: readonly CompatRouteChainEntry[] = [
         logger.warn(
           `[eliza][reset] POST /api/agent/reset failed: ${err instanceof Error ? err.message : String(err)}`,
         );
-        sendJsonResponse(res, 500, {
-          error: err instanceof Error ? err.message : "Reset failed",
-        });
+        sendJsonResponse(
+          res,
+          err instanceof ElizaError &&
+            err.code === "AGENT_RESET_DATABASE_UNSUPPORTED"
+            ? 409
+            : 500,
+          { error: err instanceof Error ? err.message : "Reset failed" },
+        );
       }
       return true;
     },
@@ -967,7 +969,7 @@ async function runCompatRequestPipeline(
       (getProvidedApiToken(req) || readCookie(req, SESSION_COOKIE_NAME)) &&
       !isAuthorized(req) &&
       !isRegisteredTokenRoleAuthorized(req, "GET", pathname) &&
-      !authStoreForRuntime(state.current)
+      !authStoreForHost(state)
     ) {
       res.setHeader("Retry-After", "1");
       sendJsonResponse(res, 503, { error: "db_unavailable" });
@@ -1050,6 +1052,8 @@ export async function startApiServer(
   }
 
   const callerOptions = args[0];
+  const callerStop = callerOptions?.onStop;
+  const callerRestart = callerOptions?.onRestart;
   const voiceHost = createSelfHostedVoice(compatState, {
     protectedHost: Boolean(callerOptions?.hostAdmission),
   });
@@ -1057,6 +1061,8 @@ export async function startApiServer(
   const upstreamStart = Date.now();
   const server = await upstreamStartApiServer({
     ...callerOptions,
+    getAuthenticationRuntime: () =>
+      compatState.current ?? compatState.stoppedAuthRuntime ?? null,
     composeStatus: (payload) =>
       composeAppStatus(
         callerOptions?.composeStatus
@@ -1066,14 +1072,60 @@ export async function startApiServer(
       ),
     onRuntimeActivated: async (previousRuntime, activeRuntime) => {
       if (compatState.current !== activeRuntime) {
-        stopStandaloneKokoro(compatState);
+        stopStandaloneSpeech(compatState);
         voiceHost.reset();
       }
       compatState.current = activeRuntime;
-      if (speechHostStarted) warmStandaloneKokoro(compatState);
+      compatState.stoppedAuthRuntime = null;
+      if (speechHostStarted) warmStandaloneSpeech(compatState);
       clearCompatRuntimeRestart(compatState);
       await callerOptions?.onRuntimeActivated?.(previousRuntime, activeRuntime);
     },
+    ...(callerStop
+      ? {
+          onStop: async (runtime: AgentRuntime) => {
+            if (compatState.current === runtime) {
+              stopStandaloneSpeech(compatState);
+              voiceHost.reset();
+              compatState.current = null;
+            }
+            try {
+              await callerStop(runtime);
+            } finally {
+              if (compatState.current === runtime) {
+                stopStandaloneSpeech(compatState);
+                voiceHost.reset();
+                compatState.current = null;
+              }
+              // The host keeps the stopped runtime's database open until the
+              // next start or shutdown, so sessions stay verifiable meanwhile.
+              compatState.stoppedAuthRuntime = runtime;
+            }
+          },
+        }
+      : {}),
+    ...(callerRestart
+      ? {
+          onRestart: async (restartOptions?: RuntimeRestartOptions) => {
+            // The host closes the stopped runtime's database before it boots
+            // the replacement; stop reading sessions from it first.
+            const stoppedRuntime = compatState.stoppedAuthRuntime;
+            compatState.stoppedAuthRuntime = null;
+            try {
+              const restarted = await callerRestart(restartOptions);
+              if (!restarted && stoppedRuntime) {
+                compatState.stoppedAuthRuntime = stoppedRuntime;
+              }
+              return restarted;
+            } catch (error) {
+              if (stoppedRuntime) {
+                compatState.stoppedAuthRuntime = stoppedRuntime;
+              }
+              throw error;
+            }
+          },
+        }
+      : {}),
     requestMiddleware: async (req, res, next) => {
       await runCompatRequestPipeline(req, res, compatState, async () => {
         if (await voiceHost.handleRequest(req, res)) return;
@@ -1093,9 +1145,7 @@ export async function startApiServer(
         identityId: string;
       }): Promise<boolean> => {
         bindSessionSocket(binding, request.socket);
-        const store = compatState.current
-          ? authStoreForRuntime(compatState.current)
-          : null;
+        const store = authStoreForHost(compatState);
         const stillActive = store
           ? await findActiveSession(store, binding.sessionId).catch(
               (error: unknown) => {
@@ -1144,9 +1194,12 @@ export async function startApiServer(
         extractAuthToken(request)?.trim() ||
         null;
       if (sessionToken) {
-        if (compatState.current?.adapter) {
+        if (
+          compatState.current?.adapter ||
+          compatState.stoppedAuthRuntime?.adapter
+        ) {
           try {
-            const store = authStoreForRuntime(compatState.current);
+            const store = authStoreForHost(compatState);
             const session = store
               ? await findActiveSession(store, sessionToken)
               : null;
@@ -1197,7 +1250,7 @@ export async function startApiServer(
   compatState.reloadConfigFromDisk = server.reloadConfigFromDisk;
 
   speechHostStarted = true;
-  warmStandaloneKokoro(compatState);
+  warmStandaloneSpeech(compatState);
 
   const originalUpdateRuntime = server.updateRuntime as (
     runtime: AgentRuntime,
@@ -1205,7 +1258,7 @@ export async function startApiServer(
 
   server.updateRuntime = (runtime: AgentRuntime) => {
     if (compatState.current !== runtime) {
-      stopStandaloneKokoro(compatState);
+      stopStandaloneSpeech(compatState);
       voiceHost.reset();
     }
     compatState.current = runtime;
@@ -1213,7 +1266,7 @@ export async function startApiServer(
     // Make the runtime immediately visible to upstream routes so hot swaps do
     // not briefly return 503s while compat setup finishes in the background.
     originalUpdateRuntime(runtime);
-    warmStandaloneKokoro(compatState);
+    warmStandaloneSpeech(compatState);
 
     // Continue repairing SQL compatibility asynchronously without blocking
     // the runtime from becoming available to unrelated routes.
@@ -1237,7 +1290,8 @@ export async function startApiServer(
 
   const originalClose = server.close.bind(server);
   server.close = async () => {
-    closeStandaloneKokoro(compatState);
+    compatState.stoppedAuthRuntime = null;
+    closeStandaloneSpeech(compatState);
     voiceHost.close();
     await originalClose();
   };

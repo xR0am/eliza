@@ -68,6 +68,7 @@ function fixture(override = {}) {
         codeType: "mobile_app_auth_code",
         code: "private-grant",
         expiresAt: future(),
+        accountCreated: true,
       });
     if (path.endsWith("/token"))
       return Response.json({
@@ -104,6 +105,12 @@ function fixture(override = {}) {
     clearActive: async () => {
       active = null;
     },
+    activateVerified: override.activateVerified
+      ? (record, guard) =>
+          override.activateVerified(record, guard, (next) => {
+            active = next;
+          })
+      : undefined,
     activate: override.activate
       ? (value, guard) =>
           override.activate(value, guard, (next) => {
@@ -126,7 +133,11 @@ test("native email sign-in persists before acknowledgement and returns no author
   const f = fixture(),
     begun = await start(f),
     result = await verify(f, begun);
-  assert.deepEqual(result, { status: "authenticated", connected: true });
+  assert.deepEqual(result, {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
   assert.equal(f.state.pending, null);
   assert.equal(f.state.active, "private-credential-not-for-renderer");
   const connect = f.calls.find((x) => x.path.endsWith("/connect"));
@@ -176,7 +187,12 @@ test("lost acknowledgement keeps durable receipt and resumes without email or a 
   assert.ok(f.state.pending);
   assert.equal(f.state.active, null);
   lost = false;
-  assert.equal((await f.auth.handle("resume")).connected, true);
+  // Cloud's account-created fact is kept with the receipt.
+  assert.deepEqual(await f.auth.handle("resume"), {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
   assert.equal(f.calls.filter((x) => x.path.endsWith("/connect")).length, 1);
 });
 test("pending credential cancellation revokes before forgetting it; failure stays recoverable", async () => {
@@ -274,10 +290,58 @@ test("wrong attempt, malformed code, resend cooldown and unsupported MFA fail cl
     f.auth.handle("verify", { sessionId: begun.sessionId, code: "123" }),
     { status: 400 },
   );
-  await assert.rejects(start(f), { status: 429 });
+  await assert.rejects(start(f), (error) => {
+    // The host's own resend gate reports the wait it knows.
+    assert.equal(error.status, 429);
+    assert.ok(error.retryAfter > 0 && error.retryAfter <= 60);
+    return true;
+  });
   assert.equal(
     f.calls.filter((x) => x.path.endsWith("/code/verify")).length,
     0,
+  );
+});
+
+test("a 429 carries the account service's Retry-After seconds, and only valid ones", async () => {
+  for (const [header, expected] of [
+    ["37", 37],
+    [" 0 ", 0],
+    [null, undefined],
+    ["soon", undefined],
+    ["-5", undefined],
+    ["1.5", undefined],
+    ["Wed, 21 Oct 2026 07:28:00 GMT", undefined],
+  ]) {
+    const f = fixture({
+      fetch: (path) =>
+        path === "/auth/email/send"
+          ? new Response("{}", {
+              status: 429,
+              headers: header === null ? {} : { "Retry-After": header },
+            })
+          : undefined,
+    });
+    await assert.rejects(start(f), (error) => {
+      assert.equal(error.status, 429, header);
+      assert.equal(error.retryAfter, expected, header);
+      assert.equal(Object.hasOwn(error, "retryAfter"), expected !== undefined);
+      return true;
+    });
+  }
+  // Too many tries at the code: the verify answer carries it the same way.
+  const f = fixture({
+    fetch: (path) =>
+      path === "/auth/email/code/verify"
+        ? new Response("{}", {
+            status: 429,
+            headers: { "Retry-After": "120" },
+          })
+        : undefined,
+  });
+  const begun = await start(f);
+  await assert.rejects(
+    f.auth.handle("verify", { sessionId: begun.sessionId, code: "123456" }),
+    { status: 429, retryAfter: 120 },
   );
 });
 
@@ -544,7 +608,11 @@ test("enrollment retains its session as memory-only billing authority bound to t
   });
   assert.equal(await g.auth.billingAuthority(), null);
   const result = await verify(g, await start(g));
-  assert.deepEqual(result, { status: "authenticated", connected: true });
+  assert.deepEqual(result, {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
   const authority = await g.auth.billingAuthority();
   assert.equal(authority.token, token);
   assert.ok(Date.parse(authority.expiresAt) > Date.now());
@@ -936,6 +1004,66 @@ test("cancellation during security token account verification cannot restore aut
   assert.equal(f.writes.length, 0);
 });
 
+const phoneNumber = "+15551234567";
+function smsEnrollmentFixture(firstEnroll) {
+  let enrolls = 0;
+  const f = billingFixture({
+    fetch: (path) => {
+      if (path === "/auth/mfa/totp/status" || path === "/auth/mfa/sms/status")
+        return Response.json({ ok: true, enabled: false });
+      if (path === "/auth/mfa/sms/enroll") {
+        enrolls++;
+        return enrolls === 1
+          ? firstEnroll()
+          : Response.json({
+              ok: true,
+              phone: `***${phoneNumber.slice(-4)}`,
+              expiresAt: future(),
+            });
+      }
+    },
+  });
+  return Object.assign(f, { enrolls: () => enrolls });
+}
+
+test("SMS enrollment refused for a stale sign-in asks for identity and starts no cooldown", async () => {
+  const f = smsEnrollmentFixture(() =>
+    Response.json(
+      {
+        ok: false,
+        error: "Recent sign-in, MFA, or passkey re-authentication is required",
+      },
+      { status: 403 },
+    ),
+  );
+  await billingVerify(f, await billingStart(f));
+  await assert.rejects(
+    f.auth.handle("account-security-enroll-start", { phone: phoneNumber }),
+    { status: 428, code: "account_verification_required" },
+  );
+  const step = await f.auth.handle("account-security-enroll-start", {
+    phone: phoneNumber,
+  });
+  assert.equal(step.status, "code");
+  assert.equal(f.enrolls(), 2);
+});
+
+test("SMS enrollment keeps the resend cooldown after an ambiguous failure", async () => {
+  const f = smsEnrollmentFixture(() =>
+    Response.json({ ok: false }, { status: 500 }),
+  );
+  await billingVerify(f, await billingStart(f));
+  await assert.rejects(
+    f.auth.handle("account-security-enroll-start", { phone: phoneNumber }),
+    { status: 502 },
+  );
+  await assert.rejects(
+    f.auth.handle("account-security-enroll-start", { phone: phoneNumber }),
+    { status: 429, code: "account_code_cooldown" },
+  );
+  assert.equal(f.enrolls(), 1);
+});
+
 for (const method of ["email", "phone"]) {
   test(`account reauthentication requests personal authority for ${method}`, async () => {
     const f = billingFixture();
@@ -976,6 +1104,69 @@ for (const claims of [
       { code: "billing_account_mismatch" },
     );
     assert.equal(await f.auth.billingAuthority(), null);
+  });
+}
+
+const AUTH_USER = "22222222-2222-4222-8222-222222222222";
+const authUserToken = (userId = AUTH_USER) =>
+  [
+    "header",
+    Buffer.from(
+      JSON.stringify({
+        exp: Math.floor(Date.now() / 1000) + 900,
+        userId,
+        tenantId: `personal-${userId}`,
+      }),
+    ).toString("base64url"),
+    "signature",
+  ].join(".");
+/** A Cloud whose own user id differs from the Auth user it names in `steward_user_id`. */
+const separateIdFixture = (steward_user_id, token) =>
+  billingFixture({
+    token,
+    fetch: (path) =>
+      path === "/api/v1/user"
+        ? Response.json({ success: true, ...ACCOUNT, steward_user_id })
+        : undefined,
+  });
+
+test("account verification matches the personal session to the Auth user Cloud names", async () => {
+  const f = separateIdFixture(AUTH_USER, authUserToken());
+  assert.equal(
+    (await billingVerify(f, await billingStart(f, { purpose: "account" })))
+      .status,
+    "authorized",
+  );
+  assert.ok(await f.auth.billingAuthority());
+});
+
+test("account verification rejects a session for another Auth user even when it carries the Cloud user id", async () => {
+  const f = separateIdFixture(AUTH_USER, sessionToken());
+  await assert.rejects(
+    billingVerify(f, await billingStart(f, { purpose: "account" })),
+    { code: "billing_account_mismatch" },
+  );
+  assert.equal(await f.auth.billingAuthority(), null);
+});
+
+for (const steward_user_id of ["", null, 7]) {
+  test(`account verification never matches an unusable Auth user id ${JSON.stringify(steward_user_id)}`, async () => {
+    const other = separateIdFixture(steward_user_id, authUserToken());
+    await assert.rejects(
+      billingVerify(other, await billingStart(other, { purpose: "account" })),
+      { code: "billing_account_mismatch" },
+    );
+    // Without a usable Auth user id the Cloud user id is the only comparison left.
+    const same = separateIdFixture(steward_user_id, sessionToken());
+    assert.equal(
+      (
+        await billingVerify(
+          same,
+          await billingStart(same, { purpose: "account" }),
+        )
+      ).status,
+      "authorized",
+    );
   });
 }
 
@@ -1285,3 +1476,255 @@ for (const phase of [
     }
   });
 }
+
+test("verified activation binds the acknowledged secret to Cloud owner and keeps it out of the renderer", async () => {
+  let record;
+  const f = fixture({
+    fetch: async (path, _body, init, state) => {
+      if (path === "/api/v1/user") {
+        assert.equal(
+          init.headers.Authorization,
+          "Bearer private-credential-not-for-renderer",
+        );
+        assert.equal(state.calls.at(-2).path, "/api/v1/app-auth/mobile/ack");
+        return Response.json({
+          success: true,
+          id: "cloud-owner",
+          organization_id: "cloud-org",
+          steward_user_id: "different-auth-user",
+        });
+      }
+    },
+    activate: async () => assert.fail("legacy activation must not run"),
+    activateVerified: async (value, guard, setActive) => {
+      guard();
+      record = value;
+      setActive(value.credential);
+    },
+  });
+  const begun = await start(f);
+  const result = await f.auth.handle("verify", {
+    sessionId: begun.sessionId,
+    code: "123456",
+    owner: { userId: "renderer-forgery" },
+  });
+  assert.deepEqual(record.owner, {
+    authority: "https://api.eliza.app",
+    userId: "cloud-owner",
+    organizationId: "cloud-org",
+  });
+  assert.equal(record.version, 1);
+  assert.equal(record.credentialId, "22222222-2222-4222-8222-222222222222");
+  assert.equal(f.state.active, record.credential);
+  assert.equal(f.state.pending, null);
+  assert.deepEqual(result, {
+    status: "authenticated",
+    connected: true,
+    created: true,
+  });
+});
+
+test("verified activation retry retains the same credential and refuses a changed verified owner", async () => {
+  let owner = "owner-a",
+    activations = 0;
+  const f = fixture({
+    fetch: async (path) =>
+      path === "/api/v1/user"
+        ? Response.json({ id: owner, organization_id: "org-a" })
+        : null,
+    activateVerified: async () => {
+      activations++;
+      throw new Error("simulated interrupted commit");
+    },
+  });
+  await assert.rejects(verify(f, await start(f)), /interrupted commit/);
+  const saved = JSON.parse(f.state.pending);
+  assert.equal(saved.verifiedOwner.userId, "owner-a");
+  owner = "owner-b";
+  await assert.rejects(f.auth.handle("resume"), {
+    code: "account_owner_changed",
+  });
+  assert.equal(activations, 1);
+  assert.equal(JSON.parse(f.state.pending).proof.secret, saved.proof.secret);
+  owner = "owner-a";
+  await assert.rejects(f.auth.handle("resume"), /interrupted commit/);
+  assert.equal(activations, 2);
+  assert.equal(f.state.active, null);
+});
+
+for (const boundary of ["owner-read", "activation"])
+  test(`verified activation cancellation fences ${boundary}`, async () => {
+    let reached, release;
+    const entered = new Promise((r) => {
+      reached = r;
+    });
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const f = fixture({
+      fetch: async (path) => {
+        if (path === "/api/v1/user") {
+          if (boundary === "owner-read") {
+            reached();
+            await gate;
+          }
+          return Response.json({ id: "owner", organization_id: "org" });
+        }
+      },
+      activateVerified: async (value, guard, setActive) => {
+        guard();
+        assert.equal(boundary, "activation");
+        reached();
+        await gate;
+        // The existing cancellation reconciler must also handle a commit that lost its response.
+        setActive(value.credential);
+      },
+    });
+    const verifying = verify(f, await start(f));
+    await entered;
+    const cancelling = f.auth.cancel();
+    release();
+    await assert.rejects(verifying);
+    await cancelling;
+    assert.equal(f.state.active, null);
+    assert.equal(f.state.pending, null);
+  });
+
+test("unavailable owner resolution preserves acknowledgement receipt without activating", async () => {
+  const f = fixture({
+    fetch: async (path) =>
+      path === "/api/v1/user"
+        ? Response.json({ error: "private-service-detail" }, { status: 503 })
+        : null,
+    activateVerified: async () =>
+      assert.fail("must not activate without owner"),
+  });
+  await assert.rejects(
+    verify(f, await start(f)),
+    (error) =>
+      error.status === 502 && !error.message.includes("private-service-detail"),
+  );
+  assert.equal(f.state.active, null);
+  assert.ok(JSON.parse(f.state.pending).proof.secret);
+});
+
+test("verified owner resumes an interrupted disk commit through actual HTTP without changing identity", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "verified-owner-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const activePath = join(directory, "active"),
+    pendingPath = join(directory, "pending");
+  const secret = "synthetic-acknowledged-credential";
+  const proof = {
+    ...binding,
+    state: "synthetic-state",
+    code: "synthetic-code",
+    codeVerifier: "synthetic-verifier",
+    credentialId: "22222222-2222-4222-8222-222222222222",
+    secret,
+  };
+  await writeFile(
+    pendingPath,
+    JSON.stringify({ version: 1, acknowledgeBy: future(), proof }),
+    { mode: 0o600 },
+  );
+  let userId = "verified-cloud-user";
+  const seen = [];
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : null;
+    seen.push(req.url);
+    let value;
+    if (req.url === "/api/v1/app-auth/mobile/ack") {
+      assert.deepEqual(body, proof);
+      value = {
+        success: true,
+        status: "acknowledged",
+        credentialId: proof.credentialId,
+        expiresAt: future(),
+      };
+    } else if (req.url === "/api/v1/user") {
+      assert.equal(req.headers.authorization, `Bearer ${secret}`);
+      // Actual endpoint exposes canonical fields both at root and under data.
+      const data = {
+        id: userId,
+        organization_id: "verified-cloud-org",
+        steward_user_id: "different-auth-user",
+      };
+      value = { ...data, success: true, data };
+    } else {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(value));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const api = `http://127.0.0.1:${server.address().port}`;
+  const read = async (path) => {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  let lostResponse = true;
+  const make = () =>
+    createEnrollment({
+      binding,
+      appName: "Synthetic verified owner",
+      api,
+      pendingStore: {
+        read: () => read(pendingPath),
+        write: (value) => writeFile(pendingPath, value, { mode: 0o600 }),
+        clear: () => rm(pendingPath, { force: true }),
+      },
+      readActive: async () => {
+        const raw = await read(activePath);
+        return raw ? JSON.parse(raw).credential : null;
+      },
+      activate: async () => assert.fail("legacy callback used"),
+      activateVerified: async (record, guard) => {
+        const { rename } = await import("node:fs/promises");
+        await writeFile(`${activePath}.new`, JSON.stringify(record), {
+          mode: 0o600,
+        });
+        guard();
+        await rename(`${activePath}.new`, activePath);
+        if (lostResponse) {
+          lostResponse = false;
+          throw new Error("synthetic lost commit response");
+        }
+      },
+    });
+  await assert.rejects(make().handle("resume"), /lost commit response/);
+  const committed = await read(activePath);
+  assert.deepEqual(JSON.parse(committed).owner, {
+    authority: api,
+    userId,
+    organizationId: "verified-cloud-org",
+  });
+  assert.equal(
+    JSON.parse(await read(pendingPath)).verifiedOwner.userId,
+    userId,
+  );
+  userId = "unexpected-other-user";
+  await assert.rejects(make().handle("resume"), {
+    code: "account_owner_changed",
+  });
+  assert.equal(await read(activePath), committed);
+  userId = "verified-cloud-user";
+  assert.deepEqual(await make().handle("resume"), {
+    status: "authenticated",
+    connected: true,
+  });
+  assert.equal(await read(activePath), committed);
+  assert.equal(await read(pendingPath), null);
+  assert.deepEqual(
+    seen,
+    Array(3).fill(["/api/v1/app-auth/mobile/ack", "/api/v1/user"]).flat(),
+  );
+});

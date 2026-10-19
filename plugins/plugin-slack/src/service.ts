@@ -26,13 +26,17 @@ import {
   type Character,
   type Content,
   checkPairingAllowed,
+  contentTypeForMime,
   createUniqueUuid,
+  DEFAULT_CONNECTOR_ATTACHMENT_MAX_BYTES,
   ElizaError,
   type EventPayload,
   EventType,
+  type FetchLike,
   getConnectorAdminWhitelist,
   type HandlerCallback,
   type IAgentRuntime,
+  type IFileStorageService,
   type IMessageService,
   type Media,
   type Memory,
@@ -47,6 +51,7 @@ import {
   type SendHandlerOutcome,
   type SendHandlerReceipt,
   Service,
+  ServiceType,
   stringToUuid,
   summarizeOutboundAttachmentUrl,
   type TargetInfo,
@@ -368,7 +373,7 @@ function normalizeSlackEmojiName(emoji: string): string {
   let end = value.length;
   while (start < end && value.charCodeAt(start) === 58) start += 1;
   while (end > start && value.charCodeAt(end - 1) === 58) end -= 1;
-  return value.slice(start, end);
+  return value.slice(start, end).toLowerCase();
 }
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
@@ -425,6 +430,7 @@ interface SlackAppMentionEventType {
   ts: string;
   thread_ts?: string;
   event_ts: string;
+  files?: unknown[];
 }
 
 interface SlackReactionEventType {
@@ -504,7 +510,11 @@ import {
   resolveDefaultSlackAccountId,
 } from "./accounts";
 import { markdownToSlackMrkdwn, splitSlackText } from "./formatting";
-import { normalizeSlackFiles, slackFilesToMedia } from "./inbound-files";
+import {
+  fetchSlackFileBytes,
+  normalizeSlackFiles,
+  slackFilesToMedia,
+} from "./inbound-files";
 import {
   extractSlackEventWorkspace,
   SlackAccountPolicyResolver,
@@ -524,6 +534,7 @@ import {
   type SlackBlock,
   type SlackChannel,
   SlackEventTypes,
+  type SlackFile,
   type SlackMessage,
   type SlackMessageSendOptions,
   type SlackReactionPayload,
@@ -631,6 +642,7 @@ export class SlackService extends Service implements ISlackService {
   private userCache: Map<string, SlackUser> = new Map();
   private channelCache: Map<string, SlackChannel> = new Map();
   private isConnected = false;
+  protected inboundFileFetch: FetchLike | undefined = undefined;
 
   constructor(runtime?: IAgentRuntime) {
     super(runtime);
@@ -1051,7 +1063,30 @@ export class SlackService extends Service implements ISlackService {
         "Slack account started successfully",
       );
 
-      await this.ensureWorkspaceExists(accountId);
+      try {
+        await this.ensureWorkspaceExists(accountId);
+      } catch (error) {
+        // The Socket Mode connection is open. A failed start must close it:
+        // no service instance is kept, so nothing else can stop this app, and
+        // Slack would keep sending events to a connection no runtime handles.
+        await app.stop().catch((stopError: unknown) => {
+          this.runtime.logger.warn(
+            {
+              src: "plugin:slack",
+              agentId: this.runtime.agentId,
+              accountId,
+              error:
+                stopError instanceof Error
+                  ? stopError.message
+                  : String(stopError),
+            },
+            "Failed to stop the Slack app after a failed start",
+          );
+        });
+        this.accountStates.delete(accountId);
+        this.syncDefaultAccountAliases();
+        throw error;
+      }
       return state;
     })();
 
@@ -1231,8 +1266,8 @@ export class SlackService extends Service implements ISlackService {
   }
 
   /**
-   * Returns the client that outbound user-action calls (currently
-   * chat.postMessage) should use for the given account. OWNER-role
+   * Returns the client that outbound user-action calls (chat.postMessage,
+   * chat.update, chat.delete) should use for the given account. OWNER-role
    * accounts with a configured xoxp- user token route through it so
    * the agent posts as the user; everything else stays on the bot
    * client. Falls back to `getClientForAccount` when no per-account
@@ -1538,6 +1573,8 @@ export class SlackService extends Service implements ISlackService {
       message.thread_ts,
       accountId,
     );
+    // The response pipeline reads the conversation kind from the message.
+    memory.content.channelType = room.type;
 
     const existingEntity = await this.runtime.getEntityById(memory.entityId);
     if (!existingEntity) {
@@ -1579,12 +1616,17 @@ export class SlackService extends Service implements ISlackService {
       this.buildEventPayload(accountId),
     );
 
-    // Process the message through the agent
+    // Process the message through the agent. A channel reply opens a thread
+    // under the message; a direct message is one conversation, so a top-level
+    // DM is answered in the DM itself and its reply stays in the DM room.
     await this.processAgentMessage(
       claimedMemory,
       room,
       message.channel,
-      message.thread_ts || message.ts,
+      gate.conversationKind === "public_channel" ||
+        gate.conversationKind === "private_channel"
+        ? message.thread_ts || message.ts
+        : message.thread_ts,
       accountId,
     );
   }
@@ -1639,6 +1681,7 @@ export class SlackService extends Service implements ISlackService {
         channel: event.channel,
         ts: event.ts,
         thread_ts: event.thread_ts,
+        files: event.files,
       },
       accountId,
     );
@@ -1650,6 +1693,8 @@ export class SlackService extends Service implements ISlackService {
       event.thread_ts,
       accountId,
     );
+    // The response pipeline reads the conversation kind from the message.
+    memory.content.channelType = room.type;
 
     const existingEntity = await this.runtime.getEntityById(memory.entityId);
     if (!existingEntity) {
@@ -2143,14 +2188,15 @@ export class SlackService extends Service implements ISlackService {
     memory: Memory,
     room: Room,
     channelId: string,
-    threadTs: string,
+    threadTs: string | undefined,
     accountId = this.defaultAccountId,
   ): Promise<void> {
     const callback: HandlerCallback = async (
       response: Content,
     ): Promise<Memory[]> => {
       const responseText = response.text || "";
-      if (!responseText.trim()) {
+      const responseAttachments = response.attachments ?? [];
+      if (!responseText.trim() && responseAttachments.length === 0) {
         this.runtime.logger.warn(
           { src: "plugin:slack", channelId, roomId: room.id },
           "Empty response from model, skipping sendMessage",
@@ -2158,20 +2204,33 @@ export class SlackService extends Service implements ISlackService {
         return [];
       }
 
-      const sent = await this.sendMessage(
-        channelId,
-        responseText,
-        {
-          threadTs,
-          replyBroadcast: undefined,
-          unfurlLinks: undefined,
-          unfurlMedia: undefined,
-          mrkdwn: undefined,
-          attachments: undefined,
-          blocks: undefined,
-        },
-        accountId,
-      );
+      const sent = responseText.trim()
+        ? await this.sendMessage(
+            channelId,
+            responseText,
+            {
+              threadTs,
+              replyBroadcast: undefined,
+              unfurlLinks: undefined,
+              unfurlMedia: undefined,
+              mrkdwn: undefined,
+              attachments: undefined,
+              blocks: undefined,
+            },
+            accountId,
+          )
+        : { messages: [] as Array<{ ts: string; text: string }> };
+      // Same upload path as handleSendMessage: fetch bytes through the SSRF
+      // guard and upload each file into the reply thread.
+      const attachmentDelivery =
+        responseAttachments.length > 0
+          ? await this.sendOutboundAttachments(
+              channelId,
+              responseAttachments,
+              threadTs,
+              accountId,
+            )
+          : null;
 
       const responseRoom = await this.ensureRoomExists(
         channelId,
@@ -2219,14 +2278,76 @@ export class SlackService extends Service implements ISlackService {
         }),
       );
 
+      const attachmentFailures = attachmentDelivery?.failures ?? [];
+      const firstFileId = attachmentDelivery?.delivered[0]?.fileId;
+      if (firstFileId && attachmentFailures.length === 0) {
+        responseMemories.push({
+          id: createUniqueUuid(
+            this.runtime,
+            this.scopedSlackKey(
+              "slack",
+              `${channelId}-file-${firstFileId}`,
+              accountId,
+            ),
+          ),
+          agentId: this.runtime.agentId,
+          roomId: responseRoom.id,
+          entityId: this.runtime.agentId,
+          content: {
+            text: "",
+            attachments: responseAttachments,
+            source: "slack",
+            inReplyTo: memory.id,
+            metadata: { accountId },
+          },
+          metadata: {
+            type: "message",
+            source: "slack",
+            provider: "slack",
+            accountId,
+            fromBot: true,
+            fromId: this.runtime.agentId,
+            sourceId: this.runtime.agentId,
+            slackChannelId: channelId,
+            slackThreadTs: threadTs,
+            slackFileIds: (attachmentDelivery?.delivered ?? []).map(
+              ({ fileId }) => fileId,
+            ),
+          } satisfies Memory["metadata"],
+          createdAt: Date.now(),
+        });
+      }
+
       for (const responseMemory of responseMemories) {
         await this.runtime.createMemory(responseMemory, "messages");
       }
 
-      await this.runtime.emitEvent(
-        SlackEventTypes.MESSAGE_SENT as string,
-        this.buildEventPayload(accountId),
-      );
+      if (responseMemories.length > 0) {
+        await this.runtime.emitEvent(
+          SlackEventTypes.MESSAGE_SENT as string,
+          this.buildEventPayload(accountId),
+        );
+      }
+
+      if (attachmentFailures.length > 0) {
+        const error = new ElizaError("Slack reply attachment delivery failed", {
+          code: "SLACK_REPLY_ATTACHMENT_DELIVERY_FAILED",
+          context: {
+            accountId,
+            channelId,
+            threadTs,
+            failures: attachmentFailures,
+            deliveredFileIds: (attachmentDelivery?.delivered ?? []).map(
+              ({ fileId }) => fileId,
+            ),
+          },
+        });
+        this.runtime.reportError("slack-reply-delivery", error, {
+          accountId,
+          channelId,
+        });
+        throw error;
+      }
 
       return responseMemories;
     };
@@ -2235,6 +2356,97 @@ export class SlackService extends Service implements ISlackService {
     if (messageService) {
       await messageService.handleMessage(this.runtime, memory, callback);
     }
+  }
+
+  private async rehostInboundFiles(
+    files: SlackFile[] | undefined,
+    context: { channelId: string; messageTs: string },
+    accountId: string,
+  ): Promise<Media[]> {
+    if (!files || files.length === 0) return [];
+    const storage = this.runtime.getService<IFileStorageService>(
+      ServiceType.REMOTE_FILES,
+    );
+    if (!storage) {
+      const error = new ElizaError(
+        "Slack inbound files are unavailable because the runtime file-storage service is missing",
+        {
+          code: "SLACK_INBOUND_FILE_STORAGE_MISSING",
+          context: { accountId, ...context, fileCount: files.length },
+        },
+      );
+      this.runtime.reportError("slack-inbound-file", error);
+      return [];
+    }
+    const botToken = this.getAccountState(accountId)?.account.botToken;
+
+    const media: Media[] = [];
+    let remainingBytes = DEFAULT_CONNECTOR_ATTACHMENT_MAX_BYTES;
+    for (const file of files) {
+      const url = file.urlPrivateDownload || file.urlPrivate;
+      if (!url) {
+        this.runtime.logger.warn(
+          {
+            src: "plugin:slack",
+            agentId: this.runtime.agentId,
+            accountId,
+            fileId: file.id,
+            ...context,
+          },
+          "Inbound Slack file has no url_private or url_private_download; attachment omitted",
+        );
+        continue;
+      }
+      try {
+        if (!botToken) {
+          throw new ElizaError(
+            "Slack account has no bot token for file download",
+            {
+              code: "SLACK_FILE_TOKEN_MISSING",
+              context: { accountId },
+            },
+          );
+        }
+        const fetched = await fetchSlackFileBytes(url, botToken, {
+          maxBytes: remainingBytes,
+          expectedMimeType: file.mimetype || undefined,
+          fetchImpl: this.inboundFileFetch,
+        });
+        remainingBytes -= fetched.buffer.byteLength;
+        const stored = await storage.store(
+          fetched.buffer,
+          file.mimetype || fetched.contentType || "application/octet-stream",
+        );
+        media.push({
+          id: file.id,
+          url: stored.url,
+          title: file.title || file.name || stored.fileName,
+          filename: file.name || stored.fileName,
+          mimeType: stored.mimeType,
+          contentType: contentTypeForMime(stored.mimeType),
+          size: stored.size,
+          source: "slack",
+        });
+      } catch (error) {
+        this.runtime.logger.warn(
+          {
+            src: "plugin:slack",
+            agentId: this.runtime.agentId,
+            accountId,
+            fileId: file.id,
+            ...context,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Failed to import inbound Slack file",
+        );
+        this.runtime.reportError("slack-inbound-file", error, {
+          accountId,
+          fileId: file.id,
+          ...context,
+        });
+      }
+    }
+    return media;
   }
 
   private async buildMemoryFromMessage(
@@ -2259,9 +2471,10 @@ export class SlackService extends Service implements ISlackService {
 
     // Slack sends url_private / url_private_download; normalize at the boundary
     // so every attachment carries a fetchable url (#31767).
-    const media: Media[] = slackFilesToMedia(
+    const media: Media[] = await this.rehostInboundFiles(
       "files" in message ? normalizeSlackFiles(message.files) : undefined,
       { channelId: message.channel, messageTs: message.ts },
+      accountId,
     );
 
     const memory: Memory = {
@@ -2326,6 +2539,7 @@ export class SlackService extends Service implements ISlackService {
       channel: string;
       ts: string;
       thread_ts?: string;
+      files?: unknown[];
     },
     accountId = this.defaultAccountId,
   ): Promise<Memory | null> {
@@ -2343,6 +2557,12 @@ export class SlackService extends Service implements ISlackService {
     const cleanText = event.text
       .replace(`<@${this.getBotUserIdForAccount(accountId)}>`, "")
       .trim();
+
+    const media: Media[] = await this.rehostInboundFiles(
+      normalizeSlackFiles(event.files),
+      { channelId: event.channel, messageTs: event.ts },
+      accountId,
+    );
 
     const memory: Memory = {
       id: createUniqueUuid(
@@ -2362,6 +2582,7 @@ export class SlackService extends Service implements ISlackService {
         name: displayName,
         metadata: { accountId },
         mentionContext: { isMention: true, isReply: false, isThread: false },
+        ...(media.length > 0 ? { attachments: media } : {}),
       },
       metadata: {
         type: "message",
@@ -2411,9 +2632,12 @@ export class SlackService extends Service implements ISlackService {
   }
 
   private parseSlackTimestamp(ts: string): number {
-    // Slack timestamps are in the format: 1234567890.123456
-    const [seconds] = ts.split(".");
-    return parseInt(seconds, 10) * 1000;
+    // Slack timestamps are in the format: 1234567890.123456. Keep the
+    // milliseconds: parts of one reply are often posted in the same second.
+    const [seconds, fraction = ""] = ts.split(".");
+    return (
+      parseInt(seconds, 10) * 1000 + parseInt(`${fraction}000`.slice(0, 3), 10)
+    );
   }
 
   private async ensureWorkspaceExists(
@@ -3240,48 +3464,47 @@ export class SlackService extends Service implements ISlackService {
       (typeof metadata?.threadTs === "string" ? metadata.threadTs : undefined);
     const channel = await this.getChannel(channelId, accountId);
 
-    const historyMessages = threadTs
-      ? await this.readThreadReplies(channelId, threadTs, undefined, accountId)
-      : await this.readHistory(channelId, undefined, accountId);
-    // Stored history (`slackMessageToMemory`) attributes this account's own
-    // bot posts to the agent; apply the same rule here so the same message
-    // does not surface as a separate participant through cached context.
-    const botUserId = this.getBotUserIdForAccount(accountId);
-    const recentMessages: MessageConnectorChatContext["recentMessages"] = [];
-    for (const message of historyMessages.slice().reverse()) {
-      const text = String(message.text ?? "");
-      if (!text.trim()) {
-        continue;
-      }
-      const userId = message.user ?? message.botId;
-      const fromAgent =
-        userId !== undefined && botUserId !== null && userId === botUserId;
-      const user =
-        typeof message.user === "string"
-          ? await this.getUser(message.user, accountId)
-          : null;
-      recentMessages.push({
-        entityId: fromAgent
-          ? this.runtime.agentId
-          : userId
-            ? (userId as UUID)
-            : undefined,
-        name: user ? getSlackUserDisplayName(user) : userId,
-        text,
-        timestamp: Number(message.ts) * 1000 || undefined,
-        metadata: {
-          accountId,
-          slackMessageTs: message.ts,
-          slackUserId: userId,
-        },
-      });
-    }
+    // Recent history comes from the stored room messages, never the Slack
+    // API: this hook runs on every planned turn, an unbounded
+    // conversations.history / conversations.replies read pages the whole
+    // channel or thread behind Slack's rate limits, and the transcript in the
+    // prompt is owned by RECENT_MESSAGES anyway (the provider strips
+    // recentMessages before rendering).
+    const roomId =
+      target.roomId ??
+      room?.id ??
+      (await this.getRoomId(channelId, threadTs, accountId));
+    const memories = await context.runtime.getMemories({
+      tableName: "messages",
+      roomId,
+      orderBy: "createdAt",
+      orderDirection: "desc",
+    });
+    const recentMessages: MessageConnectorChatContext["recentMessages"] =
+      memories
+        .slice()
+        .reverse()
+        .filter((memory) => (memory.content.text ?? "").trim().length > 0)
+        .map((memory) => ({
+          entityId: memory.entityId,
+          name:
+            typeof memory.content.name === "string"
+              ? memory.content.name
+              : undefined,
+          text: memory.content.text ?? "",
+          timestamp: memory.createdAt,
+          metadata: {
+            memoryId: memory.id,
+            accountId,
+            source: memory.content.source,
+          },
+        }));
 
     return {
       target: {
         source: "slack",
         accountId,
-        roomId: target.roomId ?? room?.id,
+        roomId,
         channelId,
         serverId:
           target.serverId ?? this.getTeamIdForAccount(accountId) ?? undefined,
@@ -3370,9 +3593,18 @@ export class SlackService extends Service implements ISlackService {
       ? await this.getUser(message.user, accountId)
       : null;
     const displayName = user ? getSlackUserDisplayName(user) : slackUserId;
-    const channel = await this.getChannel(channelId, accountId).catch(
-      () => null,
-    );
+    const channel = effectiveThreadTs
+      ? null
+      : await this.getChannel(channelId, accountId);
+    if (!effectiveThreadTs && !channel) {
+      throw new ElizaError(
+        "Slack conversation metadata is unavailable for message history",
+        {
+          code: "SLACK_CHANNEL_IDENTITY_MISSING",
+          context: { accountId, channelId, messageTs: message.ts },
+        },
+      );
+    }
     const channelType = effectiveThreadTs
       ? ChannelType.THREAD
       : channel?.isIm
@@ -3501,7 +3733,10 @@ export class SlackService extends Service implements ISlackService {
     );
     const client = this.getClientForAccount(accountId);
     if (!client) {
-      return [];
+      throw new ElizaError("Slack account client is not initialized", {
+        code: "SLACK_ACCOUNT_NOT_INITIALIZED",
+        context: { accountId },
+      });
     }
 
     const { channelId, threadTs } = await this.resolveConnectorMessageLocation(
@@ -4110,7 +4345,9 @@ export class SlackService extends Service implements ISlackService {
     text: string,
     accountId?: string | null,
   ): Promise<void> {
-    const client = this.getClientForAccount(accountId);
+    // Slack lets a token change only its own posts, so use the client that
+    // posted: the owner's user token for OWNER accounts.
+    const client = this.getOutboundClient(accountId);
     if (!client) {
       throw new Error("Slack client not initialized");
     }
@@ -4130,7 +4367,9 @@ export class SlackService extends Service implements ISlackService {
     messageTs: string,
     accountId?: string | null,
   ): Promise<void> {
-    const client = this.getClientForAccount(accountId);
+    // Slack lets a token change only its own posts, so use the client that
+    // posted: the owner's user token for OWNER accounts.
+    const client = this.getOutboundClient(accountId);
     if (!client) {
       throw new Error("Slack client not initialized");
     }
@@ -4311,7 +4550,7 @@ export class SlackService extends Service implements ISlackService {
       const result = await client.conversations.replies({
         channel: channelId,
         ts: threadTs,
-        limit: Math.min(15, requestedLimit ?? 15),
+        limit: 15,
         latest: options?.before,
         oldest: options?.after,
         cursor,
@@ -4319,15 +4558,14 @@ export class SlackService extends Service implements ISlackService {
       rawMessages.push(
         ...((result.messages ?? []) as Array<Record<string, unknown>>),
       );
-      if (requestedLimit !== undefined && rawMessages.length >= requestedLimit)
-        break;
+      if (requestedLimit !== undefined && rawMessages.length > requestedLimit)
+        rawMessages.splice(0, rawMessages.length - requestedLimit);
       cursor = nextSlackCursor(result, seen, "thread replies");
     } while (cursor);
-    const selected =
-      requestedLimit === undefined
-        ? rawMessages
-        : rawMessages.slice(0, requestedLimit);
-    return selected.map((msg) => this.wireMessageToSlackMessage(msg));
+    // conversations.replies is oldest-first; return newest-first like readHistory.
+    return rawMessages
+      .reverse()
+      .map((msg) => this.wireMessageToSlackMessage(msg));
   }
 
   private async listAllConnectorUsers(

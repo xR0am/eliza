@@ -40,8 +40,14 @@ export function pageGuidance(request) {
     return { visible: false, reason };
   };
   const answers = request.answers ?? [];
+  const keepClear = request.keepClear ?? [];
   if (
     request.kind !== "show" ||
+    (request.dismissed !== undefined &&
+      typeof request.dismissed !== "boolean") ||
+    !Array.isArray(keepClear) ||
+    keepClear.length > 8 ||
+    keepClear.some((id) => typeof id !== "string" || !/^\d+$/.test(id)) ||
     (request.action !== undefined &&
       !["click", "fill", "scroll"].includes(request.action)) ||
     (request.restore !== undefined && typeof request.restore !== "boolean") ||
@@ -106,8 +112,17 @@ export function pageGuidance(request) {
   const target = snapshot.nodes.get(request.nodeId)?.node;
   if (!target?.isConnected || target.getRootNode() !== document)
     return fail("missing-target");
+  // Controls the label must not cover, for example the button she presses
+  // next. A control that is gone is simply not avoided.
+  const clear = keepClear
+    .map((id) => snapshot.nodes.get(id)?.node)
+    .filter((node) => node?.isConnected && node !== target);
+  // The person's Dismiss holds for this step, also after a reload of the
+  // page (the extension remembers it), until she asks to see it again.
   const dismissed =
-    previous?.id === request.id && previous.dismissed && !request.restore;
+    !request.restore &&
+    (request.dismissed === true ||
+      (previous?.id === request.id && previous.dismissed));
   // A later revision of a shown step at the same target (for example its
   // success tone) replaces the words in place: no cursor travel or slide.
   const continued =
@@ -116,6 +131,34 @@ export function pageGuidance(request) {
     previous.appeared === true &&
     !previous.paused;
   previous?.destroy();
+  // A step whose control is outside the visible page brings it into view, so
+  // the guide never waits unseen. An action guide never scrolls: the action
+  // needs the page exactly as observed.
+  const placed = target.getBoundingClientRect();
+  const view0 = window.visualViewport;
+  const placement =
+    placed.width <= 0 ||
+    placed.height <= 0 ||
+    getComputedStyle(target).visibility !== "visible"
+      ? "hidden"
+      : placed.left >= (view0?.offsetLeft ?? 0) &&
+          placed.top >= (view0?.offsetTop ?? 0) &&
+          placed.right <=
+            (view0?.offsetLeft ?? 0) + (view0?.width ?? innerWidth) &&
+          placed.bottom <=
+            (view0?.offsetTop ?? 0) + (view0?.height ?? innerHeight)
+        ? "in-view"
+        : request.action || dismissed
+          ? "off-screen"
+          : "scrolled";
+  if (placement === "scrolled")
+    target.scrollIntoView({
+      block: "center",
+      inline: "nearest",
+      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "instant"
+        : "smooth",
+    });
   // The page shares document.fonts. Each document gets an unguessable family
   // added from bytes (no network or page CSP); any other face that claims it
   // makes the overlay use the generic system font for the rest of the document.
@@ -157,21 +200,23 @@ export function pageGuidance(request) {
   host.style.cssText =
     "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";
   const shadow = host.attachShadow({ mode: "closed" });
-  const style = document.createElement("style");
-  style.textContent =
+  // Host-owned CSS must render on sites that disallow inline style elements.
+  const style = new CSSStyleSheet();
+  style.replaceSync(
     ".ring{position:fixed;box-sizing:border-box;border-radius:8px;pointer-events:none;box-shadow:0 0 0 3px #fff,0 0 0 6px #4a3428}.ring.pulse{animation:ring .9s ease-in-out 3}@keyframes ring{50%{box-shadow:0 0 0 3px #fff,0 0 0 7px #4a34288c}}" +
-    ".label{font:500 20px/1.4 var(--face);position:fixed;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;background:#fff;color:#141414;border:2px solid #b3aad3;border-radius:16px;padding:18px;box-shadow:0 8px 24px #14141324;pointer-events:none;opacity:0;transform:translateY(-8px);transition:opacity .3s ease-out,transform .3s ease-out}.label.shown{opacity:1;transform:none;pointer-events:auto}.label.tone-success{border-color:#265b19}" +
-    ".tail{position:absolute;left:28px;top:-10px;width:16px;height:16px;box-sizing:border-box;background:#fff;border:2px solid;border-color:inherit;border-right:0;border-bottom:0;transform:rotate(45deg)}.tail.up{top:auto;bottom:-10px;border:2px solid;border-color:inherit;border-left:0;border-top:0}" +
-    ".row{display:flex;gap:12px;align-items:flex-start}.mark{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;background:#d4ceea;color:#141414;font:700 20px/1 var(--face)}.tone-active .mark{background:#b3aad3}.tone-success .mark{border-radius:17px;background:#265b19;color:#fff}" +
-    ".words{display:flex;flex-direction:column;gap:4px;min-width:0}.title{margin:0;font:700 22px/28px var(--face);overflow-wrap:anywhere}.detail{margin:0;font:500 17px/22px var(--face);color:#4a3428;overflow-wrap:anywhere}" +
-    "button{font:700 22px/1 var(--face);color:#141414;border:0;border-radius:20px;background:#fff;box-shadow:inset 0 0 0 1.5px #4a342899;cursor:pointer;margin:0}button:focus-visible{outline:3px solid #141414;outline-offset:3px}.answered button{cursor:default}" +
-    ".cards{display:flex;flex-direction:column;gap:10px}.card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;min-height:64px;padding:12px 20px;border-radius:16px;text-align:left}.value{font:700 22px/28px var(--face);overflow-wrap:anywhere}.purpose{font:500 17px/22px var(--face);color:#4a3428}" +
-    ".actions{display:flex;gap:10px}.actions button{flex:1 1 0}.actions button,.close{height:64px;padding:0 28px;white-space:nowrap}.actions .primary{background:#b3aad3;box-shadow:none}[hidden]{display:none!important}" +
-    ".pointer{position:fixed;left:0;top:0;width:28px;height:32px;pointer-events:none;transition:left 1.4s cubic-bezier(.45,0,.25,1),top 1.4s cubic-bezier(.45,0,.25,1)}.pointer svg{display:block;fill:#141414;filter:drop-shadow(0 2px 3px #14141359)}.tapring{position:absolute;left:-15px;top:-16px;width:36px;height:36px;box-sizing:border-box;border:4px solid #141414;border-radius:50%;opacity:0}.tapping .tapring{animation:tap .7s ease-out forwards}" +
-    ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;height:34px;padding:0 12px 0 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:nowrap}.initial{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
-    ".pointer.paused{transition:none}.paused svg{fill:#73726c}.paused .tag{background:#4a4a47;color:#fff}.paused .initial{background:#fff;color:#4a4a47}" +
-    ".tap{position:fixed;width:36px;height:36px;border:4px solid #141414;border-radius:50%;box-sizing:border-box;pointer-events:none;animation:tap .7s ease-out forwards}@keyframes tap{0%{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}" +
-    "@media (prefers-reduced-motion:reduce){.ring.pulse,.tap,.tapping .tapring{animation:none}.label,.pointer{transition:none}.label{transform:none}}";
+      ".label{font:500 20px/1.4 var(--face);position:fixed;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;background:#fff;color:#141414;border:2px solid #b3aad3;border-radius:16px;padding:18px;box-shadow:0 8px 24px #14141324;pointer-events:none;opacity:0;transform:translateY(-8px);transition:opacity .3s ease-out,transform .3s ease-out}.label.shown{opacity:1;transform:none;pointer-events:auto}.label.tone-success{border-color:#265b19}" +
+      ".tail{position:absolute;left:28px;top:-10px;width:16px;height:16px;box-sizing:border-box;background:#fff;border:2px solid;border-color:inherit;border-right:0;border-bottom:0;transform:rotate(45deg)}.tail.up{top:auto;bottom:-10px;border:2px solid;border-color:inherit;border-left:0;border-top:0}" +
+      ".row{display:flex;gap:12px;align-items:flex-start}.mark{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;background:#d4ceea;color:#141414;font:700 20px/1 var(--face)}.tone-active .mark{background:#b3aad3}.tone-success .mark{border-radius:17px;background:#265b19;color:#fff}" +
+      ".words{display:flex;flex-direction:column;gap:4px;min-width:0}.title{margin:0;font:700 22px/28px var(--face);overflow-wrap:anywhere}.detail{margin:0;font:500 17px/22px var(--face);color:#4a3428;overflow-wrap:anywhere}" +
+      "button{font:700 22px/1 var(--face);color:#141414;border:0;border-radius:20px;background:#fff;box-shadow:inset 0 0 0 1.5px #4a342899;cursor:pointer;margin:0}button:focus-visible{outline:3px solid #141414;outline-offset:3px}.answered button{cursor:default}" +
+      ".cards{display:flex;flex-direction:column;gap:10px}.card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;min-height:64px;padding:12px 20px;border-radius:16px;text-align:left}.value{font:700 22px/28px var(--face);overflow-wrap:anywhere}.purpose{font:500 17px/22px var(--face);color:#4a3428}" +
+      ".actions{display:flex;gap:10px}.actions button{flex:1 1 0}.actions button,.close{height:64px;padding:0 28px;white-space:nowrap}.actions .primary{background:#b3aad3;box-shadow:none}[hidden]{display:none!important}" +
+      ".pointer{position:fixed;left:0;top:0;width:28px;height:32px;pointer-events:none;transition:left 1.4s cubic-bezier(.45,0,.25,1),top 1.4s cubic-bezier(.45,0,.25,1)}.pointer svg{display:block;fill:#141414;filter:drop-shadow(0 2px 3px #14141359)}" +
+      ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;height:34px;padding:0 12px 0 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:nowrap}.initial{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
+      ".pointer.paused{transition:none}.paused svg{fill:#73726c}.paused .tag{background:#4a4a47;color:#fff}.paused .initial{background:#fff;color:#4a4a47}" +
+      ".tap{position:fixed;width:36px;height:36px;border:4px solid #141414;border-radius:50%;box-sizing:border-box;pointer-events:none;animation:tap .7s ease-out forwards}@keyframes tap{0%{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}" +
+      "@media (prefers-reduced-motion:reduce){.ring.pulse,.tap{animation:none}.label,.pointer{transition:none}.label{transform:none}}",
+  );
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -194,7 +239,7 @@ export function pageGuidance(request) {
   const nameTag = element("span", "name", name);
   const tag = element("span", "tag");
   tag.append(element("span", "initial", initial), nameTag);
-  pointer.append(element("span", "tapring"), svg, tag);
+  pointer.append(svg, tag);
   const tap = element("div", "tap");
   tap.setAttribute("aria-hidden", "true");
   // Reduced motion and in-place updates show everything without movement.
@@ -255,6 +300,7 @@ export function pageGuidance(request) {
   };
   const cards = answers.filter((answer) => answer.kind === "card");
   const buttons = answers.filter((answer) => answer.kind !== "card");
+  const offered = [];
   if (cards.length) {
     const list = element("div", "cards");
     for (const answer of cards) {
@@ -265,7 +311,7 @@ export function pageGuidance(request) {
       card.onclick = choose(answer.id);
       list.append(card);
     }
-    label.append(list);
+    offered.push(list);
   }
   if (buttons.length) {
     const list = element("div", "actions");
@@ -275,7 +321,7 @@ export function pageGuidance(request) {
       button.onclick = choose(answer.id);
       list.append(button);
     }
-    label.append(list);
+    offered.push(list);
   }
   // An offer's secondary answer is its decline; other labels keep Dismiss.
   const close = element(
@@ -284,10 +330,12 @@ export function pageGuidance(request) {
     request.action ? "Cancel this action" : "Dismiss guidance",
   );
   close.type = "button";
-  if (request.action || !buttons.some((answer) => answer.kind === "secondary"))
-    label.append(close);
+  close.hidden =
+    !request.action && buttons.some((answer) => answer.kind === "secondary");
+  label.append(...offered, close);
   root.append(ring, label, pointer, tap);
-  shadow.append(style, root);
+  shadow.adoptedStyleSheets = [style];
+  shadow.append(root);
   pointer.style.display = "none";
   tap.hidden = true;
   ring.hidden = true;
@@ -317,8 +365,21 @@ export function pageGuidance(request) {
     visibleSince = 0,
     appearedAt = 0,
     acted = false,
+    lapsed = false,
     travel = instant ? "done" : "idle",
     travelAt = 0;
+  // The pointer's time is up. The host shows it again only after a fresh
+  // look at the page. Until then a show-only step keeps its words readable,
+  // without the ring, the tail, the cursor or answers.
+  const lapse = () => {
+    lapsed = true;
+    travel = "done";
+    pointer.style.display = "none";
+    ring.hidden = true;
+    tail.hidden = true;
+    for (const list of offered) list.hidden = true;
+    close.hidden = false;
+  };
   const place = (point) => {
     pointer.style.left = `${point[0] - 3}px`;
     pointer.style.top = `${point[1] - 2}px`;
@@ -332,7 +393,6 @@ export function pageGuidance(request) {
     appearedAt = 0;
     if (!state.paused) {
       pointer.style.display = "none";
-      pointer.classList.remove("tapping");
       if (travel !== "done") travel = "idle";
     }
   };
@@ -407,7 +467,6 @@ export function pageGuidance(request) {
       hide();
       if (!point) return;
       cursor.point = point;
-      pointer.classList.remove("tapping");
       pointer.classList.add("paused");
       place(point);
       nameTag.textContent = `${name} · paused`;
@@ -430,10 +489,19 @@ export function pageGuidance(request) {
       state.visible = false;
     },
   };
-  close.onclick = () => {
+  close.onclick = (event) => {
     state.dismissed = true;
     state.visible = false;
     hide();
+    // Value-free: only this guide's ID returns, so a reload keeps it hidden.
+    if (event.isTrusted && !request.action)
+      try {
+        void chrome.runtime
+          .sendMessage({ type: "task-guide-dismissed", guideId: request.id })
+          .catch(() => {});
+      } catch {
+        // Without the extension transport the dismissal lasts for this page.
+      }
   };
   globalThis[key] = state;
   const update = () => {
@@ -462,7 +530,7 @@ export function pageGuidance(request) {
       return;
     }
     if (
-      Date.now() >= request.expiresAt ||
+      (request.action && Date.now() >= request.expiresAt) ||
       location.href !== snapshot.url ||
       !host.isConnected ||
       !target.isConnected
@@ -470,6 +538,7 @@ export function pageGuidance(request) {
       state.destroy();
       return;
     }
+    if (!lapsed && Date.now() >= request.expiresAt) lapse();
     if (dirty || state.dismissed) {
       hide();
       frame = requestAnimationFrame(update);
@@ -533,31 +602,35 @@ export function pageGuidance(request) {
           (p) =>
             p.y >= view.top + 8 &&
             p.y + height <= view.top + view.height - 8 &&
-            (p.x + width <= rect.left - 8 ||
-              p.x >= rect.right + 8 ||
-              p.y + height <= rect.top - 8 ||
-              p.y >= rect.bottom + 8),
+            [rect, ...clear.map((node) => node.getBoundingClientRect())].every(
+              (avoid) =>
+                p.x + width <= avoid.left - 8 ||
+                p.x >= avoid.right + 8 ||
+                p.y + height <= avoid.top - 8 ||
+                p.y >= avoid.bottom + 8,
+            ),
         );
+      Object.assign(ring.style, {
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+        borderRadius: css.borderRadius,
+      });
       if (position) {
         label.style.left = `${position.x}px`;
         label.style.top = `${position.y}px`;
-        tail.hidden = position.tail === undefined;
+        tail.hidden = position.tail === undefined || lapsed;
         tail.className = position.tail ? "tail up" : "tail";
         tail.style.left = `${Math.max(14, Math.min(rect.left + 28 - position.x, width - 32))}px`;
-        Object.assign(ring.style, {
-          left: `${rect.left}px`,
-          top: `${rect.top}px`,
-          width: `${rect.width}px`,
-          height: `${rect.height}px`,
-          borderRadius: css.borderRadius,
-        });
         const point = [
           rect.left + Math.min(rect.width / 2, 120),
           rect.top + rect.height / 2,
         ];
         const now = Date.now();
-        // Travel from where the cursor was last seen, tap the air (show-only),
-        // then hide. An action pointer stays on its target instead.
+        // Travel from where the cursor was last seen, then hide. A show-only
+        // guide never plays a tap: the person presses this control, not Eliza.
+        // An action pointer stays on its target instead.
         if (travel === "idle") {
           pointer.style.transition = "none";
           place(
@@ -574,23 +647,15 @@ export function pageGuidance(request) {
           travel = "moving";
           travelAt = now;
         } else if (travel === "moving" && now - travelAt >= 1400) {
-          if (request.action) travel = "done";
-          else {
-            travel = "tapping";
-            travelAt = now;
-            pointer.classList.add("tapping");
-          }
-        } else if (travel === "tapping" && now - travelAt >= 700) {
           travel = "done";
-          pointer.classList.remove("tapping");
-          pointer.style.display = "none";
+          if (!request.action) pointer.style.display = "none";
         }
         if (travel !== "done") {
           label.hidden = true;
           frame = requestAnimationFrame(update);
           return;
         }
-        ring.hidden = Boolean(request.action);
+        ring.hidden = Boolean(request.action) || lapsed;
         cursor.point = point;
         if (!appearedAt) appearedAt = now;
         if (now - appearedAt >= 250) label.classList.add("shown");
@@ -605,10 +670,20 @@ export function pageGuidance(request) {
         state.visible = true;
         state.appeared = true;
         if (!visibleSince) visibleSince = now;
-      } else hide();
+      } else {
+        hide();
+        // Only the label needs room. A show-only step keeps its ring on the
+        // control; an action still needs its label and Cancel.
+        ring.hidden = Boolean(request.action) || lapsed;
+      }
     } else hide();
     frame = requestAnimationFrame(update);
   };
   frame = requestAnimationFrame(update);
-  return { accepted: true, visible: false, dismissed: state.dismissed };
+  return {
+    accepted: true,
+    visible: false,
+    dismissed: state.dismissed,
+    placement,
+  };
 }

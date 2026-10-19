@@ -3035,6 +3035,7 @@ export class AgentRuntime implements IAgentRuntime {
 		source?: string;
 		type?: ChannelType | string;
 		channelId?: string;
+		serverId?: string;
 		messageServerId?: UUID;
 		userId?: UUID;
 		metadata?: Record<string, JsonValue>;
@@ -3240,6 +3241,7 @@ export class AgentRuntime implements IAgentRuntime {
 		source,
 		type,
 		channelId,
+		serverId,
 		messageServerId,
 		worldId,
 		metadata,
@@ -3258,6 +3260,7 @@ export class AgentRuntime implements IAgentRuntime {
 				source,
 				type,
 				channelId,
+				serverId,
 				messageServerId,
 				worldId,
 				metadata,
@@ -4699,6 +4702,7 @@ export class AgentRuntime implements IAgentRuntime {
 			entityId: UUID;
 			roomId: UUID;
 			type: string;
+			createdAt?: Date;
 		}>,
 	): Promise<void> {
 		return this.adapter.createLogs(params);
@@ -4773,8 +4777,10 @@ export class AgentRuntime implements IAgentRuntime {
 		source,
 		type,
 		channelId,
+		serverId,
 		messageServerId,
 		worldId,
+		metadata,
 	}: Room): Promise<UUID> {
 		if (!worldId) throw new Error("worldId is required");
 		const res = await this.createRooms([
@@ -4784,8 +4790,10 @@ export class AgentRuntime implements IAgentRuntime {
 				source,
 				type,
 				channelId,
+				serverId,
 				messageServerId,
 				worldId,
+				metadata,
 			},
 		]);
 		if (!res.length) throw new Error("Failed to create room");

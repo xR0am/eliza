@@ -20,7 +20,6 @@ import type { MeetingService } from "../service.js";
 import { readTranscriptRow } from "../transcripts/meeting-transcript-writer.js";
 import {
   MEETING_URL_PARAMETER,
-  messageText,
   reply,
   requireMeetingService,
   resolveTargetSession,
@@ -81,14 +80,13 @@ async function handler(
 export const getMeetingTranscriptAction: Action = {
   name: "GET_MEETING_TRANSCRIPT",
   similes: ["MEETING_NOTES", "SHOW_MEETING_TRANSCRIPT"],
+  // Same gate as JOIN_MEETING: the owner's meetings are the owner's.
+  roleGate: { minRole: "OWNER" },
   description:
     "Retrieve the live or final transcript of a meeting the notetaker bot attended.",
-  validate: async (runtime, message) => {
+  validate: async (runtime) => {
     const service = runtime.getService<MeetingService>("meetings");
-    if (!service || service.listSessions().length === 0) return false;
-    return /\b(transcript|notes|what.*(said|discussed|talked))\b/i.test(
-      messageText(message),
-    );
+    return service !== null && service.listSessions().length > 0;
   },
   parameters: [SESSION_ID_PARAMETER, MEETING_URL_PARAMETER],
   handler,

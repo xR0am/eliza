@@ -27,6 +27,7 @@ import {
   type Entity,
   formatError,
   type IAgentRuntime,
+  type IDatabaseAdapter,
   type LogEntry,
   logger,
   MESSAGE_SOURCE_CLIENT_CHAT,
@@ -163,11 +164,15 @@ import {
   stopMemorySampler,
 } from "./boot-telemetry.ts";
 import { BootTimer } from "./boot-timer.ts";
-import { buildCharacterFromConfig } from "./build-character-config.ts";
+import {
+  agentIdentityName,
+  buildCharacterFromConfig,
+} from "./build-character-config.ts";
 import { BLOCKING_CORE_PLUGINS, CORE_PLUGINS } from "./core-plugins.ts";
 import { maybeInjectFault } from "./crash-injection.ts";
 import {
   isSQLiteSelected,
+  resolveEffectiveDbProvider,
   SQLITE_PLUGIN,
   selectDatabasePluginNames,
   selectedDatabasePlugin,
@@ -833,6 +838,21 @@ type SandboxFetchAuditEvent = {
   url: string;
   tokenIds: string[];
 };
+// configureLocalEmbeddingPlugin pins EMBEDDING_PROVIDER=local for the live
+// runtime. An in-process restart must decide the embedding owner again from
+// saved settings, so each boot puts back the value the pin replaced.
+let embeddingProviderBeforeLocalPin: { value: string | undefined } | undefined;
+
+/** @internal Exported for regression coverage. */
+export function releaseLocalEmbeddingProviderPin(): void {
+  if (!embeddingProviderBeforeLocalPin) return;
+  const { value } = embeddingProviderBeforeLocalPin;
+  embeddingProviderBeforeLocalPin = undefined;
+  if (process.env.EMBEDDING_PROVIDER !== "local") return;
+  if (value === undefined) delete process.env.EMBEDDING_PROVIDER;
+  else process.env.EMBEDDING_PROVIDER = value;
+}
+
 export async function configureLocalEmbeddingPlugin(
   _plugin: Plugin,
   config?: ElizaConfig,
@@ -860,7 +880,12 @@ export async function configureLocalEmbeddingPlugin(
     rawValue: string | undefined,
   ): string | undefined => {
     if (!rawValue) return undefined;
-    const parsed = Number.parseInt(rawValue, 10);
+    // Number.parseInt stops at the first non-digit, so "1536junk" parsed to
+    // 1536 and was accepted as a deliberate setting instead of being ignored.
+    // Require the whole trimmed value to be decimal, mirroring
+    // resolveGenerationTimeoutMs in the discord plugin.
+    const text = rawValue.trim();
+    const parsed = /^\+?\d+$/.test(text) ? Number(text) : Number.NaN;
     if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
     return SQL_COMPATIBLE_EMBEDDING_DIMENSIONS.has(parsed)
       ? String(parsed)
@@ -948,6 +973,10 @@ export async function configureLocalEmbeddingPlugin(
   // available to cloud-hosted deployments, but an app-side OPENAI/GOOGLE value
   // must not turn a local boot into a network embedding path. The caller gates
   // this configuration off when cloud embeddings are explicitly enabled.
+  if (process.env.EMBEDDING_PROVIDER !== "local")
+    embeddingProviderBeforeLocalPin ??= {
+      value: process.env.EMBEDDING_PROVIDER,
+    };
   process.env.EMBEDDING_PROVIDER = "local";
   const embeddingConfigSummary =
     `${process.env.LOCAL_EMBEDDING_MODEL} (repo: ${process.env.LOCAL_EMBEDDING_MODEL_REPO ?? "auto"}, ` +
@@ -1106,6 +1135,31 @@ const CLOUD_ROUTING_MODEL_ENV: ReadonlyArray<[string, string]> = [
   ["ELIZAOS_CLOUD_RESPONSE_MODEL", "responseModel"],
   ["ELIZAOS_CLOUD_MEDIA_DESCRIPTION_MODEL", "mediaDescriptionModel"],
 ];
+// Operator launch values for the Cloud role pins. applyCloudConfigToEnv
+// writes these keys into process.env, and an in-process restart would read
+// that write back as operator input, so a pin reset to Default in Settings
+// would never clear. Captured on the first Cloud config step, after the host
+// loads dotenv.
+const CLOUD_ROLE_PIN_ENV_KEYS = [
+  "ELIZAOS_CLOUD_RESPONSE_HANDLER_MODEL",
+  "ELIZAOS_CLOUD_SHOULD_RESPOND_MODEL",
+  "ELIZAOS_CLOUD_ACTION_PLANNER_MODEL",
+  "ELIZAOS_CLOUD_PLANNER_MODEL",
+] as const;
+let launchCloudRolePinSnapshot: Readonly<NodeJS.ProcessEnv> | undefined;
+function launchCloudRolePinEnv(): Readonly<NodeJS.ProcessEnv> {
+  launchCloudRolePinSnapshot ??= Object.freeze(
+    Object.fromEntries(
+      CLOUD_ROLE_PIN_ENV_KEYS.map((key) => [key, process.env[key]]),
+    ),
+  );
+  return launchCloudRolePinSnapshot;
+}
+const CLOUD_ROLE_PIN_ENV_KEY_SET = new Set<string>(CLOUD_ROLE_PIN_ENV_KEYS);
+/** @internal Test-only: forget the launch copy so each case takes its own. */
+export function resetLaunchCloudRolePinEnvForTests(): void {
+  launchCloudRolePinSnapshot = undefined;
+}
 function mergeMissingCloudRoutingModelPins(
   config: ElizaConfig,
   env: NodeJS.ProcessEnv,
@@ -1118,9 +1172,14 @@ function mergeMissingCloudRoutingModelPins(
     | undefined;
   if (!llmText) return false;
   const patch: Record<string, string> = {};
+  const rolePinEnv = env === process.env ? launchCloudRolePinEnv() : env;
   for (const [envKey, routingField] of CLOUD_ROUTING_MODEL_ENV) {
     if (trimEnvString(llmText[routingField])) continue;
-    const value = readEffectiveEnvValue(config, envKey, env);
+    const value = readEffectiveEnvValue(
+      config,
+      envKey,
+      CLOUD_ROLE_PIN_ENV_KEY_SET.has(envKey) ? rolePinEnv : env,
+    );
     if (value) patch[routingField] = value;
   }
   if (Object.keys(patch).length === 0) return false;
@@ -1138,6 +1197,7 @@ export function ensureProvisionedCloudContainerConfig(
   config: ElizaConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  launchCloudRolePinEnv();
   if (!isProvisionedCloudContainer(env)) {
     return false;
   }
@@ -1487,11 +1547,121 @@ const SIGNAL_SERVICE_STOP_TIMEOUT_MS = 13000;
  * PGlite manager, so restarts must close the adapter or the next runtime can
  * silently reuse the same broken manager instance.
  */
+export interface HostRuntimeStopOptions extends RuntimeStopOptions {
+  /**
+   * Stop the runtime but leave its database adapter open. An API stop uses
+   * this so the host can still verify sessions while the agent is stopped;
+   * the host later closes the adapter with {@link closeRuntimeAdapter}.
+   */
+  keepAdapterOpen?: boolean;
+}
+/** Close a runtime's database adapter, as {@link shutdownRuntime} does. */
+export async function closeRuntimeAdapter(
+  runtime: AgentRuntime,
+  context: string,
+): Promise<void> {
+  const adapter = runtime.adapter as RuntimeAdapterWithClose | undefined;
+  if (!adapter || typeof adapter.close !== "function") return;
+  try {
+    logger.debug(`[eliza] ${context}: closing database adapter`);
+    await adapter.close();
+    logger.debug(`[eliza] ${context}: database adapter closed`);
+  } catch (err) {
+    logger.warn(
+      `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
+    );
+    throw err;
+  }
+}
+
+/**
+ * Reopen only a stopped runtime's database adapter.
+ *
+ * Hosts use this after a replacement boot fails. The runtime services stay
+ * stopped, but its persistent authentication repository becomes available
+ * again so the owner can retry Start without restarting the process.
+ */
+export async function reopenRuntimeAdapter(
+  runtime: AgentRuntime,
+  context: string,
+): Promise<void> {
+  let replacement: IDatabaseAdapter | undefined;
+  try {
+    // Reopen the backend that this host actually stopped, independent of other hosts' environment.
+    const { SQLiteDatabaseAdapter } = await import("@elizaos/plugin-sqlite");
+    if (runtime.adapter instanceof SQLiteDatabaseAdapter) {
+      const sqlitePath = runtime.getSetting("SQLITE_DATABASE_PATH");
+      if (typeof sqlitePath !== "string" || !path.isAbsolute(sqlitePath)) {
+        throw new ElizaError(
+          "Cannot reopen SQLite authentication storage without an absolute path",
+          {
+            code: "SQLITE_PATH_REQUIRED",
+          },
+        );
+      }
+      replacement = SQLiteDatabaseAdapter.create(sqlitePath, runtime.agentId);
+    } else {
+      const {
+        createDatabaseAdapter,
+        PgDatabaseAdapter,
+        PgliteDatabaseAdapter,
+      } = await import("@elizaos/plugin-sql");
+      if (runtime.adapter instanceof PgliteDatabaseAdapter) {
+        const dataDir = runtime.adapter.getPgliteDataDir();
+        if (!dataDir || dataDir === ":memory:")
+          throw new ElizaError(
+            "Stopped authentication storage is not durable",
+            {
+              code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+            },
+          );
+        replacement = createDatabaseAdapter({ dataDir }, runtime.agentId);
+      } else if (runtime.adapter instanceof PgDatabaseAdapter) {
+        const postgresUrl = runtime.getSetting("POSTGRES_URL");
+        if (typeof postgresUrl !== "string" || !postgresUrl.trim()) {
+          throw new ElizaError(
+            "Stopped PostgreSQL authentication storage has no connection configuration",
+            {
+              code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+            },
+          );
+        }
+        replacement = createDatabaseAdapter({ postgresUrl }, runtime.agentId);
+      } else {
+        throw new ElizaError(
+          "Host must supply recovery for its database adapter",
+          {
+            code: "DATABASE_ADAPTER_REOPEN_UNAVAILABLE",
+          },
+        );
+      }
+    }
+    await replacement.initialize();
+    runtime.adapter = replacement;
+    logger.debug(`[eliza] ${context}: database adapter reopened`);
+  } catch (error) {
+    if (replacement) {
+      try {
+        await replacement.close();
+      } catch (closeError) {
+        throw new ElizaError(
+          "Database adapter reopen and cleanup both failed",
+          {
+            code: "DATABASE_ADAPTER_REOPEN_CLEANUP_FAILED",
+            cause: new AggregateError([error, closeError]),
+          },
+        );
+      }
+    }
+    throw error;
+  }
+}
 export async function shutdownRuntime(
   runtime: AgentRuntime | null | undefined,
   context: string,
-  options: RuntimeStopOptions = {},
+  hostOptions: HostRuntimeStopOptions = {},
 ): Promise<void> {
+  const { keepAdapterOpen = false, ...options } = hostOptions;
   let firstError: unknown = null;
   try {
     await stopMemorySampler();
@@ -1505,7 +1675,6 @@ export async function shutdownRuntime(
     if (firstError) throw firstError;
     return;
   }
-  const adapter = runtime.adapter as RuntimeAdapterWithClose | undefined;
   try {
     const pendingDeferredBoot = pendingDeferredBootTaskCount(runtime);
     if (pendingDeferredBoot > 0) {
@@ -1523,7 +1692,13 @@ export async function shutdownRuntime(
   try {
     // Interactive/signal teardown asks for the capped fast path so Ctrl-C does
     // not block on a slow deferred service start or a long embedding drain.
-    await runtime.stop(options.fast ? options : undefined);
+    await runtime.stop(
+      options.fast ||
+        options.requireQuiescence ||
+        options.serviceStopTimeoutMs !== undefined
+        ? options
+        : undefined,
+    );
     logger.debug(`[eliza] ${context}: runtime services stopped`);
   } catch (err) {
     if (!firstError) firstError = err;
@@ -1539,23 +1714,37 @@ export async function shutdownRuntime(
     );
   }
 
-  if (adapter && typeof adapter.close === "function") {
+  if (!keepAdapterOpen) {
     try {
-      logger.debug(`[eliza] ${context}: closing database adapter`);
-      await adapter.close();
-      logger.debug(`[eliza] ${context}: database adapter closed`);
+      await closeRuntimeAdapter(runtime, context);
     } catch (err) {
-      if (!firstError) {
-        firstError = err;
-      }
-      logger.warn(
-        `[eliza] ${context}: database adapter close failed: ${formatError(err)}`,
-      );
+      if (!firstError) firstError = err;
     }
   }
   if (firstError) {
     throw firstError;
   }
+}
+/**
+ * Stop a runtime that a hot reload replaced. plugin-sql reuses one database
+ * manager per data dir and agent, so the replacement can sit on the same
+ * connection as the old runtime; closing the old adapter would close it under
+ * the replacement. The replacement's own shutdown closes it later.
+ */
+export async function disposeReplacedRuntime(
+  previousRuntime: AgentRuntime,
+  activeRuntime: AgentRuntime,
+): Promise<void> {
+  const connection = (runtime: AgentRuntime) =>
+    (
+      runtime.adapter as { getRawConnection?: () => unknown } | undefined
+    )?.getRawConnection?.();
+  const shared = connection(previousRuntime);
+  await shutdownRuntime(previousRuntime, "hot-reload cleanup", {
+    fast: true,
+    keepAdapterOpen:
+      shared !== undefined && shared === connection(activeRuntime),
+  });
 }
 interface TrajectoryLoggerControl {
   isEnabled?: () => boolean;
@@ -2136,6 +2325,7 @@ export function cloudApiKeyFingerprint(value: string | undefined): string {
  * ElizaCloud plugin can discover settings at startup.
  */
 export function applyCloudConfigToEnv(config: ElizaConfig): void {
+  launchCloudRolePinEnv();
   migrateLegacyRuntimeConfig(config as Record<string, unknown>);
   const devCloudSnapshot = applyDevCloudConfigAuthority(
     config as Record<string, unknown>,
@@ -2385,16 +2575,31 @@ function applyCloudConfigToEnvResolved(config: ElizaConfig): void {
       models?.mega ||
       readEffectiveEnvValue(config, "ELIZAOS_CLOUD_MEGA_MODEL") ||
       large;
+    // A saved Cloud route owns the role pins; only launch env and config.env
+    // can fill a pin it leaves unset.
+    const rolePinEnv = llmText ? launchCloudRolePinEnv() : process.env;
     const responseHandlerModel =
       llmText?.responseHandlerModel ||
       llmText?.shouldRespondModel ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_RESPONSE_HANDLER_MODEL") ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_SHOULD_RESPOND_MODEL");
+      readEffectiveEnvValue(
+        config,
+        "ELIZAOS_CLOUD_RESPONSE_HANDLER_MODEL",
+        rolePinEnv,
+      ) ||
+      readEffectiveEnvValue(
+        config,
+        "ELIZAOS_CLOUD_SHOULD_RESPOND_MODEL",
+        rolePinEnv,
+      );
     const actionPlannerModel =
       llmText?.actionPlannerModel ||
       llmText?.plannerModel ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_ACTION_PLANNER_MODEL") ||
-      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_PLANNER_MODEL");
+      readEffectiveEnvValue(
+        config,
+        "ELIZAOS_CLOUD_ACTION_PLANNER_MODEL",
+        rolePinEnv,
+      ) ||
+      readEffectiveEnvValue(config, "ELIZAOS_CLOUD_PLANNER_MODEL", rolePinEnv);
     process.env.SMALL_MODEL = small;
     process.env.NANO_MODEL = nano;
     process.env.MEDIUM_MODEL = medium;
@@ -2502,25 +2707,6 @@ function resolveDefaultPgliteDataDir(config: ElizaConfig): string {
  * Keeping env authoritative makes the env-only Postgres path consistent across
  * applyDatabaseConfigToEnv, resolveActivePgliteDataDir, and the provider log.
  */
-function resolveEffectiveDbProvider(
-  config: ElizaConfig,
-): "postgres" | "pglite" | "sqlite" {
-  if (isSQLiteSelected()) {
-    if (config.database?.provider)
-      throw new ElizaError(
-        "Remove the PostgreSQL/PGlite database provider when selecting SQLite",
-        { code: "DATABASE_PROVIDER_CONFLICT" },
-      );
-    return "sqlite";
-  }
-  if (config.database?.provider) {
-    return config.database.provider === "postgres" ? "postgres" : "pglite";
-  }
-  if (process.env.POSTGRES_URL?.trim() || process.env.DATABASE_URL?.trim()) {
-    return "postgres";
-  }
-  return "pglite";
-}
 /** @internal Exported for testing. */
 export function applyDatabaseConfigToEnv(config: ElizaConfig): void {
   const db = config.database;
@@ -3881,6 +4067,7 @@ export async function startEliza(
   if (!process.env.LOG_LEVEL) {
     process.env.LOG_LEVEL = config.logging?.level ?? "error";
   }
+  releaseLocalEmbeddingProviderPin();
   // 2. Push channel secrets into process.env for plugin discovery
   applyConnectorSecretsToEnv(config);
   // Cloud sandbox (Path A / double-connect): in a provisioned container that
@@ -4259,7 +4446,15 @@ export async function startEliza(
       const { applyVaultProfilesForAgent } = await import(
         "./vault-profile-resolver.ts"
       );
-      await applyVaultProfilesForAgent(sharedVault(), agentId);
+      const { overridden } = await applyVaultProfilesForAgent(
+        sharedVault(),
+        agentId,
+      );
+      const secrets = character.secrets;
+      for (const key of overridden) {
+        const value = process.env[key];
+        if (secrets && key in secrets && value) secrets[key] = value;
+      }
     } catch (err) {
       logger.warn(
         `[vault-profile-resolver] boot-time apply failed agent="${agentId}": ${err instanceof Error ? err.message : String(err)}`,
@@ -4435,7 +4630,7 @@ export async function startEliza(
   const runtimeLogLevel = (() => {
     // process.env.LOG_LEVEL is already resolved (set explicitly or from
     // config.logging.level above), so prefer it to honour the dev-mode
-    // LOG_LEVEL=error override set by eliza/packages/app/scripts/dev-ui.ts.
+    // LOG_LEVEL=error override set by packages/app/scripts/dev-ui.ts.
     const lvl = process.env.LOG_LEVEL ?? config.logging?.level ?? "error";
     if (lvl === "silent") return "fatal" as const;
     return lvl as "trace" | "debug" | "info" | "warn" | "error" | "fatal";
@@ -5763,12 +5958,27 @@ export async function startEliza(
     });
   }
   bootContext.enterPhase("attach-host");
+  let lifecycleRuntime: AgentRuntime | null = runtime;
+  // A teardown started by an API stop or restart owns its runtime; a signal
+  // shutdown waits for it (within the signal budget) before the process exits.
+  let pendingRuntimeTeardown: Promise<void> | null = null;
   const processLifecycle = createAgentProcessLifecycle({
-    disposeRuntime: (reason) =>
-      shutdownRuntime(runtime, reason, {
+    disposeRuntime: async (reason) => {
+      if (pendingRuntimeTeardown) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          pendingRuntimeTeardown.catch(() => undefined),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, SIGNAL_SERVICE_STOP_TIMEOUT_MS);
+          }),
+        ]);
+        clearTimeout(timer);
+      }
+      await shutdownRuntime(lifecycleRuntime, reason, {
         fast: true,
         serviceStopTimeoutMs: SIGNAL_SERVICE_STOP_TIMEOUT_MS,
-      }),
+      });
+    },
     disposeSandbox: sandboxManager
       ? async () => {
           await sandboxManager?.stop();
@@ -5920,13 +6130,50 @@ export async function startEliza(
       runtime,
       skipListen: skipApiListen,
       restartRequiresRuntimeDisposal: restoredGeneration !== undefined,
+      onStop: async (runtimeToStop) => {
+        // A later signal shutdown must not close this adapter a second time.
+        if (lifecycleRuntime === runtimeToStop) {
+          lifecycleRuntime = null;
+        }
+        const stop = shutdownRuntime(runtimeToStop, "API stop", {
+          requireQuiescence: true,
+        });
+        pendingRuntimeTeardown = stop;
+        try {
+          await stop;
+        } finally {
+          if (pendingRuntimeTeardown === stop) {
+            pendingRuntimeTeardown = null;
+          }
+          if (lifecycleRuntime === runtimeToStop) {
+            lifecycleRuntime = null;
+          }
+        }
+      },
       onRestart: async (restartOptions) => {
         logger.info("[eliza] Hot-reload: building replacement runtime...");
         try {
-          if (restartOptions?.disposeCurrentBeforeBuild || restoredGeneration) {
-            await shutdownRuntime(runtime, "pre-restore runtime disposal", {
-              fast: true,
-            });
+          if (
+            lifecycleRuntime === runtime &&
+            (restartOptions?.disposeCurrentBeforeBuild || restoredGeneration)
+          ) {
+            // Stop owns this runtime from this point. Clear the process
+            // lifecycle reference before teardown so an API stop followed by
+            // start, or a failed teardown, cannot close the adapter again.
+            lifecycleRuntime = null;
+            const teardown = shutdownRuntime(
+              runtime,
+              "pre-restore runtime disposal",
+              { fast: true },
+            );
+            pendingRuntimeTeardown = teardown;
+            try {
+              await teardown;
+            } finally {
+              if (pendingRuntimeTeardown === teardown) {
+                pendingRuntimeTeardown = null;
+              }
+            }
             disposedRuntimeBeforeReplacement = true;
           }
           const replacement = await buildInitializedRuntime({
@@ -5937,6 +6184,9 @@ export async function startEliza(
           logger.info("[eliza] Hot-reload: replacement runtime is ready");
           return replacement;
         } catch (err) {
+          // No activation follows a failed replacement build. Do not let this
+          // attempt suppress cleanup during a later, unrelated hot reload.
+          disposedRuntimeBeforeReplacement = false;
           // error-policy:J1 the API host receives an explicit failed replacement.
           runtime.reportError("eliza.hotReload.buildReplacement", err);
           logger.error(`[eliza] Hot-reload failed: ${formatError(err)}`);
@@ -5959,6 +6209,7 @@ export async function startEliza(
           );
         }
         runtime = activeRuntime;
+        lifecycleRuntime = activeRuntime;
         if (!previousRuntime || previousRuntime === activeRuntime) {
           return;
         }
@@ -5967,9 +6218,7 @@ export async function startEliza(
           return;
         }
         try {
-          await shutdownRuntime(previousRuntime, "hot-reload cleanup", {
-            fast: true,
-          });
+          await disposeReplacedRuntime(previousRuntime, activeRuntime);
         } catch (err) {
           // error-policy:J6 the replacement is already active; failed old-runtime
           // teardown is observable but must not roll back the healthy swap.
@@ -6059,21 +6308,23 @@ export async function startEliza(
   }
   // ── Interactive chat loop ────────────────────────────────────────────────
   const agentName = character.name ?? "Eliza";
+  // Chat ids keep the identity name, so a renamed agent keeps its CLI room.
+  const identityName = agentIdentityName(character) ?? "Eliza";
   const userId = crypto.randomUUID() as UUID;
   // Use `let` so the fallback path can reassign to fresh IDs.
-  let roomId = stringToUuid(`${agentName}-chat-room`);
+  let roomId = stringToUuid(`${identityName}-chat-room`);
   try {
-    const worldId = stringToUuid(`${agentName}-chat-world`);
+    const worldId = stringToUuid(`${identityName}-chat-world`);
     // Use a deterministic messageServerId so the settings provider
     // can reference the world by serverId after it is found.
-    const messageServerId = stringToUuid(`${agentName}-cli-server`) as UUID;
+    const messageServerId = stringToUuid(`${identityName}-cli-server`) as UUID;
     await runtime.ensureConnection({
       entityId: userId,
       roomId,
       worldId,
       userName: "User",
       source: "cli",
-      channelId: `${agentName}-chat`,
+      channelId: `${identityName}-chat`,
       type: ChannelType.DM,
       messageServerId,
       metadata: { ownership: { ownerId: userId } },
@@ -6121,7 +6372,7 @@ export async function startEliza(
         worldId: freshWorldId,
         userName: "User",
         source: "cli",
-        channelId: `${agentName}-chat`,
+        channelId: `${identityName}-chat`,
         type: ChannelType.DM,
         messageServerId: freshServerId,
         metadata: { ownership: { ownerId: userId } },

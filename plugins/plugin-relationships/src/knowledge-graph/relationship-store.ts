@@ -21,6 +21,7 @@ import type {
   LifeOpsGraphRelationshipStatus as RelationshipStatus,
 } from "@elizaos/contracts";
 import type { IAgentRuntime } from "@elizaos/core";
+import { laterIso } from "./recency.ts";
 import {
   type GraphRecordRepository,
   graphRecordRepository,
@@ -462,8 +463,11 @@ export class RelationshipStore {
         confidence: Math.max(active.confidence, obs.confidence),
         state: {
           ...active.state,
-          lastObservedAt: occurredAt,
-          lastInteractionAt: occurredAt,
+          lastObservedAt: laterIso(active.state.lastObservedAt, occurredAt),
+          lastInteractionAt: laterIso(
+            active.state.lastInteractionAt,
+            occurredAt,
+          ),
           interactionCount: (active.state.interactionCount ?? 0) + 1,
         },
         source: obs.source ?? active.source,
@@ -495,6 +499,90 @@ export class RelationshipStore {
       evidence: [...obs.evidence],
       confidence: obs.confidence,
       source: obs.source ?? "extraction",
+    });
+  }
+  /**
+   * After an entity merge, fold the active edges of `entityId` that now share
+   * from, to and type into one edge, and retire edges from the entity to
+   * itself. The kept edge is one of `keepIds` (the target's own edges before
+   * the merge) when the group has one, else the oldest. It takes the later
+   * timestamps, the summed interaction count, all evidence and the higher
+   * confidence; its own metadata wins. The other edges are retired.
+   */
+  async foldMergedEdges(
+    entityId: string,
+    keepIds: ReadonlySet<string>,
+  ): Promise<void> {
+    return this.operation(async () => {
+      const edges = new Map<string, Relationship>();
+      for (const filter of [
+        { fromEntityId: entityId },
+        { toEntityId: entityId },
+      ]) {
+        for (const edge of await this.listOperation(filter))
+          edges.set(edge.relationshipId, edge);
+      }
+      const groups = new Map<string, Relationship[]>();
+      for (const edge of edges.values()) {
+        if (edge.fromEntityId === edge.toEntityId) {
+          await this.retireOperation(edge.relationshipId, "merged_self_loop");
+          continue;
+        }
+        const key = JSON.stringify([
+          edge.fromEntityId,
+          edge.toEntityId,
+          edge.type,
+        ]);
+        groups.set(key, [...(groups.get(key) ?? []), edge]);
+      }
+      for (const group of groups.values()) {
+        if (group.length < 2) continue;
+        group.sort(
+          (a, b) =>
+            Number(keepIds.has(b.relationshipId)) -
+              Number(keepIds.has(a.relationshipId)) ||
+            a.createdAt.localeCompare(b.createdAt),
+        );
+        const [kept, ...folded] = group;
+        const later = (a?: string, b?: string) =>
+          b === undefined ? a : laterIso(a, b);
+        let state = kept.state;
+        for (const edge of folded) {
+          state = {
+            ...state,
+            lastObservedAt: later(
+              state.lastObservedAt,
+              edge.state.lastObservedAt,
+            ),
+            lastInteractionAt: later(
+              state.lastInteractionAt,
+              edge.state.lastInteractionAt,
+            ),
+            interactionCount:
+              (state.interactionCount ?? 0) +
+              (edge.state.interactionCount ?? 0),
+            sentimentTrend: state.sentimentTrend ?? edge.state.sentimentTrend,
+          };
+        }
+        await this.upsertOperation({
+          ...kept,
+          metadata: Object.assign(
+            {},
+            ...folded.map((edge) => edge.metadata ?? {}),
+            kept.metadata ?? {},
+          ),
+          state,
+          evidence: Array.from(
+            new Set([kept, ...folded].flatMap((edge) => edge.evidence)),
+          ),
+          confidence: Math.max(...group.map((edge) => edge.confidence)),
+        });
+        for (const edge of folded)
+          await this.retireOperation(
+            edge.relationshipId,
+            `merged_into:${kept.relationshipId}`,
+          );
+      }
     });
   }
   /**

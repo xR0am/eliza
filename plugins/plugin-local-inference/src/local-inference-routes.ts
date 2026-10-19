@@ -6,6 +6,7 @@
  * (engine / voice / catalog / downloader) is imported lazily on first route use
  * to keep it off the boot critical path (#9565).
  */
+
 import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import type * as http from "node:http";
@@ -44,6 +45,8 @@ import {
 	LOCAL_INFERENCE_MODEL_TYPES,
 	LOCAL_INFERENCE_PROVIDER_ID,
 } from "./provider.js";
+import { AssignmentsUnreadableError } from "./services/assignments";
+import { withConfigFileLock } from "./services/config-file-lock";
 import { classifyDeviceTier } from "./services/device-tier.js";
 import { resolveLocalInferenceStoredPath } from "./services/paths.js";
 import type { DownloadJob } from "./services/types.js";
@@ -409,31 +412,6 @@ async function writeJsonFile(
 		throw error;
 	}
 }
-// Serializes read-modify-write transactions per persisted config file. The
-// management mutations (set_assignment, upsertInstalledModel,
-// removeInstalledModel) each read the current JSON, mutate it, and write it
-// back; two concurrent mutations against one file would otherwise both read the
-// pre-write state and the second write would clobber the first, silently
-// dropping an update while both callers return success (issue #25123). Keyed by
-// absolute file path so unrelated files never serialize against each other. The
-// stored promise is settle-tracking, so one rejected transaction never breaks
-// the chain for the next waiter.
-const configFileMutex = new Map<string, Promise<unknown>>();
-async function withConfigFileLock<T>(
-	filePath: string,
-	task: () => Promise<T>,
-): Promise<T> {
-	const prior = configFileMutex.get(filePath) ?? Promise.resolve();
-	const next = prior.then(task, task);
-	configFileMutex.set(
-		filePath,
-		next.then(
-			() => undefined,
-			() => undefined,
-		),
-	);
-	return next;
-}
 async function readRegistry(): Promise<InstalledModel[]> {
 	const registry = await readJsonFile<{
 		version?: number;
@@ -463,13 +441,26 @@ async function removeInstalledModel(id: string): Promise<boolean> {
 		async () => (await service.uninstall(id)).removed,
 	);
 }
+// Unlike readJsonFile, only a missing file means "no policy yet". A file that
+// exists but cannot be read or parsed throws AssignmentsUnreadableError, so
+// updateAssignments never rewrites the user's slots from an empty fallback.
 async function readAssignments(): Promise<Assignments> {
-	const file = await readJsonFile<{
-		assignments?: Assignments;
-	}>(assignmentsPath(), {
-		assignments: {},
-	});
-	return sanitizeAssignments(file.assignments ?? {});
+	let file: { assignments?: Assignments } | null;
+	try {
+		file = JSON.parse(await fsp.readFile(assignmentsPath(), "utf8")) as {
+			assignments?: Assignments;
+		} | null;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		throw new AssignmentsUnreadableError(assignmentsPath(), error);
+	}
+	return sanitizeAssignments(file?.assignments ?? {});
+}
+function sendUnreadableAssignmentsError(
+	res: http.ServerResponse,
+	error: AssignmentsUnreadableError,
+): void {
+	sendJson(res, { error: error.message, code: error.code }, 500);
 }
 async function writeAssignments(
 	assignments: Assignments,
@@ -1063,6 +1054,22 @@ export async function handleLocalInferenceChatCommand(
 		return getLocalInferenceChatStatus(intent);
 	}
 	if (intent === "redownload") {
+		// Redownload uninstalls first, so a tier the downloader would refuse
+		// (unpublished, or its published manifest fails the activation gate)
+		// must keep its installed copy — the same rule merged #35203 applied
+		// to the Settings Redownload button via canRedownloadInstalledModel.
+		if (!isCatalogModelOfferable(model)) {
+			return buildLocalInferenceChatResult(
+				{
+					intent,
+					status: "failed",
+					modelId: model.id,
+					activeModelId: activeModelState.modelId,
+					error: `Eliza-1 tier ${model.id} is no longer downloadable, so the installed copy was kept.`,
+				},
+				"Redownload uninstalls the model before downloading it again, and this tier can no longer be downloaded, so I kept the installed copy.",
+			);
+		}
 		await removeInstalledModel(model.id).catch(() => false);
 	}
 	const job = await startDownload(model.id);
@@ -1259,27 +1266,11 @@ export async function handleLocalInferenceRoutes(
 	const method = (req.method ?? "GET").toUpperCase();
 	const url = new URL(req.url ?? "/", "http://localhost");
 	const pathname = url.pathname;
-	// Co-located voice-first-run namespace — runs alongside local-inference
-	// so the existing /api/local-inference/* mount point in server.ts also
-	// catches /api/voice/first-run/* without a second wire-up.
-	if (pathname.startsWith("/api/voice/first-run/")) {
-		const { handleVoiceFirstRunRoutes } = await import(
-			"./routes/voice-first-run-routes.js"
-		);
-		if (await handleVoiceFirstRunRoutes(req, res)) return true;
-	}
 	if (pathname === "/api/voice/native-pcm-turn") {
 		const { handleNativePcmTurnRoute } = await import(
 			"./routes/native-pcm-turn-route.js"
 		);
 		if (await handleNativePcmTurnRoute(req, res)) return true;
-	}
-	// Family-member capture route lives under /v1/voice/first-run/family-member.
-	if (pathname === "/v1/voice/first-run/family-member") {
-		const { handleFamilyMemberRoute } = await import(
-			"./routes/family-member-route.js"
-		);
-		if (await handleFamilyMemberRoute(req, res)) return true;
 	}
 	// Speaker voice-profile binding routes (bind/unbind a recognized voice to
 	// an elizaOS entity) live under /v1/voice/speaker-profiles.
@@ -1419,7 +1410,12 @@ export async function handleLocalInferenceRoutes(
 		return true;
 	}
 	if (method === "GET" && pathname === "/api/local-inference/assignments") {
-		sendJson(res, { assignments: await readAssignments() });
+		try {
+			sendJson(res, { assignments: await readAssignments() });
+		} catch (error) {
+			if (!(error instanceof AssignmentsUnreadableError)) throw error;
+			sendUnreadableAssignmentsError(res, error);
+		}
 		return true;
 	}
 	if (method === "POST" && pathname === "/api/local-inference/assignments") {
@@ -1446,13 +1442,20 @@ export async function handleLocalInferenceRoutes(
 		// readAssignments/writeAssignments pair here loses one of two
 		// concurrent POSTs to the stale pre-write snapshot (issue #25123's
 		// race, on the route that motivated it).
-		const assignments = await updateAssignments((current) => {
-			if (modelId) {
-				current[slot as keyof Assignments] = modelId;
-			} else {
-				delete current[slot as keyof Assignments];
-			}
-		});
+		let assignments: Assignments;
+		try {
+			assignments = await updateAssignments((current) => {
+				if (modelId) {
+					current[slot as keyof Assignments] = modelId;
+				} else {
+					delete current[slot as keyof Assignments];
+				}
+			});
+		} catch (error) {
+			if (!(error instanceof AssignmentsUnreadableError)) throw error;
+			sendUnreadableAssignmentsError(res, error);
+			return true;
+		}
 		sendJson(res, { assignments });
 		return true;
 	}

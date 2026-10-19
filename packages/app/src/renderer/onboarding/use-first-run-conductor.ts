@@ -62,6 +62,7 @@ import {
   hasStewardAuthedCookie,
   writeStoredStewardToken,
 } from "@elizaos/plugin-elizacloud/steward-session-client";
+import { recommendForFirstRun } from "@elizaos/plugin-native-inference/model-catalog/recommendation";
 import {
   ACCENT_PRESETS,
   APP_RESUME_EVENT,
@@ -75,10 +76,6 @@ import {
   consumeCloudAuthFirstScreenGreeting,
   createAttemptGuard,
   createFirstRunTranscriptEpoch,
-  type DedicatedActivationConfirmationQuote,
-  type DedicatedActivationConfirmationRequester,
-  type DedicatedAdoptionConfirmationQuote,
-  type DedicatedAdoptionConfirmationRequester,
   type DeviceRamTierAssessment,
   FIRST_RUN_ACTION_PREFIX,
   FIRST_RUN_GREETING,
@@ -124,7 +121,6 @@ import {
   writePendingFirstRunText,
 } from "@elizaos/ui";
 import * as React from "react";
-import { dedicatedHostingReadinessText } from "./dedicated-hosting-readiness-text";
 
 const GREETING = `${FIRST_RUN_GREETING} First, where should your agent run?`;
 
@@ -278,14 +274,22 @@ const BACKUP_RESTORE_CHOICE = [
 // on-device option stays visible but labeled unavailable (its tap is refused
 // with the reason) and the recommendation moves to Eliza Cloud inference —
 // the local agent remains allowed in cloud-inference mode on that band.
+// When the model catalog has no published, activation-eligible Eliza-1 tier,
+// nothing can be downloaded: the on-device label says so and the
+// recommendation moves to Eliza Cloud inference. The tap is still accepted,
+// because a model that is already on the device (an image-bundled or
+// previously installed bundle) activates without a download.
 function providerChoice(opts: {
   defaultId: "on-device" | "other";
   tier: DeviceRamTierAssessment | null;
 }): string {
-  const modelsBlocked = opts.tier != null && !opts.tier.allowsLocalModels;
-  const onDevice = modelsBlocked
+  const ramBlocked = opts.tier != null && !opts.tier.allowsLocalModels;
+  const modelsBlocked = ramBlocked || recommendForFirstRun() === null;
+  const onDevice = ramBlocked
     ? `${FIRST_RUN_ACTION_PREFIX}provider:on-device=On this device (unavailable — needs 12 GB+ RAM, ~${opts.tier?.marketedRamGb} GB detected)`
-    : `${FIRST_RUN_ACTION_PREFIX}provider:on-device=On this device (recommended)`;
+    : modelsBlocked
+      ? `${FIRST_RUN_ACTION_PREFIX}provider:on-device=On this device (no model download available yet)`
+      : `${FIRST_RUN_ACTION_PREFIX}provider:on-device=On this device (recommended)`;
   const cloud = modelsBlocked
     ? `${FIRST_RUN_ACTION_PREFIX}provider:elizacloud=Eliza Cloud inference (recommended)`
     : `${FIRST_RUN_ACTION_PREFIX}provider:elizacloud=Eliza Cloud inference`;
@@ -336,66 +340,6 @@ const CLOUD_ONLY_ERROR_CHOICE = [
   `${FIRST_RUN_ACTION_PREFIX}error:settings=Configure in Settings`,
   "[/CHOICE]",
 ].join("\n");
-
-type DedicatedHostingQuote =
-  | DedicatedAdoptionConfirmationQuote
-  | DedicatedActivationConfirmationQuote;
-type DedicatedHostingDecision = {
-  action: DedicatedHostingQuote["action"];
-  quoteId: string;
-} | null;
-
-function dedicatedAdoptionConfirmationText(
-  quote: DedicatedHostingQuote,
-  reason: "initial" | "quote_changed",
-): string {
-  if (quote.action === "activate_dedicated") {
-    return [
-      "Start your Dedicated Eliza?",
-      "",
-      `Hosting costs $${quote.dailyRateUsd.toFixed(2)}/day ($${quote.hourlyRateUsd.toFixed(2)}/hour).`,
-      `Minimum charge per successful start: $${quote.minimumActivationChargeUsd.toFixed(2)}. Applies again after stopping and restarting.`,
-      `Your balance is $${quote.balanceUsd.toFixed(2)}. You need at least $${quote.minimumBalanceUsd.toFixed(2)} to start.`,
-      ...dedicatedHostingReadinessText(quote),
-      "",
-      "[CHOICE:first-run id=dedicated-adoption]",
-      `${FIRST_RUN_ACTION_PREFIX}dedicated-adoption:confirm=Start Dedicated`,
-      `${FIRST_RUN_ACTION_PREFIX}dedicated-adoption:cancel=Not now`,
-      "[/CHOICE]",
-    ].join("\n");
-  }
-  const disposition =
-    quote.stateDisposition === "verified_backup_present"
-      ? "Your verified backup will be restored."
-      : quote.stateDisposition === "fresh_boot_no_verified_backup"
-        ? "This starts fresh; no verified backup is available."
-        : "Your current data stays. No verified Cloud backup is available.";
-  const changed =
-    reason === "quote_changed"
-      ? "The hosting details changed. Please review them again.\n\n"
-      : "";
-  return [
-    `${changed}Use your existing Dedicated agent?`,
-    "",
-    `$${quote.dailyRateUsd.toFixed(2)}/day ($${quote.hourlyRateUsd.toFixed(2)}/hour).`,
-    ...(quote.startsCompute
-      ? [
-          `Minimum charge per successful start: $${quote.minimumActivationChargeUsd.toFixed(2)}. Applies again after stopping and restarting.`,
-        ]
-      : []),
-    `Balance: $${quote.balanceUsd.toFixed(2)}; $${quote.minimumBalanceUsd.toFixed(2)} required.`,
-    ...dedicatedHostingReadinessText(quote),
-    ...(quote.deficitUsd > 0
-      ? [`Add $${quote.deficitUsd.toFixed(2)} to start.`]
-      : []),
-    disposition,
-    "",
-    "[CHOICE:first-run id=dedicated-adoption]",
-    `${FIRST_RUN_ACTION_PREFIX}dedicated-adoption:confirm=${quote.startsCompute ? "Start Dedicated" : "Connect"}`,
-    `${FIRST_RUN_ACTION_PREFIX}dedicated-adoption:cancel=Not now`,
-    "[/CHOICE]",
-  ].join("\n");
-}
 
 /**
  * Turn a raw finish error into a human sentence. The underlying message can be
@@ -531,8 +475,7 @@ export function useFirstRunConductor(): void {
     setUiAccent: s.setUiAccent,
     uiLanguage: s.uiLanguage,
   }));
-  const { conversationMessages, setConversationMessages } =
-    useConversationMessages();
+  const { setConversationMessages } = useConversationMessages();
 
   const active = firstRunComplete === false;
 
@@ -574,12 +517,6 @@ export function useFirstRunConductor(): void {
     if (active) refreshCloudLoginWaitingRef.current?.();
   }, [active, activeCloudLoginFallbackUrl]);
 
-  const pendingDedicatedAdoptionRef = React.useRef<{
-    quote: DedicatedHostingQuote;
-    choiceText: string;
-    resolve: (confirmation: DedicatedHostingDecision) => void;
-    dispose: () => void;
-  } | null>(null);
   // Latched by the first tutorial pick: the store flip unregisters the handler
   // only on the next commit, so a double-tap could otherwise re-fire
   // completeFirstRun/startTutorial in the gap.
@@ -654,97 +591,6 @@ export function useFirstRunConductor(): void {
       });
     },
     [setConversationMessages],
-  );
-
-  const requestDedicatedHostingConfirmation = React.useCallback<
-    (
-      quote: DedicatedHostingQuote,
-      context: { reason: "initial" | "quote_changed"; signal?: AbortSignal },
-    ) => Promise<DedicatedHostingDecision>
-  >(
-    (quote, context) => {
-      context.signal?.throwIfAborted();
-      pendingDedicatedAdoptionRef.current?.resolve(null);
-      pendingDedicatedAdoptionRef.current?.dispose();
-      silentCloudEntryRef.current = false;
-      const choiceText = dedicatedAdoptionConfirmationText(
-        quote,
-        context.reason,
-      );
-      seedFreshChoiceTurn("first-run:dedicated-adoption", choiceText);
-      return new Promise((resolve, reject) => {
-        const onAbort = () => {
-          if (pendingDedicatedAdoptionRef.current?.quote !== quote) return;
-          pendingDedicatedAdoptionRef.current = null;
-          reject(context.signal?.reason);
-        };
-        context.signal?.addEventListener("abort", onAbort, { once: true });
-        const dispose = () =>
-          context.signal?.removeEventListener("abort", onAbort);
-        pendingDedicatedAdoptionRef.current = {
-          quote,
-          choiceText,
-          resolve,
-          dispose,
-        };
-      });
-    },
-    [seedFreshChoiceTurn],
-  );
-
-  const requestDedicatedAdoptionConfirmation =
-    React.useCallback<DedicatedAdoptionConfirmationRequester>(
-      async (quote, context) => {
-        const decision = await requestDedicatedHostingConfirmation(
-          quote,
-          context,
-        );
-        return decision?.action === "adopt_existing_dedicated"
-          ? { action: decision.action, quoteId: decision.quoteId }
-          : null;
-      },
-      [requestDedicatedHostingConfirmation],
-    );
-  const requestDedicatedActivationConfirmation =
-    React.useCallback<DedicatedActivationConfirmationRequester>(
-      async (quote, context) => {
-        const decision = await requestDedicatedHostingConfirmation(quote, {
-          ...context,
-          reason: "initial",
-        });
-        return decision?.action === "activate_dedicated"
-          ? { action: decision.action, quoteId: decision.quoteId }
-          : null;
-      },
-      [requestDedicatedHostingConfirmation],
-    );
-
-  React.useEffect(() => {
-    const pending = pendingDedicatedAdoptionRef.current;
-    if (
-      !pending ||
-      conversationMessages.some(
-        (message) =>
-          message.source === "first_run" && message.text === pending.choiceText,
-      )
-    ) {
-      return;
-    }
-    // A Personal binding can start server-history hydration while onboarding
-    // still waits for explicit Dedicated adoption consent. If that hydration
-    // replaces the local transcript, restore the exact pending choice instead
-    // of leaving the provisioning promise parked behind an invisible control.
-    seedFreshChoiceTurn("first-run:dedicated-adoption", pending.choiceText);
-  }, [conversationMessages, seedFreshChoiceTurn]);
-
-  React.useEffect(
-    () => () => {
-      const pending = pendingDedicatedAdoptionRef.current;
-      pendingDedicatedAdoptionRef.current = null;
-      pending?.dispose();
-      pending?.resolve(null);
-    },
-    [],
   );
 
   const seedTutorial = React.useCallback(() => {
@@ -876,8 +722,6 @@ export function useFirstRunConductor(): void {
           statusTurn,
         ]);
       },
-      requestDedicatedAdoptionConfirmation,
-      requestDedicatedActivationConfirmation,
     }),
     [
       uiLanguage,
@@ -889,8 +733,6 @@ export function useFirstRunConductor(): void {
       completeCloudOnly,
       setConversationMessages,
       runtimeChooserEnabled,
-      requestDedicatedAdoptionConfirmation,
-      requestDedicatedActivationConfirmation,
     ],
   );
   const portsRef = React.useRef(ports);
@@ -1076,9 +918,9 @@ export function useFirstRunConductor(): void {
     };
     refreshCloudLoginWaitingRef.current = seedWaitingTurn;
     // Idempotent and OAuth-only: arm at the moment the finish flow actually
-    // enters interactive OAuth. An already-authenticated entry can spend up to
-    // six minutes activating Dedicated compute; applying this 90s login guard
-    // to that separate phase aborts healthy provisioning before its own bound.
+    // enters interactive OAuth. Once authenticated, personal runtime resolution
+    // and normal startup own their own bounds; this login timer must not abort
+    // a session that has already completed sign-in.
     const armRecoveryDeadline = () => {
       if (loginDeadline) return;
       loginDeadline = armCloudLoginWaitDeadline({
@@ -1107,16 +949,12 @@ export function useFirstRunConductor(): void {
       seedWaitingTurn();
     } else if (hasStoredSession) {
       refreshCloudLoginWaitingRef.current = null;
-      portsRef.current.onStatus?.(
-        "Connecting to your Dedicated agent…",
-        "listing",
-      );
+      portsRef.current.onStatus?.("Connecting to your Eliza…", "listing");
     }
     // Pre-open only when this gesture can actually enter OAuth. A usable
-    // stored Steward token takes the silent provisioning path and may spend
-    // the full Dedicated startup budget there; retaining an about:blank popup
-    // for that entire phase is both misleading and unnecessary. Token-less
-    // entries still claim synchronously because user activation does not
+    // stored Steward token takes the silent resolution path; retaining an
+    // about:blank popup after authentication is misleading and unnecessary.
+    // Token-less entries still claim synchronously because user activation does not
     // survive the network awaits before interactive login (#15143/#17064).
     if (!hasStoredSession) {
       claimCloudLoginWindow();
@@ -1143,10 +981,7 @@ export function useFirstRunConductor(): void {
         loginDeadline?.cancel();
         if (!cloudLoginAttemptRef.current.isCurrent(attempt)) return;
         refreshCloudLoginWaitingRef.current = null;
-        portsRef.current.onStatus?.(
-          "Connecting to your Dedicated agent…",
-          "listing",
-        );
+        portsRef.current.onStatus?.("Connecting to your Eliza…", "listing");
       },
     })
       .then((outcome) => {
@@ -1365,26 +1200,9 @@ export function useFirstRunConductor(): void {
         return true;
       }
 
-      // The provisioning promise is deliberately still in flight while this
-      // visible quote is on screen, so consent must be handled before the
-      // generic busy guard. Only the exact current quote resolver is released;
-      // stale confirmation widgets become harmless no-ops.
-      if (group === "dedicated-adoption") {
-        if (id !== "confirm" && id !== "cancel") return true;
-        const pending = pendingDedicatedAdoptionRef.current;
-        if (!pending) return true;
-        pendingDedicatedAdoptionRef.current = null;
-        pending.dispose();
-        pending.resolve(
-          id === "confirm"
-            ? {
-                action: pending.quote.action,
-                quoteId: pending.quote.quoteId,
-              }
-            : null,
-        );
-        return true;
-      }
+      // Old automatic-upgrade widgets may remain in a restored transcript;
+      // generic Cloud entry no longer owns a paid-compute decision.
+      if (group === "dedicated-adoption") return true;
 
       // One provisioning flow at a time. Stale widgets survive in the
       // transcript (error re-seeds, the cloud-agent picker next to a re-offered

@@ -1,3 +1,5 @@
+import { mergeCalendarSourceSelection } from "../internal/calendar-source-selection.js";
+import { isManagedCalendarGrant } from "../mutations/managed-gate.js";
 /**
  * Factory for the `CALENDAR` assistant action and its LLM-backed handler.
  *
@@ -245,6 +247,7 @@ function connectorGrantIdDetail(
   return isAppleCalendarGrant(value) ||
     isMicrosoftCalendarGrantId(value) ||
     value === ELIZA_CALENDAR_GRANT_ID ||
+    /^alpha-google:[a-f0-9]{64}$/.test(value) ||
     value.startsWith(GOOGLE_CONNECTOR_ACCOUNT_GRANT_PREFIX)
     ? value
     : undefined;
@@ -352,6 +355,8 @@ type CalendarMutationSubaction =
   | "delete_event";
 
 type CalendarActionParams = {
+  grantId?: string;
+  calendarId?: string;
   target?: string;
   targetKind?: "query" | "eventId";
   subaction?: CalendarSubaction;
@@ -425,21 +430,67 @@ function buildIntlWeekdayMap(): Record<string, number> {
 const MONTH_MAP: Record<string, number> = buildIntlMonthMap();
 const WEEKDAY_MAP: Record<string, number> = buildIntlWeekdayMap();
 
+// `\b` is ASCII-only, so it never matches beside Hangul or Han. Letters and
+// digits of every script are word characters, except Hangul, Han and kana,
+// which may abut particles ("금요일에", "星期五下午").
+const SPACED_WORD_CHAR = String.raw`(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{M}\p{N}_]`;
+const SPACED_WORD_CHAR_PATTERN = new RegExp(`^${SPACED_WORD_CHAR}$`, "u");
+
+function wholeWordSource(name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const open = SPACED_WORD_CHAR_PATTERN.test(name.at(0) ?? "")
+    ? `(?<!${SPACED_WORD_CHAR})`
+    : "";
+  const close = SPACED_WORD_CHAR_PATTERN.test(name.at(-1) ?? "")
+    ? `(?!${SPACED_WORD_CHAR})`
+    : "";
+  return `${open}${escaped}${close}`;
+}
+
 const MONTH_NAMES_SORTED = Object.keys(MONTH_MAP).sort(
   (a, b) => b.length - a.length,
 );
 const MONTH_NAME_PATTERN = new RegExp(
-  `\\b(${MONTH_NAMES_SORTED.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
-  "i",
+  `(${MONTH_NAMES_SORTED.map(wholeWordSource).join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`,
+  "iu",
 );
 
-const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP).sort(
-  (a, b) => b.length - a.length,
-);
+// One-syllable Korean short forms (일, 월, 수, 금, …) are everyday words.
+const WEEKDAY_NAMES_SORTED = Object.keys(WEEKDAY_MAP)
+  .filter((name) => name.length > 1)
+  .sort((a, b) => b.length - a.length);
+// Han weekday names are week-word compounds ("周五", "星期日"), and the same
+// characters also spell counts and other words: "一周五天" (five days a week),
+// "一周日程" (a week's schedule). A count before the week word, or a following
+// character that continues a different word, means no weekday was named.
+const HAN_WEEKDAY_PREFIX = /^(?:周|週|星期|礼拜|禮拜)/u;
+const HAN_COUNT_BEFORE =
+  "(?<![〇零一二两兩三四五六七八九十百几幾数數0-9０-９])";
+const HAN_SUNDAY_COMPOUND_AFTER = "(?![程期子常记記历曆])";
+const HAN_NUMBERED_DAY_COUNT_AFTER = "(?![天次个個年月周週遍回])";
+function weekdayNameSource(name: string): string {
+  const source = wholeWordSource(name);
+  if (!HAN_WEEKDAY_PREFIX.test(name)) return source;
+  return `${HAN_COUNT_BEFORE}${source}${
+    name.endsWith("日")
+      ? HAN_SUNDAY_COMPOUND_AFTER
+      : HAN_NUMBERED_DAY_COUNT_AFTER
+  }`;
+}
 const WEEKDAY_NAME_PATTERN = new RegExp(
-  `\\b(?:(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
-  "i",
+  `(?:(?<!${SPACED_WORD_CHAR})(this|next)\\s+)?(${WEEKDAY_NAMES_SORTED.map(weekdayNameSource).join("|")})`,
+  "iu",
 );
+// Korean and Chinese put the week qualifier before the weekday name
+// ("다음 주 금요일", "下周五", "下周星期五", "下周的星期五"; week after next:
+// "다다음 주 금요일", "下下周五"). Past and every-week forms name no single
+// upcoming date, so they are left unresolved.
+const CJK_NEXT_WEEK_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:다음\s*주|담주)(?:\s*의)?|(?<!下)下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
+const CJK_WEEK_AFTER_NEXT_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:다다음\s*주|다담주)(?:\s*의)?|(?<!下)下下个?(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
+const CJK_UNRESOLVED_WEEK_QUALIFIER =
+  /(?:(?<![\p{L}\p{N}])(?:지난\s*주|지난|저번\s*주|저번|매주|매)(?:\s*의)?|(?:上个?|每个?)(?:周|星期|礼拜|禮拜)?的?)\s*$/u;
 // Accepted alternate spellings for planner details live beside the
 // planner-facing schema (calendar-action-schema.ts: CALENDAR_DETAIL_ALIASES)
 // so the two surfaces are reviewed together.
@@ -1194,6 +1245,9 @@ function buildCalendarServiceErrorFallback(
 ): string {
   if (
     error.code === "CALENDAR_SEARCH_QUERY_REQUIRED" ||
+    error.code === "CALENDAR_TRIP_LOCATION_REQUIRED" ||
+    error.code === "CALENDAR_READ_DATE_INVALID" ||
+    error.code === "CALENDAR_READ_DATE_CONFLICT" ||
     error.code === "CALENDAR_ATTENDEE_ARGUMENT_INVALID" ||
     error.code === "CALENDAR_ATTENDEE_IDENTITY_REQUIRED" ||
     error.code === "CALENDAR_TARGET_SELECTOR_INVALID"
@@ -1345,7 +1399,7 @@ function normalizeText(value: string): string {
 }
 
 function normalizeLookupKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 function wordCount(value: string): number {
@@ -1409,7 +1463,7 @@ function normalizeCalendarSearchQueryValue(
     .replace(/\bmatch against titles\b.*$/g, "")
     .replace(/\bstructured calendar arguments\b.*$/g, "")
     .replace(/[;:,]+/g, " ")
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")
+    .replace(/^[^\p{L}\p{M}\p{N}]+|[^\p{L}\p{M}\p{N}]+$/gu, "")
     .trim();
 
   if (
@@ -1423,7 +1477,9 @@ function normalizeCalendarSearchQueryValue(
   return cleaned;
 }
 
-function dedupeCalendarQueries(queries: Array<string | undefined>): string[] {
+export function dedupeCalendarQueries(
+  queries: Array<string | undefined>,
+): string[] {
   const normalized = queries
     .map((query) => normalizeCalendarSearchQueryValue(query))
     .filter((query): query is string => Boolean(query));
@@ -1745,8 +1801,19 @@ export function parseExplicitLocalDate(
   }
 
   const weekdayMatch = normalized.match(WEEKDAY_NAME_PATTERN);
-  if (weekdayMatch) {
-    const qualifier = normalizeLookupKey(weekdayMatch[1] ?? "");
+  const beforeWeekday = weekdayMatch
+    ? normalized.slice(0, weekdayMatch.index)
+    : "";
+  if (weekdayMatch && !CJK_UNRESOLVED_WEEK_QUALIFIER.test(beforeWeekday)) {
+    const cjkWeeksAhead = CJK_WEEK_AFTER_NEXT_QUALIFIER.test(beforeWeekday)
+      ? 2
+      : CJK_NEXT_WEEK_QUALIFIER.test(beforeWeekday)
+        ? 1
+        : 0;
+    const qualifier =
+      cjkWeeksAhead > 0
+        ? "cjk-week"
+        : normalizeLookupKey(weekdayMatch[1] ?? "");
     const weekdayKey = normalizeLookupKey(weekdayMatch[2] ?? "");
     const targetWeekday = WEEKDAY_MAP[weekdayKey];
     if (targetWeekday !== undefined) {
@@ -1761,6 +1828,15 @@ export function parseExplicitLocalDate(
       let delta = (targetWeekday - currentWeekday + 7) % 7;
       if (qualifier === "next") {
         delta = delta === 0 ? 7 : delta + 7;
+      } else if (qualifier === "cjk-week") {
+        // 下周 / 다음 주 (下下周 / 다다음 주) name the weekday inside the
+        // Monday-start week one (two) weeks ahead, so count to that Monday,
+        // then into the week.
+        const mondayIndex = (weekday: number) => (weekday + 6) % 7;
+        delta =
+          7 * cjkWeeksAhead -
+          mondayIndex(currentWeekday) +
+          mondayIndex(targetWeekday);
       }
       return addDaysToLocalDate(
         {
@@ -2363,9 +2439,9 @@ function parseDateTimeInZone(value: string, timeZone: string): Date | null {
  * Time range for an update. A new start without a new end keeps the event's
  * current duration (live 2026-09-10: "move my dentist appointment to friday at
  * 4pm" arrived as `start` only, the stored 3–4 pm event kept its 4 pm end, and
- * the service rejected the zero-length range). The derived end is spelled like
- * the start it follows: absolute for `Z`/offset starts, wall-clock in
- * `timeZone` otherwise. Every other combination passes through unchanged and
+ * the service rejected the zero-length range). The derived end is absolute:
+ * elapsed duration identifies one instant even when its local wall clock is a
+ * repeated DST-fold time. Every other combination passes through unchanged and
  * the service keeps validating end-after-start.
  */
 export function resolveUpdateTimeRange(args: {
@@ -2399,9 +2475,7 @@ export function resolveUpdateTimeRange(args: {
   const end = new Date(start.getTime() + durationMs);
   return {
     startAt,
-    endAt: OFFSET_OR_UTC_SUFFIX_PATTERN.test(startAt.trim())
-      ? end.toISOString()
-      : formatLocalDateTimeInZone(end, timeZone),
+    endAt: end.toISOString(),
   };
 }
 
@@ -2440,7 +2514,7 @@ function distinctStatedLocalDates(
   // A comma inside a month/day/year date is not a boundary between requests.
   // Retain its year before splitting separate date clauses for intent narrowing.
   const dateClauses = text.replace(
-    new RegExp(MONTH_NAME_PATTERN.source, "gi"),
+    new RegExp(MONTH_NAME_PATTERN.source, "giu"),
     (date) => date.replace(/,\s*(?=\d{4}\b)/, " "),
   );
   for (const segment of dateClauses.split(DATE_SEGMENT_SPLIT_PATTERN)) {
@@ -3217,8 +3291,15 @@ function resolveCalendarWindow(
   }
 
   const windowDays = detailNumber(details, "windowDays");
-  if (forSearch) {
-    const days = windowDays && windowDays > 0 ? Math.min(windowDays, 90) : 30;
+  // Feed and search share the read schema, so both honour windowDays. Without
+  // it a search covers 30 days and a feed covers today.
+  const days =
+    windowDays && windowDays > 0
+      ? Math.min(windowDays, 90)
+      : forSearch
+        ? 30
+        : undefined;
+  if (days !== undefined) {
     return {
       request: {
         calendarId,
@@ -3332,6 +3413,19 @@ function resolveCalendarReadWindow(
     llmPlan,
     timeZone,
   );
+  // A lone, unparseable or reversed timestamp bound resolves to no window. The
+  // default range would then answer a different question than the one asked.
+  if (
+    !resolved.explicitWindow &&
+    (detailString(details, "timeMin") !== undefined ||
+      detailString(details, "timeMax") !== undefined)
+  ) {
+    throw new CalendarServiceError(
+      400,
+      "timeMin and timeMax must be supplied together as valid timestamps with timeMax after timeMin. For whole local days use date and optional endDate instead.",
+      "CALENDAR_READ_DATE_INVALID",
+    );
+  }
   // Ground the reply in the actual read bounds, not a planner-authored label
   // that can name a different day from the supplied timestamps.
   if (resolved.request.timeMin && resolved.request.timeMax) {
@@ -5161,7 +5255,7 @@ const calendarAction: CalendarHandlerAction = {
     "DO NOT use this action to propose or suggest candidate meeting times to send to someone — use PROPOSE_MEETING_TIMES for requests like 'propose three times for a 30 min sync with X', 'suggest meeting slots', or 'find times that work next week'. The create_event subaction is only for booking a single known time on your own calendar. " +
     "This action returns authoritative outcome receipts and complete internal evidence for the evaluator's final grounded reply; do not pair it with a speculative REPLY action.",
   descriptionCompressed:
-    "LifeOps calendar: view/search/create/query travel; not email/habits",
+    "Calendar read/create/update/delete. Updates/deletes require targetKind+target or query/details.eventId; approvals use CALENDAR_REVIEW",
   contexts: ["calendar", "contacts", "tasks"],
   roleGate: { minRole: "OWNER" },
   suppressPostActionContinuation: true,
@@ -5193,10 +5287,10 @@ const calendarAction: CalendarHandlerAction = {
         : suppliedParams;
     const intent = resolveCalendarIntentInput(params.intent, message);
 
-    const details = normalizeCalendarDetails(params.details, [
-      params.title,
-      params.query,
-    ]);
+    const details = mergeCalendarSourceSelection(
+      normalizeCalendarDetails(params.details, [params.title, params.query]),
+      params,
+    );
     // The real action remains available for connected providers. Ask the
     // existing host policy whether backend records are forbidden on this turn.
     const nativeCalendarFailure = calendarRecordPolicyFailure();
@@ -5217,7 +5311,9 @@ const calendarAction: CalendarHandlerAction = {
         transcriptVisibility: "internal",
         modelReplyRequired: true,
         turnComplete: false,
-        text: nativeCalendarFailure,
+        text:
+          nativeCalendarFailure +
+          " Connected provider calendars are separate: use CALENDAR_SOURCES operation=list to discover the exact Google or Microsoft source. Supply BOTH grantId and calendarId from that result, either at the top level or inside details. A calendar label alone is insufficient. Do not repeat this call until both source IDs are present. Do not substitute local backend records or change source selections without the owner request.",
         effectReceipts: [
           calendarFailedReceipt({
             message,
@@ -5242,6 +5338,17 @@ const calendarAction: CalendarHandlerAction = {
           "CALENDAR_NATIVE_RESOURCE_REQUIRED",
         );
     };
+    // Availability spans every owner calendar, so a conflict elsewhere still
+    // blocks a write. Phone-owned turns cannot read merged backend records,
+    // and managed Google grants are not part of the merged feed; both check
+    // the exact destination source instead.
+    const scopedAvailabilitySource = (
+      grantId: string | undefined,
+      calendarId: string | undefined,
+    ): { grantId?: string; calendarId?: string } =>
+      grantId && (nativeGrantId || isManagedCalendarGrant(grantId))
+        ? { grantId, ...(calendarId ? { calendarId } : {}) }
+        : {};
     const calendarZone = await resolveOwnerCalendarTimeZone(
       runtime,
       new Date(),
@@ -5274,7 +5381,15 @@ const calendarAction: CalendarHandlerAction = {
               : undefined) ?? detailString(details, "title"),
           tripLocation:
             explicitSubaction === "trip_window"
-              ? (params.query ?? detailString(details, "query"))
+              ? [
+                  params.query,
+                  detailString(details, "query"),
+                  ...(params.queries ?? []),
+                  ...(detailArray(details, "queries") ?? []),
+                ].find(
+                  (value): value is string =>
+                    typeof value === "string" && value.trim().length > 0,
+                )
               : undefined,
           timeMin: detailString(details, "timeMin"),
           timeMax: detailString(details, "timeMax"),
@@ -5554,8 +5669,17 @@ const calendarAction: CalendarHandlerAction = {
       if (explicitSubaction === "search_events" && searchQueries.length === 0) {
         throw new CalendarServiceError(
           400,
-          'CALENDAR_SEARCH_EVENTS requires a user-supplied event-content filter in query/queries or details.query/details.queries. For an unfiltered agenda, use CALENDAR_FEED (umbrella action=feed), preserving the requested date/range and timezone: details.date with optional endDate for whole days, or timeMin/timeMax for partial days. If CALENDAR_FEED is not loaded, DISCOVER_ACTIONS mode=load names=["CALENDAR_FEED"] loads its schema directly. No calendar read or change occurred.',
+          'CALENDAR_SEARCH_EVENTS requires a user-supplied event-content filter in query/queries or details.query/details.queries. For an unfiltered agenda, use CALENDAR_FEED (the feed operation of the umbrella CALENDAR action), preserving the requested date/range and timezone: details.date with optional endDate for whole days, or timeMin/timeMax for partial days. If CALENDAR_FEED is not loaded, DISCOVER_ACTIONS mode=load names=["CALENDAR_FEED"] loads its schema directly. No calendar read or change occurred.',
           "CALENDAR_SEARCH_QUERY_REQUIRED",
+        );
+      }
+      // A typed trip window without a place would otherwise fall through to
+      // the default feed read and answer with today's agenda.
+      if (explicitSubaction === "trip_window" && !tripWindowIntent) {
+        throw new CalendarServiceError(
+          400,
+          "trip_window requires the trip or stay location in query (for example query=Denver). No calendar read or change occurred.",
+          "CALENDAR_TRIP_LOCATION_REQUIRED",
         );
       }
       if (subaction === "next_event") {
@@ -5797,7 +5921,10 @@ const calendarAction: CalendarHandlerAction = {
         );
         const availability = await evaluateCalendarWriteAvailability({
           runtime,
-          ...(nativeGrantId ? { grantId: nativeGrantId } : {}),
+          ...scopedAvailabilitySource(
+            requestToApprove.grantId,
+            requestToApprove.calendarId,
+          ),
           startAt: requestToApprove.startAt,
           endAt: requestToApprove.endAt,
           timeZone: requestToApprove.timeZone,
@@ -6283,9 +6410,12 @@ const calendarAction: CalendarHandlerAction = {
             extractedStart: extractedStartAt,
             extractedEnd: extractedEndAt,
             target: targetEvent,
-            timeZone: updateTimeZone,
+            timeZone: updateTimeZone ?? planningTimeZone,
           }),
-          timeZone: updateTimeZone,
+          // An event saved without a zone is moved in the owner's zone: the
+          // derived end above and the bare start in the service must both be
+          // read there, not in UTC or the service default.
+          timeZone: updateTimeZone ?? planningTimeZone,
           recurrence: recurrenceUpdate,
           // Honor a scope only when the target recurs or the update itself
           // introduces a recurrence rule — the planner emits junk scopes.
@@ -6352,7 +6482,10 @@ const calendarAction: CalendarHandlerAction = {
           }
           const availability = await evaluateCalendarWriteAvailability({
             runtime,
-            ...(nativeGrantId ? { grantId: nativeGrantId } : {}),
+            ...scopedAvailabilitySource(
+              targetEvent.grantId,
+              targetEvent.calendarId,
+            ),
             startAt: proposedStart,
             endAt: proposedEnd,
             timeZone: zone,
@@ -7175,6 +7308,7 @@ const calendarAction: CalendarHandlerAction = {
             // its receipt and evaluation while allowing a corrected plan to finish.
             ...(error.code === "CALENDAR_TARGET_SELECTOR_INVALID" ||
             error.code === "CALENDAR_ATTENDEE_ARGUMENT_INVALID" ||
+            error.code === "CALENDAR_TRIP_LOCATION_REQUIRED" ||
             (error.code === "CALENDAR_SEARCH_QUERY_REQUIRED" &&
               explicitSubaction === "search_events" &&
               searchQueries.length === 0) ||
@@ -7252,14 +7386,28 @@ const calendarAction: CalendarHandlerAction = {
     {
       name: "title",
       description:
-        "Title for create_event, replacement title for update_event, or existing title for delete_event. For an update target use query, details.oldTitle, or details.eventId; do not put the existing target here.",
+        "Title for create_event, or existing title for delete_event. For update_event it is not applied: a rename is extracted from the user's request, so state it in intent, and identify the target with query, details.oldTitle, or details.eventId; do not put the existing target here.",
       required: false,
       schema: { type: "string" as const },
     },
     {
+      name: "targetKind",
+      description:
+        "For update_event/delete_event, identify the existing event using query or eventId. Pair with target; omit for other operations.",
+      required: false,
+      schema: { type: "string" as const, enum: ["query", "eventId"] },
+    },
+    {
+      name: "target",
+      description:
+        "For update_event/delete_event, the existing event title (targetKind=query) or exact provider event ID (targetKind=eventId). Required for these operations unless query or details.eventId already identifies the target. Never leave the target only in intent.",
+      required: false,
+      schema: { type: "string" as const, minLength: 1 },
+    },
+    {
       name: "query",
       description:
-        "Event-content filter explicitly requested by the user, such as flight, dentist, Denver, or return flight. Never put dates, agenda, events, or schedule here just to express a time range. For an unfiltered day agenda use feed with details.timeMin/timeMax and omit query/queries.",
+        "For update_event/delete_event, the existing event title to locate; required unless target or details.eventId identifies it. For reads: event-content filter explicitly requested by the user, such as flight, dentist, Denver, or return flight. For trip_window, the trip or stay location (required). Never put dates, agenda, events, or schedule here just to express a time range. For an unfiltered day agenda use feed with details.timeMin/timeMax and omit query/queries.",
       required: false,
       schema: { type: "string" as const },
     },
@@ -7277,23 +7425,24 @@ const calendarAction: CalendarHandlerAction = {
       name: "details",
       description:
         "Structured calendar fields; only the declared keys are accepted, so omit anything the user did not state. " +
-        "feed/search_events: timeMin/timeMax with timeZone. create_event: start (plus end or durationMinutes) and timeZone; location, description, recurrence and attendees only when the user gives them. " +
-        "update_event/delete_event: locate the target with eventId, oldTitle or query (plus date); the new time goes in start/end and a rename in newTitle. " +
+        "Connected Google or Microsoft operations MUST include the exact grantId AND calendarId returned by CALENDAR_SOURCES, either as top-level fields or inside details. Never leave them out or substitute local Calendar records. feed/search_events: timeMin/timeMax with timeZone. create_event: start (plus end or durationMinutes) and timeZone; location, description, recurrence and attendees only when the user gives them. " +
+        "update_event/delete_event: locate the target with eventId, oldTitle or query (plus date). The update itself (new time, rename, description, location, cleared fields) is extracted from the user's request and conversation, not copied from start/end, newTitle, description, location or clearFields, so state the requested change in intent. " +
         "Every wall-clock value is local (no Z, no offset) in timeZone; recurrenceScope is instance, this_and_following or series.",
       required: false,
       schema: CALENDAR_DETAILS_PARAMETER_SCHEMA,
     },
     {
-      // Planners habitually add a calendar-id field on feed/read calls (live:
-      // top-level calendar_id AND calendarId on one CALENDAR_FEED call, which
-      // validateToolArgs rejected and the whole read failed). Declare the
-      // field so natural variants normalize here instead of erroring; reads
-      // span the account's calendars and creation targets the built-in
-      // calendar, so the value is advisory and the handler ignores it.
-      name: "calendarId",
-      aliases: ["calendar_id", "calendarid"],
+      // Explicit source IDs may be supplied together here or inside details.
+      name: "grantId",
       description:
-        "Optional; leave unset. Agenda reads use the selected Calendar feed; searches cover connected calendars. Use details.includeHiddenCalendars to explicitly change that scope. Event creation targets the built-in calendar.",
+        "Exact connected-provider grantId from CALENDAR_SOURCES. Required with calendarId whenever the user names Google or Microsoft. Omit only for the built-in local Calendar.",
+      required: false,
+      schema: { type: "string" as const },
+    },
+    {
+      name: "calendarId",
+      description:
+        "Exact calendarId returned by CALENDAR_SOURCES, paired with grantId. Nested details.calendarId remains supported. With no grantId this legacy top-level field does not change source selection.",
       required: false,
       schema: { type: "string" as const },
     },

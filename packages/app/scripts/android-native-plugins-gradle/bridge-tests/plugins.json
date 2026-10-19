@@ -1,4 +1,7 @@
 {
+  "plugin-native-action-journal": {
+    "kind": "host-configured-library"
+  },
   "plugin-native-agent": {
     "name": "Agent",
     "class": "ai.eliza.plugins.agent.AgentPlugin"
@@ -42,6 +45,9 @@
     "name": "ElizaLocation",
     "class": "ai.eliza.plugins.location.LocationPlugin"
   },
+  "plugin-native-media": {
+    "kind": "host-configured-library"
+  },
   "plugin-native-messages": {
     "name": "ElizaMessages",
     "class": "ai.eliza.plugins.messages.MessagesPlugin"
@@ -53,6 +59,12 @@
   "plugin-native-network-policy": {
     "name": "ElizaNetworkPolicy",
     "class": "ai.eliza.plugins.networkpolicy.NetworkPolicyPlugin"
+  },
+  "plugin-native-notifications": {
+    "kind": "host-configured-library"
+  },
+  "plugin-native-passwords": {
+    "kind": "host-configured-library"
   },
   "plugin-native-phone": {
     "name": "ElizaPhone",

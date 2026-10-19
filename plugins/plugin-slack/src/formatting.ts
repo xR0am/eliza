@@ -225,22 +225,85 @@ function convertCodeBlocks(text: string, codeSink: string[]): string {
   return out.join("");
 }
 
+/** Holds `body` aside until `restoreCodeBlocks` and returns its sentinel. */
+function holdAside(body: string, codeSink: string[]): string {
+  codeSink.push(body);
+  return `${CODE_SENTINEL_PREFIX}${codeSink.length - 1}${CODE_SENTINEL_SUFFIX}`;
+}
+
 /**
- * Converts markdown links to Slack mrkdwn links
+ * Converts markdown links to Slack mrkdwn links. The finished token is held
+ * aside so the style passes cannot rewrite `*` in its URL (`a*b*c` became
+ * `a_b_c`, a different address); the label gets the style passes here.
  */
-function convertLinks(text: string): string {
-  return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => {
-    const trimmedUrl = url.trim();
-    const trimmedText = linkText.trim();
-    // If link text matches URL, just use URL
-    if (
-      trimmedText === trimmedUrl ||
-      trimmedText === trimmedUrl.replace(/^mailto:/, "")
-    ) {
-      return `<${escapeSlackLinkUrl(trimmedUrl)}>`;
-    }
-    return `<${escapeSlackLinkUrl(trimmedUrl)}|${escapeSlackMrkdwnSegment(trimmedText)}>`;
-  });
+/**
+ * A held-aside link token skips escapeSlackMrkdwn, so it must pass the same
+ * scheme allowlist here: javascript:, data:, file:, relative URLs and tokens
+ * spanning a newline come out escaped as plain text.
+ */
+function guardLinkToken(token: string): string {
+  return isAllowedSlackAngleToken(token) && !token.includes("\n")
+    ? token
+    : escapeSlackMrkdwnSegment(token);
+}
+
+function convertLinks(text: string, codeSink: string[]): string {
+  // The URL group tolerates one level of balanced parentheses, as the
+  // Telegram converter does: a plain [^)]+ capture cuts a Wikipedia-style
+  // URL at its inner closing paren and leaves a malformed link token.
+  // The leading alternation keeps inline-code spans literal: a Markdown link
+  // example inside backticks must not become a Slack link token.
+  return text.replace(
+    /(`[^`\n]+`)|\[([^\]]+)\]\(((?:[^()]|\([^()]*\))+)\)/g,
+    (match, inlineCode, linkText, url) => {
+      if (inlineCode) return match;
+      const trimmedUrl = url.trim();
+      const trimmedText = linkText.trim();
+      // If link text matches URL, just use URL
+      if (
+        trimmedText === trimmedUrl ||
+        trimmedText === trimmedUrl.replace(/^mailto:/, "")
+      ) {
+        return holdAside(
+          guardLinkToken(`<${escapeSlackLinkUrl(trimmedUrl)}>`),
+          codeSink,
+        );
+      }
+      const label = convertStrikethrough(
+        convertItalic(convertBold(escapeSlackMrkdwnSegment(trimmedText))),
+      );
+      return holdAside(
+        guardLinkToken(`<${escapeSlackLinkUrl(trimmedUrl)}|${label}>`),
+        codeSink,
+      );
+    },
+  );
+}
+
+/**
+ * Holds inline code spans aside like fenced bodies, so the style passes leave
+ * `a*b*c` and `**kwargs` as written. A span never takes in a held sentinel.
+ */
+/**
+ * Holds a bare URL aside as a Slack link token, like convertLinks does for
+ * [text](url), so the style passes cannot rewrite `*` or `_` in it
+ * (`https://example.com/a*b*c` was sent as `a_b_c`, a different address).
+ * Balanced parentheses and `|` (sent as %7C) stay in the URL; trailing
+ * punctuation and emphasis closers do not. A URL already inside a `<...>`
+ * token is left alone.
+ */
+function convertBareUrls(text: string, codeSink: string[]): string {
+  return text.replace(
+    /(?<![<|\w])https?:\/\/(?:[^\s<>()]|\([^\s()]*\))*(?:[^\s<>().,;:!?*_~'"]|\([^\s()]*\))/g,
+    (url) =>
+      holdAside(guardLinkToken(`<${escapeSlackLinkUrl(url)}>`), codeSink),
+  );
+}
+
+function convertInlineCode(text: string, codeSink: string[]): string {
+  return text.replace(new RegExp(`\`[^\`\n${CODE_DELIM}]+\``, "g"), (span) =>
+    holdAside(escapeSlackMrkdwnSegment(span), codeSink),
+  );
 }
 
 /**
@@ -291,11 +354,14 @@ export function markdownToSlackMrkdwn(markdown: string): string {
     return "";
   }
 
-  // Process in order: code blocks -> links -> headings -> text styles -> escape.
-  // Fenced bodies are held aside for the whole pipeline and restored last.
+  // Process in order: code blocks -> links -> inline code -> headings -> text
+  // styles -> escape. Fenced bodies, links, and inline code are held aside for
+  // the whole pipeline and restored last.
   const codeSink: string[] = [];
   let result = convertCodeBlocks(stripSentinelDelimiters(markdown), codeSink);
-  result = convertLinks(result);
+  result = convertLinks(result, codeSink);
+  result = convertInlineCode(result, codeSink);
+  result = convertBareUrls(result, codeSink);
   result = convertHeadings(result);
   result = convertBold(result);
   result = convertItalic(result);
@@ -355,6 +421,39 @@ function chunkLimitTooSmall(
   );
 }
 
+// The pinned runtimes provide Intl.Segmenter, while the declaration library
+// does not expose its type.
+const GraphemeSegmenter = (
+  Intl as unknown as {
+    Segmenter: new (
+      locale: string,
+      options: { granularity: "grapheme" },
+    ) => { segment(text: string): Iterable<{ segment: string }> };
+  }
+).Segmenter;
+
+const graphemeSegmenter = new GraphemeSegmenter("en", {
+  granularity: "grapheme",
+});
+
+/**
+ * `truncateWellFormed` that also never ends inside a grapheme cluster (a ZWJ
+ * emoji sequence, a regional-indicator flag, a combining mark, or a skin-tone
+ * modifier), so a cluster is never split across two Slack messages. When a
+ * single cluster alone exceeds `maxLength`, fall back to the surrogate-safe
+ * cut; it is the only case with no clean boundary.
+ */
+function truncateGraphemeSafe(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  let end = 0;
+  for (const { segment } of graphemeSegmenter.segment(text)) {
+    if (end + segment.length > maxLength) break;
+    end += segment.length;
+  }
+  if (end > 0) return text.slice(0, end);
+  return truncateWellFormed(text, maxLength);
+}
+
 /**
  * Splits plain Slack message text at newline/space boundaries without ever
  * emitting more than `maxChars`. Unlike `chunkSlackText`, this does not add
@@ -393,10 +492,11 @@ export function splitSlackText(
     }
 
     splitIndex = Math.min(splitIndex, maxChars);
-    // truncateWellFormed backs the cut off by one unit instead of splitting a
-    // surrogate pair; remaining must resume from the actual chunk length, not
-    // the requested splitIndex, or one unit of text would be dropped.
-    const chunk = truncateWellFormed(remaining, splitIndex);
+    // truncateGraphemeSafe backs the cut off to a grapheme boundary instead
+    // of splitting a surrogate pair or a grapheme cluster; remaining must
+    // resume from the actual chunk length, not the requested splitIndex, or
+    // one unit of text would be dropped.
+    const chunk = truncateGraphemeSafe(remaining, splitIndex);
     if (chunk.length === 0) {
       chunkLimitTooSmall("splitSlackText", splitIndex, maxChars);
     }

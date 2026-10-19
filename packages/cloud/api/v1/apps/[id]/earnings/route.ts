@@ -3,6 +3,7 @@
  * It validates the requested chart window before any app or earnings lookup.
  */
 
+import { ApiError } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import { requireAuthOrApiKeyWithOrg } from "@elizaos/cloud-shared/lib/auth";
 import { isAppKeyOutOfScope } from "@elizaos/cloud-shared/lib/auth/app-key-scope";
 import { appEarningsService } from "@elizaos/cloud-shared/lib/services/app-earnings";
@@ -75,10 +76,8 @@ async function __hono_GET(
     }
     const summary = await appEarningsService.getEarningsSummary(id);
     const breakdown = await appEarningsService.getEarningsBreakdown(id);
-    const recentTransactions = await appEarningsService.getTransactionHistory(
-      id,
-      { limit: 10 },
-    );
+    const { transactions: recentTransactions } =
+      await appEarningsService.getTransactionHistory(id, { limit: 10 });
     const chartData = await appEarningsService.getDailyEarningsChart(id, days);
     return Response.json({
       success: true,
@@ -93,6 +92,9 @@ async function __hono_GET(
       },
     });
   } catch (error) {
+    if (error instanceof ApiError) {
+      return Response.json(error.toJSON(), { status: error.status });
+    }
     // error-policy:J1 route boundary translates failures into structured HTTP errors.
     logger.error("Failed to get app earnings:", error);
     return Response.json(

@@ -8,7 +8,7 @@ Build with a Gradle wrapper, Android SDK36 and JDK21:
 
 Install the fixture and test APK into a dedicated emulator user, grant POST_NOTIFICATIONS, then run AndroidJUnitRunner with `-e reminderEngineFixture 1 -e class example.reminders.fixture.ReminderEngineFlowTest`. Without explicit opt-in the test does not execute its effects. Remove only that fixture user and its installed packages afterward.
 
-This fixture uses synthetic local reminders and a test-only store. It exercises two configured engines, receipts, null alerts, receiver notification actions and opaque taps. It does not qualify a production encrypted adapter, Capacitor permission/lifecycle behavior, concurrent failures, reboot delivery, or an installed-app migration. Do not use its storage adapter in production.
+This fixture uses synthetic local reminders and a test-only store. It exercises two configured engines, receipts, null alerts, undated to-do completion/reopen, quiet-channel migration, receiver notification actions and opaque taps. It also removes a posted fixture notice and checks that restore re-posts it only once per boot with the same route and record. This simulates notification loss; it does not reboot Android. It does not qualify a production encrypted adapter, Capacitor permission/lifecycle behavior, concurrent failures, reboot delivery, or an installed-app migration. Do not use its storage adapter in production.
 
 ## Independent Capacitor bridge flow
 
@@ -21,3 +21,9 @@ It invokes the real registered tap methods while a synthetic storage adapter
 blocks reads, verifies that a main-thread heartbeat and WebView callbacks still
 run, then releases storage and requires each promise to settle. It does not use
 production data or qualify installed-app migration.
+
+The optional question action also has local Android-shadow tests, discovered by
+`:reminders:testDebugUnitTest` in this consumer build. They exercise actual engine
+storage and notification builders, distinct content/question identities, failed
+release persistence, reusable cancellation and refusal after the OS action is
+removed. These tests do not establish real lock-screen or PendingIntent delivery.

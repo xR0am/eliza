@@ -6,6 +6,8 @@ import { expect, it, vi } from "vitest";
 import { BrowserDispatchFailure } from "./dispatch-types";
 import {
   androidNativeBrowserSocketPath,
+  currentPageFromTabs,
+  currentPageTitle,
   NativeSocketBrowserTarget,
 } from "./native-socket-target";
 
@@ -101,6 +103,10 @@ it("acknowledges profile-bound liveness then rejects interrupted effects without
     registrationMs: 1000,
     heartbeatMs: 400,
   });
+  const registrations: Array<{ profileId: string; isCurrent(): boolean }> = [];
+  const unsubscribe = target.onProfileRegistered((receipt) => {
+    registrations.push(receipt);
+  });
   const sockets: Socket[] = [];
   const peer = () => {
     const socket = createConnection(socketPath);
@@ -126,6 +132,9 @@ it("acknowledges profile-bound liveness then rejects interrupted effects without
         profileId: "stable-profile",
       }),
     );
+    await vi.waitFor(() => expect(registrations).toHaveLength(1));
+    expect(registrations[0].profileId).toBe("stable-profile");
+    expect(registrations[0].isCurrent()).toBe(true);
     first.send({
       type: "ping",
       nonce: "probe-nonce",
@@ -149,6 +158,7 @@ it("acknowledges profile-bound liveness then rejects interrupted effects without
     );
     await interrupted;
     expect(await target.available()).toBe(false);
+    expect(registrations[0].isCurrent()).toBe(false);
     const second = peer();
     await vi.waitFor(() => expect(second.messages[0]?.type).toBe("hello-ack"));
     expect(await target.available()).toBe(true);
@@ -156,6 +166,11 @@ it("acknowledges profile-bound liveness then rejects interrupted effects without
     expect(second.messages.some((value) => value.type === "command")).toBe(
       false,
     );
+    await vi.waitFor(() => expect(registrations).toHaveLength(2));
+    expect(registrations[0].isCurrent()).toBe(false);
+    expect(registrations[1].isCurrent()).toBe(true);
+    unsubscribe();
+    expect(registrations[1].isCurrent()).toBe(false);
     second.send({
       type: "ping",
       nonce: "other-probe",
@@ -518,6 +533,87 @@ it("sends a deadline-bound effect only to a feedback-capable peer", async () => 
       result: { dispatched: true },
     });
     await expect(executing).resolves.toMatchObject({ subaction: "click" });
+    // The preview sentence comes only from trusted options, never the command.
+    const worded = target.execute(
+      {
+        subaction: "click",
+        id: "1",
+        selector: "00000000-0000-0000-0000-000000000000:0:0",
+        actionText: "Page text cannot word this.",
+      } as never,
+      {
+        taskContext,
+        taskExpiresAt,
+        actionText: "I will choose your saved Visa.",
+      },
+    );
+    await vi.waitFor(() => expect(frames.messages).toHaveLength(2));
+    expect(frames.messages[1].command.actionText).toBe(
+      "I will choose your saved Visa.",
+    );
+    frames.send({
+      type: "result",
+      id: frames.messages[1].id,
+      ok: true,
+      result: { dispatched: true },
+    });
+    await worded;
+    const unbound = target.execute({
+      subaction: "click",
+      id: "1",
+      selector: "00000000-0000-0000-0000-000000000000:0:0",
+      actionText: "Unbound text.",
+    } as never);
+    for (const actionText of ["", "x".repeat(201), "line\nbreak"])
+      await expect(
+        target.execute(
+          {
+            subaction: "click",
+            id: "1",
+            selector: "00000000-0000-0000-0000-000000000000:0:0",
+          },
+          { taskContext, taskExpiresAt, actionText },
+        ),
+      ).rejects.toMatchObject({ kind: "POLICY_BLOCKED" });
+    await vi.waitFor(() => expect(frames.messages).toHaveLength(3));
+    expect(frames.messages[2].command.actionText).toBeUndefined();
+    frames.send({
+      type: "result",
+      id: frames.messages[2].id,
+      ok: true,
+      result: { dispatched: true },
+    });
+    await unbound;
+    // A reviewed target comes only from trusted options, and only a peer
+    // that enforces it may receive one.
+    await expect(
+      target.execute(
+        {
+          subaction: "click",
+          id: "1",
+          selector: "00000000-0000-0000-0000-000000000000:0:0",
+        },
+        { taskContext, taskExpiresAt, expectedSelector: "#method" },
+      ),
+    ).rejects.toMatchObject({ kind: "UNSUPPORTED" });
+    const raw = target.execute(
+      {
+        subaction: "click",
+        id: "1",
+        selector: "00000000-0000-0000-0000-000000000000:0:0",
+        expectedSelector: "#page-chosen",
+      } as never,
+      { taskContext, taskExpiresAt },
+    );
+    await vi.waitFor(() => expect(frames.messages).toHaveLength(4));
+    expect(frames.messages[3].command.expectedSelector).toBeUndefined();
+    frames.send({
+      type: "result",
+      id: frames.messages[3].id,
+      ok: true,
+      result: { dispatched: true },
+    });
+    await raw;
   } finally {
     socket?.destroy();
     await target.stop();
@@ -557,7 +653,7 @@ it("binds Android sockets to validated host application identity", async () => {
     "org.example/other",
     "org.example ",
     "org.example\0other",
-    "org." + "x".repeat(110),
+    `org.${"x".repeat(110)}`,
   ]) {
     expect(() => androidNativeBrowserSocketPath(invalid)).toThrow(
       "Invalid native browser Android application ID",
@@ -828,6 +924,175 @@ it("requires the guide-label capability for labels, offers, pause and a configur
       }),
     ).rejects.toMatchObject({ kind: "UNSUPPORTED" });
     expect(frames.messages).toHaveLength(0);
+  } finally {
+    socket?.destroy();
+    await target.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("reduces the one active HTTPS page to its origin and the complete title", () => {
+  const tab = {
+    id: "7",
+    url: "https://pay.example.test/account/123?token=secret#review",
+    title: "  Pay\u0000 your\u200b bill\n now ",
+    active: true,
+    windowId: 1,
+  };
+  expect(
+    currentPageFromTabs(
+      [tab, { ...tab, id: "8", active: false, url: "https://other.test/" }],
+      1,
+    ),
+  ).toEqual({
+    tabId: "7",
+    origin: "https://pay.example.test",
+    title: "Pay your bill now",
+  });
+  // Model-facing context preserves the complete authorized title.
+  const title = `${"a".repeat(119)}😀 ${"x".repeat(400)} user@example.com 123456789`;
+  expect(currentPageFromTabs([{ ...tab, title }], 1)?.title).toBe(title);
+  expect(currentPageTitle(title)).toBe(title);
+  expect(currentPageFromTabs([{ ...tab, title: undefined }], 1)?.title).toBe(
+    "",
+  );
+  // Unknown or ambiguous pages are not guessed.
+  expect(currentPageFromTabs([], 1)).toBeNull();
+  expect(currentPageFromTabs([{ ...tab, active: false }], 1)).toBeNull();
+  expect(
+    currentPageFromTabs([tab, { ...tab, id: "9", windowId: 2 }], 2),
+  ).toBeNull();
+  expect(
+    currentPageFromTabs(
+      [tab, { ...tab, id: "9", active: false, windowId: 2 }],
+      2,
+    ),
+  ).toBeNull();
+  // A second window that holds only a new-tab or settings page is not in the
+  // web-tab inventory, but it is counted, so the page she sees is unknown.
+  expect(currentPageFromTabs([tab], 2)).toBeNull();
+  // An extension that does not count windows cannot rule that out.
+  expect(currentPageFromTabs([tab], undefined)).toBeNull();
+  expect(currentPageFromTabs([tab], "1")).toBeNull();
+  expect(
+    currentPageFromTabs([{ ...tab, url: "http://pay.example.test/" }], 1),
+  ).toBeNull();
+  expect(
+    currentPageFromTabs(
+      [{ ...tab, url: "https://user:pw@pay.example.test/" }],
+      1,
+    ),
+  ).toBeNull();
+  expect(currentPageFromTabs([{ ...tab, url: "not a url" }], 1)).toBeNull();
+  expect(currentPageFromTabs([{ ...tab, id: "x" }], 1)).toBeNull();
+});
+
+it("reads the current page through a list request and sends nothing else", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "native-current-page-"));
+  const socketPath = join(directory, "browser.sock");
+  const target = new NativeSocketBrowserTarget(() => {});
+  let socket: Socket | undefined;
+  try {
+    await expect(target.currentPage()).rejects.toMatchObject({
+      kind: "UNSUPPORTED",
+    });
+    await target.start({ ELIZA_BROWSER_NATIVE_SOCKET: socketPath });
+    socket = createConnection(socketPath);
+    const peer = socketFrames(socket);
+    peer.send({
+      type: "hello",
+      protocol: 2,
+      extensionId: "pmldpcoefklbdbgmggcejkfoinmjfeio",
+      profileId: "page-profile",
+      capabilities: ["list"],
+    });
+    await vi.waitFor(async () => expect(await target.available()).toBe(true));
+    const page = target.currentPage();
+    await vi.waitFor(() => expect(peer.messages).toHaveLength(1));
+    expect(peer.messages[0]).toMatchObject({
+      type: "command",
+      command: { subaction: "list" },
+    });
+    peer.send({
+      type: "result",
+      id: peer.messages[0].id,
+      ok: true,
+      result: {
+        tabs: [
+          {
+            id: "3",
+            url: "https://bills.example.test/pay?amount=12",
+            title: "Pay a bill",
+            active: true,
+            windowId: 4,
+          },
+        ],
+        windowCount: 1,
+      },
+    });
+    await expect(page).resolves.toEqual({
+      tabId: "3",
+      origin: "https://bills.example.test",
+      title: "Pay a bill",
+    });
+    // An older extension that does not count windows: the page is unknown.
+    const uncounted = target.currentPage();
+    await vi.waitFor(() => expect(peer.messages).toHaveLength(2));
+    peer.send({
+      type: "result",
+      id: peer.messages[1].id,
+      ok: true,
+      result: {
+        tabs: [
+          {
+            id: "3",
+            url: "https://bills.example.test/pay",
+            title: "Pay a bill",
+            active: true,
+            windowId: 4,
+          },
+        ],
+      },
+    });
+    await expect(uncounted).resolves.toBeNull();
+    const invalid = target.currentPage();
+    await vi.waitFor(() => expect(peer.messages).toHaveLength(3));
+    peer.send({
+      type: "result",
+      id: peer.messages[2].id,
+      ok: true,
+      result: { tabs: "none" },
+    });
+    await expect(invalid).rejects.toThrow(/tab inventory/);
+    expect(peer.messages).toHaveLength(3);
+  } finally {
+    socket?.destroy();
+    await target.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("refuses the current page when the peer cannot list tabs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "native-current-page-old-"));
+  const socketPath = join(directory, "browser.sock");
+  const target = new NativeSocketBrowserTarget(() => {});
+  let socket: Socket | undefined;
+  try {
+    await target.start({ ELIZA_BROWSER_NATIVE_SOCKET: socketPath });
+    socket = createConnection(socketPath);
+    const peer = socketFrames(socket);
+    peer.send({
+      type: "hello",
+      protocol: 2,
+      extensionId: "pmldpcoefklbdbgmggcejkfoinmjfeio",
+      profileId: "page-profile",
+      capabilities: ["snapshot"],
+    });
+    await vi.waitFor(async () => expect(await target.available()).toBe(true));
+    await expect(target.currentPage()).rejects.toMatchObject({
+      kind: "UNSUPPORTED",
+    });
+    expect(peer.messages).toHaveLength(0);
   } finally {
     socket?.destroy();
     await target.stop();

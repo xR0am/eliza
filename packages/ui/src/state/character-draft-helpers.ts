@@ -18,9 +18,6 @@ function extractLikelyJson(input: string): string {
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
-  if (withoutFences.startsWith("{") || withoutFences.startsWith("[")) {
-    return withoutFences;
-  }
 
   const firstBracket = withoutFences.indexOf("[");
   const firstBrace = withoutFences.indexOf("{");
@@ -30,10 +27,24 @@ function extractLikelyJson(input: string): string {
   const start = Math.min(...starts);
   const opener = withoutFences[start];
   const closer = opener === "[" ? "]" : "}";
-  const end = withoutFences.lastIndexOf(closer);
-  if (end <= start) return withoutFences;
-
-  return withoutFences.slice(start, end + 1);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < withoutFences.length; index += 1) {
+    const char = withoutFences[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === opener) depth += 1;
+    else if (char === closer && --depth === 0) {
+      return withoutFences.slice(start, index + 1);
+    }
+  }
+  return withoutFences;
 }
 
 function normalizeSpeakerName(
@@ -213,7 +224,11 @@ export function prepareDraftForSave(
     return out;
   };
 
-  if (draft.system) result.system = tokenize(draft.system);
+  // `PUT /api/character` keeps every omitted field, so a field the user
+  // emptied must be sent as empty — omitting it would restore the old value.
+  if (typeof draft.system === "string") {
+    result.system = tokenize(draft.system);
+  }
 
   if (typeof draft.bio === "string") {
     const lines = draft.bio
@@ -221,27 +236,28 @@ export function prepareDraftForSave(
       .map((l: string) => l.trim())
       .filter((l: string) => l.length > 0)
       .map(tokenize);
-    if (lines.length > 0) result.bio = lines;
-  } else if (Array.isArray(draft.bio) && draft.bio.length > 0) {
+    result.bio = lines;
+  } else if (Array.isArray(draft.bio)) {
     result.bio = draft.bio.map(tokenize);
   }
 
-  const adjectives = (draft.adjectives ?? []).filter(
-    (s) => s.trim().length > 0,
-  );
-  if (adjectives.length > 0) result.adjectives = adjectives;
+  if (Array.isArray(draft.adjectives)) {
+    result.adjectives = draft.adjectives.filter((s) => s.trim().length > 0);
+  }
 
-  const topics = (draft.topics ?? [])
-    .filter((s) => s.trim().length > 0)
-    .map(tokenize);
-  if (topics.length > 0) result.topics = topics;
+  if (Array.isArray(draft.topics)) {
+    result.topics = draft.topics
+      .filter((s) => s.trim().length > 0)
+      .map(tokenize);
+  }
 
-  const postExamples = (draft.postExamples ?? [])
-    .filter((s) => s.trim().length > 0)
-    .map(tokenize);
-  if (postExamples.length > 0) result.postExamples = postExamples;
+  if (Array.isArray(draft.postExamples)) {
+    result.postExamples = draft.postExamples
+      .filter((s) => s.trim().length > 0)
+      .map(tokenize);
+  }
 
-  if (draft.messageExamples != null) {
+  if (Array.isArray(draft.messageExamples)) {
     // Strip extra fields from content (schema is .strict() — only text + actions allowed)
     const cleaned = normalizeGeneratedMessageExamples(
       draft.messageExamples,
@@ -253,14 +269,22 @@ export function prepareDraftForSave(
         content: { ...msg.content, text: tokenize(msg.content.text) },
       })),
     }));
-    if (cleaned.length > 0) result.messageExamples = cleaned;
+    // Rows the user emptied normalize away; send the result even when it is
+    // empty so the save clears them.
+    result.messageExamples = cleaned;
   }
 
   if (draft.style) {
     const style: Record<string, string[]> = {};
-    if (draft.style.all?.length) style.all = draft.style.all.map(tokenize);
-    if (draft.style.chat?.length) style.chat = draft.style.chat.map(tokenize);
-    if (draft.style.post?.length) style.post = draft.style.post.map(tokenize);
+    if (Array.isArray(draft.style.all)) {
+      style.all = draft.style.all.map(tokenize);
+    }
+    if (Array.isArray(draft.style.chat)) {
+      style.chat = draft.style.chat.map(tokenize);
+    }
+    if (Array.isArray(draft.style.post)) {
+      style.post = draft.style.post.map(tokenize);
+    }
     if (Object.keys(style).length > 0) result.style = style;
   }
 

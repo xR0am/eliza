@@ -37,7 +37,10 @@ import {
 import { createLifeOpsTestRuntime } from "../../../test/helpers/runtime.js";
 import * as taskPlans from "../../actions/lib/extract-task-plan.js";
 import { runLifeOperationHandler } from "../../actions/life.js";
-import { createLifeOpsReminderAttempt } from "../repository.js";
+import {
+  createLifeOpsReminderAttempt,
+  createLifeOpsReminderPlan,
+} from "../repository.js";
 import { LifeOpsService } from "../service.js";
 import { decideReminderReviewTransition } from "../service-helpers-reminder.js";
 
@@ -257,6 +260,30 @@ it.each(["unrelated", "abstain"] as const)(
     ).toBeUndefined();
   },
 );
+
+it("keeps a failed message read retryable instead of recording owner silence", async () => {
+  const f = await reviewFixture("done");
+  const fault = new Error("message store unavailable");
+  vi.spyOn(fixture.runtime, "getMemoriesByRoomIds").mockRejectedValue(fault);
+  const reportError = vi
+    .spyOn(fixture.runtime, "reportError")
+    .mockImplementation(() => {});
+  const review = await service.reviewOwnerResponseAfterReminderAttempt({
+    subjectType: "owner",
+    attempt: f.attempt,
+    now: f.now,
+  });
+  expect(review).toMatchObject({
+    decision: "no_response",
+    classifierSource: "none",
+    reason: "review_evidence_unavailable",
+  });
+  expect(reportError).toHaveBeenCalledWith(
+    "lifeops:reminders:review-owner-response",
+    fault,
+    { attemptId: f.attempt.id },
+  );
+});
 
 it("leaves typed control replies to their action pipeline", async () => {
   const f = await reviewFixture("done", {
@@ -1569,3 +1596,197 @@ it.each(["completed", "snoozed"] as const)(
     }
   },
 );
+
+it("sends the before-start Calendar reminder for a timed event but not an all-day one", async () => {
+  // Google stores an all-day event on Oct 10 at 2026-10-10T00:00Z. A
+  // "30 minutes before" step would fire at 2026-10-09T23:30Z: 19:30 the day
+  // before in New York.
+  const now = new Date("2026-10-09T23:45:00.000Z");
+  const event = (
+    title: string,
+    startAt: string,
+    endAt: string,
+    isAllDay: boolean,
+  ) => ({
+    id: crypto.randomUUID(),
+    externalId: crypto.randomUUID(),
+    agentId: fixture.runtime.agentId,
+    provider: "google" as const,
+    side: "owner" as const,
+    calendarId: "primary",
+    title,
+    description: "",
+    location: "",
+    status: "confirmed",
+    startAt,
+    endAt,
+    isAllDay,
+    timezone: "America/New_York",
+    htmlLink: null,
+    conferenceLink: null,
+    organizer: null,
+    attendees: [],
+    metadata: {},
+    syncedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  const allDay = event(
+    "Company holiday",
+    "2026-10-10T00:00:00.000Z",
+    "2026-10-11T00:00:00.000Z",
+    true,
+  );
+  const timed = event(
+    "Late call",
+    "2026-10-10T00:10:00.000Z",
+    "2026-10-10T01:00:00.000Z",
+    false,
+  );
+  for (const row of [allDay, timed]) {
+    await service.repository.upsertCalendarEvent(row);
+    await service.repository.createReminderPlan(
+      createLifeOpsReminderPlan({
+        agentId: fixture.runtime.agentId,
+        ownerType: "calendar_event",
+        ownerId: row.id,
+        steps: [
+          { channel: "in_app", offsetMinutes: 30, label: "30m before event" },
+        ],
+        mutePolicy: {},
+        quietHours: {},
+      }),
+    );
+  }
+
+  const { attempts } = await service.processReminders({
+    now: now.toISOString(),
+  });
+
+  const owners = attempts
+    .filter((attempt) => attempt.ownerType === "calendar_event")
+    .map((attempt) => attempt.ownerId);
+  expect(owners).toContain(timed.id);
+  expect(owners).not.toContain(allDay.id);
+  // Delivery renders the reminder text with the (rejected) model and falls
+  // back; rendering is outside this check.
+  vi.mocked(fixture.runtime.useModel).mockClear();
+});
+
+it("sends the before-start reminder for built-in, Outlook and Apple calendar events", async () => {
+  const now = new Date("2026-10-12T14:45:00.000Z");
+  const providers = ["eliza", "microsoft", "apple_calendar"] as const;
+  const events = providers.map((provider) => ({
+    id: crypto.randomUUID(),
+    externalId: crypto.randomUUID(),
+    agentId: fixture.runtime.agentId,
+    provider,
+    side: "owner" as const,
+    calendarId: "primary",
+    title: `Dentist (${provider})`,
+    description: "",
+    location: "",
+    status: "confirmed",
+    startAt: "2026-10-12T15:10:00.000Z",
+    endAt: "2026-10-12T16:00:00.000Z",
+    isAllDay: false,
+    timezone: "UTC",
+    htmlLink: null,
+    conferenceLink: null,
+    organizer: null,
+    attendees: [],
+    metadata: {},
+    syncedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  }));
+  for (const row of events) {
+    await service.repository.upsertCalendarEvent(row);
+    await service.repository.createReminderPlan(
+      createLifeOpsReminderPlan({
+        agentId: fixture.runtime.agentId,
+        ownerType: "calendar_event",
+        ownerId: row.id,
+        steps: [
+          { channel: "in_app", offsetMinutes: 30, label: "30m before event" },
+        ],
+        mutePolicy: {},
+        quietHours: {},
+      }),
+    );
+  }
+
+  const { attempts } = await service.processReminders({
+    now: now.toISOString(),
+  });
+
+  const owners = attempts
+    .filter((attempt) => attempt.ownerType === "calendar_event")
+    .map((attempt) => attempt.ownerId);
+  expect(
+    events.filter((row) => !owners.includes(row.id)).map((row) => row.provider),
+  ).toEqual([]);
+  vi.mocked(fixture.runtime.useModel).mockClear();
+});
+
+it("sends no before-start reminder for a meeting the owner declined", async () => {
+  const now = new Date("2026-10-13T14:45:00.000Z");
+  const meeting = (title: string, responseStatus: string) => ({
+    id: crypto.randomUUID(),
+    externalId: crypto.randomUUID(),
+    agentId: fixture.runtime.agentId,
+    provider: "google" as const,
+    side: "owner" as const,
+    calendarId: "primary",
+    title,
+    description: "",
+    location: "",
+    status: "confirmed",
+    startAt: "2026-10-13T15:10:00.000Z",
+    endAt: "2026-10-13T16:00:00.000Z",
+    isAllDay: false,
+    timezone: "UTC",
+    htmlLink: null,
+    conferenceLink: null,
+    organizer: null,
+    attendees: [
+      {
+        email: "owner@example.test",
+        displayName: null,
+        responseStatus,
+        self: true,
+        organizer: false,
+        optional: false,
+      },
+    ],
+    metadata: {},
+    syncedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+  });
+  const declined = meeting("Team sync", "declined");
+  const accepted = meeting("Design review", "accepted");
+  for (const row of [declined, accepted]) {
+    await service.repository.upsertCalendarEvent(row);
+    await service.repository.createReminderPlan(
+      createLifeOpsReminderPlan({
+        agentId: fixture.runtime.agentId,
+        ownerType: "calendar_event",
+        ownerId: row.id,
+        steps: [
+          { channel: "in_app", offsetMinutes: 30, label: "30m before event" },
+        ],
+        mutePolicy: {},
+        quietHours: {},
+      }),
+    );
+  }
+
+  const { attempts } = await service.processReminders({
+    now: now.toISOString(),
+  });
+
+  const owners = attempts
+    .filter((attempt) => attempt.ownerType === "calendar_event")
+    .map((attempt) => attempt.ownerId);
+  expect(owners).toContain(accepted.id);
+  expect(owners).not.toContain(declined.id);
+  vi.mocked(fixture.runtime.useModel).mockClear();
+});

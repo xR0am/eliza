@@ -15,16 +15,26 @@ if (!process.env.ELIZA_BROWSER_EXECUTABLE)
   throw new Error("Set ELIZA_BROWSER_EXECUTABLE");
 const server = createServer((req, res) => {
   res.setHeader("Content-Type", "text/html");
+  const styles = "style-src 'nonce-c3R5bGU='; style-src-attr 'unsafe-inline'";
+  res.setHeader("Content-Security-Policy", styles);
   if (req.url === "/labels") {
     // A strict font policy must not block the overlay's bundled font bytes.
-    res.setHeader("Content-Security-Policy", "font-src 'none'");
+    res.setHeader("Content-Security-Policy", `${styles}; font-src 'none'`);
     res.end(
-      '<!doctype html><style>body{margin:0;font:22px Arial}button,input{position:absolute;font:22px Arial;padding:16px}</style><button id="first" style="left:40px;top:40px">First step</button><input id="email" aria-label="Email" style="left:600px;top:40px"><button id="last" style="left:40px;top:520px">Last step</button><script>window.pageClicks=[];document.addEventListener("click",e=>window.pageClicks.push({target:e.target.nodeName,path:e.composedPath().map(n=>n.nodeName||"window")}),true)</script>',
+      '<!doctype html><style nonce="c3R5bGU=">body{margin:0;font:22px Arial}button,input{position:absolute;font:22px Arial;padding:16px}</style><button id="first" style="left:40px;top:40px">First step</button><input id="email" aria-label="Email" style="left:600px;top:40px"><button id="last" style="left:40px;top:520px">Last step</button><script>window.pageClicks=[];document.addEventListener("click",e=>window.pageClicks.push({target:e.target.nodeName,path:e.composedPath().map(n=>n.nodeName||"window")}),true)</script>',
+    );
+    return;
+  }
+  if (req.url === "/far") {
+    // The step's control is below the visible page; a Pay button sits where
+    // the label would go under the date field.
+    res.end(
+      '<!doctype html><style nonce="c3R5bGU=">body{margin:0;height:3000px;font:22px Arial}button,input{position:absolute;font:22px Arial;padding:16px}</style><input id="date" aria-label="Payment date" style="left:40px;top:40px"><button id="pay" style="left:40px;top:130px">Pay now</button><button id="far" style="left:40px;top:2200px">Account details</button>',
     );
     return;
   }
   res.end(
-    '<!doctype html><style>body{height:2400px;font:22px system-ui}button{margin:100px 20px;padding:20px}</style><button id="target">Continue on this website</button><input type="password" value="private-secret"><p>Provider content</p>',
+    '<!doctype html><style nonce="c3R5bGU=">body{height:2400px;font:22px system-ui}button{margin:100px 20px;padding:20px}</style><button id="target">Continue on this website</button><input type="password" value="private-secret"><p>Provider content</p>',
   );
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -226,9 +236,73 @@ try {
   await page.setViewport({ width: 1280, height: 800 });
   await settle();
   await page.screenshot({ path: `${output}/desktop.png` });
+  // When the pointer's time ends, its words stay readable: the ring, tail,
+  // answers and action authority end, and Dismiss stays available.
+  const parts = () =>
+    evaluate(
+      `(()=>{const s=globalThis.__elizaPageGuidanceV1;const q=(c)=>s.shadow.querySelector(c);return {visible:s.visible,disposed:s.disposed,text:q('.title').textContent,label:q('.label').hidden,ring:q('.ring').hidden,tail:q('.tail').hidden,answers:q('.actions')?.hidden ?? null,close:q('.close').hidden}})()`,
+    );
+  const lapsed = {
+    visible: true,
+    disposed: false,
+    text: "Use this control when you are ready.",
+    label: false,
+    ring: true,
+    tail: true,
+    answers: null,
+    close: false,
+  };
   await offer("expiry", { expiresAt: Date.now() + 300 });
+  await settle();
+  assert.deepEqual(await parts(), { ...lapsed, ring: false, tail: false });
   await new Promise((resolve) => setTimeout(resolve, 450));
-  assert.equal((await state()).visible, false);
+  assert.deepEqual(await parts(), lapsed);
+  await offer("expiry-offer", {
+    expiresAt: Date.now() + 300,
+    tone: "offer",
+    answerKey: "expiry-answer-key",
+    answers: [
+      { id: "yes", kind: "primary", text: "Yes" },
+      { id: "no", kind: "secondary", text: "Not now" },
+    ],
+  });
+  await settle();
+  assert.deepEqual(await parts(), {
+    ...lapsed,
+    ring: false,
+    tail: false,
+    answers: false,
+    close: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.deepEqual(await parts(), { ...lapsed, answers: true });
+  // A renewal of the same step after a fresh look restores the pointer in place.
+  await offer("expiry-offer", {
+    tone: "offer",
+    answerKey: "renewed-answer-key",
+    answers: [
+      { id: "yes", kind: "primary", text: "Yes" },
+      { id: "no", kind: "secondary", text: "Not now" },
+    ],
+  });
+  await settle();
+  assert.deepEqual(await parts(), {
+    ...lapsed,
+    ring: false,
+    tail: false,
+    answers: false,
+    close: true,
+  });
+  // An action preview ends with its authority.
+  await offer("expiry-action", {
+    expiresAt: Date.now() + 300,
+    action: "click",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(
+    await evaluate("globalThis.__elizaPageGuidanceV1.disposed"),
+    true,
+  );
   assert.equal(
     (await offer("wrong-origin", { origin: "https://other.example" })).reason,
     "invalid-context",
@@ -237,7 +311,9 @@ try {
   await settle();
   await call(pageGuidance, { kind: "hide" });
   assert.equal((await state()).visible, false);
-  cases.push("expiry, origin mismatch and host hide remove guidance");
+  cases.push(
+    "expiry keeps a show-only step's words without ring or answers, renewal restores it in place, an action ends; origin mismatch and host hide remove guidance",
+  );
   // A landscape IME leaves room beside the field, but neither above nor
   // below it. Side placement must shift vertically inside the visible area.
   await page.setViewport({ width: 1280, height: 220 });
@@ -264,6 +340,19 @@ try {
   cases.push(
     "IME-sized viewport uses available side space without covering the field",
   );
+  // No label position is clear of the field here. The ring stays on the
+  // field and the label does not cover it.
+  await page.setViewport({ width: 400, height: 220 });
+  await settle();
+  assert.equal((await state()).visible, false);
+  assert.deepEqual(
+    await evaluate(
+      "(()=>{const s=globalThis.__elizaPageGuidanceV1.shadow,ring=s.querySelector('.ring'),r=ring.getBoundingClientRect(),t=document.querySelector('#target').getBoundingClientRect();return {ring:ring.hidden,label:s.querySelector('.label').hidden,onTarget:r.x===t.x&&r.y===t.y&&r.width===t.width&&r.height===t.height}})()",
+    ),
+    { ring: false, label: true, onTarget: true },
+  );
+  await page.screenshot({ path: `${output}/ring-without-label.png` });
+  cases.push("a step with no room for its label keeps the ring on the control");
   // ---- Labels, offers, answers, cursor travel, pause and font -------------
   await page.setViewport({ width: 1280, height: 800 });
   await page.goto(`${origin}/labels`);
@@ -307,8 +396,9 @@ try {
   };
   const shown =
     "globalThis.__elizaPageGuidanceV1?.visible && globalThis.__elizaPageGuidanceV1.shadow.querySelector('.label').classList.contains('shown')";
-  // Grace sheet sequence: travel 1.4s, tap ring 700ms, cursor hides, ring,
-  // then the label 250ms later. Sampled every frame inside the isolated realm.
+  // Show-only sequence: travel 1.4s, cursor hides with no tap (the person
+  // presses this control), ring, then the label 250ms later. Sampled every
+  // frame inside the isolated realm.
   await page.emulateMediaFeatures([
     { name: "prefers-reduced-motion", value: "no-preference" },
   ]);
@@ -318,19 +408,21 @@ try {
   );
   assert.equal((await show("labels-1", element("Email"))).accepted, true);
   await evaluate(
-    `(()=>{const samples=globalThis.__samples=[];const t0=performance.now();const tick=()=>{const s=globalThis.__elizaPageGuidanceV1;const q=(c)=>s.shadow.querySelector(c);const p=q('.pointer');const r=p.getBoundingClientRect();samples.push({t:performance.now()-t0,pointer:p.style.display==='block',tapping:p.classList.contains('tapping'),x:r.left,y:r.top,ring:!q('.ring').hidden,label:!q('.label').hidden,shown:q('.label').classList.contains('shown'),opacity:getComputedStyle(q('.label')).opacity});if(samples.length<400)requestAnimationFrame(tick)};requestAnimationFrame(tick);return true})()`,
+    `(()=>{const samples=globalThis.__samples=[];const t0=performance.now();const tick=()=>{const s=globalThis.__elizaPageGuidanceV1;const q=(c)=>s.shadow.querySelector(c);const p=q('.pointer');const r=p.getBoundingClientRect();samples.push({t:performance.now()-t0,pointer:p.style.display==='block',tapping:Boolean(q('.tapring'))||!q('.tap').hidden,x:r.left,y:r.top,ring:!q('.ring').hidden,label:!q('.label').hidden,shown:q('.label').classList.contains('shown'),opacity:getComputedStyle(q('.label')).opacity});if(samples.length<400)requestAnimationFrame(tick)};requestAnimationFrame(tick);return true})()`,
   );
   await until(shown);
   await new Promise((resolve) => setTimeout(resolve, 450));
   const samples = await evaluate("globalThis.__samples");
   const first = (test) => samples.find(test)?.t;
   const travelStart = first((x) => x.pointer);
-  const tapStart = first((x) => x.tapping);
   const ringStart = first((x) => x.ring);
   const labelShown = first((x) => x.shown);
   assert.ok(Math.abs(samples.find((x) => x.pointer).x - 997) < 2);
-  assert.ok(tapStart - travelStart >= 1350 && tapStart - travelStart < 1600);
-  assert.ok(ringStart - tapStart >= 650 && ringStart - tapStart < 900);
+  assert.ok(
+    samples.every((x) => !x.tapping),
+    "show-only guidance never plays the agent tap",
+  );
+  assert.ok(ringStart - travelStart >= 1350 && ringStart - travelStart < 1600);
   assert.ok(
     samples.filter((x) => x.ring || x.label).every((x) => !x.pointer),
     "the cursor hides before the ring and label appear",
@@ -347,7 +439,7 @@ try {
   );
   assert.equal(await part(".label", "getComputedStyle(n).opacity"), "1");
   cases.push(
-    "cursor travels 1.4s from where last seen, taps 700ms, hides; ring then label 250ms later",
+    "cursor travels 1.4s from where last seen and hides without a tap; ring then label 250ms later",
   );
   // Grace computed styles, configured name and the bundled font.
   await until(
@@ -447,7 +539,7 @@ try {
   await page.screenshot({ path: `${output}/offer-cards.png` });
   assert.deepEqual(
     await evaluate(
-      `(()=>{const s=globalThis.__elizaPageGuidanceV1.shadow;const css=(n)=>getComputedStyle(n);const card=s.querySelector('.card');return {cards:s.querySelectorAll('.card').length,value:[css(card.querySelector('.value')).fontSize,css(card.querySelector('.value')).fontWeight],purpose:[css(card.querySelector('.purpose')).fontSize,css(card.querySelector('.purpose')).fontWeight],card:card.getBoundingClientRect().height>=64,secondary:[css(s.querySelector('.secondary')).height,css(s.querySelector('.secondary')).boxShadow],close:!!s.querySelector('.close')}})()`,
+      `(()=>{const s=globalThis.__elizaPageGuidanceV1.shadow;const css=(n)=>getComputedStyle(n);const card=s.querySelector('.card');return {cards:s.querySelectorAll('.card').length,value:[css(card.querySelector('.value')).fontSize,css(card.querySelector('.value')).fontWeight],purpose:[css(card.querySelector('.purpose')).fontSize,css(card.querySelector('.purpose')).fontWeight],card:card.getBoundingClientRect().height>=64,secondary:[css(s.querySelector('.secondary')).height,css(s.querySelector('.secondary')).boxShadow],close:!!s.querySelector('.close:not([hidden])')}})()`,
     ),
     {
       cards: 2,
@@ -595,6 +687,93 @@ try {
   );
   await call(pageGuidance, { kind: "hide" });
   cases.push("a page font claiming the overlay family is refused");
+  // ---- Placement: off-screen target, keep-clear controls, dismissal -------
+  await page.emulateMediaFeatures([
+    { name: "prefers-reduced-motion", value: "reduce" },
+  ]);
+  await page.goto(`${origin}/far`);
+  await isolate();
+  element = await read("far-1");
+  const scrolledFrom = await page.evaluate(() => scrollY);
+  const far = await show("far-1", element("Account details"), {
+    id: "far",
+  });
+  assert.equal(far.accepted, true);
+  assert.equal(far.placement, "scrolled");
+  await until(shown);
+  assert.ok((await page.evaluate(() => scrollY)) > scrolledFrom);
+  const farBox = await page.$eval("#far", (n) => {
+    const r = n.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom };
+  });
+  assert.ok(farBox.top >= 0 && farBox.bottom <= 800);
+  await call(pageGuidance, { kind: "hide" });
+  await page.evaluate(() => scrollTo(0, 0));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  element = await read("far-2");
+  // An action guide never moves the page it is about to act on.
+  const action = await show("far-2", element("Account details"), {
+    id: "far-action",
+    action: "click",
+  });
+  assert.equal(action.placement, "off-screen");
+  assert.equal(await page.evaluate(() => scrollY), 0);
+  await call(pageGuidance, { kind: "hide" });
+  cases.push(
+    "an off-screen step is scrolled into view and shown; an action guide reports off-screen and never scrolls",
+  );
+  const overlaps = async () => {
+    const box = await part(
+      ".label",
+      "(()=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}})()",
+    );
+    const pay = await page.$eval("#pay", (n) => {
+      const r = n.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    });
+    return !(
+      box.x + box.w <= pay.x ||
+      box.x >= pay.x + pay.w ||
+      box.y + box.h <= pay.y ||
+      box.y >= pay.y + pay.h
+    );
+  };
+  element = await read("clear-1");
+  await show("clear-1", element("Payment date"), { id: "clear" });
+  await until(shown);
+  assert.equal(await overlaps(), true, "fixture: the label would cover Pay");
+  await call(pageGuidance, { kind: "hide" });
+  element = await read("clear-2");
+  await show("clear-2", element("Payment date"), {
+    id: "clear",
+    keepClear: [element("Pay now")],
+  });
+  await until(shown);
+  assert.equal(await overlaps(), false);
+  await page.screenshot({ path: `${output}/keep-clear.png` });
+  cases.push("a keep-clear control is never covered by the label");
+  // A step the person dismissed before a reload starts dismissed; an
+  // explicit restore shows it again.
+  await call(pageGuidance, { kind: "hide" });
+  element = await read("dismissed-1");
+  const again = await show("dismissed-1", element("Payment date"), {
+    id: "clear",
+    dismissed: true,
+  });
+  assert.equal(again.dismissed, true);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await part(".label", "n.hidden"), true);
+  await call(pageGuidance, { kind: "hide" });
+  element = await read("dismissed-2");
+  const restored = await show("dismissed-2", element("Payment date"), {
+    id: "clear",
+    dismissed: true,
+    restore: true,
+  });
+  assert.equal(restored.dismissed, false);
+  await until(shown);
+  await call(pageGuidance, { kind: "hide" });
+  cases.push("a remembered dismissal keeps the step hidden until restored");
   await writeFile(
     `${output}/verification.json`,
     JSON.stringify(

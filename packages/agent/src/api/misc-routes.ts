@@ -39,6 +39,7 @@ import { loadElizaConfig, saveElizaConfig } from "../config/config.ts";
 import {
   buildTestHandler,
   registerCustomActionLive,
+  unregisterCustomActionLive,
 } from "../runtime/custom-actions.ts";
 import { runShell } from "../services/shell-execution-router.ts";
 import { customActionGenerateTemplate } from "./custom-action-prompt.js";
@@ -751,6 +752,9 @@ export async function handleMiscRoutes(
     if (!config.customActions) config.customActions = [];
     config.customActions.push(actionDef);
     saveElizaConfig(config);
+    // Keep the live server config in step so the next full save of
+    // state.config does not drop this action from disk.
+    state.config.customActions = config.customActions;
     if (actionDef.enabled) {
       registerCustomActionLive(actionDef);
     }
@@ -934,6 +938,12 @@ export async function handleMiscRoutes(
     actions[idx] = updated;
     config.customActions = actions;
     saveElizaConfig(config);
+    state.config.customActions = config.customActions;
+    if (updated.enabled) {
+      registerCustomActionLive(updated);
+    } else {
+      unregisterCustomActionLive(updated.id);
+    }
     json(res, { ok: true, action: updated });
     return true;
   }
@@ -959,6 +969,8 @@ export async function handleMiscRoutes(
     actions.splice(idx, 1);
     config.customActions = actions;
     saveElizaConfig(config);
+    state.config.customActions = config.customActions;
+    unregisterCustomActionLive(actionId);
     json(res, { ok: true });
     return true;
   }

@@ -15,14 +15,27 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./turn": {
+      "eliza-source": "./src/turn.ts",
+      "types": "./dist/turn.d.ts",
+      "import": "./dist/turn.js",
+      "default": "./dist/turn.js"
+    },
+    "./browser-capture": {
+      "eliza-source": "./src/browser-capture/index.ts",
+      "types": "./dist/browser-capture/index.d.ts",
+      "import": "./dist/browser-capture/index.js",
+      "default": "./dist/browser-capture/index.js"
     }
   },
   "scripts": {
     "build": "tsc6 --noCheck -p tsconfig.emit.json && node ../scripts/rewrite-dist-relative-imports-node-esm.ts packages/voice",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint:check": "bunx @biomejs/biome check src *.ts",
-    "lint": "bunx @biomejs/biome check --write src *.ts",
-    "prepublishOnly": "bun run build"
+    "lint:check": "bunx @biomejs/biome check src test package.json",
+    "lint": "bunx @biomejs/biome check --write src test package.json",
+    "prepublishOnly": "bun run build",
+    "test:browser:consumer": "node test/consumer.mjs"
   },
   "dependencies": {
     "@elizaos/core": "workspace:*"

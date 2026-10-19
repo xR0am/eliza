@@ -5,7 +5,10 @@
  * Google connector. Results are capped at `maxResults` (default 12).
  */
 
-import { requireUserOrApiKeyWithOrg } from "@elizaos/cloud-shared/auth";
+import {
+  requirePrivateOwnerAccess,
+  requireUserOrApiKeyWithOrg,
+} from "@elizaos/cloud-shared/auth";
 import { failureResponse } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import {
   AgentGoogleConnectorError,
@@ -21,9 +24,18 @@ app.get("/", async (c) => {
   try {
     const user = await requireUserOrApiKeyWithOrg(c);
     const rawSide = c.req.query("side") ?? null;
+    if (rawSide !== "agent") await requirePrivateOwnerAccess(c, user);
     const grantId = c.req.query("grantId")?.trim();
     const rawQuery = c.req.query("query") ?? null;
     const pageToken = c.req.query("pageToken");
+    const labelId = c.req.query("labelId");
+    const includeLabels = c.req.query("includeLabels");
+    if (
+      includeLabels !== undefined &&
+      includeLabels !== "true" &&
+      includeLabels !== "false"
+    )
+      return c.json({ error: "includeLabels must be true or false." }, 400);
     if (
       pageToken !== undefined &&
       (!pageToken.length || pageToken.length > 4096)
@@ -52,6 +64,8 @@ app.get("/", async (c) => {
       query,
       maxResults,
       pageToken,
+      labelId,
+      includeLabels: includeLabels === "true",
     });
     return c.json(result);
   } catch (error) {

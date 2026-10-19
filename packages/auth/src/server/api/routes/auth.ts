@@ -1,10 +1,10 @@
+import { buildPhoneAuthProvidersFromEnvironment } from "../../auth/phone-provider";
 import { fetchPinnedResponse } from "../../shared/pinned-response";
 import {
   assertAllowedOAuthRedirectUri,
   authAppClientSubjects,
   authTenantConfigSubject,
   bootstrapRows,
-  buildTwilioVerifyProviderFromEnvironment,
   claimSmsVerifyAttempt,
   clearSmsVerifyFailures,
   createSessionToken,
@@ -22,11 +22,15 @@ import {
   getPasskeyAuth,
   getPhoneAuth,
   isMockEmailEnabled,
+  type LoginMethodName,
+  loginMethodProviderKey,
+  loginMethodRefusal,
   normalizePublicClientId,
   OAUTH_CODE_TTL_MS,
   releaseUnattemptedSmsVerifyClaim,
   SMS_VERIFY_MAX_FAILED_ATTEMPTS,
   smsVerifyAttemptSlotKey,
+  tenantSwitchLoginRefusal,
 } from "../services/auth-lifecycle";
 import {
   checkAuthRateLimit,
@@ -40,7 +44,7 @@ import { verifySolanaMessageSignature } from "../services/wallet-proof";
  */
 
 import { randomBytes } from "node:crypto";
-import { assertPublicHttpsEndpoint, logger } from "@elizaos/core";
+import { assertPublicHttpsEndpoint, ElizaError, logger } from "@elizaos/core";
 import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
 import { errors as joseErrors } from "jose";
@@ -56,6 +60,7 @@ import {
   type EmailAuth,
   EmailDeliveryError,
   EmailDeliveryNotConfiguredError,
+  type EmailLoginDelivery,
   evaluateSiwePolicy,
   type FarcasterLoginPayload,
   generateApiKey,
@@ -134,6 +139,7 @@ import {
   isAllowedOidcClientSecretEnvForTenant,
   normalizeOidcProviders,
 } from "../services/oidc-provider-config";
+import { revokeUserRefreshSessions } from "../services/refresh-session-revocation";
 import { buildSamlServiceProviderUrls } from "../services/saml-sso-config";
 import { lockUserSession } from "../services/session-lock";
 import { testAccountOtpMatches } from "../services/test-account-credentials";
@@ -320,21 +326,16 @@ async function getTenantAppClientLoginMethods(
   );
 }
 
-type LoginMethodName =
-  | "passkey"
-  | "email"
-  | "sms"
-  | "whatsapp"
-  | "totp"
-  | "siwe"
-  | "siws"
-  | "telegram"
-  | "farcaster"
-  | "oauth"
-  | "oidc";
-
-function loginMethodProviderKey(providerId: string | undefined): string {
-  return providerId?.trim().toLowerCase() ?? "";
+function withoutTenantMfaClaims(
+  claims: Record<string, unknown>,
+): Record<string, unknown> {
+  const {
+    mfaVerifiedAt: _mfaVerifiedAt,
+    mfaMethod: _mfaMethod,
+    factorEnrollmentVerifiedAt: _factorEnrollmentVerifiedAt,
+    ...rest
+  } = claims;
+  return rest;
 }
 
 async function requireTenantLoginMethodAllowed(
@@ -348,37 +349,10 @@ async function requireTenantLoginMethodAllowed(
   const loginMethods =
     (await getTenantAppClientLoginMethods(tenantId, clientId)) ??
     (await getTenantAuthAbuseConfig(tenantId)).loginMethods;
-  if (!loginMethods) return null;
-  if (
-    method !== "oauth" &&
-    method !== "oidc" &&
-    loginMethods[method] === false
-  ) {
-    return c.json<ApiResponse>(
-      { ok: false, error: `${method} login is disabled for this tenant` },
-      403,
-    );
-  }
-  const normalizedProviderId = loginMethodProviderKey(providerId);
-  if (
-    method === "oauth" &&
-    loginMethods.oauth?.[normalizedProviderId] === false
-  ) {
-    return c.json<ApiResponse>(
-      { ok: false, error: "OAuth login is disabled for this tenant" },
-      403,
-    );
-  }
-  if (
-    method === "oidc" &&
-    loginMethods.oidc?.[normalizedProviderId] === false
-  ) {
-    return c.json<ApiResponse>(
-      { ok: false, error: "OIDC login is disabled for this tenant" },
-      403,
-    );
-  }
-  return null;
+  const refusal = loginMethodRefusal(loginMethods, method, providerId);
+  return refusal
+    ? c.json<ApiResponse>({ ok: false, error: refusal }, 403)
+    : null;
 }
 
 async function isSsoRequiredForEmailDomain(
@@ -611,7 +585,13 @@ type RefreshRotationResult =
   | { status: "invalid" }
   | { status: "deactivated"; userId: string; tenantId: string }
   | { status: "not_member"; userId: string; tenantId: string }
-  | { status: "revoked"; userId: string; tenantId: string };
+  | { status: "revoked"; userId: string; tenantId: string }
+  | {
+      status: "login_method_disabled";
+      userId: string;
+      tenantId: string;
+      error: string;
+    };
 
 type UsedRefreshTokenRecord = {
   userId?: string;
@@ -623,18 +603,6 @@ function refreshTokenIssuedAtSeconds(
   record: typeof refreshTokens.$inferSelect,
 ): number {
   return Math.floor(new Date(record.createdAt).getTime() / 1000);
-}
-
-async function revokeUserRefreshSessions(userId: string) {
-  return getDb().transaction(async (tx) => {
-    await lockUserSession(tx, userId);
-    const revoked = await tx
-      .delete(refreshTokens)
-      .where(eq(refreshTokens.userId, userId))
-      .returning();
-    const issuedBefore = await revocationStore.revokeUserTokens(userId);
-    return { revoked, issuedBefore };
-  });
 }
 
 async function rotateRefreshTokenForUserSession(
@@ -781,16 +749,21 @@ async function rotateRefreshTokenInsideTenant(
     }
 
     const targetTenantId = requestedTenantId ?? record.tenantId;
+    const switchesTenant = targetTenantId !== record.tenantId;
     const membership = await authTenantSubject(targetTenantId, record.userId);
     if (!membership?.membership_role) {
-      await tx
-        .delete(refreshTokens)
-        .where(
-          and(
-            eq(refreshTokens.userId, record.userId),
-            eq(refreshTokens.tenantId, record.tenantId),
-          ),
-        );
+      // A refused switch leaves the caller's current session as it was; only
+      // a token whose own tenant dropped the user is spent.
+      if (!switchesTenant) {
+        await tx
+          .delete(refreshTokens)
+          .where(
+            and(
+              eq(refreshTokens.userId, record.userId),
+              eq(refreshTokens.tenantId, record.tenantId),
+            ),
+          );
+      }
       return {
         status: "not_member",
         userId: record.userId,
@@ -817,11 +790,33 @@ async function rotateRefreshTokenInsideTenant(
 
     const walletAddress = user?.walletAddress ?? "";
     const email = user?.email ?? undefined;
-    const sessionClaims =
+    const storedClaims =
       (await readMfaJson<Record<string, unknown>>(
         `refresh:claims:${record.tokenHash}`,
       )) ?? {};
+    // A switch into another tenant is a sign-in to it: that tenant's login
+    // methods apply, checked before anything is spent so a refusal keeps the
+    // current session.
+    if (switchesTenant) {
+      const refusal = await tenantSwitchLoginRefusal(
+        targetTenantId,
+        storedClaims,
+      );
+      if (refusal) {
+        return {
+          status: "login_method_disabled",
+          userId: record.userId,
+          tenantId: record.tenantId,
+          error: refusal,
+        };
+      }
+    }
     await getMfaBackend().delete(`refresh:claims:${record.tokenHash}`);
+    // MFA freshness is scoped to the tenant where it was performed, as on
+    // /user/me/tenants/switch: the switched tenant needs its own step-up.
+    const sessionClaims = switchesTenant
+      ? withoutTenantMfaClaims(storedClaims)
+      : storedClaims;
 
     const newAccessToken = await createSessionToken(
       walletAddress,
@@ -1441,13 +1436,37 @@ async function findOrCreateWalletUserWithStatus(
 
 async function findOrCreatePhoneUserWithStatus(
   phone: string,
+  provider: "phone" | "whatsapp" = "phone",
 ): Promise<UserProvisionResult> {
   const phoneSubject = `phone:${hashSha256Hex(phone)}`;
   const db = getDb();
+  // SMS and WhatsApp share one subject, so a link made through either channel
+  // marks the number as owned.
+  const links = await db
+    .select({ provider: accounts.provider, user: users })
+    .from(accounts)
+    .innerJoin(users, eq(accounts.userId, users.id))
+    .where(
+      and(
+        inArray(accounts.provider, ["phone", "whatsapp"]),
+        eq(accounts.providerAccountId, phoneSubject),
+      ),
+    );
+  const linked = links.find((link) => link.provider === provider);
   const [existing] = await db
     .select()
     .from(users)
     .where(eq(users.walletAddress, phoneSubject));
+  // Every link and the original phone account must name one user, so neither
+  // channel can sign the number in to a different account.
+  const owners = new Set(links.map((link) => link.user.id));
+  if (existing) owners.add(existing.id);
+  if (owners.size > 1 || (!linked && !existing && links.length > 0)) {
+    throw new ElizaError("Phone login identity needs reconciliation", {
+      code: "PHONE_IDENTITY_CONFLICT",
+    });
+  }
+  if (linked) return { user: linked.user, isNew: false };
   if (existing) return { user: existing, isNew: false };
 
   const [created] = await db
@@ -1954,8 +1973,7 @@ async function requireRecentFactorEnrollmentStepUp(
 export function validatePhoneAuthProviderEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (env.SMS_PROVIDER === "mock" && env.NODE_ENV !== "production") return;
-  buildTwilioVerifyProviderFromEnvironment(env);
+  buildPhoneAuthProvidersFromEnvironment(env);
 }
 
 function isWhatsAppOtpEnabled(): boolean {
@@ -5806,7 +5824,10 @@ auth.post("/whatsapp/verify", async (c) => {
   }
   await clearSmsVerifyFailures(body.phone, otpPurpose);
 
-  const { user, isNew } = await findOrCreatePhoneUserWithStatus(body.phone);
+  const { user, isNew } = await findOrCreatePhoneUserWithStatus(
+    body.phone,
+    "whatsapp",
+  );
   const tenantResult = await resolveAndValidateTenant(
     c,
     user.id,
@@ -8518,6 +8539,9 @@ auth.post("/refresh", async (c) => {
       401,
     );
   }
+  if (rotatedRefresh.status === "login_method_disabled") {
+    return c.json<ApiResponse>({ ok: false, error: rotatedRefresh.error }, 403);
+  }
 
   const { record, newAccessToken, newRefreshToken } = rotatedRefresh;
   await withVerifiedAuthTenant(record.tenantId, record.userId, async () => {
@@ -9436,10 +9460,121 @@ auth.post("/passkey/login/verify", async (c) => {
 
 // ── Email magic link ──────────────────────────────────────────────────────────
 
+/** Tenant-wide ceiling on code-only emails per minute (all IPs, all addresses). */
+const EMAIL_CODE_SEND_TENANT_MAX_PER_MINUTE = 120;
+
+async function checkEmailCodeSendTenantBudget(
+  c: Context,
+  tenantId: string,
+): Promise<Response | null> {
+  const tenantRl = await checkAuthRateLimit(
+    c,
+    "email-code-send-tenant",
+    60_000,
+    EMAIL_CODE_SEND_TENANT_MAX_PER_MINUTE,
+    `tenant:${tenantId}`,
+  );
+  if (tenantRl.allowed) return null;
+  return c.json<ApiResponse>(
+    { ok: false, error: "Too many requests. Please try again later." },
+    429,
+  );
+}
+
+type EmailSignInSendPreflight =
+  | { ok: true; email: string; tenantId: string }
+  | { ok: false; response: Response };
+
+/**
+ * Checks shared by every email sign-in send: tenant hint, login method, SSO
+ * domain, tenant email policy, captcha and the per-address budget (5 per 10
+ * minutes, one bucket for every email sign-in endpoint so they cannot be
+ * combined to exceed it).
+ */
+async function preflightEmailSignInSend(
+  c: Context,
+  body: { email: string; tenantId?: string; captchaToken?: string },
+): Promise<EmailSignInSendPreflight> {
+  const email = body.email.toLowerCase().trim();
+  const headerTenantId = c.req.header("X-Steward-Tenant")?.trim();
+  const bodyTenantId = body.tenantId?.trim();
+  const resolvedTenantId =
+    headerTenantId || bodyTenantId || defaultAuthTenantId();
+  const tenantHintError = await validateExplicitAuthTenantHint(
+    resolvedTenantId,
+    Boolean(headerTenantId || bodyTenantId),
+  );
+  if (tenantHintError) {
+    return {
+      ok: false,
+      response: c.json<ApiResponse>({ ok: false, error: tenantHintError }, 404),
+    };
+  }
+  const methodResponse = await requireTenantLoginMethodAllowed(
+    c,
+    resolvedTenantId,
+    "email",
+  );
+  if (methodResponse) return { ok: false, response: methodResponse };
+  const ssoRequiredResponse = await requireNonSsoEmailLoginAllowed(
+    c,
+    resolvedTenantId,
+    email,
+    "Email",
+  );
+  if (ssoRequiredResponse) return { ok: false, response: ssoRequiredResponse };
+  const authAbuseConfig = await getTenantAuthAbuseConfig(resolvedTenantId);
+  const emailPolicyError = validateEmailAbusePolicy(email, authAbuseConfig);
+  if (emailPolicyError) {
+    return {
+      ok: false,
+      response: c.json<ApiResponse>(
+        { ok: false, error: emailPolicyError },
+        400,
+      ),
+    };
+  }
+  const captcha = await verifyCaptchaToken(
+    authAbuseConfig,
+    "email_otp",
+    body.captchaToken,
+    trustedClientIp(c),
+  );
+  if (!captcha.ok) {
+    return {
+      ok: false,
+      response: c.json<ApiResponse>(
+        { ok: false, error: captcha.error },
+        captcha.status as 400 | 502 | 503,
+      ),
+    };
+  }
+  const emailRl = await checkAuthRateLimit(
+    c,
+    "email-send-destination",
+    10 * 60_000,
+    5,
+    email,
+  );
+  if (!emailRl.allowed) {
+    return {
+      ok: false,
+      response: c.json<ApiResponse>(
+        { ok: false, error: "Too many requests. Please try again later." },
+        429,
+      ),
+    };
+  }
+  return { ok: true, email, tenantId: resolvedTenantId };
+}
+
 /**
  * POST /email/send
- * Body: { email, tenantId? }
- * Sends a magic link email, returns expiry time.
+ * Body: { email, tenantId?, captchaToken?, delivery? }
+ * Sends a sign-in email, returns expiry time. By default the email carries a
+ * magic link and a six-digit code. `delivery: "code"` sends only the code (no
+ * link token is issued); it is kept for compatibility, and native apps should
+ * call POST /email/code/send, which applies the same checks and limits.
  */
 auth.post("/email/send", async (c) => {
   // Tiered limits: the per-IP burst is generous (30/min) because one IP is
@@ -9456,70 +9591,41 @@ auth.post("/email/send", async (c) => {
     email: string;
     tenantId?: string;
     captchaToken?: string;
+    delivery?: unknown;
   }>(c);
   if (!body?.email) {
     return c.json<ApiResponse>({ ok: false, error: "email is required" }, 400);
   }
+  if (
+    body.delivery !== undefined &&
+    body.delivery !== "code" &&
+    body.delivery !== "link_and_code"
+  ) {
+    return c.json<ApiResponse>(
+      { ok: false, error: 'delivery must be "code" or "link_and_code"' },
+      400,
+    );
+  }
+  const delivery: EmailLoginDelivery =
+    body.delivery === "code" ? "code" : "link_and_code";
 
-  const email = body.email.toLowerCase().trim();
-  const headerTenantId = c.req.header("X-Steward-Tenant")?.trim();
-  const bodyTenantId = body.tenantId?.trim();
-  const resolvedTenantId =
-    headerTenantId || bodyTenantId || defaultAuthTenantId();
-  const tenantHintError = await validateExplicitAuthTenantHint(
-    resolvedTenantId,
-    Boolean(headerTenantId || bodyTenantId),
-  );
-  if (tenantHintError) {
-    return c.json<ApiResponse>({ ok: false, error: tenantHintError }, 404);
-  }
-  const methodResponse = await requireTenantLoginMethodAllowed(
-    c,
-    resolvedTenantId,
-    "email",
-  );
-  if (methodResponse) return methodResponse;
-  const ssoRequiredResponse = await requireNonSsoEmailLoginAllowed(
-    c,
-    resolvedTenantId,
-    email,
-    "Email",
-  );
-  if (ssoRequiredResponse) return ssoRequiredResponse;
-  const authAbuseConfig = await getTenantAuthAbuseConfig(resolvedTenantId);
-  const emailPolicyError = validateEmailAbusePolicy(email, authAbuseConfig);
-  if (emailPolicyError) {
-    return c.json<ApiResponse>({ ok: false, error: emailPolicyError }, 400);
-  }
-  const captcha = await verifyCaptchaToken(
-    authAbuseConfig,
-    "email_otp",
-    body.captchaToken,
-    trustedClientIp(c),
-  );
-  if (!captcha.ok) {
-    return c.json<ApiResponse>(
-      { ok: false, error: captcha.error },
-      captcha.status as 400 | 502 | 503,
+  const preflight = await preflightEmailSignInSend(c, body);
+  if (!preflight.ok) return preflight.response;
+  const { email, tenantId: resolvedTenantId } = preflight;
+  if (delivery === "code") {
+    const tenantLimited = await checkEmailCodeSendTenantBudget(
+      c,
+      resolvedTenantId,
     );
-  }
-  const emailRl = await checkAuthRateLimit(
-    c,
-    "email-send-destination",
-    10 * 60_000,
-    5,
-    email,
-  );
-  if (!emailRl.allowed) {
-    return c.json<ApiResponse>(
-      { ok: false, error: "Too many requests. Please try again later." },
-      429,
-    );
+    if (tenantLimited) return tenantLimited;
   }
   const emailAuth = await getEmailAuthForTenant(resolvedTenantId);
   let sent: Awaited<ReturnType<EmailAuth["sendMagicLink"]>>;
   try {
-    sent = await emailAuth.sendMagicLink(email, { tenantId: resolvedTenantId });
+    sent = await emailAuth.sendMagicLink(email, {
+      tenantId: resolvedTenantId,
+      delivery,
+    });
   } catch (err) {
     // Fail closed: ok:true only after the provider accepted the message. On
     // typed delivery failures the challenge is not redeemable (never issued
@@ -9535,6 +9641,74 @@ auth.post("/email/send", async (c) => {
   >({
     ok: true,
     data: { expiresAt: expiresAt.toISOString(), challengeId, pollSecret },
+  });
+});
+
+/**
+ * POST /email/code/send
+ * Body: { email, tenantId?, captchaToken? }
+ * Returns 200 { ok: true, data: { expiresAt, codeLength: 6 } }
+ *
+ * Native in-app email sign-in (Alpha Phone). Emails ONLY a six-digit code,
+ * rendered with the sign-in code template: the email has no link, and no link
+ * token is ever published, so nothing in it can sign in a browser or consume
+ * the challenge. The app redeems the code through POST /email/code/verify,
+ * which returns the Steward session the app passes as Bearer to Cloud's
+ * mobile_pkce connect.
+ *
+ * The code: crypto-random, 10-minute TTL, stored only as an HMAC keyed by a
+ * server secret and bound to {email, tenant} (the lookup is by that HMAC, so
+ * no stored secret is compared byte by byte), single use (consumed on
+ * success), superseded by any later send to the same address, and locked
+ * after 5 failed attempts. Limits: 30/min per IP, 5 per 10 min per address
+ * (shared with /email/send), EMAIL_CODE_SEND_TENANT_MAX_PER_MINUTE per tenant;
+ * verify adds 10/min per IP and 5 per 10 min per tenant+address. No poll
+ * secret is returned: a native client never polls.
+ */
+auth.post("/email/code/send", async (c) => {
+  setAuthNoStoreHeaders(c);
+  const rl = await checkAuthRateLimit(c, "email-code-send", 60_000, 30);
+  if (!rl.allowed) {
+    return c.json<ApiResponse>(
+      { ok: false, error: "Too many requests. Please try again later." },
+      429,
+    );
+  }
+  const body = await safeJsonParse<{
+    email?: unknown;
+    tenantId?: unknown;
+    captchaToken?: unknown;
+  }>(c);
+  if (
+    typeof body?.email !== "string" ||
+    !body.email.trim() ||
+    (body.tenantId !== undefined && typeof body.tenantId !== "string") ||
+    (body.captchaToken !== undefined && typeof body.captchaToken !== "string")
+  ) {
+    return c.json<ApiResponse>({ ok: false, error: "email is required" }, 400);
+  }
+
+  const preflight = await preflightEmailSignInSend(c, {
+    email: body.email,
+    tenantId: body.tenantId,
+    captchaToken: body.captchaToken,
+  });
+  if (!preflight.ok) return preflight.response;
+  const { email, tenantId } = preflight;
+  const tenantLimited = await checkEmailCodeSendTenantBudget(c, tenantId);
+  if (tenantLimited) return tenantLimited;
+  const emailAuth = await getEmailAuthForTenant(tenantId);
+  let sent: Awaited<ReturnType<EmailAuth["sendMagicLink"]>>;
+  try {
+    sent = await emailAuth.sendMagicLink(email, { tenantId, delivery: "code" });
+  } catch (err) {
+    const deliveryFailure = emailDeliveryFailureResponse(c, err);
+    if (deliveryFailure) return deliveryFailure;
+    throw err;
+  }
+  return c.json<ApiResponse<{ expiresAt: string; codeLength: number }>>({
+    ok: true,
+    data: { expiresAt: sent.expiresAt.toISOString(), codeLength: 6 },
   });
 });
 
@@ -10506,6 +10680,33 @@ auth.post("/guest/upgrade", async (c) => {
 // ── OAuth authorization-code flow ─────────────────────────────────────────────
 
 /**
+ * Provider `prompt` values an /authorize caller may pass through. Native
+ * clients use `select_account` so the provider always shows an account picker:
+ * the user picks the intended Google account, and the final redirect follows a
+ * user gesture, which is what lets Android deliver it to a verified App Link.
+ * Anything not listed (including `none`, which would silently reuse a session)
+ * is rejected rather than dropped, so a caller never believes a prompt was
+ * honoured when it was not.
+ */
+const OAUTH_PROMPT_PASSTHROUGH: Readonly<Record<string, ReadonlySet<string>>> =
+  {
+    google: new Set(["select_account", "consent", "select_account consent"]),
+  };
+
+export function resolveOAuthPromptPassthrough(
+  providerName: string,
+  rawPrompt: string | undefined,
+): { ok: true; prompt?: string } | { ok: false; error: string } {
+  if (rawPrompt === undefined) return { ok: true };
+  const prompt = rawPrompt.trim().replace(/\s+/g, " ");
+  if (!prompt) return { ok: true };
+  if (!OAUTH_PROMPT_PASSTHROUGH[providerName]?.has(prompt)) {
+    return { ok: false, error: "prompt is not supported for this provider" };
+  }
+  return { ok: true, prompt };
+}
+
+/**
  * GET /oauth/:provider/authorize
  * Query: ?redirect_uri=<url>&tenant_id=<id>
  *
@@ -10538,6 +10739,26 @@ auth.get("/oauth/:provider/authorize", async (c) => {
 
   const redirectUri = c.req.query("redirect_uri");
   const appState = c.req.query("state")?.trim() || undefined;
+  const promptResult = resolveOAuthPromptPassthrough(
+    providerName,
+    c.req.query("prompt"),
+  );
+  if (!promptResult.ok) {
+    return c.json<ApiResponse>({ ok: false, error: promptResult.error }, 400);
+  }
+  // `mfa=exchange` (native apps): when the account needs a second factor, the
+  // callback returns an ordinary one-time code to redirect_uri instead of the
+  // HTML error page, and POST /oauth/exchange (PKCE-checked as usual) answers
+  // with the MFA challenge so the app can finish through /auth/mfa/*/complete
+  // in its own screens. Without it, MFA accounts keep the error page.
+  const rawMfaMode = c.req.query("mfa");
+  if (rawMfaMode !== undefined && rawMfaMode !== "exchange") {
+    return c.json<ApiResponse>(
+      { ok: false, error: "mfa must be 'exchange' when present" },
+      400,
+    );
+  }
+  const mfaMode = rawMfaMode === "exchange" ? "exchange" : undefined;
   // Accept both `tenant_id` (snake_case, canonical) and `tenantId` (camelCase)
   // so integrators sending either shape land on the right tenant. Whitespace
   // is trimmed defensively for the same reason we trim headers elsewhere.
@@ -10659,6 +10880,11 @@ auth.get("/oauth/:provider/authorize", async (c) => {
     url.searchParams.set("nonce", oidcNonce);
     authUrl = url.toString();
   }
+  if (promptResult.prompt) {
+    const url = new URL(authUrl);
+    url.searchParams.set("prompt", promptResult.prompt);
+    authUrl = url.toString();
+  }
 
   // Store state metadata in the challenge store — include PKCE verifier when present
   const statePayload = JSON.stringify({
@@ -10670,6 +10896,7 @@ auth.get("/oauth/:provider/authorize", async (c) => {
     appState,
     codeChallenge,
     codeChallengeMethod,
+    ...(mfaMode ? { mfaMode } : {}),
     ...(oidcNonce ? { oidcNonce } : {}),
     ...(codeVerifier ? { codeVerifier } : {}),
   });
@@ -10759,6 +10986,7 @@ auth.get("/oauth/:provider/callback", async (c) => {
     codeChallengeMethod?: string;
     codeVerifier?: string;
     oidcNonce?: string;
+    mfaMode?: "exchange";
   };
   try {
     stateData = JSON.parse(rawPayload) as typeof stateData;
@@ -10961,6 +11189,32 @@ auth.get("/oauth/:provider/callback", async (c) => {
   }
 
   if (result.response.mfaRequired) {
+    if (stateData.mfaMode === "exchange" && stateData.codeChallenge) {
+      // Same one-time, PKCE-bound, redirect- and tenant-bound code as a
+      // success; it redeems to the MFA challenge instead of tokens.
+      const mfaExchangeCode = uint8ArrayToBase64url(
+        crypto.getRandomValues(new Uint8Array(32)),
+      );
+      await getOAuthCodeStore().set(
+        `oauth-code:${mfaExchangeCode}`,
+        JSON.stringify({
+          providerName,
+          mfaRequired: true,
+          mfa: result.response.mfa,
+          user: result.response.user,
+          redirectUri: stateData.redirectUri,
+          tenantId: stateData.tenantId ?? null,
+          codeChallenge: stateData.codeChallenge,
+          codeChallengeMethod: stateData.codeChallengeMethod ?? "S256",
+          expiresAt: Date.now() + OAUTH_CODE_TTL_MS,
+        }),
+      );
+      setRedirectFragment(redirectUrl, {
+        code: mfaExchangeCode,
+        state: stateData.appState,
+      });
+      return c.redirect(redirectUrl.toString(), 302);
+    }
     return oauthCallbackFailure(c, {
       code: "mfa_required",
       message: "Additional verification is required to complete sign-in.",
@@ -11098,6 +11352,9 @@ auth.post("/oauth/exchange", async (c) => {
     codeChallengeMethod?: string;
     expiresAt: number;
     expiresIn: number;
+    /** Set only for `mfa=exchange` codes, which carry no tokens. */
+    mfaRequired?: true;
+    mfa?: unknown;
   };
   try {
     payload = JSON.parse(raw);
@@ -11206,6 +11463,15 @@ auth.post("/oauth/exchange", async (c) => {
     }
   } finally {
     await releaseOAuthCodeRedemptionLock(code);
+  }
+
+  if (payload.mfaRequired === true) {
+    return c.json({
+      ok: true,
+      mfaRequired: true,
+      mfa: payload.mfa,
+      ...(payload.user ? { user: payload.user } : {}),
+    });
   }
 
   return c.json({
@@ -11737,6 +12003,7 @@ async function provisionOAuthUser(opts: {
           userId: user.id,
           email,
           authMethod: "oauth",
+          oauthProviderId: providerName,
         },
         { id: user.id, email, walletAddress },
         c,

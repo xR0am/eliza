@@ -8,8 +8,9 @@ import {
   resolveCloudTimeoutMs,
 } from "../utils/config";
 import { webStreamToNodeStream } from "../utils/helpers";
-import { warmingRetryWaitSeconds } from "../utils/warming";
 import { createElizaCloudClient } from "../utils/sdk-client";
+import { isOpenAiVoiceAlias } from "../utils/voice-aliases.js";
+import { warmingRetryWaitSeconds } from "../utils/warming";
 
 /**
  * Narrow client interface the speech handler actually exercises. Lets tests
@@ -20,6 +21,7 @@ export interface CloudTtsClient {
     postApiV1VoiceTts<T = unknown>(options: {
       headers?: Record<string, unknown>;
       json: { text: string; voiceId?: string; modelId?: string };
+      signal?: AbortSignal;
       timeoutMs?: number;
     }): Promise<T>;
   };
@@ -81,18 +83,20 @@ function normalizeTextInput(
 /**
  * Pull an ElevenLabs `modelId` out of (in order):
  *   1. options.modelId — explicit ElevenLabs model id
- *   2. options.model with `elevenlabs/` prefix or `eleven_*` shape
+ *   2. options.model, else the ELIZAOS_CLOUD_TTS_MODEL setting, with an
+ *      `elevenlabs/` prefix or `eleven_*` shape
  *
  * Returns `undefined` when nothing usable was provided so the upstream
  * can apply its own default (currently `eleven_flash_v2_5`).
  */
 function resolveModelId(
   options: CloudTextToSpeechParams,
+  setting: string | undefined,
 ): string | undefined {
   if (options.modelId && options.modelId.trim()) {
     return options.modelId.trim();
   }
-  const model = options.model?.trim();
+  const model = options.model?.trim() || setting?.trim();
   if (!model) return undefined;
   if (model.startsWith("elevenlabs/")) {
     return model.split("/").slice(1).join("/");
@@ -106,23 +110,23 @@ function resolveModelId(
 /**
  * Pull an ElevenLabs `voiceId` out of (in order):
  *   1. options.voiceId — explicit ElevenLabs voice id (preferred)
- *   2. options.voice — OpenAI-style voice name (rejected unless it looks
- *      like an ElevenLabs id, i.e. neither an OpenAI alias nor "nova")
+ *   2. options.voice, else the ELIZAOS_CLOUD_TTS_VOICE setting — rejected
+ *      when it is a known OpenAI voice alias
  *
  * Returns `undefined` when nothing usable was provided so the upstream
  * can apply its own default voice.
  */
 function resolveVoiceId(
   options: CloudTextToSpeechParams,
+  setting: string | undefined,
 ): string | undefined {
   if (options.voiceId && options.voiceId.trim()) {
     return options.voiceId.trim();
   }
-  const voice = options.voice?.trim();
+  const voice = options.voice?.trim() || setting?.trim();
   if (!voice) return undefined;
-  // "nova" is the OpenAI default — treat as unset so the upstream falls back
-  // to the cloud default voice instead of being forwarded as an opaque alias.
-  if (voice === "nova") return undefined;
+  // Let the upstream choose its default for provider-specific aliases.
+  if (isOpenAiVoiceAlias(voice)) return undefined;
   return voice;
 }
 
@@ -131,8 +135,14 @@ async function fetchTextToSpeech(
   options: CloudTextToSpeechParams,
 ): Promise<ReadableStream<Uint8Array> | Readable> {
   const format = options.format || "mp3";
-  const modelId = resolveModelId(options);
-  const voiceId = resolveVoiceId(options);
+  const modelId = resolveModelId(
+    options,
+    getSetting(runtime, "ELIZAOS_CLOUD_TTS_MODEL"),
+  );
+  const voiceId = resolveVoiceId(
+    options,
+    getSetting(runtime, "ELIZAOS_CLOUD_TTS_VOICE"),
+  );
 
   try {
     // Ride through the cloud's transient cold-cache warming 503 — the
@@ -150,7 +160,11 @@ async function fetchTextToSpeech(
           ...(voiceId ? { voiceId } : {}),
           ...(modelId ? { modelId } : {}),
         },
-        timeoutMs: resolveCloudTimeoutMs("ELIZAOS_CLOUD_TTS_TIMEOUT_MS", 60_000),
+        signal: options.signal,
+        timeoutMs: resolveCloudTimeoutMs(
+          "ELIZAOS_CLOUD_TTS_TIMEOUT_MS",
+          60_000,
+        ),
       })) as Response;
       if (warmingRetries < 2) {
         const waitSeconds = await warmingRetryWaitSeconds(res);
@@ -178,7 +192,9 @@ async function fetchTextToSpeech(
     return await webStreamToNodeStream(res.body);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to fetch speech from ElizaOS Cloud TTS: ${message}`);
+    throw new Error(
+      `Failed to fetch speech from ElizaOS Cloud TTS: ${message}`,
+    );
   }
 }
 
@@ -326,11 +342,6 @@ export async function handleTextToSpeech(
     input !== null &&
     (input as { audioStream?: boolean }).audioStream === true;
 
-  const resolvedModel =
-    options.modelId ||
-    options.model ||
-    (getSetting(runtime, "ELIZAOS_CLOUD_TTS_MODEL", "eleven_flash_v2_5") as string);
-  logger.log(`[ELIZAOS_CLOUD] Using TEXT_TO_SPEECH model: ${resolvedModel}`);
   try {
     const speechStream = await fetchTextToSpeech(runtime, options);
     if (wantsStream) {

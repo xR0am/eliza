@@ -62,6 +62,19 @@ public abstract class EmbeddedRuntimeService extends Service {
     EmbeddedRuntimeService service=current.get(type);
     if(service!=null)synchronized(service){if(current.get(type)==service)service.supervisor.invalidate();}
   }
+  /** Off by default. A host returns true only in a test build (for example from a
+   * test-only build flag) to admit {@link #injectChildExitFor}. Production builds keep false. */
+  protected boolean allowsChildExitInjection(){return false;}
+  /** Test-build fault hook: ends the named supervised child ("agent" or "gateway") of the
+   * current running launch as a crash would, so instrumentation can observe the real
+   * exit detection, restart policy and health reporting. Refused unless the live service
+   * allows injection; returns false when it is not running or no live child has that name. */
+  protected static boolean injectChildExitFor(Class<? extends EmbeddedRuntimeService> type,String name) {
+    EmbeddedRuntimeService service=current.get(type);
+    if(service==null)return false;
+    if(!service.allowsChildExitInjection())throw new IllegalStateException("Runtime fault injection is disabled in this build");
+    return service.supervisor.injectChildExit(name);
+  }
   protected static LocalRuntimeHealth healthFor(Class<? extends EmbeddedRuntimeService> type,String processInstance,int timeoutMillis) {
     return new LocalRuntimeHealth(processInstance,()->{
       EmbeddedRuntimeService service=current.get(type);if(service==null)return null;
@@ -96,6 +109,9 @@ public abstract class EmbeddedRuntimeService extends Service {
   }
   protected static JSONObject exchangeHttp(int port,String token,String method,String route,String body,int timeout,int maxBody)throws Exception {
     return LocalRuntimeHttp.exchange(port,token,method,route,body,timeout,maxBody,SystemClock::elapsedRealtimeNanos);
+  }
+  protected static JSONObject exchangeHttp(int port,String token,String method,String route,String body,java.util.Map<String,String> headers,int timeout,int maxBody)throws Exception {
+    return LocalRuntimeHttp.exchange(port,token,method,route,body,headers,timeout,maxBody,SystemClock::elapsedRealtimeNanos);
   }
   private JSONObject exchange(boolean gateway,String route,int timeout)throws Exception {
     EmbeddedRuntimeGroup.Endpoint endpoint=gateway?group.gateway():group.agent();

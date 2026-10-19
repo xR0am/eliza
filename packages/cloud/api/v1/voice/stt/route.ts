@@ -75,7 +75,7 @@ const CARTESIA_BATCH_STT_MODEL = "ink-whisper";
 const CARTESIA_BATCH_STT_API_VERSION = "2026-03-01";
 const DEFAULT_CARTESIA_BATCH_STT_TIMEOUT_MS = 120_000;
 const MAX_CARTESIA_BATCH_STT_TIMEOUT_MS = 300_000;
-const STT_PRICING_PROXY_MODEL = "elevenlabs/scribe_v1";
+const STT_PRICING_PROXY_MODEL = "elevenlabs/scribe_v2";
 const DEFAULT_MAX_MULTIPART_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_MULTIPART_BODY_BYTES_ENV = "VOICE_STT_MAX_MULTIPART_BYTES";
 const OVERSIZED_MULTIPART_RESPONSE = {
@@ -88,6 +88,9 @@ const SUPPORTED_MIME_TYPES = [
   "audio/mpeg",
   "audio/mp4",
   "audio/m4a",
+  // Chromium and Safari report .m4a files (voice memos) as audio/x-m4a;
+  // the signature allowlist below already accepts that detected type.
+  "audio/x-m4a",
   "audio/wav",
   // Windows clients (and Bun's multipart layer) commonly declare WAV as the
   // legacy x- form; the magic-number allowlist below already accepts it.
@@ -130,6 +133,8 @@ function estimateAudioDurationMinutes(
 }
 
 interface DeepgramTranscription {
+  /** Seconds of audio Deepgram transcribed (`metadata.duration`). */
+  durationSeconds?: number;
   transcript: string;
   segments?: SttTimedSpan[];
   words?: SttTimedSpan[];
@@ -223,7 +228,21 @@ function parseDeepgramTranscription(
   const segments = parseDeepgramArray(results?.utterances, "transcript");
   if (words.invalid || segments.invalid) return null;
 
+  const metadata =
+    root?.metadata &&
+    typeof root.metadata === "object" &&
+    !Array.isArray(root.metadata)
+      ? (root.metadata as Record<string, unknown>)
+      : null;
+  const durationSeconds =
+    typeof metadata?.duration === "number" &&
+    Number.isFinite(metadata.duration) &&
+    metadata.duration > 0
+      ? metadata.duration
+      : undefined;
+
   return {
+    ...(durationSeconds !== undefined ? { durationSeconds } : {}),
     transcript,
     ...(segments.spans.length > 0 ? { segments: segments.spans } : {}),
     ...(words.spans.length > 0 ? { words: words.spans } : {}),
@@ -562,7 +581,10 @@ async function __hono_POST(c: AppContext) {
       );
     }
 
-    if (!ALLOWED_AUDIO_SIGNATURES.has(fileTypeResult.mime)) {
+    // file-type adds codec parameters for some containers (Ogg/Opus from
+    // Telegram, Discord and Firefox is `audio/ogg; codecs=opus`).
+    const detectedMimeType = fileTypeResult.mime.split(";")[0].trim();
+    if (!ALLOWED_AUDIO_SIGNATURES.has(detectedMimeType)) {
       logger.warn("[Voice STT API] Audio file signature mismatch", {
         actualMimeType: fileTypeResult.mime,
         claimedMimeType: baseMimeType,
@@ -575,8 +597,8 @@ async function __hono_POST(c: AppContext) {
       );
     }
 
-    let finalMimeType = fileTypeResult.mime;
-    if (fileTypeResult.mime === "video/webm") {
+    let finalMimeType = detectedMimeType;
+    if (detectedMimeType === "video/webm") {
       logger.info(
         "[Voice STT API] Converting video/webm container to audio/webm (Safari/macOS audio recording)",
       );
@@ -805,6 +827,10 @@ async function __hono_POST(c: AppContext) {
       }
 
       const deepgramDuration = Date.now() - deepgramStart;
+      // Bill the audio Deepgram transcribed; the container header estimate
+      // only sized the reservation.
+      const billedDurationSeconds =
+        transcription.durationSeconds ?? estimate.durationSeconds;
       const billingReservation = reservation;
       reservation = undefined;
 
@@ -815,15 +841,23 @@ async function __hono_POST(c: AppContext) {
         pricingProxyModel: STT_PRICING_PROXY_MODEL,
         provider: "deepgram",
         segmentCount: transcription.segments?.length,
+        transcriptionDurationSeconds: transcription.durationSeconds,
         transcriptLength: transcription.transcript.length,
         wordCount: transcription.words?.length,
       });
       let billingApplied = false;
       const billingTask = (async () => {
         try {
+          const actualSttCost = await calculateSTTCostFromCatalog({
+            model: STT_PRICING_PROXY_MODEL,
+            durationSeconds: billedDurationSeconds,
+            ...(getGenerativePricingCacheOptions(c).cacheOnly
+              ? { cache: getGenerativePricingCacheOptions(c) }
+              : {}),
+          });
           const billing = await billFlatUsage(
             deepgramBillingContext,
-            sttCost,
+            actualSttCost,
             billingReservation,
           );
           billingApplied = true;
@@ -844,7 +878,8 @@ async function __hono_POST(c: AppContext) {
             metadata: {
               audioSizeBytes: audioFile.size,
               estimatedDurationMinutes: estimate.estimatedDurationMinutes,
-              durationSeconds: estimate.durationSeconds,
+              estimatedDurationSeconds: estimate.durationSeconds,
+              durationSeconds: billedDurationSeconds,
               languageCode,
               transcriptLength: transcription.transcript.length,
               baseTotalCost: billing.baseTotalCost,
@@ -1238,7 +1273,7 @@ async function __hono_POST(c: AppContext) {
       organizationId: user.organization_id,
       userId: user.id,
       apiKeyId,
-      model: "elevenlabs/scribe_v1",
+      model: "elevenlabs/scribe_v2",
       provider: "elevenlabs",
       billingSource: "elevenlabs",
       requestId: billingRequestId,
@@ -1281,26 +1316,42 @@ async function __hono_POST(c: AppContext) {
     await markProviderDispatched?.();
     providerWorkMayHaveStarted = true;
     settlementProvider = "elevenlabs";
-    const transcript = await elevenlabs.speechToText({
-      audioFile: validatedFile,
-      languageCode,
-    });
+    const { transcript, audioDurationSeconds, minAudioDurationSeconds } =
+      await elevenlabs.speechToText({
+        audioFile: validatedFile,
+        languageCode,
+      });
     const duration = Date.now() - startTime;
+    // Bill the audio ElevenLabs transcribed; the container header estimate
+    // only sized the reservation. Without a reported total, the last word end
+    // can only raise the header estimate: audio after the last word is billed.
+    const billedDurationSeconds =
+      audioDurationSeconds ??
+      Math.max(durationSeconds, minAudioDurationSeconds ?? 0);
 
     const billingReservation = reservation;
     reservation = undefined;
 
     logger.info("[Voice STT API] Completed", {
       durationMs: duration,
+      transcriptionDurationSeconds: audioDurationSeconds,
+      minTranscriptionDurationSeconds: minAudioDurationSeconds,
       transcriptLength: transcript.length,
     });
 
     let billingApplied = false;
     const billingTask = (async () => {
       try {
+        const actualSttCost = await calculateSTTCostFromCatalog({
+          model: STT_PRICING_PROXY_MODEL,
+          durationSeconds: billedDurationSeconds,
+          ...(getGenerativePricingCacheOptions(c).cacheOnly
+            ? { cache: getGenerativePricingCacheOptions(c) }
+            : {}),
+        });
         const billing = await billFlatUsage(
           elevenLabsBillingContext,
-          sttCost,
+          actualSttCost,
           billingReservation,
         );
         billingApplied = true;
@@ -1324,7 +1375,8 @@ async function __hono_POST(c: AppContext) {
             // not sensitive content, so it stays.
             audioSizeBytes: audioFile.size,
             estimatedDurationMinutes,
-            durationSeconds,
+            estimatedDurationSeconds: durationSeconds,
+            durationSeconds: billedDurationSeconds,
             languageCode,
             transcriptLength: transcript.length,
             baseTotalCost: billing.baseTotalCost,

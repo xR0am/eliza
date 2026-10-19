@@ -2,6 +2,7 @@
 
 import type {
   LifeOpsCalendarEvent,
+  LifeOpsCalendarProvider,
   LifeOpsConnectorGrant,
   LifeOpsConnectorSide,
 } from "@elizaos/contracts";
@@ -88,7 +89,7 @@ export class LifeOpsCalendarRepository {
 
   async listCalendarEvents(
     agentId: string,
-    provider: LifeOpsConnectorGrant["provider"],
+    provider: LifeOpsCalendarProvider | LifeOpsConnectorGrant["provider"],
     timeMin?: string,
     timeMax?: string,
     side?: LifeOpsConnectorSide,

@@ -16,6 +16,14 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       );
     return true;
   }
+  if (message?.type === "task-guide-dismissed") {
+    try {
+      reply(handleCommand.dismissGuide(message, sender));
+    } catch {
+      reply({ recorded: false });
+    }
+    return false;
+  }
   if (message?.type !== "task-manual-activity") return false;
   void handleCommand
     .recordManualActivity(message, sender)
@@ -39,6 +47,7 @@ const connection = new NativeConnection({
       extensionId: chrome.runtime.id,
       profileId,
       capabilities: [
+        ...(handleCommand.hasProtectionAdvisory() ? ["protection-owner"] : []),
         "list",
         "open",
         "navigate",
@@ -57,6 +66,8 @@ const connection = new NativeConnection({
         "task-action-feedback",
         "task-manual-activity",
         "task-protected-fill",
+        "task-expected-target",
+        "task-guide-keep-clear",
       ],
     };
   },

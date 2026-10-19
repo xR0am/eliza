@@ -80,6 +80,47 @@ describe("webSearchEdgePlugin", () => {
         ).toEqual(["https://example.com/a", "https://news.example.org/story"]);
     });
 
+    it("keeps complete structured URLs and balanced prose citation paths", () => {
+        const exact = "https://example.com/path).";
+        const structured = webSearchSourceEvidence(
+            JSON.stringify({
+                results: [{ url: exact, text: "Exact published path" }],
+            })
+        );
+        expect(structured.sourceUrls).toEqual([exact]);
+        expect(structured.sources[0]?.url).toBe(exact);
+        expect(
+            webSearchSourceUrls(
+                "Source: (https://en.wikipedia.org/wiki/Function_(mathematics)). " +
+                    "Nested: https://example.com/a_(b_(c)));"
+            )
+        ).toEqual([
+            "https://en.wikipedia.org/wiki/Function_(mathematics)",
+            "https://example.com/a_(b_(c))",
+        ]);
+        expect(webSearchSourceUrls(`https://example.com/path${")".repeat(50000)}`)).toEqual([
+            "https://example.com/path",
+        ]);
+    });
+
+    it("reads URLs in JSON excerpts from the decoded text, not the escapes", () => {
+        const text = JSON.stringify({
+            results: [
+                {
+                    url: "https://example.com/article",
+                    excerpts: [
+                        'Intro\nSee https://docs.example.org/guide\nNext says "https://example.net/x" too',
+                    ],
+                },
+            ],
+        });
+        expect(webSearchSourceUrls(text)).toEqual([
+            "https://example.com/article",
+            "https://docs.example.org/guide",
+            "https://example.net/x",
+        ]);
+    });
+
     it("rejects loopback and private-network citation URLs", () => {
         expect(
             webSearchSourceEvidence(
@@ -382,4 +423,45 @@ it("direct edge runner distinguishes typed outage from successful zero hits and 
         runWebSearchEdge("aborted query", { signal: controller.signal })
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it("only an opted-in host runner accepts explicit fallback selection", async () => {
+    const network = vi.fn(async () => {
+        throw new Error("Unexpected public I/O");
+    });
+    globalThis.fetch = network as typeof fetch;
+    const host = vi.fn(async () => ({ success: true, text: "host evidence" }));
+    const unavailable = createWebSearchEdgePlugin(host).actions?.[0];
+    const available = createWebSearchEdgePlugin(host, { fallbackEnabled: true }).actions?.[0];
+    if (!unavailable || !available) throw new Error("Expected canonical search actions");
+    expect(unavailable.parameters?.some((parameter) => parameter.name === "provider")).toBe(false);
+    expect(
+        available.parameters?.find((parameter) => parameter.name === "provider")?.schema
+    ).toEqual({ type: "string", enum: ["default", "fallback"] });
+    for (const provider of ["fallback", "unknown"]) {
+        const denied = await unavailable.handler({} as IAgentRuntime, {} as Memory, undefined, {
+            parameters: { query: "Tokyo news", provider },
+        });
+        expect(denied).toMatchObject({ success: false });
+    }
+    expect(await runWebSearchEdge("Tokyo news", { provider: "fallback" })).toMatchObject({
+        success: false,
+    });
+    expect(host).not.toHaveBeenCalled();
+    const result = await available.handler({} as IAgentRuntime, {} as Memory, undefined, {
+        parameters: { query: "Tokyo news", provider: "fallback" },
+    });
+    expect(result).toMatchObject({ success: true, text: "host evidence" });
+    expect(host).toHaveBeenCalledExactlyOnceWith("Tokyo news", {
+        signal: undefined,
+        provider: "fallback",
+    });
+    expect(network).not.toHaveBeenCalled();
+});
+
+it("refuses fallback opt-in without a host-authorized runner", () => {
+    expect(() => createWebSearchEdgePlugin(undefined, { fallbackEnabled: true })).toThrow(
+        "host-authorized runner"
+    );
+    expect(() => createWebSearchEdgePlugin(runWebSearchEdge, { fallbackEnabled: true })).toThrow();
 });

@@ -1,5 +1,6 @@
 // Handles v1 cloud API v1 apps id regenerate api key route traffic with route-local auth expectations.
 
+import { ApiError } from "@elizaos/cloud-shared/lib/api/cloud-worker-errors";
 import { requireAuthOrApiKeyWithOrg } from "@elizaos/cloud-shared/lib/auth";
 import { isAppKeyOutOfScope } from "@elizaos/cloud-shared/lib/auth/app-key-scope";
 import {
@@ -10,6 +11,7 @@ import { appsService } from "@elizaos/cloud-shared/lib/services/apps";
 import { logger } from "@elizaos/cloud-shared/lib/utils/logger";
 import type { AppEnv } from "@elizaos/cloud-shared/types/cloud-worker-env";
 import { Hono } from "hono";
+import { assertCanManageApiKey } from "../../../api-keys/_lib/key-access";
 
 async function handlePOST(
   request: Request,
@@ -55,6 +57,14 @@ async function handlePOST(
       );
     }
 
+    // The new key acts as the app's creator, and the caller receives its
+    // plaintext: only that user may regenerate it (same rule as user keys).
+    assertCanManageApiKey(
+      user,
+      { user_id: existingApp.created_by_user_id },
+      "regenerate",
+    );
+
     const newApiKey = await appsService.regenerateApiKey(id);
 
     logger.info(`Regenerated API key for app: ${id}`, {
@@ -70,6 +80,9 @@ async function handlePOST(
         "API key regenerated successfully. Make sure to save it securely.",
     });
   } catch (error) {
+    if (error instanceof ApiError) {
+      return Response.json(error.toJSON(), { status: error.status });
+    }
     logger.error("Failed to regenerate API key:", error);
     return Response.json(
       {

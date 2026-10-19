@@ -15,8 +15,9 @@ export {
  * Playback / TTS logic for voice chat — text processing, sentence splitting,
  * speech text extraction, and mouth animation helpers.
  */
-import { ElizaError, sanitizeSpeechText } from "@elizaos/core/protocol";
-import { MOUTH_OPEN_STEP, type SpeechSegmentKind } from "./voice-chat-types";
+import { ElizaError, sanitizeSpeechText } from "@elizaos/core/speech";
+export type SpeechSegmentKind = "full" | "first-sentence" | "remainder";
+export const MOUTH_OPEN_STEP = 0.02;
 // ── Text processing helpers ───────────────────────────────────────────
 export function normalizeCacheText(input: string): string {
   return collapseWhitespace(input.normalize("NFKC")).toLowerCase();
@@ -42,7 +43,7 @@ export function capSpeechLength(input: string): string {
  * into the voice output.  We handle it here before sanitization.
  */
 const HIDDEN_VOICE_BLOCK_RE =
-  /<(think|thought|analysis|reasoning|tool_calls?|tools?)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
+  /<(think|thought|analysis|reasoning|tool_calls?|tools?)(?=[\s/>])[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
 function parseJsonObject(input: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(input.trim());

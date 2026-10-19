@@ -26,6 +26,7 @@ import type {
   CaptureLifeOpsPhoneConsentRequest,
   LifeOpsActivitySignal,
   LifeOpsCalendarEvent,
+  LifeOpsCalendarProvider,
   LifeOpsChannelPolicy,
   LifeOpsCircadianState,
   LifeOpsManualOverrideResult,
@@ -66,6 +67,7 @@ import {
   hashStableJson,
   type IAgentRuntime,
   inspectSendHandlerResult,
+  isElizaError,
   logger,
   type Memory,
   ModelType,
@@ -75,6 +77,7 @@ import {
   readDurableConversationChatMarker,
   resolveOptimizedPromptForRuntime,
   runWithTrajectoryPurpose,
+  SEND_HANDLER_NOT_FOUND,
   ServiceType,
   unwrapUserMessageText,
   validateUuid,
@@ -215,6 +218,8 @@ import {
   buildActiveReminders,
   isReminderChannelAllowedForUrgency,
   isWithinQuietHours as isWithinQuietHoursPolicy,
+  normalizeGeneratedReminderBody,
+  normalizeGeneratedWorkflowBody,
 } from "../service-helpers-misc.js";
 import { computeDefinitionPerformance } from "../service-helpers-occurrence.js";
 import {
@@ -251,9 +256,13 @@ import {
   lifeOpsErrorMessage,
   normalizeEnumValue,
   normalizeOptionalString,
+  normalizePhoneNumber,
   requireNonEmptyString,
 } from "../service-normalize.js";
-import type { ReminderActivityProfileSnapshot } from "../service-types.js";
+import {
+  LifeOpsServiceError,
+  type ReminderActivityProfileSnapshot,
+} from "../service-types.js";
 import { getActivitySignalBus } from "../signals/bus.js";
 import { publishDerivedHealthSignals } from "../signals/health-signal-publisher.js";
 import {
@@ -374,6 +383,22 @@ function foregroundRequestHandling(
     return undefined;
   }
 }
+
+/**
+ * Reminder attempts whose send may have reached the recipient: the connector
+ * accepted part of it, accepted it but failed to save it, gave no delivery
+ * evidence, or threw after the request left. Sending the same step again would
+ * duplicate the message, so these attempts count as consumed on every
+ * channel. A clean refusal (`runtime_send_not_delivered`) or a missing send
+ * handler (`runtime_send_handler_missing`, nothing was sent) is retried.
+ */
+const SEND_MAY_HAVE_REACHED_RECIPIENT = new Set([
+  "runtime_send_acceptance_unknown",
+  "runtime_send_partially_delivered",
+  "runtime_send_persistence_failed",
+  "runtime_send_unknown",
+  "runtime_send_in_flight",
+]);
 
 export { REMINDER_DISPATCH_INSTRUCTIONS } from "../optimized-prompt-instructions.js";
 
@@ -651,18 +676,25 @@ function normalizeIsoString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     fail(400, `${field} must be an ISO 8601 string`);
   }
-  const ms = Date.parse(value);
+  const ms = Date.parse(value.trim());
   if (!Number.isFinite(ms)) {
     fail(400, `${field} must be a valid ISO 8601 string`);
   }
-  return value;
+  // Match the canonical LifeOps normalizer (@elizaos/contracts
+  // service-normalize, used by every other PA service): return the canonical
+  // ISO form, not the caller's spelling. The repositories filter and sort
+  // persisted timestamps as text (`observed_at >= sinceAt`,
+  // `ORDER BY observed_at DESC`), so an offset, date-only, or unpadded
+  // spelling stored verbatim would compare against canonical values as a
+  // different instant.
+  return new Date(ms).toISOString();
 }
 
 function normalizeOptionalIsoString(
   value: unknown,
   field: string,
 ): string | null {
-  if (value === undefined || value === null) return null;
+  if (value === undefined || value === null || value === "") return null;
   return normalizeIsoString(value, field);
 }
 
@@ -678,7 +710,16 @@ function normalizeOptionalNonNegativeInteger(
   value: unknown,
   field: string,
 ): number | null {
-  if (value === undefined || value === null) return null;
+  // Match the canonical LifeOps normalizer (@elizaos/contracts
+  // service-normalize, used by every sibling PA service): an empty
+  // string is absent (null), not 0 — Number("") === 0 would otherwise
+  // fabricate an idle time of 0 seconds for a field the caller never
+  // sent. A whitespace-only string is not absent either; the
+  // canonical copy rejects it, so reject it here too.
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "string" && value.trim().length === 0) {
+    fail(400, `${field} must be a non-negative integer`);
+  }
   const num = typeof value === "string" ? Number(value) : value;
   if (typeof num !== "number" || !Number.isInteger(num) || num < 0) {
     fail(400, `${field} must be a non-negative integer`);
@@ -698,17 +739,6 @@ function normalizeOptionalRecord(
 }
 
 const LIFEOPS_PRIVACY_CLASSES = ["public", "private", "shared"] as const;
-
-function normalizePhoneNumber(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    fail(400, `${field} must be a non-empty phone number string`);
-  }
-  const cleaned = value.replace(/[\s\-().]/g, "");
-  if (!/^\+?\d{7,15}$/.test(cleaned)) {
-    fail(400, `${field} is not a valid phone number`);
-  }
-  return cleaned.startsWith("+") ? cleaned : `+${cleaned}`;
-}
 
 function normalizePrivacyClass(
   value: unknown,
@@ -895,16 +925,6 @@ function readMemoryCreatedAtMs(memory: { createdAt?: unknown }): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function normalizeGeneratedReminderBody(value: string): string | null {
-  const cleaned = value.replace(/^["'`]+|["'`]+$/g, "").trim();
-  return cleaned.length > 0 ? cleaned : null;
-}
-
-function normalizeGeneratedWorkflowBody(value: string): string | null {
-  const cleaned = value.replace(/^["'`]+|["'`]+$/g, "").trim();
-  return cleaned.length > 0 ? cleaned : null;
 }
 
 function formatReminderPromptValue(value: unknown): string {
@@ -1122,6 +1142,14 @@ function collectNearbyReminderTitles(args: {
   return titles;
 }
 
+function ownerDeclinedEvent(event: LifeOpsCalendarEvent): boolean {
+  return event.attendees.some(
+    (attendee) =>
+      attendee.self &&
+      attendee.responseStatus?.trim().toLowerCase() === "declined",
+  );
+}
+
 function buildActiveCalendarEventReminders(
   events: Array<{
     id: string;
@@ -1241,11 +1269,39 @@ export type RemindersDeps = {
   checkinSource: CheckinSourceService;
 };
 
+// Providers whose events plugin-calendar gives a reminder plan (Google,
+// Microsoft and Apple sync, and the built-in calendar). ICS imports create no
+// plans, so they are not read here.
+const REMINDER_CALENDAR_PROVIDERS = [
+  "eliza",
+  "google",
+  "microsoft",
+  "apple_calendar",
+] as const satisfies readonly LifeOpsCalendarProvider[];
+
 export class RemindersDomain {
   constructor(
     private readonly ctx: LifeOpsContext,
     private readonly deps: RemindersDeps,
   ) {}
+
+  private async listReminderCalendarEvents(
+    timeMin?: string,
+    timeMax?: string,
+  ): Promise<LifeOpsCalendarEvent[]> {
+    const agentId = this.ctx.agentId();
+    const events = await Promise.all(
+      REMINDER_CALENDAR_PROVIDERS.map((provider) =>
+        this.ctx.repository.listCalendarEvents(
+          agentId,
+          provider,
+          timeMin,
+          timeMax,
+        ),
+      ),
+    );
+    return events.flat();
+  }
 
   /**
    * UTC date key of the last successful telemetry rollup+retention run.
@@ -1416,7 +1472,13 @@ export class RemindersDomain {
           }),
         )
         .filter((line): line is string => typeof line === "string");
-    } catch {
+    } catch (error) {
+      // error-policy:J4 the conversation only styles the reminder body; the
+      // reminder still fires without it. Report the failed message read.
+      this.ctx.runtime.reportError(
+        "lifeops:reminders:recent-conversation",
+        error,
+      );
       return [];
     }
   }
@@ -1488,7 +1550,10 @@ export class RemindersDomain {
       return parseReminderOwnerResponseSemanticClassification(
         parsed ? normalizeSemanticClassifierModelRecord(parsed) : null,
       );
-    } catch {
+    } catch (error) {
+      // error-policy:J4 no verdict keeps the review retryable (the caller
+      // reads null as no_semantic_verdict). Report the model failure.
+      this.ctx.runtime.reportError("lifeops:reminders:classify-reply", error);
       return null;
     }
   }
@@ -1719,7 +1784,14 @@ export class RemindersDomain {
             ) {
               return { ...noResponse, reason: "foreground_request_pending" };
             }
-          } catch {
+          } catch (error) {
+            // error-policy:J4 an unreadable request stays unknown evidence and
+            // the review retries. Report the failed refresh.
+            this.ctx.runtime.reportError(
+              "lifeops:reminders:foreground-request-refresh",
+              error,
+              { attemptId: args.attempt.id },
+            );
             return {
               ...noResponse,
               reason: "foreground_request_refresh_unknown",
@@ -1853,8 +1925,16 @@ export class RemindersDomain {
           semanticReason: null,
         }
       );
-    } catch {
-      return noResponse;
+    } catch (error) {
+      // error-policy:J4 a failed plan, message or review-state read is not
+      // owner silence. Return unknown evidence so the caller retries instead
+      // of escalating to the next channel, and report the fault.
+      this.ctx.runtime.reportError(
+        "lifeops:reminders:review-owner-response",
+        error,
+        { attemptId: args.attempt.id },
+      );
+      return { ...noResponse, reason: "review_evidence_unavailable" };
     }
   }
 
@@ -1910,7 +1990,12 @@ export class RemindersDomain {
           ? normalizeGeneratedReminderBody(response)
           : null;
       return text ?? fallback;
-    } catch {
+    } catch (error) {
+      // error-policy:J4 the template body still delivers the reminder.
+      // Report the model failure that replaced the generated body.
+      this.ctx.runtime.reportError("lifeops:reminders:render-body", error, {
+        channel: args.channel,
+      });
       return fallback;
     }
   }
@@ -1974,7 +2059,13 @@ export class RemindersDomain {
           ? normalizeGeneratedWorkflowBody(response)
           : null;
       return text ?? fallback;
-    } catch {
+    } catch (error) {
+      // error-policy:J4 the template body still delivers the workflow update.
+      // Report the model failure that replaced the generated body.
+      this.ctx.runtime.reportError(
+        "lifeops:reminders:render-workflow-body",
+        error,
+      );
       return fallback;
     }
   }
@@ -2526,9 +2617,27 @@ export class RemindersDomain {
     timezone?: string | null;
     now?: Date;
   }): Promise<LifeOpsScheduleMergedStateRecord | null> {
-    const timezone =
-      normalizeOptionalString(args?.timezone) ?? resolveDefaultTimeZone();
     const now = args?.now ?? new Date();
+    const preferred = await this.readStoredEffectiveScheduleState({
+      timezone: args?.timezone,
+      now,
+    });
+    return preferred ? refreshLifeOpsRelativeTime(preferred, now) : null;
+  }
+
+  /**
+   * The preferred merged state as persisted, keeping the relative time it was
+   * computed with. The circadian tick diffs the refreshed state against this:
+   * re-projecting the previous state onto `now` would give it the current
+   * `minutesUntilBedtimeTarget`, so `bedtime.imminent` could never see the
+   * crossing into its window.
+   */
+  private async readStoredEffectiveScheduleState(args: {
+    timezone?: string | null;
+    now: Date;
+  }): Promise<LifeOpsScheduleMergedStateRecord | null> {
+    const timezone =
+      normalizeOptionalString(args.timezone) ?? resolveDefaultTimeZone();
     const local = await this.ctx.repository.getScheduleMergedState(
       this.ctx.agentId(),
       "local",
@@ -2539,12 +2648,11 @@ export class RemindersDomain {
       "cloud",
       timezone,
     );
-    const preferred = preferEffectiveMergedState({
-      now,
+    return preferEffectiveMergedState({
+      now: args.now,
       local,
       cloud,
     });
-    return preferred ? refreshLifeOpsRelativeTime(preferred, now) : null;
   }
 
   public async refreshEffectiveScheduleState(args?: {
@@ -2808,13 +2916,10 @@ export class RemindersDomain {
         window.endMinute <= window.startMinute
           ? window.endMinute + 24 * 60
           : window.endMinute;
-      const localNowComparable =
-        nowMinute < window.startMinute && endMinute >= 24 * 60
-          ? nowMinute + 24 * 60
-          : nowMinute;
-      const isInside =
-        localNowComparable >= window.startMinute &&
-        localNowComparable < endMinute;
+      // Today's occurrence uses today's window. The tail after midnight of a
+      // window such as night (22:00-04:00) belongs to the previous night, so
+      // 00:05 waits for today's 22:00 instead of firing at once.
+      const isInside = nowMinute >= window.startMinute && nowMinute < endMinute;
       if (isInside) {
         const immediateCandidate = new Date(now.getTime() + 1_000);
         if (
@@ -2826,7 +2931,7 @@ export class RemindersDomain {
         continue;
       }
       const candidateMinute = window.startMinute;
-      if (candidateMinute <= localNowComparable) continue;
+      if (candidateMinute <= nowMinute) continue;
       const localDate = addDaysToLocalDate(
         { year, month, day },
         Math.floor(candidateMinute / (24 * 60)),
@@ -3364,7 +3469,10 @@ export class RemindersDomain {
   }): Promise<Record<string, unknown>> {
     try {
       const [activityProfile, policies] = await Promise.all([
-        this.readReminderActivityProfileSnapshot({ now: args.now }),
+        this.readReminderActivityProfileSnapshot({
+          now: args.now,
+          timezone: await resolveOwnerTimeZone(this.ctx.runtime, args.now),
+        }),
         this.ctx.repository.listChannelPolicies(this.ctx.agentId()),
       ]);
       const candidates = await this.resolveOwnerContactRouteCandidates({
@@ -3572,9 +3680,9 @@ export class RemindersDomain {
       });
       return;
     }
-    const event = (
-      await this.ctx.repository.listCalendarEvents(this.ctx.agentId(), "google")
-    ).find((candidate) => candidate.id === args.ownerId);
+    const event = (await this.listReminderCalendarEvents()).find(
+      (candidate) => candidate.id === args.ownerId,
+    );
     if (!event) {
       return;
     }
@@ -3659,12 +3767,9 @@ export class RemindersDomain {
         updatedAt: new Date().toISOString(),
       });
     } else {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === args.ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === args.ownerId,
+      );
       if (!event) {
         return;
       }
@@ -3840,6 +3945,24 @@ export class RemindersDomain {
             return;
           }
         }
+        if (
+          error instanceof LifeOpsServiceError &&
+          error.code === "LIFEOPS_SNOOZE_PAST_QUOTA_DAY"
+        ) {
+          // The owner asked for a snooze this occurrence cannot take. Record
+          // the reply as unresolved so the review asks for a new time; a throw
+          // here would abort the reminder tick on every run until day end.
+          await this.markReminderReviewObservedResponse({
+            attempt: args.attempt,
+            decision: "needs_clarification",
+            respondedAt: args.respondedAt,
+            responseText: args.responseText,
+            reason: "snooze_past_daily_count_day_end",
+            classifierSource: args.classifierSource,
+            semanticReason: args.semanticReason,
+          });
+          return;
+        }
         throw error;
       }
     }
@@ -3854,12 +3977,9 @@ export class RemindersDomain {
     args.attempt.reviewStatus = "resolved";
     if (args.resolution === "snoozed") return;
     if (args.ownerType === "calendar_event") {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === args.ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === args.ownerId,
+      );
       if (event) {
         await this.ctx.repository.upsertCalendarEvent({
           ...event,
@@ -4162,10 +4282,7 @@ export class RemindersDomain {
       }
 
       if (reviewAttempt.ownerType === "calendar_event") {
-        calendarEvents ??= await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        );
+        calendarEvents ??= await this.listReminderCalendarEvents();
         const event =
           calendarEvents.find(
             (candidate) => candidate.id === reviewAttempt.ownerId,
@@ -4435,6 +4552,7 @@ export class RemindersDomain {
         (responseReview.reason === "no_semantic_verdict" ||
           responseReview.reason === "foreground_request_pending" ||
           responseReview.reason === "foreground_request_refresh_unknown" ||
+          responseReview.reason === "review_evidence_unavailable" ||
           responseReview.reason === "definition_inactive")
       ) {
         // Unknown evidence stays retryable. Inactive definitions already closed
@@ -5037,6 +5155,12 @@ export class RemindersDomain {
                 outcome = "blocked_connector";
                 deliveryMetadata.error = result.error ?? "sms delivery failed";
                 deliveryMetadata.status = result.status;
+                if (result.sids?.length) {
+                  // Twilio accepted the earlier parts of a long body. A second
+                  // dispatch would send those parts to the recipient again.
+                  deliveryMetadata.reason = "runtime_send_acceptance_unknown";
+                  deliveryMetadata.providerMessageIds = result.sids;
+                }
               } else {
                 deliveryMetadata.sid = result.sid ?? null;
                 deliveryMetadata.status = result.status;
@@ -5136,12 +5260,21 @@ export class RemindersDomain {
               ),
             );
           } catch (error) {
-            // error-policy:J1 reminder dispatch boundary treats a thrown
-            // connector result as acceptance-unknown. Retrying without an
-            // explicit zero-accept receipt can duplicate an external message.
             outcome = "blocked_connector";
-            deliveryMetadata.error = `${lifeOpsErrorMessage(error)} Provider acceptance is unknown; do not retry blindly.`;
-            deliveryMetadata.reason = "runtime_send_acceptance_unknown";
+            if (isElizaError(error) && error.code === SEND_HANDLER_NOT_FOUND) {
+              // The registry throws before calling any handler when the
+              // connector has not registered (startup, restart, account
+              // removal). Nothing left the process, so the step stays
+              // retryable on a later tick.
+              deliveryMetadata.error = lifeOpsErrorMessage(error);
+              deliveryMetadata.reason = "runtime_send_handler_missing";
+            } else {
+              // error-policy:J1 reminder dispatch boundary treats a thrown
+              // connector result as acceptance-unknown. Retrying without an
+              // explicit zero-accept receipt can duplicate an external message.
+              deliveryMetadata.error = `${lifeOpsErrorMessage(error)} Provider acceptance is unknown; do not retry blindly.`;
+              deliveryMetadata.reason = "runtime_send_acceptance_unknown";
+            }
           }
         } else {
           outcome = "blocked_connector";
@@ -5574,8 +5707,10 @@ export class RemindersDomain {
       createdAt: new Date().toISOString(),
     });
 
+    const refreshedAt = new Date(occurredAt);
     const refreshed = await this.refreshEffectiveScheduleState({
-      now: new Date(occurredAt),
+      timezone: await resolveOwnerTimeZone(this.ctx.runtime, refreshedAt),
+      now: refreshedAt,
     });
     return {
       accepted: true,
@@ -5747,6 +5882,38 @@ export class RemindersDomain {
       },
     });
 
+    // Delivery selects the oldest primary policy, so a number captured earlier
+    // (another number, or the same one under a previous key) must stop being
+    // primary or it keeps receiving reminders under its old permissions. This
+    // runs after the new policies are stored so a rejected request changes
+    // nothing.
+    for (const policy of await this.ctx.repository.listChannelPolicies(
+      this.ctx.agentId(),
+    )) {
+      if (
+        (policy.channelType !== "sms" && policy.channelType !== "voice") ||
+        policy.channelRef === phoneNumber ||
+        policy.metadata.isPrimary !== true
+      ) {
+        continue;
+      }
+      await this.ctx.repository.upsertChannelPolicy({
+        ...policy,
+        metadata: { ...policy.metadata, isPrimary: false },
+        updatedAt: new Date().toISOString(),
+      });
+      await this.ctx.recordChannelPolicyAudit(
+        policy.id,
+        "channel policy replaced as primary",
+        { request },
+        {
+          channelType: policy.channelType,
+          channelRef: policy.channelRef,
+          replacedBy: phoneNumber,
+        },
+      );
+    }
+
     // Register SMS/voice in the escalation channel list when the user
     // consents so the escalation service can reach them without manual
     // setup.
@@ -5842,12 +6009,7 @@ export class RemindersDomain {
       OVERVIEW_HORIZON_MINUTES,
     ).toISOString();
     const calendarEvents = includeCalendar
-      ? await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-          now.toISOString(),
-          eventWindowEnd,
-        )
+      ? await this.listReminderCalendarEvents(now.toISOString(), eventWindowEnd)
       : [];
     const eventPlans = await this.ctx.repository.listReminderPlansForOwners(
       this.ctx.agentId(),
@@ -5864,8 +6026,18 @@ export class RemindersDomain {
         }),
       );
     }
+    // An all-day event has no start time: its stored startAt is UTC midnight
+    // of the date, so an offset step would fire at an arbitrary local hour.
+    // An event the owner declined is not attended (availability ignores it
+    // too), so it gets no reminder.
+    const unremindedEventIds = new Set(
+      calendarEvents
+        .filter((event) => event.isAllDay || ownerDeclinedEvent(event))
+        .map((event) => event.id),
+    );
     const plansByEventId = new Map<string, LifeOpsReminderPlan>();
     for (const plan of eventPlans) {
+      if (unremindedEventIds.has(plan.ownerId)) continue;
       const effectivePlan = this.resolveEffectiveReminderPlan(
         plan,
         globalReminderPreference,
@@ -5904,10 +6076,10 @@ export class RemindersDomain {
         .filter(
           (attempt) =>
             isDeliveredReminderOutcome(attempt.outcome) ||
-            (attempt.channel === "in_app" &&
-              attempt.outcome === "blocked_connector" &&
-              attempt.deliveryMetadata.reason ===
-                "runtime_send_acceptance_unknown"),
+            (attempt.outcome === "blocked_connector" &&
+              SEND_MAY_HAVE_REACHED_RECIPIENT.has(
+                String(attempt.deliveryMetadata.reason),
+              )),
         )
         .map((attempt) =>
           attemptKey(attempt.planId, attempt.stepIndex, attempt.scheduledFor),
@@ -6339,10 +6511,15 @@ export class RemindersDomain {
       "circadian_state",
       circadianFallback,
       async () => {
-        const previousSchedule = await this.readEffectiveScheduleState({
+        // Same owner-zone anchor as the reminder pass (#13509): the sleep
+        // cycle check-ins read `currentSchedule.timezone`.
+        const timezone = await resolveOwnerTimeZone(this.ctx.runtime, now);
+        const previousSchedule = await this.readStoredEffectiveScheduleState({
+          timezone,
           now,
         });
         const refreshedSchedule = await this.refreshEffectiveScheduleState({
+          timezone,
           now,
         });
         if (refreshedSchedule !== null) {
@@ -6977,12 +7154,9 @@ export class RemindersDomain {
         },
       );
     } else {
-      const event = (
-        await this.ctx.repository.listCalendarEvents(
-          this.ctx.agentId(),
-          "google",
-        )
-      ).find((candidate) => candidate.id === ownerId);
+      const event = (await this.listReminderCalendarEvents()).find(
+        (candidate) => candidate.id === ownerId,
+      );
       if (!event) {
         fail(404, "life-ops calendar event not found");
       }

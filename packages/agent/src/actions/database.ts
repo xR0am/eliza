@@ -234,12 +234,8 @@ async function opListTables(
     runtime,
     `SELECT
        t.table_schema AS schema,
-       t.table_name AS name,
-       COALESCE(s.n_live_tup, 0) AS row_count
+       t.table_name AS name
      FROM information_schema.tables t
-     LEFT JOIN pg_stat_user_tables s
-       ON s.schemaname = t.table_schema
-       AND s.relname = t.table_name
      WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')
        AND t.table_type = 'BASE TABLE'
      ORDER BY t.table_schema, t.table_name`,
@@ -285,26 +281,37 @@ async function opListTables(
     columnsByTable.set(key, cols);
   }
 
-  const allTables: TableInfo[] = tablesResult.rows.map((row) => {
-    const key = JSON.stringify([row.schema, row.name]);
-    return {
-      name: String(row.name),
-      schema: String(row.schema),
-      rowCount: Number(row.row_count ?? 0),
-      columns: columnsByTable.get(key) ?? [],
-    };
-  });
+  const allTables = tablesResult.rows.map((row) => ({
+    name: String(row.name),
+    schema: String(row.schema),
+  }));
 
   const filter = params.filter?.trim().toLowerCase() ?? "";
   const includeEmpty = params.includeEmpty ?? true;
-  const tables = allTables.filter((table) => {
-    if (filter) {
-      const qualified = `${table.schema}.${table.name}`.toLowerCase();
-      if (!qualified.includes(filter)) return false;
-    }
-    if (!includeEmpty && table.rowCount === 0) return false;
-    return true;
-  });
+  const named = filter
+    ? allTables.filter((table) =>
+        `${table.schema}.${table.name}`.toLowerCase().includes(filter),
+      )
+    : allTables;
+  // Count the table itself. pg_stat_user_tables.n_live_tup is a statistic: on
+  // PGlite it reads 0 for every table after a restart, so it reported full
+  // tables as "0 rows" and includeEmpty:false dropped them.
+  const counted: TableInfo[] = [];
+  for (const table of named) {
+    const countResult = await executeRawSql(
+      runtime,
+      `SELECT count(*) AS total FROM ${qualifiedTable(table.schema, table.name)}`,
+    );
+    counted.push({
+      ...table,
+      rowCount: Number(countResult.rows[0]?.total),
+      columns:
+        columnsByTable.get(JSON.stringify([table.schema, table.name])) ?? [],
+    });
+  }
+  const tables = includeEmpty
+    ? counted
+    : counted.filter((table) => table.rowCount > 0);
 
   const lines = tables.map(
     (t) =>
@@ -392,7 +399,7 @@ async function opGetTable(
   if (!requestedName) {
     return {
       success: false,
-      text: "tableName is required for op:get_table.",
+      text: "tableName is required for action=get_table.",
       values: { error: "DATABASE_GET_TABLE_FAILED", reason: "MISSING_TABLE" },
     };
   }
@@ -427,11 +434,23 @@ async function opGetTable(
       runtime,
       `SELECT column_name FROM information_schema.columns
        WHERE table_name = '${safe}'
-         AND table_schema = '${safeSchema}'`,
+         AND table_schema = '${safeSchema}'
+       ORDER BY ordinal_position`,
     );
-    if (cols.rows.some((r) => String(r.column_name) === params.sortBy)) {
-      validSort = params.sortBy;
+    const columnNames = cols.rows.map((r) => String(r.column_name));
+    // An unknown sort column used to be dropped, and the rows came back in
+    // primary-key order under a success text.
+    if (!columnNames.includes(params.sortBy)) {
+      return {
+        success: false,
+        text: `sortBy "${params.sortBy}" is not a column of "${resolved.schema}.${tableName}". Columns: ${columnNames.join(", ")}.`,
+        values: {
+          error: "DATABASE_GET_TABLE_FAILED",
+          reason: "UNKNOWN_SORT_COLUMN",
+        },
+      };
     }
+    validSort = params.sortBy;
   }
   // OFFSET pages are separate queries. A sort column with ties, or no sort,
   // lets rows trade places between pages. The primary key makes the order
@@ -491,6 +510,9 @@ async function opGetTable(
       total,
       offset,
       ...(limit === undefined ? {} : { limit }),
+      ...(validSort
+        ? { sortBy: validSort, sortDir: sortDir === "DESC" ? "desc" : "asc" }
+        : {}),
     },
   };
 }
@@ -503,7 +525,7 @@ async function opQuery(
   if (!sqlText) {
     return {
       success: false,
-      text: "sql is required for op:query.",
+      text: "sql is required for action=query.",
       values: { error: "DATABASE_QUERY_FAILED", reason: "MISSING_SQL" },
     };
   }
@@ -563,7 +585,7 @@ async function opSearchVectors(
   if (!query) {
     return {
       success: false,
-      text: "query is required for op:search_vectors.",
+      text: "query is required for action=search_vectors.",
       values: {
         error: "DATABASE_SEARCH_VECTORS_FAILED",
         reason: "MISSING_QUERY",

@@ -292,9 +292,14 @@ export async function handleImageDescription(
 
     if (!finalResponse.ok) {
       const status = finalResponse.status;
+      // Keep the HTTP status on the error, as the text path does, so core's
+      // model-failure checks can classify it (credits, provider fallback).
       if (status === 402) {
-        throw new Error(
-          `Eliza Cloud credits exhausted — top up at ${resolveCloudBillingUrl(getBaseURL(runtime))}`,
+        throw Object.assign(
+          new Error(
+            `Eliza Cloud credits exhausted — top up at ${resolveCloudBillingUrl(getBaseURL(runtime))}`,
+          ),
+          { status },
         );
       }
       if (status === 429) {
@@ -302,7 +307,9 @@ export async function handleImageDescription(
           "Eliza Cloud rate limit exceeded for image description — try again in a minute"
         );
       }
-      throw new Error(`ElizaOS Cloud API error: ${status}`);
+      throw Object.assign(new Error(`ElizaOS Cloud API error: ${status}`), {
+        status,
+      });
     }
 
     type OpenAIResponseType = {
@@ -339,7 +346,7 @@ export async function handleImageDescription(
       throw new ElizaError(
         "Eliza Cloud did not complete the image description; retry with a model capable of returning the complete page",
         {
-          code: "MODEL_INCOMPLETE_OUTPUT",
+          code: "MODEL_OUTPUT_INCOMPLETE",
           context: { provider: "elizacloud", finishReason },
         }
       );

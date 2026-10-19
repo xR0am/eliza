@@ -16,7 +16,7 @@ import {
   TRIGGER_SCHEMA_VERSION,
   type TriggerConfig,
 } from '@elizaos/core';
-import { and, asc, desc, eq, gt, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, notInArray, or, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   embeddedExecutions,
@@ -42,6 +42,7 @@ import type {
   WorkflowRevision,
   WorkflowRevisionOperation,
   WorkflowRunEvent,
+  WorkflowSchedule,
   WorkflowTag,
 } from '../types/index';
 import { WORKFLOW_RUN_EVENT, WorkflowApiError } from '../types/index';
@@ -56,6 +57,7 @@ import {
   digestPhoneSpec,
   digestRecord,
   digestSource,
+  digestSourceState,
   digestText,
   HOSTED_SPEC,
   HOSTED_TEMPLATE_VERSION,
@@ -143,6 +145,27 @@ function requireMutable(workflow: WorkflowDefinition) {
     );
 }
 
+/**
+ * Next fire time of an enabled schedule, or a 400 when it cannot be armed.
+ * The cron scheduler evaluates a zone it cannot resolve on UTC, so an
+ * unrecognized zone (the model writes "PST") is rejected, not run on UTC.
+ */
+function scheduleNextRunAtMs(schedule: WorkflowSchedule, now: number): number {
+  const timeZone: unknown = schedule.timezone;
+  try {
+    if (typeof timeZone !== 'string') throw new RangeError('missing time zone');
+    new Intl.DateTimeFormat('en-US', { timeZone }).format(0);
+  } catch {
+    throw new WorkflowApiError(`Invalid workflow schedule time zone: ${String(timeZone)}`, 400);
+  }
+  const nextRunAtMs =
+    typeof schedule.cron === 'string' ? computeNextCronRunAtMs(schedule.cron, now, timeZone) : null;
+  if (nextRunAtMs === null) {
+    throw new WorkflowApiError(`Invalid workflow cron schedule: ${String(schedule.cron)}`, 400);
+  }
+  return nextRunAtMs;
+}
+
 function normalizeWorkflow(
   workflow: WorkflowDefinition,
   id: string | undefined,
@@ -182,6 +205,8 @@ function normalizeWorkflow(
   if (snapshot.steps !== undefined && !Array.isArray(snapshot.steps)) {
     throw new WorkflowApiError('Workflow steps must be an array', 400);
   }
+  // Checked before the write: activation arms this schedule after the row commits.
+  if (snapshot.schedule?.enabled) scheduleNextRunAtMs(snapshot.schedule, Date.now());
   const stepIds = new Set<string>();
   for (const step of snapshot.steps ?? []) {
     if (!step || typeof step !== 'object' || typeof step.id !== 'string' || !step.id.trim()) {
@@ -228,7 +253,7 @@ export class EmbeddedWorkflowService extends Service {
   private readonly workerReconciliations = new Map<string, ReturnType<typeof setTimeout>>();
   private reconciliationStopped = false;
   private readonly resumeAdmissions = new Map<string, Promise<void>>();
-  private scheduleWorkerReconciliation(execution: WorkflowExecution): void {
+  private scheduleWorkerReconciliation(execution: WorkflowExecution, delayMs = 1000): void {
     if (this.reconciliationStopped || this.workerReconciliations.has(execution.id)) return;
     const timer = setTimeout(() => {
       this.workerReconciliations.delete(execution.id);
@@ -239,9 +264,34 @@ export class EmbeddedWorkflowService extends Service {
           'Worker reconciliation unavailable; unfinished state preserved'
         );
       });
-    }, 1000);
+    }, delayMs);
     timer.unref?.();
     this.workerReconciliations.set(execution.id, timer);
+  }
+
+  /**
+   * Smithers does not wait for a timer in process: a run that reaches a
+   * timer that is not due returns `waiting-timer` and expects its host to
+   * call it again. Resume at the earliest timer that has not fired yet.
+   */
+  private scheduleTimerResume(execution: WorkflowExecution): void {
+    const fired = new Set<unknown>();
+    const created = new Map<unknown, number>();
+    for (const event of execution.events ?? []) {
+      const payload = event.payload as { timerId?: unknown; firesAtMs?: unknown } | undefined;
+      if (event.type === 'TimerFired' || event.type === 'TimerCancelled')
+        fired.add(payload?.timerId);
+      else if (event.type === 'TimerCreated' && typeof payload?.firesAtMs === 'number')
+        created.set(payload.timerId, payload.firesAtMs);
+    }
+    const pending = [...created].filter(([timerId]) => !fired.has(timerId));
+    const firesAtMs = pending.length
+      ? Math.min(...pending.map(([, at]) => at))
+      : Date.now() + 60_000;
+    // setTimeout overflows above 2^31-1 ms; a far timer is re-armed when the
+    // resumed run reports `waiting-timer` again.
+    const delayMs = Math.min(Math.max(firesAtMs - Date.now(), 0) + 100, 2_147_483_647);
+    this.scheduleWorkerReconciliation(execution, delayMs);
   }
 
   private readonly cancellationControls = new Map<string, Promise<void>>();
@@ -391,9 +441,15 @@ export class EmbeddedWorkflowService extends Service {
   }
 
   private async resumeInterruptedExecutions(): Promise<void> {
-    const interrupted = (await this.listExecutions()).data.filter(
-      (execution) => !execution.finished
-    );
+    const interrupted = (
+      await this.getDb()
+        .select()
+        .from(embeddedExecutions)
+        .where(
+          and(eq(embeddedExecutions.agentId, this.tenantId), eq(embeddedExecutions.finished, false))
+        )
+        .orderBy(desc(embeddedExecutions.startedAt))
+    ).map((row) => cloneJson(row.execution));
     for (const execution of interrupted) {
       try {
         await this.resumeExecution(execution);
@@ -581,11 +637,6 @@ export class EmbeddedWorkflowService extends Service {
       source = await digestSource(this.getDb(), this.tenantId, ownerId, spec.sourceId);
     if (source.revision !== spec.sourceRevision)
       throw new WorkflowApiError('Reviewed snapshot revision changed', 409);
-    if (source.live?.provider === 'native' && spec.template !== 'morning')
-      throw new WorkflowApiError(
-        'Selected phone sources support a reviewed morning brief or an on-demand dossier',
-        400
-      );
     if (source.live?.provider === 'native' && spec.enabled) {
       if (source.revoked || Date.parse(source.expiresAt) <= Date.now())
         throw new WorkflowApiError('Native source grant expired or revoked', 409);
@@ -680,26 +731,48 @@ export class EmbeddedWorkflowService extends Service {
     return execution;
   }
   async listHostedDigests(ownerId: string) {
-    return (
+    const rows = (
       await this.getDb()
         .select()
         .from(embeddedWorkflows)
         .where(eq(embeddedWorkflows.agentId, this.tenantId))
-    )
-      .filter(
-        (row) =>
-          row.workflow.metadata?.elizaOwnerEntityId === ownerId &&
-          row.workflow.metadata?.[HOSTED_SPEC] &&
-          !validateDigestSpec(JSON.parse(String(row.workflow.metadata[HOSTED_SPEC]))).manualOnly
-      )
+    ).filter(
+      (row) =>
+        row.workflow.metadata?.elizaOwnerEntityId === ownerId &&
+        row.workflow.metadata?.[HOSTED_SPEC]
+    );
+    const definitions = rows
       .map((row) => ({
-        id: row.id,
-        versionId: row.versionId,
-        name: row.name,
+        row,
         spec: validateDigestSpec(JSON.parse(String(row.workflow.metadata?.[HOSTED_SPEC]))),
-        active: row.active,
-        removed: isWorkflowRemoved(row.workflow),
-      }));
+      }))
+      .filter(({ spec }) => !spec.manualOnly);
+    if (!definitions.length) return [];
+    const sources = await this.getDb()
+      .select()
+      .from(hostedSources)
+      .where(
+        and(
+          eq(hostedSources.agentId, this.tenantId),
+          eq(hostedSources.ownerId, ownerId),
+          inArray(hostedSources.id, [...new Set(definitions.map(({ spec }) => spec.sourceId))])
+        )
+      );
+    const states = new Map(
+      sources.map((source) => [
+        source.id,
+        digestSourceState({ ...source.source, revoked: source.revoked }),
+      ])
+    );
+    return definitions.map(({ row, spec }) => ({
+      id: row.id,
+      versionId: row.versionId,
+      name: row.name,
+      spec,
+      active: row.active,
+      removed: isWorkflowRemoved(row.workflow),
+      sourceState: states.get(spec.sourceId) ?? 'revoked',
+    }));
   }
   async digestResults(ownerId: string, clientId: string) {
     const where = and(
@@ -1306,6 +1379,9 @@ export class EmbeddedWorkflowService extends Service {
           409
         );
       requireMutable(current.workflow);
+      // A stored schedule that cannot be armed must not commit as active.
+      if (active && current.workflow.schedule?.enabled)
+        scheduleNextRunAtMs(current.workflow.schedule, Date.now());
       await tx
         .insert(workflowRevisions)
         .values(this.revisionValues(id, current, active ? 'activate' : 'deactivate'));
@@ -1392,8 +1468,30 @@ export class EmbeddedWorkflowService extends Service {
       if (this.scheduleLocks.get(requested.id) === work) this.scheduleLocks.delete(requested.id);
     }
   }
+  /** True when a scheduled digest's reviewed source is revoked or expired. */
+  private async hostedSourceLapsed(workflow: WorkflowDefinitionResponse): Promise<boolean> {
+    if (!workflow.metadata?.[HOSTED_SPEC]) return false;
+    const spec = validateDigestSpec(JSON.parse(String(workflow.metadata[HOSTED_SPEC])));
+    if (spec.manualOnly) return false;
+    const [row] = await this.getDb()
+      .select()
+      .from(hostedSources)
+      .where(
+        and(
+          eq(hostedSources.agentId, this.tenantId),
+          eq(hostedSources.ownerId, String(workflow.metadata.elizaOwnerEntityId || '')),
+          eq(hostedSources.id, spec.sourceId)
+        )
+      );
+    return !row || digestSourceState({ ...row.source, revoked: row.revoked }) !== 'current';
+  }
   private async syncActiveSchedule(workflow: WorkflowDefinitionResponse): Promise<void> {
     if (workflow.metadata?.[HOSTED_SPEC] && workflow.active && workflow.schedule?.enabled) {
+      // Renewal saves a new reviewed version and re-arms this schedule.
+      if (await this.hostedSourceLapsed(workflow)) {
+        await this.removeSchedule(workflow.id);
+        return;
+      }
       const tasks = await this.runtime.getTasks({
         agentIds: [this.runtime.agentId],
         tags: [...WORKFLOW_TRIGGER_TAGS],
@@ -1412,10 +1510,7 @@ export class EmbeddedWorkflowService extends Service {
     const schedule = workflow.schedule;
     if (!workflow.active || !schedule?.enabled) return;
     const now = Date.now();
-    const nextRunAtMs = computeNextCronRunAtMs(schedule.cron, now, schedule.timezone);
-    if (nextRunAtMs === null) {
-      throw new WorkflowApiError(`Invalid workflow cron schedule: ${schedule.cron}`, 400);
-    }
+    const nextRunAtMs = scheduleNextRunAtMs(schedule, now);
     const triggerId = stringToUuid(`workflow-schedule:${this.tenantId}:${workflow.id}`);
     const trigger: TriggerConfig = {
       version: TRIGGER_SCHEMA_VERSION,
@@ -1720,6 +1815,12 @@ export class EmbeddedWorkflowService extends Service {
       if (pending.finished) await writeDigestResult(tx, this.tenantId, workflow, pending);
       return { workflow, pending, fresh: true };
     });
+    if (
+      accepted.fresh &&
+      accepted.pending.finished &&
+      (accepted.pending.output as Record<string, unknown> | undefined)?.paused === true
+    )
+      await this.syncSchedule(accepted.workflow);
     if (accepted.fresh && !accepted.pending.finished) {
       const controller = new AbortController();
       this.controllers.set(accepted.pending.id, controller);
@@ -1805,6 +1906,8 @@ export class EmbeddedWorkflowService extends Service {
             output: admission,
           };
           await this.saveExecution(unavailable);
+          if ((admission as Record<string, unknown>).paused === true)
+            await this.syncSchedule(workflow);
           return unavailable;
         }
         const spec = validateDigestSpec(JSON.parse(String(workflow.metadata[HOSTED_SPEC])));
@@ -1818,7 +1921,8 @@ export class EmbeddedWorkflowService extends Service {
                   owner,
                   source.live,
                   String(context.scheduledAt),
-                  controller.signal
+                  controller.signal,
+                  spec.template
                 )
               : await readHostedGoogleSource(this.runtime, owner, source.live, {
                   signal: controller.signal,
@@ -1948,6 +2052,7 @@ export class EmbeddedWorkflowService extends Service {
         ...(result.nextRunId ? { nextRunId: result.nextRunId } : {}),
       };
       await this.saveExecution(completed);
+      if (completed.status === 'waiting-timer') this.scheduleTimerResume(completed);
       return completed;
     } catch (error) {
       if (
@@ -2238,6 +2343,9 @@ export class EmbeddedWorkflowService extends Service {
       );
       if (!canonical || canonical.status !== decision || canonical.requestDigest !== requestDigest)
         throw new WorkflowApiError('Approval outcome unknown; refresh its receipt', 503);
+      const pendingEntry = (execution.approvals ?? []).find(
+        (item) => item.nodeId === nodeId && item.iteration === iteration
+      );
       execution.approvals = [
         ...(execution.approvals ?? []).filter(
           (item) => item.nodeId !== nodeId || item.iteration !== iteration
@@ -2248,7 +2356,7 @@ export class EmbeddedWorkflowService extends Service {
           nodeId,
           iteration,
           status: decision,
-          requestedAt: receipt.decidedAt ?? nowIso(),
+          requestedAt: pendingEntry?.requestedAt ?? nowIso(),
           decidedAt: canonical.decidedAt,
           decidedBy: ownerId,
           prompt: receipt.summary,
@@ -2389,17 +2497,21 @@ export class EmbeddedWorkflowService extends Service {
   async listExecutions(
     params: { workflowId?: string; limit?: number } = {}
   ): Promise<{ data: WorkflowExecution[] }> {
-    const rows = await this.getDb()
+    const query = this.getDb()
       .select()
       .from(embeddedExecutions)
-      .where(eq(embeddedExecutions.agentId, this.tenantId))
-      .orderBy(desc(embeddedExecutions.startedAt));
-    const data = rows
-      .filter((row) => !params.workflowId || row.workflowId === params.workflowId)
-      .map((row) => cloneJson(row.execution));
-    return {
-      data: params.limit === undefined ? data : data.slice(0, Math.max(0, params.limit)),
-    };
+      .where(
+        and(
+          eq(embeddedExecutions.agentId, this.tenantId),
+          params.workflowId ? eq(embeddedExecutions.workflowId, params.workflowId) : undefined
+        )
+      )
+      .orderBy(desc(embeddedExecutions.startedAt))
+      .$dynamic();
+    const rows = await (params.limit === undefined
+      ? query
+      : query.limit(Math.max(0, params.limit)));
+    return { data: rows.map((row) => cloneJson(row.execution)) };
   }
 
   async getExecution(id: string): Promise<WorkflowExecution> {

@@ -141,6 +141,8 @@ const STATES: Record<string, string> = {
   WI: "Wisconsin",
   WY: "Wyoming",
 };
+// "Charleston West Virginia" must not end at "Virginia".
+const STATES_LONGEST_FIRST = Object.entries(STATES).sort(([, a], [, b]) => b.length - a.length);
 type Place = {
   city: string;
   state: string;
@@ -190,14 +192,19 @@ const metadataCache = new Map<string, { expiresAt: number; value: Metadata }>();
 export function clearCurrentWeatherMetadataCacheForTests(): void {
   metadataCache.clear();
 }
-const fold = (v: string) =>
+// NFKD does not decompose œ; GNIS spells Cœur d'Alene as Coeur d'Alene.
+const PLAIN_LETTERS: Readonly<Record<string, string>> = {
+  œ: "oe",
+  Œ: "Oe",
+};
+/** The name in the plain spelling accepted by the USGS geocoder. */
+const plainLetters = (v: string) =>
   v
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
-    .toLowerCase()
-    .replace(/[.'’]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[œŒ]/g, (c) => PLAIN_LETTERS[c] ?? c);
+const fold = (v: string) =>
+  plainLetters(v).toLowerCase().replace(/[.'’]/g, "").replace(/\s+/g, " ").trim();
 const record = (v: unknown): Record<string, unknown> | undefined =>
   v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -233,7 +240,7 @@ export function parseExplicitUsWeatherQuery(
     .trim()
     .replace(/,\s*(?:USA|United States(?: of America)?)$/iu, "");
   if (location.length > 160 || /[^\p{L} .'’,-]/u.test(location)) return undefined;
-  for (const [state, name] of Object.entries(STATES)) {
+  for (const [state, name] of STATES_LONGEST_FIRST) {
     for (const suffix of [name, state]) {
       const pattern = new RegExp("(?:,\\s*|\\s+)" + suffix + "$", "i");
       const match = pattern.exec(location);
@@ -540,7 +547,10 @@ export async function runCurrentUsWeatherSearch(
     if (cached && cached.expiresAt > now()) metadata = cached.value;
     if (!metadata) {
       const geo = new URL("https://dashboard.waterdata.usgs.gov/service/geocoder/get/location/1.0");
-      geo.searchParams.set("term", target.city);
+      // The USGS geocoder finds "Espanola" and "Coeur d'Alene" but returns
+      // nothing for "Española" or "Cœur d'Alene"; the place filter below
+      // compares names folded the same way.
+      geo.searchParams.set("term", plainLetters(target.city));
       geo.searchParams.set("include", "gnis");
       geo.searchParams.set("states", target.state);
       geo.searchParams.set("maxSuggestions", "20");
