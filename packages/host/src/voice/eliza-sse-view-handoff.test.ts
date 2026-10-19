@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
+import { listenLoopbackHttp } from "../../../app/test/fixtures/loopback-server.ts";
 import { streamElizaConversation } from "./eliza-sse-bridge";
 import { createLocalRuntimeConversationFetch } from "./local-runtime-conversation-fetch";
 
@@ -186,19 +187,15 @@ test("only a valid canonical terminal receipt supplies the user message correlat
 
 test("bounded voice policy survives the actual SSE bridge and loopback adapter", async () => {
   const received: { headers: Headers; body: Record<string, unknown> }[] = [];
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      received.push({
-        headers: request.headers,
-        body: (await request.json()) as Record<string, unknown>,
-      });
-      return new Response(
-        'event: done\ndata: {"type":"done","text":"Ready."}\n\n',
-        { headers: { "content-type": "text/event-stream" } },
-      );
-    },
+  const server = await listenLoopbackHttp(async (request) => {
+    received.push({
+      headers: request.headers,
+      body: (await request.json()) as Record<string, unknown>,
+    });
+    return new Response(
+      'event: done\ndata: {"type":"done","text":"Ready."}\n\n',
+      { headers: { "content-type": "text/event-stream" } },
+    );
   });
   const adapter = createLocalRuntimeConversationFetch(server.url.origin, {
     agentId: "agent",
@@ -264,6 +261,6 @@ test("bounded voice policy survives the actual SSE bridge and loopback adapter",
     expect(received).toHaveLength(2);
     expect(received[1].headers.get("X-Eliza-Voice-Model-Policy")).toBeNull();
   } finally {
-    server.stop(true);
+    await server.close();
   }
 });

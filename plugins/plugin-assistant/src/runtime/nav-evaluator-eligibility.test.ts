@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { expect, test } from "vitest";
 import { isDeliveredNavigationOnlyTurn } from "./nav-evaluator-eligibility";
 import fixture from "./navigation-replay.fixture.json";
 

@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import ts from "typescript";
+import { expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { timeSpeechProxyFetch, speechUpstreamTraceId } from "./cloud-speech-proxy-timing";
 import { warmingRetryWaitSeconds } from "../utils/warming";
@@ -102,9 +103,7 @@ test("actual TTS body drain and attempt wrappers execute without buffering extra
   const source = readFileSync(new URL("./server-cloud-tts.ts", import.meta.url), "utf8");
   const from = source.indexOf("        const drainStarted=Date.now();"),
     to = source.indexOf("        client.signal.throwIfAborted();", from);
-  const body = new Bun.Transpiler({ loader: "ts" }).transformSync(
-    "async function runDrain(){" + source.slice(from, to) + ";return audioBuffer;}"
-  );
+  const body = ts.transpileModule("async function runDrain(){" + source.slice(from, to) + ";return audioBuffer;}", {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
   const logs: any[] = [];
   const run = new Function(
     "cloudResponse",

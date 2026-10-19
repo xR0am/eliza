@@ -1,6 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import ts from "typescript";
+import { afterEach, expect, test } from "vitest";
+import { listenLoopbackHttp } from "../../../app/test/fixtures/loopback-server.ts";
 import type { CartesiaInkRealtimeEvent } from "./cartesia-ink";
 import { VOICE_STREAM_PROTOCOL } from "./eliza-sse-bridge";
 import { createLocalRuntimeConversationFetch } from "./local-runtime-conversation-fetch";
@@ -14,18 +16,18 @@ import {
 import { createVoiceSessionRegistry } from "./session-registry";
 import { InMemoryVoiceUsageStore } from "./usage";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 const tick = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 async function until(read: () => boolean) {
-  for (let i = 0; i < 100 && !read(); i++) await Bun.sleep(5);
+  for (let i = 0; i < 100 && !read(); i++) await sleep(5);
   expect(read()).toBe(true);
 }
-function setup(prepared = false, bounded = false) {
+async function setup(prepared = false, bounded = false) {
   let policyClosed = 0;
   const control: ServerControlFrame[] = [],
     audio: Uint8Array[] = [],
@@ -39,53 +41,48 @@ function setup(prepared = false, bounded = false) {
     hold = false,
     transportClosed = 0,
     sttCancelled = 0;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (request) => {
-      requests.push({
-        url: request.url,
-        headers: request.headers,
-        body: await request.json(),
-      });
-      return new Response(
-        "event: done\ndata: " +
-          JSON.stringify({
-            type: "done",
-            userMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            text: "You are on Notes.",
-            actionResults: [
-              {
-                actionName: "VIEWS",
-                success: true,
-                values: {
-                  mode: "open",
-                  viewId: "notes",
-                  ...(prepared
-                    ? {
-                        navigationPrepared: true,
-                        completedActionHandoffId:
-                          "11111111-1111-4111-8111-111111111111",
-                        navigationBinding: {
-                          requestId: "11111111-1111-4111-8111-111111111111",
-                          clientId: "22222222-2222-4222-8222-222222222222",
-                          installationId:
-                            "33333333-3333-4333-8333-333333333333",
-                          viewId: "notes",
-                          viewType: "gui",
-                        },
-                      }
-                    : {}),
-                },
+  const server = await listenLoopbackHttp(async (request) => {
+    requests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await request.json(),
+    });
+    return new Response(
+      "event: done\ndata: " +
+        JSON.stringify({
+          type: "done",
+          userMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          text: "You are on Notes.",
+          actionResults: [
+            {
+              actionName: "VIEWS",
+              success: true,
+              values: {
+                mode: "open",
+                viewId: "notes",
+                ...(prepared
+                  ? {
+                      navigationPrepared: true,
+                      completedActionHandoffId:
+                        "11111111-1111-4111-8111-111111111111",
+                      navigationBinding: {
+                        requestId: "11111111-1111-4111-8111-111111111111",
+                        clientId: "22222222-2222-4222-8222-222222222222",
+                        installationId: "33333333-3333-4333-8333-333333333333",
+                        viewId: "notes",
+                        viewType: "gui",
+                      },
+                    }
+                  : {}),
               },
-            ],
-          }) +
-          "\n\n",
-        { headers: { "content-type": "text/event-stream" } },
-      );
-    },
+            },
+          ],
+        }) +
+        "\n\n",
+      { headers: { "content-type": "text/event-stream" } },
+    );
   });
-  cleanups.push(() => server.stop(true));
+  cleanups.push(() => server.close());
   const ports: VoiceSessionSpeechPorts = {
     openStt: (callback) => {
       event = callback;
@@ -206,7 +203,7 @@ function setup(prepared = false, bounded = false) {
   };
 }
 test("injected Ink/Sonic ports retain partial/final/audio/navigation through the existing LOCAL conversation route", async () => {
-  const f = setup();
+  const f = await setup();
   f.session.start();
   f.emit({ type: "connected", raw: {} });
   f.session.pushUplinkAudio(new Uint8Array(3200));
@@ -247,7 +244,7 @@ test("injected Ink/Sonic ports retain partial/final/audio/navigation through the
   expect(f.sttCancelled).toBe(1);
 });
 test("actual playback drain reopens uplink immediately, while stale completion cannot release it", async () => {
-  const f = setup();
+  const f = await setup();
   f.config.halfDuplexPlaybackSettleMs = 60_000;
   f.session.start();
   f.emit({ type: "connected", raw: {} });
@@ -269,7 +266,7 @@ test("actual playback drain reopens uplink immediately, while stale completion c
   expect(uplinks()).toBeGreaterThan(before);
 });
 test("injected speech still uses canonical interruption and ignores late audio after cancellation", async () => {
-  const f = setup();
+  const f = await setup();
   f.hold();
   f.session.start();
   f.emit({ type: "connected", raw: {} });
@@ -286,8 +283,8 @@ test("injected speech still uses canonical interruption and ignores late audio a
   f.session.bye();
   expect(f.transportClosed).toBe(1);
 });
-test("injected mode rejects mixed or incomplete providers before any provider opens; default mode remains direct", () => {
-  const f = setup();
+test("injected mode rejects mixed or incomplete providers before any provider opens; default mode remains direct", async () => {
+  const f = await setup();
   let opened = 0;
   for (const patch of [
     { speechProvider: undefined },
@@ -328,7 +325,7 @@ test("injected mode rejects mixed or incomplete providers before any provider op
 
 test("explicit completed-action UI context survives actual VoiceSession/SSE/local conversation request", async () => {
   const { parseVoiceUiContext } = await import("../voice");
-  const f = setup();
+  const f = await setup();
   const uiContext = parseVoiceUiContext({
     uiClientId: "11111111-1111-4111-8111-111111111111",
     uiBrowserSurface: "native",
@@ -437,15 +434,24 @@ async function parseActualChatPayload(body: unknown) {
     new URL("../../../agent/src/api/chat-view-metadata.ts", import.meta.url),
     "utf8",
   );
-  const metadataJs = new Bun.Transpiler({ loader: "ts" }).transformSync(
+  const metadataJs = ts.transpileModule(
     metadataSource.replace(/^import type .*;$/gm, "").replace(/^export /gm, ""),
-  );
+    {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+      },
+    },
+  ).outputText;
   const enrich = new Function(
     metadataJs + ";return enrichChatUiViewMetadata;",
   )();
-  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(
-    node.getText(ast).replace(/^export /, ""),
-  );
+  const js = ts.transpileModule(node.getText(ast).replace(/^export /, ""), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+    },
+  }).outputText;
   const ports = {
     CHAT_MAX_BODY_BYTES: 1_000_000,
     normalizeIncomingChatPrompt: (text: string) => text.trim(),
@@ -479,7 +485,7 @@ async function parseActualChatPayload(body: unknown) {
 }
 
 test("actual VoiceSession retains prepared binding on its terminal navigation frame", async () => {
-  const f = setup(true);
+  const f = await setup(true);
   f.session.start();
   f.emit({ type: "connected", raw: {} });
   f.emit({ type: "start-of-turn", transcript: "", raw: {} });
@@ -502,7 +508,7 @@ test("actual VoiceSession retains prepared binding on its terminal navigation fr
 });
 
 test("actual VoiceSession carries its immutable host trial scope and closes it on Stop", async () => {
-  const f = setup(false, true);
+  const f = await setup(false, true);
   const original = f.config.sessionId;
   f.session.start();
   f.emit({ type: "connected", raw: {} });
@@ -533,7 +539,7 @@ test("actual VoiceSession carries its immutable host trial scope and closes it o
 });
 
 test("barge-in keeps the actual VoiceSession trial scope for the next caller turn", async () => {
-  const f = setup(false, true);
+  const f = await setup(false, true);
   f.hold();
   f.session.start();
   f.emit({ type: "connected", raw: {} });

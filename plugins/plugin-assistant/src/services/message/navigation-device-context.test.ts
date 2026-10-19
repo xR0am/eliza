@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
+import { expect, test } from "vitest";
 
 const source = readFileSync(
   new URL("./context-assembly.ts", import.meta.url),
@@ -14,9 +15,15 @@ const fn = new Function(
   "getDeviceActionTurn",
   "deviceOperationSupportedByCapabilities",
   "CLOCK_ALARMS_CAPABILITY",
-  new Bun.Transpiler({ loader: "ts" }).transformSync(
+  ts.transpileModule(
     "const events=[];\n" + source.slice(start, end) + "\nreturn events;",
-  ),
+    {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+      },
+    },
+  ).outputText,
 );
 const runtime = {};
 function render(capabilities: string[], matching = true) {

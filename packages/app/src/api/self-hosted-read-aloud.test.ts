@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { cartesiaEvents } from "../../test/fixtures/cartesia-events";
 import { synthesizeDirectReadAloud } from "./self-hosted-read-aloud";
 

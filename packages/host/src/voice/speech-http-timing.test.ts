@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { speechHttpTimings } from "./speech-http-timing";
 
 test("keeps only known numeric durations without arbitrary header descriptions", () => {

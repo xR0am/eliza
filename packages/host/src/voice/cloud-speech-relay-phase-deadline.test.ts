@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import { expect, test } from "vitest";
 import {
   type CloudSpeechRelayTransportDiagnostic,
   createCloudSpeechRelayPorts,
@@ -129,7 +130,7 @@ test("abort during upgrade fences late open and ready without hello or retry", a
     () => null,
     (error) => error,
   );
-  await Bun.sleep(20);
+  await sleep(20);
   controller.abort();
   expect(await result).toBeInstanceOf(Error);
   f.open();

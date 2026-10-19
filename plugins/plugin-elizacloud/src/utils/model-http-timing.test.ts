@@ -1,14 +1,13 @@
-import { expect, test } from "bun:test";
+import {listenLoopbackHttp} from "../../../../packages/app/test/fixtures/loopback-server.ts";
+import ts from "typescript";
+import { expect, test } from "vitest";
 import {
   createModelHttpTiming,
   type ModelHttpObservation,
 } from "./model-http-timing";
 test("real loopback fetch observes headers/body separately without consuming or leaking response", async () => {
   const events: ModelHttpObservation[] = [];
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch() {
+  const server = await listenLoopbackHttp(()=>{
       return new Response(
         new ReadableStream({
           start(c) {
@@ -28,8 +27,7 @@ test("real loopback fetch observes headers/body separately without consuming or 
           },
         },
       );
-    },
-  });
+    });
   try {
     const timing = createModelHttpTiming(
       "chat/completions",
@@ -55,7 +53,7 @@ test("real loopback fetch observes headers/body separately without consuming or 
     expect(events[1].durationMs).toBeGreaterThanOrEqual(15);
     expect(JSON.stringify(events)).not.toMatch(/PRIVATE|SECRET|unknown/);
   } finally {
-    server.stop(true);
+    await server.close();
   }
 });
 test("attempts keep one correlation group and malformed headers or sink never alter transport", async () => {
@@ -108,10 +106,7 @@ test("original transport errors preserve identity and bounded static failed outc
 test("real Cloud SDK requestRaw preserves loopback response and private content stays outside diagnostics", async () => {
   const { ElizaCloudClient } = await import("@elizaos/cloud-sdk");
   const events: ModelHttpObservation[] = [];
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch(req) {
+  const server = await listenLoopbackHttp((req)=>{
       expect(new URL(req.url).pathname).toBe("/api/v1/chat/completions");
       return Response.json(
         { choices: [{ message: { content: "PRIVATE_RESPONSE" } }] },
@@ -125,8 +120,7 @@ test("real Cloud SDK requestRaw preserves loopback response and private content 
           },
         },
       );
-    },
-  });
+    });
   try {
     const client = new ElizaCloudClient({
       baseUrl: server.url.origin,
@@ -160,7 +154,7 @@ test("real Cloud SDK requestRaw preserves loopback response and private content 
     });
     expect(JSON.stringify(events)).not.toMatch(/PRIVATE|fake-key/);
   } finally {
-    server.stop(true);
+    await server.close();
   }
 });
 
@@ -184,9 +178,7 @@ test("actual production retry wrapper records each attempt and original body whi
     "logger",
     "sleepMs",
     "WARMING_RETRY_DELAYS_MS",
-    new Bun.Transpiler({ loader: "ts" }).transformSync(
-      src.slice(a, b).replace("export ", ""),
-    ) + ";return requestNativeWithWarmingRetry;",
+    ts.transpileModule(src.slice(a, b).replace("export ", ""), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText + ";return requestNativeWithWarmingRetry;",
   )(
     (route: string, trace?: string) =>
       createModelHttpTiming(route, trace, (e) => rows.push(e)),

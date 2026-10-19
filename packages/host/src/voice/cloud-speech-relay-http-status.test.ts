@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { createCloudSpeechRelayPorts } from "./cloud-speech-relay-client";
 
 test("HTTP availability is transport, not authorization, and never retries consent or mint", async () => {

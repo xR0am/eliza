@@ -1,4 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import { afterEach, expect, test } from "vitest";
+import {
+  type LoopbackWebSocket,
+  listenLoopbackHttp,
+  listenLoopbackWebSocket,
+} from "../../../app/test/fixtures/loopback-server.ts";
 import {
   type CloudSpeechRelayClientOptions,
   type CloudSpeechRelayTransportDiagnostic,
@@ -11,15 +17,15 @@ import { createVoiceSessionRegistry } from "./session-registry";
 import { encodeSpeechRelayAudio } from "./speech-relay-wire";
 import { InMemoryVoiceUsageStore } from "./usage";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const close of cleanups.splice(0)) close();
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of cleanups.splice(0)) await close();
 });
 const until = async (read: () => boolean) => {
-  for (let n = 0; n < 100 && !read(); n++) await Bun.sleep(5);
+  for (let n = 0; n < 100 && !read(); n++) await sleep(5);
   expect(read()).toBe(true);
 };
-function fixture() {
+async function fixture() {
   const account = "server-account-secret",
     token = "one-use-speech-token",
     sessionId = crypto.randomUUID(),
@@ -27,24 +33,18 @@ function fixture() {
       [],
     controls: Record<string, unknown>[] = [],
     pcm: Uint8Array[] = [],
-    sockets: Bun.ServerWebSocket<unknown>[] = [],
+    sockets: LoopbackWebSocket[] = [],
     pendingSpeech: (() => void)[] = [],
     diagnostics: CloudSpeechRelayTransportDiagnostic[] = [];
   let expiry = new Date(Date.now() + 60000).toISOString(),
     mode = "ok",
     current = true,
     connections = 0;
-  const server = Bun.serve<unknown>({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (request, server) => {
+  const server = await listenLoopbackWebSocket(
+    async (request) => {
       const url = new URL(request.url);
-      if (url.pathname === "/api/v1/voice/speech/ws") {
-        if (url.search !== `?sessionId=${sessionId}`)
-          return new Response(null, { status: 400 });
-        if (server.upgrade(request, { data: {} })) return;
+      if (url.pathname === "/api/v1/voice/speech/ws")
         return new Response(null, { status: 400 });
-      }
       requests.push({
         path: url.pathname,
         authorization: request.headers.get("authorization"),
@@ -75,78 +75,90 @@ function fixture() {
         ...(mode === "extra" ? { apiKey: "must-reject" } : {}),
       });
     },
-    websocket: {
-      open(ws) {
-        connections++;
-        sockets.push(ws);
-      },
-      message(ws, value) {
-        if (typeof value !== "string") {
-          pcm.push(new Uint8Array(value));
-          return;
-        }
-        const frame = JSON.parse(value);
-        controls.push(frame);
-        if (frame.t === "hello") {
-          expect(frame.token).toBe(token);
-          if (mode === "hold-ready") return;
-          if (mode === "reject-ready" || mode === "reject-credit") {
-            ws.send(
-              JSON.stringify({
-                t: "error",
-                code: "unavailable",
-                ...(mode === "reject-credit"
-                  ? { reason: "insufficient_credits" }
-                  : {}),
-              }),
-            );
-            return;
-          }
+    (request) => {
+      const url = new URL(request.url);
+      return (
+        url.pathname === "/api/v1/voice/speech/ws" &&
+        url.search === `?sessionId=${sessionId}`
+      );
+    },
+  );
+  server.sockets.on("connection", (ws) => {
+    connections++;
+    sockets.push(ws);
+
+    ws.on("message", (data, isBinary) => {
+      const bytes = Array.isArray(data)
+        ? Buffer.concat(data)
+        : Buffer.isBuffer(data)
+          ? data
+          : Buffer.from(data);
+      const value = isBinary ? new Uint8Array(bytes) : bytes.toString();
+      if (typeof value !== "string") {
+        pcm.push(new Uint8Array(value));
+        return;
+      }
+      const frame = JSON.parse(value);
+      controls.push(frame);
+      if (frame.t === "hello") {
+        expect(frame.token).toBe(token);
+        if (mode === "hold-ready") return;
+        if (mode === "reject-ready" || mode === "reject-credit") {
           ws.send(
             JSON.stringify({
-              t: "ready",
-              version: 1,
-              sampleRate: 16000,
-              channels: 1,
-              expiresAt: expiry,
+              t: "error",
+              code: "unavailable",
+              ...(mode === "reject-credit"
+                ? { reason: "insufficient_credits" }
+                : {}),
             }),
           );
-          ws.send(JSON.stringify({ t: "stt", event: { type: "connected" } }));
           return;
         }
-        if (frame.t === "prepare") {
-          if (mode !== "hold-prepare")
-            ws.send(JSON.stringify({ t: "tts_prepared", id: frame.id }));
-          return;
-        }
-        if (frame.t === "tts") {
-          const deliver = () => {
+        ws.send(
+          JSON.stringify({
+            t: "ready",
+            version: 1,
+            sampleRate: 16000,
+            channels: 1,
+            expiresAt: expiry,
+          }),
+        );
+        ws.send(JSON.stringify({ t: "stt", event: { type: "connected" } }));
+        return;
+      }
+      if (frame.t === "prepare") {
+        if (mode !== "hold-prepare")
+          ws.send(JSON.stringify({ t: "tts_prepared", id: frame.id }));
+        return;
+      }
+      if (frame.t === "tts") {
+        const deliver = () => {
+          ws.send(
+            encodeSpeechRelayAudio(frame.id, new Uint8Array([1, 2, 3, 4])),
+          );
+          if (frame.flush)
             ws.send(
-              encodeSpeechRelayAudio(frame.id, new Uint8Array([1, 2, 3, 4])),
+              JSON.stringify({
+                t: "flush_complete",
+                id: frame.id,
+                flushId: 1,
+              }),
             );
-            if (frame.flush)
-              ws.send(
-                JSON.stringify({
-                  t: "flush_complete",
-                  id: frame.id,
-                  flushId: 1,
-                }),
-              );
-          };
-          if (mode === "hold-speech") pendingSpeech.push(deliver);
-          else deliver();
-        }
-        if (frame.t === "finish") {
-          const deliver = () =>
-            ws.send(JSON.stringify({ t: "complete", id: frame.id }));
-          if (mode === "hold-speech") pendingSpeech.push(deliver);
-          else deliver();
-        }
-        if (frame.t === "stop") ws.close(1000, "stopped");
-      },
-    },
+        };
+        if (mode === "hold-speech") pendingSpeech.push(deliver);
+        else deliver();
+      }
+      if (frame.t === "finish") {
+        const deliver = () =>
+          ws.send(JSON.stringify({ t: "complete", id: frame.id }));
+        if (mode === "hold-speech") pendingSpeech.push(deliver);
+        else deliver();
+      }
+      if (frame.t === "stop") ws.close(1000, "stopped");
+    });
   });
-  cleanups.push(() => server.stop(true));
+  cleanups.push(() => server.close());
   const options: CloudSpeechRelayClientOptions = {
     enabled: true,
     logger: {
@@ -188,7 +200,7 @@ function fixture() {
   };
 }
 test("server-only client uses account auth only for fixed HTTP routes, then canonical STT and one streamed Sonic context", async () => {
-  const f = fixture(),
+  const f = await fixture(),
     client = await createCloudSpeechRelayPorts(f.options),
     events: unknown[] = [],
     audio: Uint8Array[] = [],
@@ -254,7 +266,7 @@ test("server-only client uses account auth only for fixed HTTP routes, then cano
   );
 });
 test("cancel never replays a context and ignores its delayed audio, while owner changes block further dispatch", async () => {
-  const f = fixture(),
+  const f = await fixture(),
     client = await createCloudSpeechRelayPorts(f.options);
   let frames = 0;
   const stream = client.speechPorts.tts.createStream(
@@ -269,7 +281,7 @@ test("cancel never replays a context and ignores its delayed audio, while owner 
   if (!sent) throw Error("Expected TTS dispatch");
   const id = sent.id as string;
   f.sockets[0].send(encodeSpeechRelayAudio(id, new Uint8Array([8, 8])));
-  await Bun.sleep(10);
+  await sleep(10);
   const count = f.controls.filter((c) => c.t === "tts").length;
   expect(() =>
     stream.sendPhrase({ text: "Replay", continueContext: false }),
@@ -310,7 +322,7 @@ test("disabled mode and unsafe origin fail before credential or network access; 
     ).rejects.toThrow();
   expect(credentials).toBe(0);
   for (const mode of ["foreign", "expired", "extra"]) {
-    const f = fixture();
+    const f = await fixture();
     f.mode(mode);
     await expect(createCloudSpeechRelayPorts(f.options)).rejects.toThrow();
     expect(f.connections).toBe(0);
@@ -320,7 +332,7 @@ test("disabled mode and unsafe origin fail before credential or network access; 
   }
 });
 test("HTTP redirects are refused without leaking credentials or retrying admission", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.mode("redirect");
   await expect(createCloudSpeechRelayPorts(f.options)).rejects.toThrow();
   expect(f.requests).toHaveLength(1);
@@ -328,7 +340,7 @@ test("HTTP redirects are refused without leaking credentials or retrying admissi
 });
 
 test("abort during the one-shot hello closes its socket and revokes the minted session without retry", async () => {
-  const f = fixture(),
+  const f = await fixture(),
     abort = new AbortController();
   f.mode("hold-ready");
   const pending = createCloudSpeechRelayPorts({
@@ -344,7 +356,7 @@ test("abort during the one-shot hello closes its socket and revokes the minted s
 });
 test("expiry and malformed provider frames retire active contexts and never reopen or emit later audio", async () => {
   for (const mode of ["short", "malformed"]) {
-    const f = fixture();
+    const f = await fixture();
     if (mode === "short") f.mode(mode);
     const client = await createCloudSpeechRelayPorts(f.options),
       events: unknown[] = [];
@@ -376,38 +388,34 @@ test("expiry and malformed provider frames retire active contexts and never reop
 });
 
 test("canonical LOCAL VoiceSession consumes relay speech ports without any Cloud agent or model request", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.mode("hold-speech");
   const client = await createCloudSpeechRelayPorts(f.options),
     control: ServerControlFrame[] = [],
     audio: Uint8Array[] = [],
     localRequests: string[] = [],
     lifecycle: string[] = [];
-  const runtime = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: (request) => {
-      localRequests.push(new URL(request.url).pathname);
-      expect(request.headers.get("authorization")).toBeNull();
-      return new Response(
-        "event: done\ndata: " +
-          JSON.stringify({
-            type: "done",
-            text: "You are on Notes.",
-            actionResults: [
-              {
-                actionName: "VIEWS",
-                success: true,
-                values: { mode: "open", viewId: "notes" },
-              },
-            ],
-          }) +
-          "\n\n",
-        { headers: { "content-type": "text/event-stream" } },
-      );
-    },
+  const runtime = await listenLoopbackHttp((request) => {
+    localRequests.push(new URL(request.url).pathname);
+    expect(request.headers.get("authorization")).toBeNull();
+    return new Response(
+      "event: done\ndata: " +
+        JSON.stringify({
+          type: "done",
+          text: "You are on Notes.",
+          actionResults: [
+            {
+              actionName: "VIEWS",
+              success: true,
+              values: { mode: "open", viewId: "notes" },
+            },
+          ],
+        }) +
+        "\n\n",
+      { headers: { "content-type": "text/event-stream" } },
+    );
   });
-  cleanups.push(() => runtime.stop(true));
+  cleanups.push(() => runtime.close());
   const session = new VoiceSession({
     sessionId: crypto.randomUUID(),
     jti: crypto.randomUUID(),
@@ -502,7 +510,7 @@ test("canonical LOCAL VoiceSession consumes relay speech ports without any Cloud
 });
 
 test("an owner mismatch on uplink retires active paid speech before forwarding another frame", async () => {
-  const f = fixture(),
+  const f = await fixture(),
     client = await createCloudSpeechRelayPorts(f.options);
   const stt = client.speechPorts.openStt(() => {}),
     stream = client.speechPorts.tts.createStream(
@@ -521,7 +529,7 @@ test("an owner mismatch on uplink retires active paid speech before forwarding a
 });
 
 test("retirement survives owner removal during its response and remains bound, bounded and once-only", async () => {
-  const f = fixture();
+  const f = await fixture();
   let retirements = 0;
   const client = await createCloudSpeechRelayPorts({
     ...f.options,
@@ -558,7 +566,7 @@ test("retirement survives owner removal during its response and remains bound, b
 });
 
 test("failed retirement remains unconfirmed and never retries the captured credential or session", async () => {
-  const f = fixture();
+  const f = await fixture();
   let retirements = 0;
   const client = await createCloudSpeechRelayPorts({
     ...f.options,
@@ -586,7 +594,7 @@ test("failed retirement remains unconfirmed and never retries the captured crede
 });
 
 test("startup timings and fake remote close preserve public code and PCM counters without private canaries", async () => {
-  const f = fixture(),
+  const f = await fixture(),
     slot: { socket?: WebSocket } = {};
   const client = await createCloudSpeechRelayPorts({
     ...f.options,
@@ -667,7 +675,7 @@ test("only recognized scalar wire codes enter diagnostics; malformed private fra
     "PRIVATE_WIRE_CANARY",
     ["closed"],
   ] as const) {
-    const f = fixture(),
+    const f = await fixture(),
       client = await createCloudSpeechRelayPorts(f.options);
     client.speechPorts.openStt(() => {});
     f.send({ t: "error", code });
@@ -693,7 +701,7 @@ test("only recognized scalar wire codes enter diagnostics; malformed private fra
 });
 
 test("throwing diagnostic sink neither blocks startup nor changes teardown or retries", async () => {
-  const f = fixture();
+  const f = await fixture();
   let calls = 0;
   const client = await createCloudSpeechRelayPorts({
     ...f.options,
@@ -715,7 +723,7 @@ test("throwing diagnostic sink neither blocks startup nor changes teardown or re
 });
 
 test("bootstrap refusal records only its static HTTP stage and public status before any socket", async () => {
-  const f = fixture();
+  const f = await fixture();
   let sockets = 0;
   await expect(
     createCloudSpeechRelayPorts({
@@ -750,7 +758,7 @@ test("bootstrap refusal records only its static HTTP stage and public status bef
 });
 
 test("HTTP bootstrap diagnostics preserve only fixed Server-Timing durations and separate body drain", async () => {
-  const f = fixture();
+  const f = await fixture();
   const ports = await createCloudSpeechRelayPorts({
     ...f.options,
     fetch: Object.assign(
@@ -792,7 +800,7 @@ test("HTTP bootstrap diagnostics preserve only fixed Server-Timing durations and
 });
 
 test("Cloud proxy opened waits for actual preparation ACK; late ACK after cancel cannot resurrect it", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.mode("hold-prepare");
   const client = await createCloudSpeechRelayPorts(f.options);
   let opened = false;
@@ -817,7 +825,7 @@ test("Cloud proxy opened waits for actual preparation ACK; late ACK after cancel
 });
 test("Stop, owner replacement and expiry before prepare ACK reject readiness without another admission", async () => {
   for (const mode of ["cancel", "owner", "stop"]) {
-    const f = fixture();
+    const f = await fixture();
     f.mode("hold-prepare");
     const client = await createCloudSpeechRelayPorts(f.options);
     const stream = client.speechPorts.tts.createStream({}, {});
@@ -839,7 +847,7 @@ test("Stop, owner replacement and expiry before prepare ACK reject readiness wit
     } else await client.close();
     await expect(stream.opened).rejects.toBeInstanceOf(Error);
     if (mode === "cancel") f.send({ t: "tts_prepared", id: p.id });
-    await Bun.sleep(5);
+    await sleep(5);
     expect(opened).toBe(false);
     expect(f.requests.filter((r) => r.path.endsWith("/session"))).toHaveLength(
       1,
@@ -848,7 +856,7 @@ test("Stop, owner replacement and expiry before prepare ACK reject readiness wit
   }
 });
 test("lease expiry while provider preparation is pending rejects opened and cannot remint", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.mode("short");
   const client = await createCloudSpeechRelayPorts(f.options);
   f.mode("hold-prepare");
@@ -868,7 +876,7 @@ test("lease expiry while provider preparation is pending rejects opened and cann
 });
 
 test("bootstrap diagnostics retain only validated Cloud HTTP trace IDs for each consent and mint", async () => {
-  const f = fixture();
+  const f = await fixture();
   const ports = await createCloudSpeechRelayPorts({
     ...f.options,
     fetch: Object.assign(
@@ -914,7 +922,7 @@ test("missing, invalid and throwing HTTP trace headers stay absent without alter
     "PRIVATE_TRACE_HEADER_CANARY",
     "throw-getter",
   ]) {
-    const f = fixture();
+    const f = await fixture();
     let calls = 0;
     await expect(
       createCloudSpeechRelayPorts({
@@ -963,7 +971,7 @@ test("missing, invalid and throwing HTTP trace headers stay absent without alter
 
 test("HTTP trace capture precedes body cancellation and cannot mask original failures even when logging throws", async () => {
   for (const failure of ["cancel", "fetch"]) {
-    const f = fixture();
+    const f = await fixture();
     const original = Error("PRIVATE_ORIGINAL_FAILURE");
     let calls = 0;
     await expect(
@@ -1006,7 +1014,7 @@ test("HTTP trace capture precedes body cancellation and cannot mask original fai
 });
 
 test("pre-ready admission errors retain only the validated public wire code and send no PCM", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.mode("reject-ready");
   await expect(createCloudSpeechRelayPorts(f.options)).rejects.toThrow();
   expect(
@@ -1022,7 +1030,7 @@ test("pre-ready admission errors retain only the validated public wire code and 
 });
 
 test("negotiated insufficient credits stop before PCM with a public billing reason", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.mode("reject-credit");
   await expect(createCloudSpeechRelayPorts(f.options)).rejects.toMatchObject({
     code: "insufficient_credits",
