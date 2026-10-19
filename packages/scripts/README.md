@@ -80,3 +80,12 @@ all registration queries run in the same read-only transaction. Existing `diagno
 and `repair` behavior is unchanged. A present Worker registry is not permission to
 replace it: preserve every existing client and Android certificate when repairing
 configuration. This inventory neither reveals nor changes those values.
+The protected **Cloud Catalog Diagnostic** workflow checks only the five Stripe
+catalog binding names. It then makes one unauthenticated plans request with a
+random diagnostic header. A temporary Wrangler tail filters that header and GET
+method. The script emits only HTTP status and recognized catalog failure codes
+from the exact plans URL. Tail output stays in bounded memory; Wrangler disk logs
+and metrics are disabled. No provider configuration or payment is changed.
+Production requires `main`. A 503 without a captured code fails the diagnostic;
+it does not prove a missing binding. Compare binding presence and the captured
+code before repairing provider configuration.
