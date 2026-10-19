@@ -10,7 +10,7 @@ import {
 const bindings = [
   "ELIZA_MOBILE_APP_AUTH_CLIENTS_JSON",
   "ELIZA_MOBILE_APP_AUTH_APP_ID",
-  "ANDROID_ASSET_LINKS_JSON",
+  "ELIZA_ANDROID_ASSET_LINKS_JSON",
 ] as const;
 
 export async function inventoryRegistration(
