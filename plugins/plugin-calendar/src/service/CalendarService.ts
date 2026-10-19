@@ -1,3 +1,4 @@
+import { createManagedCalendarMutationPort } from "../mutations/managed.js";
 /**
  * The calendar domain service — the single owner of calendar reads and
  * mutations across Google, Microsoft, Apple, and guarded ICS/webcal sources.
@@ -5923,6 +5924,30 @@ export class CalendarService extends Service {
     const calendarId = normalizeCalendarId(request.calendarId);
     const recurrence = normalizeRecurrence(request.recurrence);
     const range = resolveCalendarEventRange(request, now);
+    const managed = createManagedCalendarMutationPort(
+      process.env,
+      fetch,
+      this.agentId(),
+    );
+    if (request.grantId && managed?.owns(request.grantId)) {
+      if (side && side !== "owner")
+        throw new CalendarServiceError(
+          403,
+          "Select the owner Calendar.",
+          "CALENDAR_MANAGED_OWNER_REQUIRED",
+        );
+      await managed.capabilities(request.grantId, calendarId);
+      return {
+        ...request,
+        side: "owner",
+        grantId: request.grantId,
+        calendarId,
+        startAt: range.startAt,
+        endAt: range.endAt,
+        timeZone: range.timeZone,
+        ...(recurrence ? { recurrence } : {}),
+      };
+    }
     if (!request.grantId || isElizaCalendarGrant(request.grantId)) {
       assertCalendarRecordsAllowed();
       if (calendarId !== ELIZA_CALENDAR_ID) {
@@ -6954,6 +6979,40 @@ export class CalendarService extends Service {
         eventId: targetEventId,
       });
     }
+    const requestedStartAt = request.startAt
+      ? normalizeCalendarDateTimeInTimeZone(
+          request.startAt,
+          "startAt",
+          parseTimeZone,
+          "reject",
+        )
+      : undefined;
+    const requestedEndAt = request.endAt
+      ? normalizeCalendarDateTimeInTimeZone(
+          request.endAt,
+          "endAt",
+          parseTimeZone,
+          "reject",
+        )
+      : undefined;
+    // The times are the picked occurrence's new times. Written as-is onto the
+    // master they would move the series start to that occurrence's date and
+    // drop every earlier occurrence, so apply them as a wall-clock shift of
+    // the master's own start instead.
+    const seriesTimes =
+      !allDayRange &&
+      targetEventId !== request.eventId &&
+      (requestedStartAt || requestedEndAt)
+        ? await this.shiftSeriesMasterTimes({
+            grant,
+            calendarId: request.calendarId,
+            occurrenceEventId: request.eventId,
+            masterEventId: targetEventId,
+            startAt: requestedStartAt,
+            endAt: requestedEndAt,
+            replacesRecurrence: recurrence !== undefined,
+          })
+        : null;
     const updateEvent = requireGoogleServiceMethod(this.runtime, "updateEvent");
     let googleEvent: GoogleCalendarEvent;
     try {
@@ -6967,26 +7026,12 @@ export class CalendarService extends Service {
           description: request.description,
           location: request.location,
           startAt:
-            allDayRange?.startDate ??
-            (request.startAt
-              ? normalizeCalendarDateTimeInTimeZone(
-                  request.startAt,
-                  "startAt",
-                  parseTimeZone,
-                  "reject",
-                )
-              : undefined),
+            allDayRange?.startDate ?? seriesTimes?.startAt ?? requestedStartAt,
           endAt:
             allDayRange?.endDateExclusive ??
-            (request.endAt
-              ? normalizeCalendarDateTimeInTimeZone(
-                  request.endAt,
-                  "endAt",
-                  parseTimeZone,
-                  "reject",
-                )
-              : undefined),
-          timeZone,
+            seriesTimes?.endAt ??
+            requestedEndAt,
+          timeZone: seriesTimes?.timeZone ?? timeZone,
           attendees:
             request.attendees === undefined
               ? undefined
@@ -7707,6 +7752,30 @@ export class CalendarService extends Service {
       recurrenceScope?: LifeOpsCalendarRecurrenceScope | null;
     },
   ): Promise<LifeOpsCalendarEvent> {
+    const managed = createManagedCalendarMutationPort(
+      process.env,
+      fetch,
+      this.agentId(),
+    );
+    if (request.grantId && managed?.owns(request.grantId)) {
+      if (request.side && request.side !== "owner")
+        throw new CalendarServiceError(
+          403,
+          "Select the owner Calendar.",
+          "CALENDAR_MANAGED_OWNER_REQUIRED",
+        );
+      if (request.recurrenceScope && request.recurrenceScope !== "instance")
+        throw new CalendarServiceError(
+          409,
+          "Review recurring-series changes in Calendar.",
+          "CALENDAR_MANAGED_SERIES_REVIEW_REQUIRED",
+        );
+      return managed.target(
+        request.grantId,
+        normalizeCalendarId(request.calendarId),
+        request.eventId,
+      );
+    }
     // Composite local identities are not external provider IDs. Reject a
     // dropped/wrong agent prefix (including UI element IDs) instead of sending
     // it to Google or silently rebinding it to a different local event.
@@ -7872,6 +7941,111 @@ export class CalendarService extends Service {
       "calendar_event_updated",
     );
     return event;
+  }
+
+  /**
+   * Map new times for one occurrence onto its series master: the master keeps
+   * its own start date and moves by the same wall-clock shift, so "move all to
+   * 3pm" changes every occurrence, earlier ones included. The new duration
+   * applies to the whole series. A shift to another day is refused when the
+   * rule pins days (BYDAY etc.) and is not replaced in the same request: the
+   * moved start would no longer match the rule.
+   */
+  private async shiftSeriesMasterTimes(args: {
+    grant: LifeOpsConnectorGrant;
+    calendarId?: string | null;
+    occurrenceEventId: string;
+    masterEventId: string;
+    startAt?: string;
+    endAt?: string;
+    replacesRecurrence: boolean;
+  }): Promise<{ startAt: string; endAt: string; timeZone: string }> {
+    const getEvent = requireGoogleServiceMethod(this.runtime, "getEvent");
+    const accountId = accountIdForGrant(args.grant);
+    const calendarId = args.calendarId ?? undefined;
+    const read = async (eventId: string) =>
+      lifeOpsCalendarEventFromGoogle({
+        event: await getEvent({ accountId, calendarId, eventId }),
+        grant: args.grant,
+        agentId: this.agentId(),
+      });
+    const occurrence = await read(args.occurrenceEventId);
+    const master = await read(args.masterEventId);
+    const timeZone = master.timezone ?? occurrence.timezone;
+    if (!timeZone) {
+      fail(
+        502,
+        "Google Calendar did not return the IANA timezone required to move the whole series.",
+        "CALENDAR_RECURRENCE_SERIES_TIMEZONE_MISSING",
+      );
+    }
+    // Wall-clock instant: the zone's local time read as if it were UTC.
+    const wallMs = (iso: string) => {
+      const parts = getZonedDateParts(new Date(iso), timeZone);
+      return Date.UTC(
+        parts.year,
+        parts.month - 1,
+        parts.day,
+        parts.hour,
+        parts.minute,
+        parts.second,
+      );
+    };
+    const fromWallMs = (ms: number) => {
+      const wall = new Date(ms);
+      return buildUtcDateFromLocalParts(timeZone, {
+        year: wall.getUTCFullYear(),
+        month: wall.getUTCMonth() + 1,
+        day: wall.getUTCDate(),
+        hour: wall.getUTCHours(),
+        minute: wall.getUTCMinutes(),
+        second: wall.getUTCSeconds(),
+      }).toISOString();
+    };
+    // Measure the shift from the occurrence's slot in the series, so a moved
+    // exception still maps "all to 3pm" onto 3pm.
+    const occurrenceSlot =
+      recurrenceOriginalStartAtFrom(occurrence) ?? occurrence.startAt;
+    const shiftMs = args.startAt
+      ? wallMs(args.startAt) - wallMs(occurrenceSlot)
+      : 0;
+    // A new end time is measured from the start the series lands on: the
+    // new start, or with no new start the occurrence's slot (the master start
+    // is not moved), so the end lands at the time the owner chose.
+    const newDurationMs = args.endAt
+      ? Date.parse(args.endAt) - Date.parse(args.startAt ?? occurrenceSlot)
+      : Date.parse(master.endAt) - Date.parse(master.startAt);
+    if (!(newDurationMs > 0)) {
+      fail(
+        400,
+        "The new end time must be after the occurrence's start.",
+        "CALENDAR_RECURRENCE_SERIES_INVALID_RANGE",
+      );
+    }
+    const dayMs = 24 * 60 * 60 * 1000;
+    const wallDay = (ms: number) => Math.floor(ms / dayMs);
+    if (
+      !args.replacesRecurrence &&
+      wallDay(wallMs(master.startAt) + shiftMs) !==
+        wallDay(wallMs(master.startAt)) &&
+      (recurrenceLinesFrom(master) ?? []).some((line) =>
+        /;(BYDAY|BYMONTHDAY|BYYEARDAY|BYWEEKNO|BYSETPOS)=/i.test(
+          `;${line.split(":").pop()}`,
+        ),
+      )
+    ) {
+      fail(
+        409,
+        "Moving every occurrence of this series to another day needs its recurrence rule changed too (the rule names the days).",
+        "CALENDAR_RECURRENCE_SERIES_DAY_CHANGE_NEEDS_RULE",
+      );
+    }
+    const masterStart = fromWallMs(wallMs(master.startAt) + shiftMs);
+    return {
+      startAt: masterStart,
+      endAt: new Date(Date.parse(masterStart) + newDurationMs).toISOString(),
+      timeZone,
+    };
   }
 
   /**

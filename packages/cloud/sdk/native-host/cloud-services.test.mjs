@@ -566,6 +566,7 @@ test("a sign-in 429 answer carries the reported wait in seconds, and nothing inv
 
 test("a service-only host composes CLI login and provider-default voice without billing routes", async (t) => {
   const calls = [];
+  let cloudSaysCreated;
   const routes = createCloudRoutes({
     hostPolicy: {
       accountBilling: false,
@@ -586,6 +587,18 @@ test("a service-only host composes CLI login and provider-default voice without 
       if (url.endsWith("/api/auth/cli-session"))
         return Response.json({
           sessionId: "12345678-1234-1234-1234-123456789012",
+        });
+      if (
+        url.endsWith(
+          "/api/auth/cli-session/12345678-1234-1234-1234-123456789012",
+        )
+      )
+        return Response.json({
+          status: "authenticated",
+          apiKey: "synthetic-cli-credential",
+          ...(cloudSaysCreated === undefined
+            ? {}
+            : { accountCreated: cloudSaysCreated }),
         });
       throw Error("Unexpected provider request");
     },
@@ -631,6 +644,24 @@ test("a service-only host composes CLI login and provider-default voice without 
   );
   assert.doesNotMatch(calls.at(-1).options.body.toString(), /languageCode/);
   assert.equal((await post("/cloud/login", {})).status, 200);
+  // The login reply says whether Cloud made the account, and says it again on a
+  // repeated check; an older Cloud sends no flag, and the reply has no `created`.
+  const status = async () =>
+    (
+      await fetch(
+        `${base}/cloud/login/status?sessionId=12345678-1234-1234-1234-123456789012`,
+      )
+    ).json();
+  for (const [said, reply] of [
+    [true, { status: "authenticated", connected: true, created: true }],
+    [false, { status: "authenticated", connected: true, created: false }],
+    [undefined, { status: "authenticated", connected: true }],
+  ]) {
+    cloudSaysCreated = said;
+    assert.equal((await post("/cloud/login", {})).status, 200);
+    assert.deepEqual(await status(), reply);
+    assert.deepEqual(await status(), reply);
+  }
 });
 
 test("a saved pending sign-in that becomes unparseable reports account recovery, not a service outage", async () => {

@@ -172,6 +172,32 @@ export function parseDateExpr(expr: string, now: Date): Date | null {
   if (m[5]) return nextDayOfMonth(Number(m[5]), today);
   if (m[6]) return nextDayOfMonth(Number(m[6]), today);
   if (m[8]) {
+    // "Friday, October 30", "Monday the 26th", "Thursday 10/29": the date
+    // after the weekday names the day. Without this the weekday alone won and
+    // the window ended on the next Friday, a week or more early.
+    // Tolerate comma-spacing variants: "Friday,October 30" (no space) and
+    // "Friday , October 30" (space before comma) as well as the canonical
+    // "Friday, October 30".
+    const after = rest.replace(/^\s*,?\s*/, "");
+    const dated = after !== rest ? DATE_EXPR.exec(after) : null;
+    if (
+      dated?.index === 0 &&
+      ((dated[1] && dated[2]) ||
+        (dated[3] && dated[4]) ||
+        dated[5] ||
+        dated[6] ||
+        (dated[10] && dated[11]))
+    )
+      return parseDateExpr(after, now);
+    // "Friday next week" names the Friday of the next calendar week. The bare
+    // weekday branch resolved it to this week's Friday, ending the window six
+    // days early; "next Friday" already resolved to that date.
+    if (/^,?\s+(?:of\s+)?next\s+week\b/.test(rest))
+      return nextWeekday(
+        WEEKDAYS.indexOf(m[8].slice(0, 3).toLowerCase()),
+        today,
+        true,
+      );
     const w = WEEKDAYS.indexOf(m[8].slice(0, 3).toLowerCase());
     return nextWeekday(w, today, Boolean(m[7]));
   }

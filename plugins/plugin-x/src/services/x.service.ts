@@ -38,7 +38,7 @@ import {
 import type { AuthenticatedTwitterSession } from "../client/auth.js";
 import { SearchMode, type Tweet } from "../client/index.js";
 import { materializeEnvAccountIfMissing } from "../connector-account-provider.js";
-import { TwitterDirectMessageClient } from "../direct-messages";
+import { isGroupDmEvent, TwitterDirectMessageClient } from "../direct-messages";
 import { TwitterDiscoveryClient } from "../discovery";
 import { validateTwitterConfig } from "../environment";
 import { TwitterInteractionClient } from "../interactions";
@@ -1267,11 +1267,15 @@ export class XService extends Service {
     // empty inbox.
     const messages = await this.listRecentDirectMessages(accountId);
 
-    // A conversation with the target includes the account's own replies, so
-    // match on the authenticated conversation pair, not only the sender.
+    // A stored room targets the provider conversation id, while a resolved
+    // user target names the authenticated one-to-one counterpart. Accept both
+    // forms so group rooms and the account's own replies remain readable.
     const matches = messages
       .filter(
-        (message) => !targetUserId || dmCounterpartId(message) === targetUserId,
+        (message) =>
+          !targetUserId ||
+          message.conversationId === targetUserId ||
+          dmCounterpartId(message) === targetUserId,
       )
       .map((message) =>
         this.buildXDirectMessageMemory(
@@ -1679,6 +1683,12 @@ export class XService extends Service {
       ? Date.parse(message.createdAt)
       : Date.now();
     const counterpartId = dmCounterpartId(message);
+    const channelType = isGroupDmEvent({
+      dm_conversation_id: message.conversationId,
+      participant_ids: message.participantIds,
+    })
+      ? ChannelType.GROUP
+      : ChannelType.DM;
     const roomId =
       target?.roomId ??
       createUniqueUuid(
@@ -1706,7 +1716,7 @@ export class XService extends Service {
       content: {
         text: message.text,
         source: "x",
-        channelType: ChannelType.DM,
+        channelType,
       },
       metadata: {
         type: "message",
@@ -1716,7 +1726,7 @@ export class XService extends Service {
         timestamp: createdAt,
         fromBot: fromAccount,
         messageIdFull: message.id,
-        chatType: ChannelType.DM,
+        chatType: channelType,
         sender: {
           id: senderId,
           username: message.senderUsername ?? undefined,

@@ -257,6 +257,61 @@ describe("GitHub account resolution", () => {
     expect(service.getOctokit({ role: "user" })).toBeNull();
   });
 
+  it("uses a connector account connected after start and stops using it once removed", async () => {
+    const vaultRef = "connector.agent-1.github.acc_late.oauth_tokens";
+    const accounts: ConnectorAccount[] = [];
+    const runtime = runtimeWithConnectorStorage({
+      accounts,
+      vaultValues: new Map([
+        [
+          vaultRef,
+          JSON.stringify({ access_token: "late-token", token_type: "bearer" }),
+        ],
+      ]),
+    });
+    const originalGetService = runtime.getService.bind(runtime);
+    const { GitHubService } = await import("./services/github-service");
+    const service = (await GitHubService.start(
+      runtime,
+      () => ({}) as never,
+    )) as InstanceType<typeof GitHubService>;
+    runtime.getService = ((serviceType: string) =>
+      serviceType === "github"
+        ? service
+        : serviceType === "connector_account_storage" || serviceType === "vault"
+          ? originalGetService(serviceType)
+          : null) as typeof runtime.getService;
+    const { buildResolvedClient } = await import("./action-helpers");
+    expect(
+      "error" in (await buildResolvedClient(runtime, { role: "user" })),
+    ).toBe(true);
+
+    // OAuth completes in the connector manager while the service runs.
+    accounts.push(
+      createConnectorAccount({
+        id: "acc_late",
+        role: "OWNER",
+        metadata: {
+          credentialRefs: [{ credentialType: "oauth.tokens", vaultRef }],
+        },
+      }),
+    );
+    const connected = await buildResolvedClient(
+      runtime,
+      { role: "user" },
+      {
+        refresh: "on-miss",
+      },
+    );
+    expect("error" in connected ? null : connected.client).not.toBeNull();
+
+    // Disconnect removes the account row.
+    accounts.length = 0;
+    expect(
+      "error" in (await buildResolvedClient(runtime, { role: "user" })),
+    ).toBe(true);
+  });
+
   it.each(["clear", "stop"] as const)(
     "does not restore stale accounts after %s while a reload is pending",
     async (operation) => {

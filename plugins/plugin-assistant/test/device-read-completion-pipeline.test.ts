@@ -113,7 +113,12 @@ it.each(["bound", "string", "missing"] as const)(
                   ],
                   candidateActionNames: ["PROPOSE_DEVICE_ACTION"],
                   contextRequests: [],
-                  replyText: "Review the note request on your phone.",
+                  replyText: [
+                    {
+                      kind: "text",
+                      value: "Review the note request on your phone.",
+                    },
+                  ],
                   facts: [],
                   relationships: [],
                   addressedTo: [],

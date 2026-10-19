@@ -183,17 +183,33 @@ export function collectTextArchitectureBlockers(
 	];
 }
 
-function bundleTextGgufs(bundleRoot: string): string[] {
+interface TextGgufListing {
+	readonly ggufs: string[];
+	/** Set when `text/` exists but could not be enumerated at all. */
+	readonly unreadableDir?: { dir: string; code: string };
+}
+
+function bundleTextGgufs(bundleRoot: string): TextGgufListing {
 	const textDir = path.join(bundleRoot, "text");
-	let entries: string[];
 	try {
-		entries = readdirSync(textDir);
-	} catch {
-		return [];
+		return {
+			ggufs: readdirSync(textDir)
+				.filter((name) => name.toLowerCase().endsWith(".gguf"))
+				.map((name) => path.join(textDir, name)),
+		};
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		// No `text/` directory (`text` may even be a file) means the bundle
+		// ships no text GGUF: a legitimate non-claim, not a read failure.
+		if (code === "ENOENT" || code === "ENOTDIR") return { ggufs: [] };
+		// Anything else (EACCES, EIO, ELOOP, EMFILE) means the gate could not
+		// look at the shipped bytes at all, which must not read as "nothing
+		// to check".
+		return {
+			ggufs: [],
+			unreadableDir: { dir: textDir, code: code ?? "unknown" },
+		};
 	}
-	return entries
-		.filter((name) => name.toLowerCase().endsWith(".gguf"))
-		.map((name) => path.join(textDir, name));
 }
 
 /**
@@ -201,9 +217,20 @@ function bundleTextGgufs(bundleRoot: string): string[] {
  * architecture is not Gemma-4. The companion to `readBundleAsrProvenanceBlockers`
  * for the text model: the manifest's `lineage.text.base` is operator-authored,
  * this verifies the bytes that actually ship.
+ *
+ * A bundle without a `text/` directory makes no text-model claim and yields no
+ * blockers. A `text/` directory that exists but cannot be listed yields one
+ * blocker: the shipped text model is unverifiable, which is not the same as
+ * absent, and must not let a strict release through.
  */
 export function readBundleTextArchitectureBlockers(
 	bundleRoot: string,
 ): string[] {
-	return bundleTextGgufs(bundleRoot).flatMap(collectTextArchitectureBlockers);
+	const { ggufs, unreadableDir } = bundleTextGgufs(bundleRoot);
+	if (unreadableDir) {
+		return [
+			`files.text: could not list ${unreadableDir.dir} (${unreadableDir.code}); the shipped text model cannot be verified, so this bundle is not a strict/defaultEligible Eliza-1 release`,
+		];
+	}
+	return ggufs.flatMap(collectTextArchitectureBlockers);
 }

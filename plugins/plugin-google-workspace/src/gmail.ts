@@ -50,7 +50,6 @@ import type {
   GoogleSendEmailInput,
 } from "./types.js";
 
-const MESSAGE_METADATA_HEADERS = ["Subject", "From", "To", "Date"];
 const GMAIL_METADATA_HEADERS = [
   "Subject",
   "From",
@@ -104,6 +103,17 @@ function nextGmailPageToken(
   }
   state.seenPageTokens.add(token);
   return token;
+}
+
+function requireGmailSendMessageId(value: string | null | undefined): string {
+  const messageId = value?.trim();
+  if (!messageId) {
+    throw new ElizaError("Gmail send returned no provider message id.", {
+      code: "GOOGLE_GMAIL_SEND_RECEIPT_MISSING",
+      severity: "fatal",
+    });
+  }
+  return messageId;
 }
 
 export class GoogleGmailClient {
@@ -220,7 +230,7 @@ export class GoogleGmailClient {
     });
 
     return {
-      id: response.data.id ?? "",
+      id: requireGmailSendMessageId(response.data.id),
       threadId: response.data.threadId ?? undefined,
     };
   }
@@ -883,7 +893,7 @@ export class GoogleGmailClient {
       userId: "me",
       id: params.messageId,
       format: params.includeBody ? "full" : "metadata",
-      metadataHeaders: MESSAGE_METADATA_HEADERS,
+      metadataHeaders: [...GMAIL_METADATA_HEADERS],
     });
 
     return mapMessage(response.data, Boolean(params.includeBody));
@@ -921,7 +931,7 @@ export class GoogleGmailClient {
       requestBody: threadId ? { raw, threadId } : { raw },
     });
     return {
-      messageId: response.data.id ?? null,
+      messageId: requireGmailSendMessageId(response.data.id),
       threadId: response.data.threadId ?? null,
       labelIds: response.data.labelIds ?? [],
     };

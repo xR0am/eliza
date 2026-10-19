@@ -2234,11 +2234,29 @@ export async function restorePostgresRows(
         [agentId],
       );
     }
+    // The dump holds json/jsonb values as parsed JSON. node-postgres sends a
+    // JS array as a Postgres array literal, which json/jsonb rejects, so those
+    // columns are sent as JSON text.
+    const jsonColumns = new Set(
+      (
+        await client.query<{ table_name: string; column_name: string }>(
+          `SELECT table_name, column_name
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND data_type IN ('json', 'jsonb')`,
+        )
+      ).rows.map((row) => `${row.table_name}.${row.column_name}`),
+    );
     for (const table of sortedTablesForRestore(dump.tables)) {
       if (table.rows.length === 0) continue;
       const quotedColumns = table.columns.map(quoteIdentifier);
       for (const row of table.rows) {
-        const values = table.columns.map((column) => row[column] ?? null);
+        const values = table.columns.map((column) => {
+          const value = row[column] ?? null;
+          return value !== null && jsonColumns.has(`${table.name}.${column}`)
+            ? JSON.stringify(value)
+            : value;
+        });
         const placeholders = values.map((_, index) => `$${index + 1}`);
         await client.query(
           `INSERT INTO ${quoteIdentifier(table.name)} (${quotedColumns.join(", ")})

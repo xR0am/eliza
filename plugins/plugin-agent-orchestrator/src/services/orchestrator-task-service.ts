@@ -7473,12 +7473,24 @@ export class OrchestratorTaskService extends Service {
           continue;
         }
         // error-policy:J7 the dispatch of a parked task failed for a non-cap
-        // reason (bad workdir, transport error). Report it so the agent/owner
-        // sees the parked task did not launch; do not silently drop or re-park
-        // forever (that would spin the reconcile tick).
+        // reason (bad workdir, transport error). Its admission record is gone,
+        // so nothing retries it: mark the task failed with the reason so the
+        // owner sees it did not launch, instead of leaving it `open` forever.
+        // Re-parking would spin the reconcile tick on the same error.
         this.runtime.reportError("OrchestratorTask.drainAdmissionQueue", err, {
           taskId: head.taskId,
         });
+        await this.store.addEvent({
+          id: randomUUID(),
+          taskId: head.taskId,
+          eventType: "task_failed",
+          summary: "Queued sub-agent could not be started; task marked failed.",
+          data: { message: err instanceof Error ? err.message : String(err) },
+          timestamp: Date.now(),
+          createdAt: nowIso(),
+        });
+        await this.advanceTaskStatus(head.taskId, "unrecoverable");
+        this.emitChange(head.taskId);
       }
     }
   }

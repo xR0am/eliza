@@ -18,7 +18,7 @@ import {
   getDefaultMessageRefStore,
   type MessageRefStore,
 } from "./message-ref-store.ts";
-import { draftConsentDigest } from "./send-consent.ts";
+import { draftConsentDigest, noteDraftPreview } from "./send-consent.ts";
 import {
   compareMessageRefsByRecency,
   rankScored,
@@ -407,7 +407,7 @@ export class TriageService {
     runtime: IAgentRuntime,
     messageId: string,
     op: ManageOperation,
-    hint?: { source?: MessageSource },
+    hint?: { source?: MessageSource; requester?: Memory },
   ): Promise<ManageResult> {
     const adapter = this.getManageAdapter(runtime, messageId, hint);
     if (!adapter) {
@@ -432,7 +432,9 @@ export class TriageService {
         reason: `${adapter.source} adapter does not implement manageMessage`,
       };
     }
-    return adapter.manageMessage(runtime, messageId, op);
+    return adapter.manageMessage(runtime, messageId, op, {
+      requester: hint?.requester,
+    });
   }
 
   async draftReply(
@@ -486,6 +488,7 @@ export class TriageService {
     if (snapshot) Object.assign(record, structuredClone(snapshot));
     record.agentId = runtime.agentId;
     this.store.saveDraft(record, runtime.agentId);
+    await noteDraftPreview(runtime, requester, record.draftId);
     return record;
   }
 
@@ -536,6 +539,7 @@ export class TriageService {
     if (snapshot) Object.assign(record, structuredClone(snapshot));
     record.agentId = runtime.agentId;
     this.store.saveDraft(record, runtime.agentId);
+    await noteDraftPreview(runtime, params.requester, record.draftId);
     return record;
   }
 

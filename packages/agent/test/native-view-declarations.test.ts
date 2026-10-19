@@ -1,5 +1,6 @@
 import type { IAgentRuntime } from "@elizaos/core";
 import { afterEach, expect, it, vi } from "vitest";
+import { mapsPlugin } from "../../../plugins/plugin-maps/src/plugin.ts";
 import { BUILTIN_VIEWS } from "../src/api/builtin-views.ts";
 import { nativeViewDeclarations } from "../src/api/native-view-declarations.ts";
 import {
@@ -89,24 +90,11 @@ it.each([
 
 it("preserves an already installed plugin and yields only to the declared package at the same route", async () => {
   vi.stubEnv("ELIZA_NATIVE_VIEW_DECLARATIONS", JSON.stringify(policy));
-  const plugin = {
-    name: "maps",
-    packageName: "@elizaos/plugin-maps",
-    description: "Owned fixture",
-    views: [
-      {
-        id: "maps",
-        label: "Plugin Maps",
-        path: "/maps",
-        viewKind: "release" as const,
-        bundleUrl: "/maps.js",
-      },
-    ],
-  };
+  const plugin = mapsPlugin;
   const first = runtime();
   await registerPluginViews(first, plugin, { pluginDir: process.cwd() });
   registerBuiltinViews(first);
-  expect(getView(first, "maps")?.label).toBe("Plugin Maps");
+  expect(getView(first, "maps")?.label).toBe("Maps");
   const second = runtime();
   registerBuiltinViews(second);
   const fallback = getView(second, "maps");
@@ -121,7 +109,7 @@ it("preserves an already installed plugin and yields only to the declared packag
   const installation = await registerPluginViews(second, plugin, {
     pluginDir: process.cwd(),
   });
-  expect(getView(second, "maps")?.label).toBe("Plugin Maps");
+  expect(getView(second, "maps")?.label).toBe("Maps");
   unregisterPluginViews(second, installation);
   expect(getView(second, "maps")).toBe(fallback);
 });

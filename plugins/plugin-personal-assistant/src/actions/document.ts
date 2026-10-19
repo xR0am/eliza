@@ -367,6 +367,25 @@ async function scheduleDeadlineTask(
   return task.taskId;
 }
 
+async function replaceDeadlineTask(
+  scope: RunnerScope,
+  doc: DocumentRequest,
+): Promise<string | undefined> {
+  if (!doc.deadline) return undefined;
+  if (doc.scheduledTaskId) {
+    const activeTask = (await scope.runner.list({ status: "scheduled" })).find(
+      (task) => task.taskId === doc.scheduledTaskId,
+    );
+    if (activeTask) {
+      const edited = await scope.runner.apply(activeTask.taskId, "edit", {
+        trigger: { kind: "once", atIso: doc.deadline },
+      });
+      return edited.taskId;
+    }
+  }
+  return scheduleDeadlineTask(scope, doc);
+}
+
 async function persistDocumentObligation(
   scope: RunnerScope,
   doc: DocumentRequest,
@@ -648,7 +667,10 @@ async function handleTrackDeadline(
     status: existing.status === "draft" ? "pending" : existing.status,
   });
   if (!patched) return notFound(documentRequestId, subaction);
-  const scheduledTaskId = await scheduleDeadlineTask(scope, patched);
+  // A pending watcher is the durable identity of this deadline. Edit it in
+  // place so the previous date cannot still notify the owner. A terminal or
+  // missing watcher cannot fire again, so replace only that settled row.
+  const scheduledTaskId = await replaceDeadlineTask(scope, patched);
   await persistDocumentObligation(scope, patched, scheduledTaskId);
   const next = patchDocument(scope.runtime, documentRequestId, {
     ...(scheduledTaskId ? { scheduledTaskId } : {}),

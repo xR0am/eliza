@@ -20,6 +20,7 @@ import {
   createUniqueUuid,
   decodeCallback,
   ElizaError,
+  type EventPayload,
   EventType,
   type HandlerCallback,
   type IAgentRuntime,
@@ -979,9 +980,10 @@ export class MessageManager {
         // Add a basic attachment even if documentInfo is null
         attachments.push({
           id: document.file_id,
-          url: "",
+          url: telegramFileRefUrl(document.file_id),
           title: `Document: ${document.file_name || "Unknown Document"}`,
           source: "Document",
+          contentType: contentTypeForMime(document.mime_type),
           description: `Document: ${document.file_name || "Unknown Document"}`,
           text: `Document: ${document.file_name || "Unknown Document"}\nSize: ${document.file_size || 0} bytes\nType: ${document.mime_type || "unknown"}`,
         });
@@ -3017,7 +3019,24 @@ export class MessageManager {
       // Emit both generic and platform-specific message sent events
       if (memories.length > 0) {
         const firstMemory = memories[0];
-        this.runtime.emitEvent(EventType.MESSAGE_SENT, {
+        const observeEvent = (event: string, payload: EventPayload) => {
+          const reportFailure = (error: unknown) =>
+            this.runtime.reportError("MessageManager.emitMessageSent", error, {
+              event,
+              accountId: this.accountId,
+              chatId: String(chatId),
+            });
+          try {
+            // error-policy:J7 The provider send and memory write are already
+            // durable. Event listeners are observers, so report a rejected
+            // listener without creating an unhandled rejection or making the
+            // accepted message look retryable.
+            void this.runtime.emitEvent(event, payload).catch(reportFailure);
+          } catch (error) {
+            reportFailure(error);
+          }
+        };
+        observeEvent(EventType.MESSAGE_SENT, {
           runtime: this.runtime,
           message: firstMemory,
           source: "telegram",
@@ -3041,7 +3060,7 @@ export class MessageManager {
           accountId: string;
           metadata: { accountId: string };
         };
-        this.runtime.emitEvent(
+        observeEvent(
           TelegramEventTypes.MESSAGE_SENT as string,
           telegramMessageSentPayload,
         );
@@ -3058,7 +3077,7 @@ export class MessageManager {
         },
         "Error persisting a Telegram message that the Bot API already accepted",
       );
-      // error-policy:J2 Local persist/event failure after Telegram accepted the
+      // error-policy:J2 Local persistence failure after Telegram accepted the
       // send. Returning [] would look like "nothing sent" and invite a retry
       // that duplicates the visible message; rethrow with the provider ids in
       // context so the connector boundary can fail without claiming silence.

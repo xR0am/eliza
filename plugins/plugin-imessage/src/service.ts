@@ -60,6 +60,7 @@ import {
   type ChatDbReader,
   DEFAULT_CHAT_DB_PATH,
   getLastChatDbAccessIssue,
+  IMESSAGE_ATTACHMENT_READ_FAILED,
   openChatDb,
 } from "./chatdb-reader.js";
 import {
@@ -109,6 +110,59 @@ const BLOOIO_RECEIPT_CACHE_NAMESPACE = "imessage:blooio-receipt:v1";
 const BLOOIO_RECEIPT_CLEANUP_TASK_NAME = "IMESSAGE_BLOOIO_RECEIPT_CLEANUP";
 export const BLOOIO_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const BLOOIO_RECEIPT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+/** Attempts per chat.db row before a retryable persistence failure is skipped. */
+export const IMESSAGE_INBOUND_PERSIST_MAX_ATTEMPTS = 5;
+
+/** Poll attempts per chat.db row before an attachment metadata read failure is tolerated. */
+export const IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS = 5;
+
+/** Row id of a chat.db attachment metadata read failure, or null for any other error. */
+function attachmentReadFailureRowId(error: unknown): number | null {
+  if (!(error instanceof ElizaError) || error.code !== IMESSAGE_ATTACHMENT_READ_FAILED) {
+    return null;
+  }
+  const rowId = error.context?.rowId;
+  return typeof rowId === "number" ? rowId : null;
+}
+
+class IMessageInboundPersistenceRetryError extends ElizaError {
+  constructor(rowId: number, cause: unknown) {
+    super("Inbound iMessage could not be persisted; retry the chat database row", {
+      code: "IMESSAGE_INBOUND_PERSIST_FAILED",
+      cause,
+      context: { rowId },
+      severity: "ephemeral",
+    });
+  }
+}
+
+class IMessageInboundPersistenceRejectedError extends ElizaError {
+  constructor(rowId: number, cause: unknown, reason: "fatal-rejection" | "retries-exhausted") {
+    super("Inbound iMessage could not be persisted; the chat database row was skipped", {
+      code: "IMESSAGE_INBOUND_PERSIST_REJECTED",
+      cause,
+      context: { rowId, reason },
+      severity: "fatal",
+    });
+  }
+}
+
+/**
+ * A store rejection marked `fatal` (unsupported JSON text, structural budget,
+ * invalid input) fails identically on every retry, so rolling the cursor back
+ * for it would block every later row behind it.
+ */
+function isFatalPersistenceRejection(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth++) {
+    if (current instanceof ElizaError && current.severity === "fatal") {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
 
 interface BlooioDispatchReceipt {
   version: 1;
@@ -456,6 +510,24 @@ function filterMemoriesByQuery(memories: Memory[], query: string, limit?: number
   return limit === undefined ? matches : matches.slice(0, limit);
 }
 
+async function readIMessageConnectorMessages(
+  service: Pick<IIMessageService, "getMessages">,
+  options: IMessageListMessagesOptions,
+  accountId: string,
+  chatId: string | null
+): Promise<IMessageMessage[]> {
+  try {
+    return await service.getMessages(options);
+  } catch (cause) {
+    throw new ElizaError("iMessage history could not be read", {
+      code: "IMESSAGE_HISTORY_READ_FAILED",
+      cause,
+      context: { accountId, ...(chatId ? { chatId } : {}) },
+      severity: "ephemeral",
+    });
+  }
+}
+
 function publicIMessageToMemory(
   runtime: IAgentRuntime,
   message: IMessageMessage,
@@ -664,6 +736,15 @@ export class IMessageService extends Service implements IIMessageService {
    * we skip backlog on a fresh launch without ever double-delivering.
    */
   private lastRowId: number = 0;
+  /** Retryable persistence attempts for the chat.db row currently blocking the cursor. */
+  private inboundPersistRetry: { rowId: number; attempts: number } | null = null;
+  /** Attachment metadata read attempts for the chat.db row currently blocking the poll. */
+  private attachmentReadRetry: { rowId: number; attempts: number } | null = null;
+  /**
+   * Rows whose attachment read failure exhausted its retries and was reported.
+   * The reader delivers them without attachments until the cursor passes them.
+   */
+  private attachmentReadTolerated = new Set<number>();
   /**
    * Reentrancy gate for the polling loop. Dispatch calls
    * `messageService.handleMessage` which invokes the LLM and typically
@@ -983,9 +1064,12 @@ export class IMessageService extends Service implements IIMessageService {
           readTargetAccountId(target) ?? readContextAccountId(context)
         );
         const chatId = target ? await resolveIMessageChatId(context.runtime, target) : null;
-        const platformMessages = await service
-          .getMessages({ ...(chatId ? { chatId } : {}), limit })
-          .catch(() => []);
+        const platformMessages = await readIMessageConnectorMessages(
+          service,
+          { ...(chatId ? { chatId } : {}), limit },
+          accountId,
+          chatId
+        );
         if (platformMessages.length > 0) {
           const roomId =
             target?.roomId ??
@@ -1015,9 +1099,12 @@ export class IMessageService extends Service implements IIMessageService {
         // Search the whole chat, then keep `limit` matches (as the Slack,
         // Discord and Google Chat connectors do): limiting the read first
         // searched only the newest `limit` messages.
-        const platformMessages = await service
-          .getMessages({ ...(chatId ? { chatId } : {}) })
-          .catch(() => []);
+        const platformMessages = await readIMessageConnectorMessages(
+          service,
+          { ...(chatId ? { chatId } : {}) },
+          accountId,
+          chatId
+        );
         const roomId =
           target?.roomId ??
           (createUniqueUuid(context.runtime, chatId ?? "imessage-read:recent") as UUID);
@@ -1149,6 +1236,8 @@ export class IMessageService extends Service implements IIMessageService {
 
     this.settings = null;
     this.lastRowId = 0;
+    this.attachmentReadRetry = null;
+    this.attachmentReadTolerated.clear();
     logger.info("iMessage service stopped");
   }
 
@@ -1305,7 +1394,24 @@ export class IMessageService extends Service implements IIMessageService {
     // the standard event bus see outbound iMessage sends the same way
     // they see Telegram / Discord / Slack sends.
     if (this.runtime) {
-      this.runtime.emitEvent(IMessageEventTypes.MESSAGE_SENT, {
+      const observeEvent = (event: string, payload: EventPayload) => {
+        const reportFailure = (error: unknown) =>
+          this.runtime.reportError("IMessageService.emitMessageSent", error, {
+            event,
+            accountId,
+            chatId: target,
+          });
+        try {
+          // error-policy:J7 The provider send is already accepted. Event
+          // listeners are observers, so report a rejected listener without
+          // creating an unhandled rejection or making the send retryable.
+          const emitted = this.runtime.emitEvent(event, payload);
+          if (emitted) void emitted.catch(reportFailure);
+        } catch (error) {
+          reportFailure(error);
+        }
+      };
+      observeEvent(IMessageEventTypes.MESSAGE_SENT, {
         runtime: this.runtime,
         source: "imessage",
         accountId,
@@ -1313,7 +1419,7 @@ export class IMessageService extends Service implements IIMessageService {
         text,
         hasMedia: mediaUrls.length > 0,
       } as EventPayload);
-      this.runtime.emitEvent(EventType.MESSAGE_SENT, {
+      observeEvent(EventType.MESSAGE_SENT, {
         runtime: this.runtime,
         source: "imessage",
         message: {
@@ -2154,7 +2260,9 @@ export class IMessageService extends Service implements IIMessageService {
       try {
         await this.pollForNewMessages();
       } catch (error) {
-        logger.debug(`Polling error: ${error}`);
+        logger.warn(
+          `[imessage] Polling error: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }, this.settings.pollIntervalMs);
   }
@@ -2195,13 +2303,65 @@ export class IMessageService extends Service implements IIMessageService {
     }
   }
 
+  /**
+   * Read the next batch from chat.db. An attachment metadata read failure
+   * leaves the cursor in place so the next tick retries the row; after
+   * {@link IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS} attempts it is reported and
+   * the row is delivered without attachments (`attachmentReadFailed`) so it
+   * cannot head-of-line block later rows. Returns null when this tick must
+   * stop and retry.
+   */
+  private fetchInboundBatch(sinceRowId: number, limit: number): ChatDbMessage[] | null {
+    if (!this.runtime || !this.chatDb) return null;
+    // Retry state only matters until the cursor has durably moved past the row
+    // (a persistence rollback can rewind the cursor below a tolerated row).
+    if (this.attachmentReadRetry && this.attachmentReadRetry.rowId <= sinceRowId) {
+      this.attachmentReadRetry = null;
+    }
+    for (const rowId of this.attachmentReadTolerated) {
+      if (rowId <= sinceRowId) this.attachmentReadTolerated.delete(rowId);
+    }
+    for (;;) {
+      try {
+        return this.attachmentReadTolerated.size > 0
+          ? this.chatDb.fetchNewMessages(sinceRowId, limit, {
+              tolerateAttachmentReadFailure: this.attachmentReadTolerated,
+            })
+          : this.chatDb.fetchNewMessages(sinceRowId, limit);
+      } catch (error) {
+        const rowId = attachmentReadFailureRowId(error);
+        if (rowId === null || this.attachmentReadTolerated.has(rowId)) throw error;
+        const attempts =
+          this.attachmentReadRetry?.rowId === rowId ? this.attachmentReadRetry.attempts + 1 : 1;
+        logger.warn(
+          `[imessage] Attachment metadata read failed for ROWID=${rowId} (attempt ${attempts}/${IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS}): ${
+            error instanceof Error && error.cause instanceof Error
+              ? error.cause.message
+              : String(error)
+          }`
+        );
+        if (attempts < IMESSAGE_ATTACHMENT_READ_MAX_ATTEMPTS) {
+          this.attachmentReadRetry = { rowId, attempts };
+          return null;
+        }
+        this.attachmentReadRetry = null;
+        this.attachmentReadTolerated.add(rowId);
+        this.runtime.reportError("IMessageService.inboundAttachmentRead", error, {
+          rowId,
+          attempts,
+        });
+      }
+    }
+  }
+
   private async pollForNewMessagesInner(): Promise<void> {
     if (!this.runtime || !this.chatDb) return;
 
     // Cap batch size to 50 to keep per-tick latency bounded on busy
     // inboxes. If traffic exceeds that, subsequent ticks catch up.
-    const batch = this.chatDb.fetchNewMessages(this.lastRowId, 50);
-    if (batch.length === 0) {
+    const cursorBeforeBatch = this.lastRowId;
+    const batch = this.fetchInboundBatch(cursorBeforeBatch, 50);
+    if (batch === null || batch.length === 0) {
       return;
     }
 
@@ -2222,7 +2382,7 @@ export class IMessageService extends Service implements IIMessageService {
       `[imessage][poll-start] fetched=${batch.length} cursor advanced to ${this.lastRowId}`
     );
 
-    for (const row of batch) {
+    for (const [index, row] of batch.entries()) {
       // Skip outbound messages — the agent sent these itself via AppleScript,
       // we don't want it reacting to its own output.
       if (row.isFromMe) {
@@ -2281,12 +2441,39 @@ export class IMessageService extends Service implements IIMessageService {
       );
       try {
         await this.dispatchInboundMessage(row);
+        if (this.inboundPersistRetry?.rowId === row.rowId) {
+          this.inboundPersistRetry = null;
+        }
       } catch (error) {
         logger.error(
           `[imessage] Failed to dispatch inbound message ROWID=${row.rowId}: ${
             error instanceof Error ? error.message : String(error)
           }`
         );
+        if (error instanceof IMessageInboundPersistenceRetryError) {
+          const attempts =
+            this.inboundPersistRetry?.rowId === row.rowId
+              ? this.inboundPersistRetry.attempts + 1
+              : 1;
+          if (attempts >= IMESSAGE_INBOUND_PERSIST_MAX_ATTEMPTS) {
+            // Bounded retry: a failure that persists across every attempt is
+            // reported and skipped so it cannot head-of-line block later rows.
+            this.inboundPersistRetry = null;
+            this.runtime.reportError(
+              "IMessageService.inboundPersistence",
+              new IMessageInboundPersistenceRejectedError(row.rowId, error, "retries-exhausted"),
+              { rowId: row.rowId, attempts }
+            );
+            continue;
+          }
+          this.inboundPersistRetry = { rowId: row.rowId, attempts };
+          // Default-off ingestion has no outbound effect before persistence.
+          // Roll back only to the row before this one and stop the batch so the
+          // next tick retries it without replaying already completed rows.
+          this.lastRowId =
+            index === 0 ? cursorBeforeBatch : (batch[index - 1]?.rowId ?? cursorBeforeBatch);
+          return;
+        }
       }
     }
     logger.debug(`[imessage][poll-end] done. lastRowId=${this.lastRowId}`);
@@ -2670,23 +2857,25 @@ export class IMessageService extends Service implements IIMessageService {
       return [responseMemory];
     };
 
-    // Emit the plugin-namespaced event for any iMessage-specific listeners
-    // (kept for backwards compatibility with pre-fix code) and the generic
-    // core event so anything subscribed to EventType.MESSAGE_RECEIVED sees it.
-    this.runtime.emitEvent(IMessageEventTypes.MESSAGE_RECEIVED, {
-      runtime: this.runtime,
-      message: memory,
-      source: "imessage",
-      accountId,
-      callback,
-    } as EventPayload);
-    this.runtime.emitEvent(EventType.MESSAGE_RECEIVED, {
-      runtime: this.runtime,
-      message: memory,
-      source: "imessage",
-      accountId,
-      callback,
-    } as EventPayload);
+    const emitReceivedEvents = (): void => {
+      // Keep the plugin event for pre-fix listeners and the generic core event
+      // for every runtime listener. Default-off ingestion calls this only after
+      // its durable write succeeds, so a retry cannot duplicate these events.
+      this.runtime?.emitEvent(IMessageEventTypes.MESSAGE_RECEIVED, {
+        runtime: this.runtime,
+        message: memory,
+        source: "imessage",
+        accountId,
+        callback,
+      } as EventPayload);
+      this.runtime?.emitEvent(EventType.MESSAGE_RECEIVED, {
+        runtime: this.runtime,
+        message: memory,
+        source: "imessage",
+        accountId,
+        callback,
+      } as EventPayload);
+    };
 
     // Inbound messages are always ingested + emitted above. The agent only
     // auto-generates a reply when IMESSAGE_AUTO_REPLY is explicitly enabled —
@@ -2697,17 +2886,33 @@ export class IMessageService extends Service implements IIMessageService {
       try {
         await this.runtime.createMemory(memory, "messages");
       } catch (err) {
-        logger.warn(
-          `[imessage] Failed to persist inbound memory for ROWID=${row.rowId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
+        if (isFatalPersistenceRejection(err)) {
+          // Deterministic rejection: retrying replays the same failure forever.
+          // Report it and let the cursor advance past this row.
+          const rejection = new IMessageInboundPersistenceRejectedError(
+            row.rowId,
+            err,
+            "fatal-rejection"
+          );
+          this.runtime.reportError("IMessageService.inboundPersistence", rejection, {
+            rowId: row.rowId,
+          });
+          throw rejection;
+        }
+        const failure = new IMessageInboundPersistenceRetryError(row.rowId, err);
+        this.runtime.reportError("IMessageService.inboundPersistence", failure, {
+          rowId: row.rowId,
+        });
+        throw failure;
       }
+      emitReceivedEvents();
       logger.debug(
         "[imessage] Auto-reply disabled (IMESSAGE_AUTO_REPLY=false); message ingested without response"
       );
       return;
     }
+
+    emitReceivedEvents();
 
     // Route through the message service — this is what actually triggers
     // the agent's decision pipeline (shouldRespond → generate → callback).

@@ -677,6 +677,7 @@ export async function fetchGmailMessages(
       snippet: msg.snippet || msg.subject || "",
       timestamp: receivedMs,
       deepLink: gmailLink,
+      subject: msg.subject,
       gmailMessageId: externalId,
       gmailIsImportant: msg.isImportant,
       gmailLikelyReplyNeeded: msg.likelyReplyNeeded,

@@ -44,7 +44,7 @@ app.post("/", async (c) => {
     const files = form
       .getAll("files")
       .filter((value): value is File => value instanceof File);
-    const invalid = validateDocumentFiles(files);
+    const invalid = await validateDocumentFiles(files);
     if (invalid) return invalid;
 
     const uploaded = [];

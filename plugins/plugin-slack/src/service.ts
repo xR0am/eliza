@@ -3464,48 +3464,47 @@ export class SlackService extends Service implements ISlackService {
       (typeof metadata?.threadTs === "string" ? metadata.threadTs : undefined);
     const channel = await this.getChannel(channelId, accountId);
 
-    const historyMessages = threadTs
-      ? await this.readThreadReplies(channelId, threadTs, undefined, accountId)
-      : await this.readHistory(channelId, undefined, accountId);
-    // Stored history (`slackMessageToMemory`) attributes this account's own
-    // bot posts to the agent; apply the same rule here so the same message
-    // does not surface as a separate participant through cached context.
-    const botUserId = this.getBotUserIdForAccount(accountId);
-    const recentMessages: MessageConnectorChatContext["recentMessages"] = [];
-    for (const message of historyMessages.slice().reverse()) {
-      const text = String(message.text ?? "");
-      if (!text.trim()) {
-        continue;
-      }
-      const userId = message.user ?? message.botId;
-      const fromAgent =
-        userId !== undefined && botUserId !== null && userId === botUserId;
-      const user =
-        typeof message.user === "string"
-          ? await this.getUser(message.user, accountId)
-          : null;
-      recentMessages.push({
-        entityId: fromAgent
-          ? this.runtime.agentId
-          : userId
-            ? (userId as UUID)
-            : undefined,
-        name: user ? getSlackUserDisplayName(user) : userId,
-        text,
-        timestamp: Number(message.ts) * 1000 || undefined,
-        metadata: {
-          accountId,
-          slackMessageTs: message.ts,
-          slackUserId: userId,
-        },
-      });
-    }
+    // Recent history comes from the stored room messages, never the Slack
+    // API: this hook runs on every planned turn, an unbounded
+    // conversations.history / conversations.replies read pages the whole
+    // channel or thread behind Slack's rate limits, and the transcript in the
+    // prompt is owned by RECENT_MESSAGES anyway (the provider strips
+    // recentMessages before rendering).
+    const roomId =
+      target.roomId ??
+      room?.id ??
+      (await this.getRoomId(channelId, threadTs, accountId));
+    const memories = await context.runtime.getMemories({
+      tableName: "messages",
+      roomId,
+      orderBy: "createdAt",
+      orderDirection: "desc",
+    });
+    const recentMessages: MessageConnectorChatContext["recentMessages"] =
+      memories
+        .slice()
+        .reverse()
+        .filter((memory) => (memory.content.text ?? "").trim().length > 0)
+        .map((memory) => ({
+          entityId: memory.entityId,
+          name:
+            typeof memory.content.name === "string"
+              ? memory.content.name
+              : undefined,
+          text: memory.content.text ?? "",
+          timestamp: memory.createdAt,
+          metadata: {
+            memoryId: memory.id,
+            accountId,
+            source: memory.content.source,
+          },
+        }));
 
     return {
       target: {
         source: "slack",
         accountId,
-        roomId: target.roomId ?? room?.id,
+        roomId,
         channelId,
         serverId:
           target.serverId ?? this.getTeamIdForAccount(accountId) ?? undefined,
@@ -3594,9 +3593,18 @@ export class SlackService extends Service implements ISlackService {
       ? await this.getUser(message.user, accountId)
       : null;
     const displayName = user ? getSlackUserDisplayName(user) : slackUserId;
-    const channel = await this.getChannel(channelId, accountId).catch(
-      () => null,
-    );
+    const channel = effectiveThreadTs
+      ? null
+      : await this.getChannel(channelId, accountId);
+    if (!effectiveThreadTs && !channel) {
+      throw new ElizaError(
+        "Slack conversation metadata is unavailable for message history",
+        {
+          code: "SLACK_CHANNEL_IDENTITY_MISSING",
+          context: { accountId, channelId, messageTs: message.ts },
+        },
+      );
+    }
     const channelType = effectiveThreadTs
       ? ChannelType.THREAD
       : channel?.isIm
@@ -3725,7 +3733,10 @@ export class SlackService extends Service implements ISlackService {
     );
     const client = this.getClientForAccount(accountId);
     if (!client) {
-      return [];
+      throw new ElizaError("Slack account client is not initialized", {
+        code: "SLACK_ACCOUNT_NOT_INITIALIZED",
+        context: { accountId },
+      });
     }
 
     const { channelId, threadTs } = await this.resolveConnectorMessageLocation(

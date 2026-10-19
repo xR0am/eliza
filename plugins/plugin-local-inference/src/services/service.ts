@@ -10,7 +10,12 @@
 import { existsSync } from "node:fs";
 import { totalmem } from "node:os";
 import { join as pathJoin } from "node:path";
-import { type AgentRuntime, logger, type UUID } from "@elizaos/core";
+import {
+	type AgentRuntime,
+	ElizaError,
+	logger,
+	type UUID,
+} from "@elizaos/core";
 import { isAndroidMobile, isIosMobile } from "@elizaos/host/protocol";
 import { renderMessageHandlerStablePrefix } from "@elizaos/plugin-assistant";
 import {
@@ -400,6 +405,15 @@ export class LocalInferenceService {
 			installed,
 			overrides,
 		);
+		// A failed switch keeps (or restores) the previous model as ready. That
+		// is not an activation of the requested model: do not route chat to it,
+		// prewarm it, or report success.
+		if (state.status === "ready" && state.modelId !== modelId) {
+			throw new ElizaError(state.error ?? `Could not switch to "${modelId}".`, {
+				code: "LOCAL_MODEL_SWITCH_FAILED",
+				context: { requestedModelId: modelId, activeModelId: state.modelId },
+			});
+		}
 		if (state.status === "ready") {
 			await routeActivatedModelToLocalText();
 		}

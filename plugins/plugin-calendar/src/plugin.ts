@@ -1,3 +1,5 @@
+import { calendarReviewAction } from "./actions/calendar-review.js";
+import { CalendarMutationPortService } from "./mutations/service.js";
 /**
  * Plugin definition for `@elizaos/plugin-calendar`: registers `CalendarService`,
  * the deterministic conflict action, the non-destructive migration service,
@@ -40,8 +42,17 @@ export const calendarPlugin: Plugin = {
     "Multi-provider calendar feeds, scheduling, and event management for Eliza agents.",
   dependencies: ["@elizaos/plugin-scheduling"],
   schema: calendarSchema,
-  services: [CalendarMigrationService, CalendarService],
-  actions: [calendarAction, calendarSourcesAction, conflictDetectAction],
+  services: [
+    CalendarMigrationService,
+    CalendarService,
+    CalendarMutationPortService,
+  ],
+  actions: [
+    calendarAction,
+    calendarSourcesAction,
+    conflictDetectAction,
+    calendarReviewAction,
+  ],
   responseHandlerFieldEvaluators: [calendarReadBindingField],
   responseHandlerEvaluators: [calendarReadBindingEvaluator],
   providers: [calendarSourcesProvider],

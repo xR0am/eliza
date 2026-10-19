@@ -911,6 +911,34 @@ describe("InboxDomain on a real runtime", () => {
     expect(recached.some((row) => row.priorityScore === 90)).toBe(true);
   });
 
+  it("refresh keeps the Gmail subject separate from the sender", async () => {
+    const before = scoringCalls.length;
+    const cache = new MemoryInboxCache();
+    const sources = new FakeConnectorSources([
+      gmailSummary({
+        id: "gm-subject",
+        subject: "Contract renewal",
+        snippet: "Please sign the renewal by Monday",
+      }),
+    ]);
+    const domain = makeDomain({ cache, sources });
+
+    const inbox = await domain.getInbox({
+      channels: ["gmail"],
+      cacheMode: "refresh",
+    });
+
+    expect(inbox.messages[0]?.sender.displayName).toBe("Ada Lovelace");
+    expect(inbox.messages[0]?.subject).toBe("Contract renewal");
+    const cached = await cache.listCachedInboxMessages(runtime.agentId, {
+      channels: ["gmail"],
+    });
+    expect(cached.map((row) => row.subject)).toEqual(["Contract renewal"]);
+    expect(scoringCalls.slice(before).join("\n")).toContain(
+      "subject: Contract renewal",
+    );
+  });
+
   it("owner policy seam: scoring disabled means the model is never consulted", async () => {
     const before = scoringCalls.length;
     const cache = new MemoryInboxCache();

@@ -3204,9 +3204,7 @@ export class TelegramService extends Service {
             }
             const entity =
               typeof handlerRuntime.getEntityById === "function"
-                ? await handlerRuntime
-                    .getEntityById(entityId as UUID)
-                    .catch(() => null)
+                ? await handlerRuntime.getEntityById(entityId as UUID)
                 : null;
             if (entity) {
               return entity;

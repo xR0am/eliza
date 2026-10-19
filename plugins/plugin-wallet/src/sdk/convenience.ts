@@ -42,6 +42,7 @@ import {
   optimism,
   polygon,
 } from "viem/chains";
+import { prefixEvmHex } from "../chains/evm/routes/evm-hex.js";
 import type { AgentWalletConfig } from "./types.js";
 import { createWallet, NATIVE_TOKEN, setSpendPolicy } from "./wallet-core.js";
 import { createX402Client } from "./x402/middleware.js";
@@ -171,7 +172,7 @@ export function walletFromEnv(options?: {
         "Set it to the 0x-prefixed 32-byte hex private key of your agent EOA.",
     );
   }
-  const privateKey = (rawKey.startsWith("0x") ? rawKey : `0x${rawKey}`) as Hex;
+  const privateKey = prefixEvmHex(rawKey) as Hex;
 
   // ── Wallet (smart-contract) address ────────────────────────────────────
   const walletAddress = process.env.AGENT_WALLET_ADDRESS;

@@ -13,7 +13,10 @@ import {
   BaseMessageAdapter,
   type DraftRequest,
   type ListOptions,
+  type ManageOperation,
+  type ManageResult,
   type MessageDraftContext,
+  type MessageManageContext,
   type MessageRef,
   type MessageSendContext,
   type ReadMessageRequest,
@@ -21,6 +24,7 @@ import {
   type SearchMessagesFilters,
 } from "@elizaos/plugin-assistant";
 import { readGmailTextRange } from "@elizaos/plugin-google-workspace/gmail-text-range";
+import { managedGmailManager } from "./managed-gmail-manage.ts";
 import {
   managedGmailMessageReader,
   managedGmailReadFetcher,
@@ -48,6 +52,7 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
   private readonly fetcher = managedGmailReadFetcher();
   private readonly reader = managedGmailMessageReader();
   private readonly sender = managedGmailSender();
+  private readonly manager = managedGmailManager();
   private readonly drafts = new Map<
     string,
     {
@@ -66,13 +71,64 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
     return {
       list: true,
       search: true,
-      manage: {},
+      manage: this.manager
+        ? { archive: true, trash: true, markRead: true }
+        : {},
       send: this.sender
         ? { new: true, requiresLiveRequester: true }
         : { requiresLiveRequester: true },
       worlds: "single" as const,
       channels: "none" as const,
     };
+  }
+  protected async manageMessageImpl(
+    runtime: IAgentRuntime,
+    messageId: string,
+    operation: ManageOperation,
+    context?: MessageManageContext,
+  ): Promise<ManageResult> {
+    const requester = await owner(runtime, context?.requester);
+    if (!this.manager)
+      throw new ElizaError(
+        "Managed Gmail mailbox changes are not available on this device yet. Nothing was changed.",
+        { code: "MANAGED_GMAIL_MAILBOX_UNAVAILABLE" },
+      );
+    if (!requester.id || !requester.roomId || !requester.entityId)
+      throw unavailable("Mailbox changes need the current owner turn.");
+    const kind =
+      operation.kind === "mark_read"
+        ? operation.read
+          ? "mark-read"
+          : "mark-unread"
+        : operation.kind === "archive" || operation.kind === "trash"
+          ? operation.kind
+          : null;
+    if (!kind)
+      return {
+        ok: false,
+        reason: "This Gmail mailbox operation is not supported.",
+      };
+    const hex = createHash("sha256")
+      .update(
+        JSON.stringify([
+          runtime.agentId,
+          requester.entityId,
+          requester.roomId,
+          requester.id,
+          messageId,
+          kind,
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 32)
+      .split("");
+    hex[12] = "4";
+    hex[16] = ((Number.parseInt(hex[16], 16) & 3) | 8).toString(16);
+    const h = hex.join("");
+    const requestId = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    const result = await this.manager({ messageId, kind, requestId });
+    await owner(runtime, requester);
+    return result;
   }
   async authorizeSend(
     runtime: IAgentRuntime,
@@ -98,7 +154,10 @@ export class ManagedGmailAdapter extends BaseMessageAdapter {
   ) {
     const caller = await owner(runtime, context?.requester);
     if (!this.sender)
-      throw unavailable("Managed Gmail sending is unavailable.");
+      throw new ElizaError(
+        "Managed Gmail sending is not available on this device yet. Nothing was sent.",
+        { code: "MANAGED_GMAIL_SEND_UNAVAILABLE" },
+      );
     if (
       draft.source !== "gmail" ||
       draft.inReplyToId ||

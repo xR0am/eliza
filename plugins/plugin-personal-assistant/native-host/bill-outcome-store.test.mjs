@@ -531,3 +531,65 @@ test("a submission attempt whose INSERT fails is journaled first and written at 
     rmSync(f.directory, { recursive: true, force: true });
   }
 });
+
+test("a journal codec stores every record encoded and recovers it after a restart", async () => {
+  const f = await journalFixture();
+  let { db, tasks, runtime } = f.first;
+  // A reversible stand-in for a host cipher: no record text is stored as is.
+  const journalCodec = {
+    encode: (line) => `sealed:${Buffer.from(line).toString("base64url")}`,
+    decode: (line) => {
+      if (!line.startsWith("sealed:")) throw new Error("not sealed");
+      return Buffer.from(line.slice(7), "base64url").toString();
+    },
+  };
+  try {
+    assert.throws(
+      () =>
+        createBillOutcomeStore(db, tasks, {
+          journalPath: f.journalPath,
+          journalCodec: { encode: () => "x" },
+        }),
+      /Invalid outcome journal codec/,
+    );
+    const store = createBillOutcomeStore(db, tasks, {
+      journalPath: f.journalPath,
+      journalCodec,
+    });
+    db.exec(
+      "CREATE TRIGGER fail_outcome BEFORE INSERT ON bill_outcomes_v1 BEGIN SELECT RAISE(ABORT, 'injected disk write error'); END;",
+    );
+    assert.equal(
+      store.forTask(runtime, f.task.id).save(observed, "observation")
+        .saveStatus,
+      "pending",
+    );
+    const stored = readFileSync(f.journalPath, "utf8");
+    assert.match(stored, /^sealed:[A-Za-z0-9_-]+\n$/);
+    assert.doesNotMatch(stored, /TEST-9|Water Test/);
+    db.exec("DROP TRIGGER fail_outcome");
+    db.close();
+    ({ db, tasks, runtime } = f.open());
+    // Without the codec the encoded journal is refused, never misread.
+    assert.throws(
+      () => createBillOutcomeStore(db, tasks, { journalPath: f.journalPath }),
+      /Invalid outcome journal/,
+    );
+    const recovered = createBillOutcomeStore(db, tasks, {
+      journalPath: f.journalPath,
+      journalCodec,
+    }).forTask(runtime, f.task.id);
+    assert.equal(recovered.loadEvidence().record.decision.reference, "TEST-9");
+    assert.equal(recovered.retry().saveStatus, "saved");
+    db.close();
+    ({ db, tasks, runtime } = f.open());
+    createBillOutcomeStore(db, tasks, {
+      journalPath: f.journalPath,
+      journalCodec,
+    });
+    assert.equal(readFileSync(f.journalPath, "utf8"), "");
+  } finally {
+    db.close();
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});

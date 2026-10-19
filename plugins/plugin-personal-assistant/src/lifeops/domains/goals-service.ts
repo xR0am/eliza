@@ -165,6 +165,8 @@ export class GoalsDomain {
         normalizeOwnership: (input, current) =>
           this.ctx.normalizeOwnership(input, current),
         checkinSync: () => getGoalsCheckinService(this.ctx.runtime),
+        releaseGoalReferences: (goalId) =>
+          this.ctx.repository.clearGoalReferences(this.ctx.agentId(), goalId),
       });
     }
     return this.goalsServiceInstance;

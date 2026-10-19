@@ -99,7 +99,7 @@ async function runList(
   callback: HandlerCallback | undefined,
 ): Promise<GitHubActionResult<GitHubPrOpResult>> {
   const selection = resolveAccountSelection(options, "agent");
-  const resolved = buildResolvedClient(runtime, selection);
+  const resolved = await buildResolvedClient(runtime, selection);
   if ("error" in resolved) {
     await callback?.({ text: resolved.error });
     return { success: false, error: resolved.error };
@@ -253,7 +253,7 @@ async function runReview(
     await callback?.({ text: err });
     return { success: false, error: err };
   }
-  const resolved = buildResolvedClient(runtime, selection);
+  const resolved = await buildResolvedClient(runtime, selection);
   if ("error" in resolved) {
     await callback?.({ text: resolved.error });
     return { success: false, error: resolved.error };
@@ -393,7 +393,9 @@ export const prOpAction: Action = {
     runtime: IAgentRuntime,
     _message: Memory,
   ): Promise<boolean> => {
-    const r = buildResolvedClient(runtime, "agent");
+    const r = await buildResolvedClient(runtime, "agent", {
+      refresh: "on-miss",
+    });
     return !("error" in r);
   },
 

@@ -7,6 +7,7 @@
  */
 import type { Component, IAgentRuntime, UUID } from "@elizaos/core";
 import { beforeEach, describe, expect, it } from "vitest";
+import { formAction } from "./actions/form";
 import { FormService } from "./service";
 import type { FormDefinition } from "./types";
 
@@ -16,6 +17,7 @@ const agentId = "00000000-0000-4000-8000-000000000403" as UUID;
 
 function makeRuntime(): IAgentRuntime {
   const components = new Map<string, Component>();
+  let formService: FormService | undefined;
   const keyFor = (entity: UUID, type: string) => `${entity}:${type}`;
 
   return {
@@ -40,6 +42,10 @@ function makeRuntime(): IAgentRuntime {
     emitEvent: async () => undefined,
     registerTaskWorker: () => undefined,
     getTaskWorker: () => undefined,
+    getService: () => formService,
+    setFormService: (service: FormService) => {
+      formService = service;
+    },
     logger: {
       debug: () => undefined,
       error: () => undefined,
@@ -62,9 +68,14 @@ function signupForm(): FormDefinition {
 
 describe("FormService stash/restore across same-room restart (issue #22272)", () => {
   let service: FormService;
+  let runtime: IAgentRuntime;
 
   beforeEach(async () => {
-    service = (await FormService.start(makeRuntime())) as FormService;
+    runtime = makeRuntime();
+    service = (await FormService.start(runtime)) as FormService;
+    (
+      runtime as unknown as { setFormService(s: FormService): void }
+    ).setFormService(service);
     service.registerForm(signupForm());
   });
 
@@ -102,5 +113,40 @@ describe("FormService stash/restore across same-room restart (issue #22272)", ()
     await expect(
       service.startSession("signup", entityId, roomId),
     ).rejects.toThrow(/Active session already exists/);
+  });
+
+  it("resuming from another room continues the form in that room", async () => {
+    const otherRoomId = "00000000-0000-4000-8000-000000000404" as UUID;
+    const first = await service.startSession("signup", entityId, roomId);
+    await service.stash(first.id, entityId);
+    // The original room now holds a different active form.
+    const second = await service.startSession("signup", entityId, roomId);
+
+    const message = {
+      entityId,
+      roomId: otherRoomId,
+      content: { text: "resume my form" },
+    } as unknown as Parameters<typeof formAction.handler>[1];
+    const replies: string[] = [];
+    const result = await formAction.handler(
+      runtime,
+      message,
+      undefined,
+      undefined,
+      async (content) => {
+        replies.push(String(content.text));
+        return [];
+      },
+    );
+
+    expect(result?.success).toBe(true);
+    expect(replies[0]).toContain("restored");
+    expect((await service.getActiveSession(entityId, otherRoomId))?.id).toBe(
+      first.id,
+    );
+    expect((await service.getActiveSession(entityId, roomId))?.id).toBe(
+      second.id,
+    );
+    expect(await service.getStashedSessions(entityId)).toEqual([]);
   });
 });
