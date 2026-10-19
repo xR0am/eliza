@@ -61,4 +61,14 @@ describe("handleReaction", () => {
 		expect(runtime.ensureConnection).not.toHaveBeenCalled();
 		expect(runtime.emitEvent).not.toHaveBeenCalled();
 	});
+
+	it("quotes the reacted-to message without escape characters", async () => {
+		const { runtime, service } = makeService();
+
+		await handleReaction(service, reaction, reactor(false), "add");
+
+		expect(runtime.emitEvent.mock.calls[0][1].message.content.text).toBe(
+			'*Added <⏳> to: "ship it"*',
+		);
+	});
 });

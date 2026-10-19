@@ -117,7 +117,7 @@ export async function handleReaction(
 
 		// Process message content
 		const messageContent = reaction.message.content || "";
-		const reactionMessage = `*${actionText} <${emoji}> ${preposition}: \\"${messageContent}\\"*`;
+		const reactionMessage = `*${actionText} <${emoji}> ${preposition}: "${messageContent}"*`;
 
 		// Get user info from the reacting user (not the message author)
 		const reactionMessageAuthor = reaction.message.author;
