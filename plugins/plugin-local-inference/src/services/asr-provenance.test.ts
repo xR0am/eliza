@@ -1,6 +1,12 @@
 /** Covers strict-versus-candidate ASR provenance enforcement against real manifest files. */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -164,5 +170,32 @@ describe("bundle ASR artifacts", () => {
 		writeFileSync(path.join(root, "asr", "README.md"), "not a model");
 
 		expect(bundleHasAsrModelFiles(root)).toBe(false);
+	});
+
+	it("propagates an unreadable ASR GGUF instead of reporting no model files", () => {
+		const root = writeManifest({});
+		const model = path.join(root, "asr", "phonon-2-fv5.gguf");
+		writeFileSync(model, gguf("parakeet-tdt"));
+		chmodSync(model, 0o000);
+		try {
+			// A staged-but-unreadable model is a broken bundle, not a bundle with
+			// no ASR artifacts: callers must not report "no ASR model is staged".
+			expect(() => readGgufArchitecture(model)).toThrow(
+				/failed to read GGUF header/,
+			);
+			expect(() => bundleHasAsrModelFiles(root)).toThrow(
+				/failed to read GGUF header/,
+			);
+		} finally {
+			chmodSync(model, 0o600);
+		}
+	});
+
+	it("treats a GGUF deleted mid-scan as absent, not unreadable", () => {
+		// The directory listing and the header read are separate syscalls; a file
+		// removed between them is legitimately "not there".
+		expect(
+			readGgufArchitecture(path.join(tmpdir(), "eliza-absent.gguf")),
+		).toBeNull();
 	});
 });

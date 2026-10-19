@@ -98,9 +98,21 @@ const GGUF_SCALAR_BYTES: Readonly<Record<number, number>> = {
 };
 
 /**
+ * `ENOENT` only: the entry was removed between the directory listing and the
+ * read, which is legitimately "absent". Every other read failure (`EACCES`,
+ * `EIO`, `EMFILE`) means a staged file exists but cannot be inspected.
+ */
+function isMissingPath(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+/**
  * Read `general.architecture` from a GGUF header, or null when the file is
  * not a GGUF or the key is not among the leading scalar/string entries
  * (converters write it first). Reads at most the first 64 KiB.
+ *
+ * Throws when the file exists but cannot be read, so callers never mistake a
+ * broken artifact for a missing one.
  */
 export function readGgufArchitecture(file: string): string | null {
 	let fd: number | undefined;
@@ -138,9 +150,13 @@ export function readGgufArchitecture(file: string): string | null {
 			}
 		}
 		return null;
-	} catch {
-		// error-policy:J3 unreadable file is "not a parakeet GGUF".
-		return null;
+	} catch (error) {
+		// error-policy:J3 the entry was removed between the listing and this read,
+		// which is legitimately "not a parakeet GGUF". Any other I/O failure
+		// (EACCES, EIO, EMFILE) means a staged model cannot be inspected: throw
+		// so callers do not report "no ASR model is staged" for a broken bundle.
+		if (isMissingPath(error)) return null;
+		throw new Error(`failed to read GGUF header at ${file}`, { cause: error });
 	} finally {
 		if (fd !== undefined) closeSync(fd);
 	}
@@ -161,7 +177,12 @@ export function bundleHasAsrModelFiles(bundleRoot: string): boolean {
 				readGgufArchitecture(path.join(asrDir, entry.name)) ===
 					PARAKEET_TDT_ARCHITECTURE,
 		);
-	} catch {
-		return false;
+	} catch (error) {
+		// error-policy:J3 an `asr/` directory removed mid-scan is legitimately
+		// "no model staged". An unreadable directory, or an unreadable GGUF
+		// inside a present directory, is a broken bundle and must not be
+		// flattened into the same answer.
+		if (isMissingPath(error)) return false;
+		throw error;
 	}
 }
