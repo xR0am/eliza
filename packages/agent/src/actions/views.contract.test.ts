@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
+import { expect, test } from "vitest";
 import { promoteSubactionsToActions } from "../../../core/src/actions/promote-subactions.ts";
 import { actionToTool } from "../../../core/src/actions/to-tool.ts";
 import type { Action } from "../../../core/src/types/components.ts";
@@ -8,11 +9,17 @@ import type { IAgentRuntime } from "../../../core/src/types/runtime.ts";
 
 function fixture() {
   const source = readFileSync(new URL("./views.ts", import.meta.url), "utf8");
-  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(
+  const js = ts.transpileModule(
     source
       .replace(/^import[\s\S]*?;\n/gm, "")
       .replace("export const viewsAction", "const viewsAction"),
-  );
+    {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+      },
+    },
+  ).outputText;
   let dispatches = 0;
   let owner = true;
   const ports = {
