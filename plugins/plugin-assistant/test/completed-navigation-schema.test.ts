@@ -155,3 +155,13 @@ it("accepts the browser camera's 25-digit saved identity without numeric coercio
     validateCameraCaptureResult({ ...result, mediaId: mediaId + "0" }),
   ).toThrow();
 });
+
+it("Gmail policy negotiation does not widen a clock-only device", () => {
+  const restricted = deviceActionForCapabilities(proposeDeviceAction, [
+    "clock.handoff.v1",
+    "gmail.request-policy.v1",
+  ]);
+  expect(types(restricted)).not.toContain("create_note");
+  expect(types(restricted)).not.toContain("open_view");
+  expect(types(restricted)).toContain("clock_handoff");
+});

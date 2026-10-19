@@ -3066,6 +3066,7 @@ export async function handleConversationRoutes(
     }
     // The bound identity is never copied from message metadata or model parameters.
     let authenticated = false;
+    const authenticatedRuntime = ctx.state.runtime;
     try {
       return await withDeviceActionTurn(
         ctx.state.runtime,
@@ -3073,6 +3074,13 @@ export async function handleConversationRoutes(
         async () => {
           authenticated = true;
           return handle();
+        },
+        {
+          isCurrent: () =>
+            !ctx.req.aborted &&
+            !ctx.res.destroyed &&
+            !ctx.res.writableEnded &&
+            ctx.state.runtime === authenticatedRuntime,
         },
       );
     } catch (error) {

@@ -128,9 +128,13 @@ export function deviceOperationSupportedByCapabilities(
           capability === CLOCK_REPEAT_CAPABILITY,
       ) === true
     );
+  // Transport policy negotiation never widens a clock-only executor.
+  const operationCapabilities = capabilities?.filter(
+    (capability) => capability !== "gmail.request-policy.v1",
+  );
   const clockOnly =
-    capabilities?.length &&
-    capabilities.every(
+    operationCapabilities?.length &&
+    operationCapabilities.every(
       (capability) =>
         capability === CLOCK_CAPABILITY ||
         capability === CLOCK_ALARMS_CAPABILITY ||

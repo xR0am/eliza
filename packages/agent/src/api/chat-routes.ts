@@ -82,6 +82,7 @@ import {
   readAliasedEnv,
 } from "@elizaos/host/protocol";
 import {
+  bindDeviceRequestedActionPolicy,
   persistInferenceTimingSummary,
   shouldSkipResponseMemoryPersistence,
 } from "@elizaos/plugin-assistant";
@@ -2221,6 +2222,7 @@ export async function readChatRequestPayload(
     source?: string;
     metadata?: Record<string, unknown>;
     clientMessageId?: string;
+    requestedActionPolicy?: unknown;
   }>(req, res, { maxBytes });
   if (!body) return null;
   const normalizedPrompt = normalizeIncomingChatPrompt(body.text, body.images);
@@ -2277,6 +2279,27 @@ export async function readChatRequestPayload(
       res,
       "clientMessageId must be a non-empty string of at most 128 characters",
       400,
+    );
+    return null;
+  }
+  // Consume this transport command in the authenticated request scope only;
+  // it must not become model-facing or persisted message metadata.
+  if (
+    body.requestedActionPolicy !== undefined &&
+    (!helpers.runtime ||
+      !clientMessageId ||
+      (channelType !== ChannelType.DM &&
+        channelType !== ChannelType.VOICE_DM) ||
+      !bindDeviceRequestedActionPolicy(
+        helpers.runtime,
+        body.requestedActionPolicy,
+        clientMessageId,
+      ))
+  ) {
+    helpers.error(
+      res,
+      "Requested action policy requires a current authenticated device request",
+      403,
     );
     return null;
   }
