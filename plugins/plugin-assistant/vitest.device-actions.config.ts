@@ -10,6 +10,7 @@ export default defineConfig({
     environment: "node",
     fileParallelism: false,
     include: [
+      "test/completed-navigation-schema.test.ts",
       "test/device-actions.e2e.test.ts",
       "test/gmail-request-policy.e2e.test.ts",
       "test/maps-navigation.integration.test.ts",
