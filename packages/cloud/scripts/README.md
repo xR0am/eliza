@@ -88,3 +88,20 @@ the staging procedure above. Only the sealed envelope is uploaded for one day.
 Open it locally with the matching private key. Never put plaintext codes in logs
 or issue comments. The workflow is not a payment, redemption, or service-acceptance
 check. Do not dispatch the staging workflow against production.
+
+## Production pending migration review
+
+The read-only `Production Railway Database Authority Audit` reports
+`pendingMigrationTags` for the canonical and protected database connections.
+These are ordered tags from the checked-out migration journal, mapped only after
+ledger hashes and order pass validation and both database authorities match.
+An empty array means the validated ledger is current. `null` means that no plan
+was admitted (missing, divergent, unavailable or mismatched authority). A pending
+list still fails readiness; it does not authorize a migration or prove that the
+served application supports the new schema. The workflow retains its exact-main
+freshness check and prints no database identities, credentials or customer rows.
+
+For a divergent ledger, `migrationLedgerDiagnostics` reports a fixed reason and
+a canonical tag only when the journal uniquely identifies it. Raw database row
+IDs, timestamps, hashes and exception messages are excluded. Unknown failures
+remain classified as `unknown`; neither case admits a pending plan or a repair.
