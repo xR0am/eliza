@@ -132,3 +132,11 @@ An unknown0387 variant has a fixed `reason`: `source_guard`, `fixture_guard`,
 unexpected row count, and an unrecognized stored hash without publishing the
 count, stored hash, or database values. Known variants and unavailable queries
 have a null reason. These diagnostics do not authorize any database change.
+
+The diagnostic also reports funding relation presence and a fixed relation kind.
+It compares the private ledger hash with this checkout's canonical migration
+hashes. `hashAssociation` returns only a uniquely matched reviewed tag, or
+`none`/`ambiguous` with no tag. A match to another tag describes a possible wrong
+journal association; it never reassigns that row or proves the schema is ready.
+Ledger validation maps stored timestamps to current journal entries before
+checking hashes. It does not identify applied SQL from row position or tag text.
