@@ -90,3 +90,9 @@ and metrics are disabled. No provider configuration or payment is changed.
 Production requires `main`. A 503 without a captured code fails the diagnostic;
 it does not prove a missing binding. Compare binding presence and the captured
 code before repairing provider configuration.
+
+Its `compare-primary` operation selects only the protected primary app UUID and
+reports booleans for app approval, organization/owner validity, and whether the
+protected creation organization and owner match that existing app. It shares the
+inventory's database identity guard and read-only transaction. It does not select
+another organization, reveal identifiers, activate records, or change ownership.
