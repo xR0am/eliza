@@ -1,7 +1,5 @@
 /** Stage-only composition. Protected entrypoint must supply fresh read-only authority capture. */
 import { createHash, randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { approveBackupForStage } from "./pitr-approved-backup-receipt";
 import type { privatePitrApi } from "./pitr-private-api";
 import { pitrPatchReceipt } from "./pitr-reviewed-patch";
@@ -11,6 +9,7 @@ import {
   stagePitrPolicyEngine,
 } from "./pitr-reviewed-stage";
 import { observedStageBucketBinding } from "./pitr-stage-bucket-binding";
+import { prepareStageEvidence } from "./pitr-stage-evidence";
 import { normalizeStageObservation } from "./pitr-stage-observation";
 
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
@@ -30,6 +29,7 @@ const WAL_NAMES = [
 ];
 export interface StageOnlyInput {
   directory: string;
+  recipientPublicKey: string;
   projectId: string;
   environmentId: string;
   serviceId: string;
@@ -60,15 +60,16 @@ export async function runStageOnlyPolicyEngine(
   templateReceipt: string,
   now: () => number = Date.now,
 ) {
+  const action = { submitted: false };
   try {
-    return await executeStageOnly(input, templateReceipt, now);
+    return await executeStageOnly(input, templateReceipt, now, action);
   } catch {
     return {
       purpose: "production_pitr_stage_only",
-      state: "refused_before_stage",
+      state: action.submitted ? "creation_unconfirmed" : "refused_before_stage",
       automaticRetryAllowed: false,
       committed: false,
-      resourceCreationPossible: false,
+      resourceCreationPossible: action.submitted,
       productionMigrationReady: false,
     };
   }
@@ -77,13 +78,22 @@ async function executeStageOnly(
   input: StageOnlyInput,
   templateReceipt: string,
   now: () => number,
+  action: { submitted: boolean },
 ) {
-  const persist = (name: string, value: unknown) =>
-    writeFileSync(join(input.directory, name), JSON.stringify(value), {
-      flag: "wx",
-      mode: 0o600,
-    });
   const operationReceipt = sha(randomUUID());
+  const seal = prepareStageEvidence({
+    directory: input.directory,
+    recipientPublicKey: input.recipientPublicKey,
+    operationReceipt,
+  });
+  const persist = (name: string, value: unknown) => {
+    const receipt = seal(name, value);
+    input.publish({
+      purpose: "pitr_stage_sealed_evidence",
+      operationReceipt,
+      ...receipt,
+    });
+  };
   const observations = new WeakMap<
     StageSnapshot,
     ReturnType<typeof normalizeStageObservation>
@@ -188,11 +198,13 @@ async function executeStageOnly(
             !(await input.sourceFresh()) ||
             input.signal.aborted ||
             now() >= input.expiry ||
+            now() >= input.approvedBackup.validUntilMs ||
             (input.approvedBackup.expiresAtMs !== null &&
               now() >= input.approvedBackup.expiresAtMs) ||
             now() - binding.observedAtMs > 60000
           )
             throw Error("stage_action_admission_expired");
+          action.submitted = true;
           const response = object(
             await input.api(
               "stageTemplate",

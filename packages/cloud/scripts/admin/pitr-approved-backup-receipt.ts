@@ -86,6 +86,10 @@ export function approveBackupForStage(input: {
     volumeReceipt: r.volumeReceipt,
     createdAtMs: created,
     expiresAtMs: expiry,
+    validUntilMs: Math.min(
+      created + input.maxAgeHours * 3600000,
+      expiry ?? Infinity,
+    ),
     verifiedRunId: a.runId,
   };
 }

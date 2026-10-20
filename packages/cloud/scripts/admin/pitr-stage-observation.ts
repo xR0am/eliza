@@ -27,6 +27,7 @@ export function normalizeStageObservation(input: {
     volumeReceipt: string;
     createdAtMs: number;
     expiresAtMs: number | null;
+    validUntilMs: number;
   };
   authority: unknown;
   authorityObservedAtMs: number;
@@ -137,6 +138,8 @@ export function normalizeStageObservation(input: {
           ? Date.parse(backup.expiresAt)
           : NaN;
   if (
+    !Number.isFinite(input.approvedBackup.validUntilMs) ||
+    input.now >= input.approvedBackup.validUntilMs ||
     created !== input.approvedBackup.createdAtMs ||
     expiry !== input.approvedBackup.expiresAtMs ||
     (expiry !== null && (!Number.isFinite(expiry) || expiry <= input.now))

@@ -68,6 +68,7 @@ test("authenticates exact reviewed successful run and reads only unique complete
     volumeReceipt: "d".repeat(64),
     createdAtMs: 1000,
     expiresAtMs: null,
+    validUntilMs: 129601000,
     verifiedRunId: 1,
   });
 });

@@ -9,7 +9,7 @@ export function protectedGithubEvidence(input: {
     try {
       if (
         !input.token ||
-        !/^repos\/elizaOS\/eliza\/actions\/(?:runs\/[1-9][0-9]*(?:\/jobs\?per_page=100)?|jobs\/[1-9][0-9]*\/logs)$/.test(
+        !/^repos\/elizaOS\/eliza\/(?:git\/ref\/heads\/main|actions\/(?:runs\/[1-9][0-9]*(?:\/jobs\?per_page=100)?|jobs\/[1-9][0-9]*\/logs))$/.test(
           path,
         )
       )

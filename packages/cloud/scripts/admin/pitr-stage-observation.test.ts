@@ -17,6 +17,7 @@ function fixture() {
       volumeReceipt:
         "62d7a6b1211d627650e2bf0c869b69b564e2cd74290ae1dd78ae4b5e20b0cfe7",
       createdAtMs: 1000,
+      validUntilMs: Date.now() + 3600000,
       expiresAtMs: null,
     },
     authority: {

@@ -14,6 +14,7 @@ import {
   runStageOnlyPolicyEngine,
   type StageOnlyInput,
 } from "./pitr-stage-runner";
+import { generateRecipientKeyPair, openEnvelope } from "./recipient-envelope";
 
 function observationFixture() {
   return {
@@ -31,6 +32,7 @@ function observationFixture() {
       volumeReceipt:
         "62d7a6b1211d627650e2bf0c869b69b564e2cd74290ae1dd78ae4b5e20b0cfe7",
       createdAtMs: 1000,
+      validUntilMs: Date.now() + 3600000,
       expiresAtMs: null as number | null,
     },
     authority: {
@@ -143,6 +145,7 @@ function observationFixture() {
   };
 }
 
+const recipient = generateRecipientKeyPair();
 const template = { fixture: "only synthetic stage template" };
 const templateReceipt = createHash("sha256")
   .update(JSON.stringify(template))
@@ -155,7 +158,9 @@ async function scenario(
     | "preflight"
     | "expired"
     | "backup_expires"
-    | "stale_capture",
+    | "stale_capture"
+    | "publish_fails"
+    | "backup_ages",
 ) {
   const f = observationFixture();
   if (mode === "backup_expires") {
@@ -164,6 +169,7 @@ async function scenario(
       f.approvedBackup.expiresAtMs,
     ).toISOString();
   }
+  if (mode === "backup_ages") f.approvedBackup.validUntilMs = Date.now() + 50;
   let sourceReads = 0;
   let clockOffset = 0;
   const clock = () => Date.now() + clockOffset;
@@ -234,6 +240,7 @@ async function scenario(
   }) as typeof privatePitrApi;
   const input: StageOnlyInput = {
     directory,
+    recipientPublicKey: recipient.publicKeyBase64,
     projectId: "project",
     environmentId: "env",
     serviceId: "db",
@@ -247,7 +254,10 @@ async function scenario(
     api,
     sourceFresh: async () => {
       sourceReads++;
-      if (mode === "backup_expires" && sourceReads === 5)
+      if (
+        (mode === "backup_expires" || mode === "backup_ages") &&
+        sourceReads === 5
+      )
         await new Promise((resolve) => setTimeout(resolve, 70));
       return true;
     },
@@ -258,6 +268,8 @@ async function scenario(
     }),
     publish: (r) => {
       published.push(r);
+      if (mode === "publish_fails" && staged)
+        throw Error("private-output-error");
     },
   };
   try {
@@ -269,7 +281,10 @@ async function scenario(
     const names = readdirSync(directory);
     const modes = names.map((n) => statSync(join(directory, n)).mode & 0o777);
     const privateEvidence = names.map((n) =>
-      readFileSync(join(directory, n), "utf8"),
+      openEnvelope(
+        JSON.parse(readFileSync(join(directory, n), "utf8")),
+        recipient.privateKeyPem,
+      ).toString("utf8"),
     );
     return { result, calls, published, names, modes, privateEvidence, staged };
   } finally {
@@ -293,7 +308,7 @@ test("image-changing staged result remains prohibited with no commit or cleanup 
   const r = await scenario("image");
   expect(r.result.state).toBe("staged_prohibited_change");
   expect(r.result.resourceCreationPossible).toBe(true);
-  expect(r.names).toContain("stage-reconciliation.json");
+  expect(r.names).toContain("stage-reconciliation.sealed.json");
   expect(r.calls.filter((n) => n === "stageTemplate").length).toBe(1);
 });
 test("uncertain stage reconciles privately and never retries or claims owned resources", async () => {
@@ -329,4 +344,19 @@ test("capture cannot relabel old config reads as fresh after slow later provider
   expect(r.result.state).toBe("refused_before_stage");
   expect(r.calls).not.toContain("stageTemplate");
   expect(r.result.resourceCreationPossible).toBe(false);
+});
+
+test("evidence publication failure after submission cannot relabel resource creation as preflight", async () => {
+  const r = await scenario("publish_fails");
+  expect(r.staged).toBe(true);
+  expect(r.result.resourceCreationPossible).toBe(true);
+  expect(r.result.state).toBe("creation_unconfirmed");
+  expect(r.names).toContain("stage-intent.sealed.json");
+  expect(r.names).toContain("stage-workflow.sealed.json");
+  expect(JSON.stringify(r.result)).not.toContain("private-output-error");
+});
+test("backup max-age crossing during final await prevents stage even with no expiry", async () => {
+  const r = await scenario("backup_ages");
+  expect(r.calls).not.toContain("stageTemplate");
+  expect(r.staged).toBe(false);
 });
