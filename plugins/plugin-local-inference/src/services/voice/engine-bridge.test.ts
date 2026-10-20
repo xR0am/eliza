@@ -29,6 +29,7 @@ import {
 	nativeRejectedRangeToRollbackRange,
 	StubTtsBackend,
 	type TtsPcmChunk,
+	VoiceStartupError,
 } from "./engine-bridge";
 import type { VoiceLifecycleLoaders } from "./lifecycle";
 import type { MmapRegionHandle, RefCountedResource } from "./shared-resources";
@@ -380,5 +381,47 @@ describe("EngineVoiceBridge direct synthesis guard", () => {
 		expect(transcript).toBe("Hello, say hello back.");
 		expect(observedSampleRate).toBe(24_000);
 		expect(observedSamples).toBe(24_000);
+	});
+});
+
+describe("EngineVoiceBridge.start — ASR region readability", () => {
+	function bundleWithPreset(): string {
+		const root = mkdtempSync(path.join(tmpdir(), "eliza-asr-region-"));
+		writePresetBundle(root);
+		return root;
+	}
+
+	it("rejects when the asr entry exists but cannot be read", () => {
+		const root = bundleWithPreset();
+		try {
+			// `asr` exists on disk but is a regular file, so `readdirSync`
+			// fails with ENOTDIR — a broken bundle, not an ASR-less one.
+			writeFileSync(path.join(root, "asr"), "");
+			let caught: unknown;
+			try {
+				EngineVoiceBridge.start({ bundleRoot: root, useFfiBackend: false });
+			} catch (err) {
+				caught = err;
+			}
+			expect(caught).toBeInstanceOf(VoiceStartupError);
+			expect((caught as VoiceStartupError).code).toBe("unreadable-asr-dir");
+			expect((caught as Error).message).toContain(path.join(root, "asr"));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("still starts a TTS-only bundle that ships no asr directory", () => {
+		const root = bundleWithPreset();
+		try {
+			const bridge = EngineVoiceBridge.start({
+				bundleRoot: root,
+				useFfiBackend: false,
+			});
+			expect(bridge.asrAvailable).toBe(false);
+			bridge.dispose();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
