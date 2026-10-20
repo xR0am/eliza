@@ -1,0 +1,300 @@
+/** Stage-only composition. Protected entrypoint must supply fresh read-only authority capture. */
+import { createHash, randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { approveBackupForStage } from "./pitr-approved-backup-receipt";
+import type { privatePitrApi } from "./pitr-private-api";
+import { pitrPatchReceipt } from "./pitr-reviewed-patch";
+import {
+  OBSERVED_TEMPLATE,
+  type StageSnapshot,
+  stagePitrPolicyEngine,
+} from "./pitr-reviewed-stage";
+import { observedStageBucketBinding } from "./pitr-stage-bucket-binding";
+import { normalizeStageObservation } from "./pitr-stage-observation";
+
+const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+type Json = Parameters<typeof pitrPatchReceipt>[0];
+function object(v: unknown): Record<string, Json> {
+  if (!v || typeof v !== "object" || Array.isArray(v))
+    throw Error("stage_private_shape_invalid");
+  return v as Record<string, Json>;
+}
+const WAL_NAMES = [
+  "WAL_ARCHIVE_BUCKET",
+  "WAL_ARCHIVE_ENDPOINT",
+  "WAL_ARCHIVE_KEY",
+  "WAL_ARCHIVE_SECRET",
+  "WAL_ARCHIVE_REGION",
+  "WAL_ARCHIVE_PATH",
+];
+export interface StageOnlyInput {
+  directory: string;
+  projectId: string;
+  environmentId: string;
+  serviceId: string;
+  sourceHead: string;
+  volumeReceipt: string;
+  imageReceipt: string;
+  maintenanceReceipt: string;
+  expiry: number;
+  approvedBackup: ReturnType<typeof approveBackupForStage>;
+  signal: AbortSignal;
+  api: typeof privatePitrApi;
+  sourceFresh: () => Promise<boolean>;
+  /** Runs the already reviewed read-only authority audit and pinned CLI PITR status capture. */
+  refreshAuthority: () => Promise<{
+    authority: unknown;
+    authorityObservedAtMs: number;
+    pitr: unknown;
+  }>;
+  publish: (receipt: Record<string, unknown>) => void;
+}
+/** Production composition is fixed to the independently captured template. */
+export async function runStageOnly(input: StageOnlyInput) {
+  return runStageOnlyPolicyEngine(input, OBSERVED_TEMPLATE);
+}
+/** Synthetic fixtures may substitute the template receipt; production entrypoints must use runStageOnly. */
+export async function runStageOnlyPolicyEngine(
+  input: StageOnlyInput,
+  templateReceipt: string,
+) {
+  try {
+    return await executeStageOnly(input, templateReceipt);
+  } catch {
+    return {
+      purpose: "production_pitr_stage_only",
+      state: "refused_before_stage",
+      automaticRetryAllowed: false,
+      committed: false,
+      resourceCreationPossible: false,
+      productionMigrationReady: false,
+    };
+  }
+}
+async function executeStageOnly(
+  input: StageOnlyInput,
+  templateReceipt: string,
+) {
+  const persist = (name: string, value: unknown) =>
+    writeFileSync(join(input.directory, name), JSON.stringify(value), {
+      flag: "wx",
+      mode: 0o600,
+    });
+  const operationReceipt = sha(randomUUID());
+  const observations = new WeakMap<
+    StageSnapshot,
+    ReturnType<typeof normalizeStageObservation>
+  >();
+  const capture = async () => {
+    if (input.signal.aborted || !(await input.sourceFresh()))
+      throw Error("stage_source_unavailable");
+    const [environment, project, volumes, staged] = await Promise.all([
+      input.api("environment", { id: input.environmentId }, input.signal),
+      input.api("projectBuckets", { id: input.projectId }, input.signal),
+      input.api("volumes", { id: input.environmentId }, input.signal),
+      input.api("staged", { id: input.environmentId }, input.signal),
+    ]);
+    const edges = object(
+      object(object(volumes).data).environment,
+    ).volumeInstances;
+    const nodes = object(edges).edges;
+    if (!Array.isArray(nodes)) throw Error("stage_volume_invalid");
+    const selected = nodes
+      .map((e) => object(object(e).node))
+      .filter(
+        (n) => typeof n.id === "string" && sha(n.id) === input.volumeReceipt,
+      );
+    if (selected.length !== 1) throw Error("stage_volume_invalid");
+    const listed = await input.api(
+      "backupList",
+      { id: selected[0].id },
+      input.signal,
+    );
+    const fresh = await input.refreshAuthority();
+    if (!(await input.sourceFresh())) throw Error("stage_source_unavailable");
+    const observation = normalizeStageObservation({
+      projectId: input.projectId,
+      environmentId: input.environmentId,
+      serviceId: input.serviceId,
+      sourceHead: input.sourceHead,
+      expectedVolumeReceipt: input.volumeReceipt,
+      expectedImageReceipt: input.imageReceipt,
+      approvedBackup: input.approvedBackup,
+      ...fresh,
+      now: Date.now(),
+      environment,
+      project,
+      volumes,
+      staged,
+      backups: listed,
+    });
+    observations.set(observation.snapshot, observation);
+    return observation;
+  };
+  const initial = await capture();
+  const response = object(await input.api("template", {}, input.signal)),
+    template = object(object(response.data).template);
+  const serialized =
+    typeof template.serializedConfig === "string"
+      ? JSON.parse(template.serializedConfig)
+      : template.serializedConfig;
+  if (
+    typeof template.id !== "string" ||
+    sha(JSON.stringify(serialized)) !== templateReceipt
+  )
+    throw Error("stage_template_changed");
+  const result = await stagePitrPolicyEngine(
+    {
+      serializedTemplate: serialized,
+      review: {
+        before: initial.snapshot,
+        serializedTemplateSha256: templateReceipt,
+        writerMaintenanceReceipt: input.maintenanceReceipt,
+        operationReceipt,
+        expiresAtMs: input.expiry,
+        allowedVariableNames: WAL_NAMES,
+      },
+      transport: {
+        snapshot: async () => (await capture()).snapshot,
+        async persistIntent(review) {
+          persist("stage-intent.json", {
+            review,
+            baseline: initial.privateConfig,
+            inventory: initial.privateBuckets,
+          });
+          input.publish({
+            purpose: "pitr_stage_intent",
+            operationReceipt,
+            templateReceipt,
+            volumeReceipt: input.volumeReceipt,
+            priorBucketReceipts: initial.snapshot.bucketIds.map(sha),
+            automaticRetryAllowed: false,
+          });
+        },
+        async stage(config, binding) {
+          if (
+            !(await input.sourceFresh()) ||
+            input.signal.aborted ||
+            Date.now() >= input.expiry ||
+            Date.now() - binding.observedAtMs > 60000
+          )
+            throw Error("stage_action_admission_expired");
+          const response = object(
+            await input.api(
+              "stageTemplate",
+              {
+                input: {
+                  serializedConfig: config,
+                  existingRootServiceId: input.serviceId,
+                  environmentId: input.environmentId,
+                  projectId: input.projectId,
+                  workspaceId: initial.workspaceId,
+                  templateId: template.id,
+                  stageOnly: true,
+                },
+              },
+              input.signal,
+            ),
+          );
+          const operation = object(object(response.data).templateDeployV2);
+          if (
+            operation.projectId !== input.projectId ||
+            typeof operation.workflowId !== "string" ||
+            !operation.workflowId
+          )
+            throw Error("stage_creation_unconfirmed");
+          persist("stage-workflow.json", operation);
+          input.publish({
+            purpose: "pitr_stage_workflow",
+            operationReceipt,
+            workflowReceipt: sha(operation.workflowId),
+            automaticRetryAllowed: false,
+          });
+          return { workflowId: operation.workflowId };
+        },
+        async awaitComplete(id) {
+          const deadline = Date.now() + 600000;
+          while (Date.now() < deadline && !input.signal.aborted) {
+            const result = object(
+                await input.api("workflowStatus", { id }, input.signal),
+              ),
+              status = object(object(result.data).workflowStatus).status;
+            if (status === "Complete") return true;
+            if (status !== "Running" && status !== "NotFound") return false;
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+          return false;
+        },
+        async verifyBucketBinding(before, after, newBucketId) {
+          const a = observations.get(before),
+            b = observations.get(after);
+          return (
+            !!a &&
+            !!b &&
+            observedStageBucketBinding({
+              beforeBuckets: a.privateBuckets,
+              afterBuckets: b.privateBuckets,
+              stagedPatch: after.stagedPatch,
+              newBucketId,
+              serviceId: input.serviceId,
+              projectId: input.projectId,
+            })
+          );
+        },
+        async persistObservation(snapshot, owned) {
+          const evidence = observations.get(snapshot);
+          if (!evidence) throw Error("stage_observation_missing");
+          persist("stage-observation.json", { ...evidence, owned });
+          input.publish({
+            purpose: "pitr_stage_observation",
+            operationReceipt,
+            patchReceipt: pitrPatchReceipt(snapshot.stagedPatch),
+            ownedBucketReceipts: owned.map(sha),
+            activeConfigReceipt: snapshot.binding.configSha256,
+            automaticRetryAllowed: false,
+          });
+        },
+      },
+    },
+    templateReceipt,
+  );
+  if (
+    result.resourceCreationPossible &&
+    result.state !== "staged_requires_review"
+  ) {
+    try {
+      const observed = await capture();
+      persist("stage-reconciliation.json", observed);
+      input.publish({
+        purpose: "pitr_stage_reconciliation",
+        operationReceipt,
+        addedBucketReceipts: observed.snapshot.bucketIds
+          .filter((id) => !initial.snapshot.bucketIds.includes(id))
+          .map(sha),
+        removedBucketReceipts: initial.snapshot.bucketIds
+          .filter((id) => !observed.snapshot.bucketIds.includes(id))
+          .map(sha),
+        activeConfigUnchanged:
+          observed.snapshot.binding.configSha256 ===
+          initial.snapshot.binding.configSha256,
+        patchReceipt: pitrPatchReceipt(observed.snapshot.stagedPatch),
+        ownershipProven: false,
+        automaticRetryAllowed: false,
+      });
+    } catch {
+      // error-policy:J1 No private provider error may reach the public receipt.
+      try {
+        input.publish({
+          purpose: "pitr_stage_reconciliation",
+          operationReceipt,
+          state: "observation_unavailable",
+          automaticRetryAllowed: false,
+        });
+      } catch {
+        /* Preserve the existing unconfirmed result. */
+      }
+    }
+  }
+  return { ...result, purpose: "production_pitr_stage_only", operationReceipt };
+}
