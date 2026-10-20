@@ -21,6 +21,12 @@ interface SchemaMatch {
 }
 export interface Funding0387Probe {
   variant: Variant | "unknown" | "unavailable";
+  reason:
+    | "source_guard"
+    | "fixture_guard"
+    | "ledger_row_count"
+    | "unknown_hash"
+    | null;
   schemaMatches: Record<Variant, SchemaMatch> | null;
 }
 
@@ -52,7 +58,11 @@ export async function probeFunding0387(
   try {
     const matching = migrations.filter((m) => m.entry.tag === TAG);
     if (matching.length !== 1 || matching[0].hash !== HASHES.canonical)
-      return { variant: "unknown", schemaMatches: null };
+      return {
+        variant: "unknown",
+        reason: "source_guard",
+        schemaMatches: null,
+      };
     const historical = await readFile(
       new URL(
         "./fixtures/0387-agent-compute-funding-historical.sql",
@@ -63,17 +73,30 @@ export async function probeFunding0387(
       createHash("sha256").update(historical).digest("hex") !==
       HASHES.historical
     )
-      return { variant: "unknown", schemaMatches: null };
+      return {
+        variant: "unknown",
+        reason: "fixture_guard",
+        schemaMatches: null,
+      };
     const ledger = await client.query<{ hash: string }>(
       "SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at = $1",
       [matching[0].entry.when],
     );
     if (ledger.rows.length !== 1)
-      return { variant: "unknown", schemaMatches: null };
+      return {
+        variant: "unknown",
+        reason: "ledger_row_count",
+        schemaMatches: null,
+      };
     const variant = (Object.keys(HASHES) as Variant[]).find(
       (key) => HASHES[key] === ledger.rows[0].hash,
     );
-    if (!variant) return { variant: "unknown", schemaMatches: null };
+    if (!variant)
+      return {
+        variant: "unknown",
+        reason: "unknown_hash",
+        schemaMatches: null,
+      };
     const expected = JSON.parse(
       await readFile(
         new URL(
@@ -115,9 +138,9 @@ export async function probeFunding0387(
       }
       schemaMatches[key] = safe;
     }
-    return { variant, schemaMatches };
+    return { variant, reason: null, schemaMatches };
   } catch {
     // error-policy:J1 never expose database errors, parameters or stored values.
-    return { variant: "unavailable", schemaMatches: null };
+    return { variant: "unavailable", reason: null, schemaMatches: null };
   }
 }

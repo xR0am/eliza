@@ -284,8 +284,16 @@ test("0387 probe is gated by matching authority and never changes divergent read
     ).toBe(matches);
     if (matches)
       expect(report.funding0387).toEqual({
-        canonical: { variant: "unknown", schemaMatches: null },
-        protected: { variant: "unknown", schemaMatches: null },
+        canonical: {
+          variant: "unknown",
+          reason: "ledger_row_count",
+          schemaMatches: null,
+        },
+        protected: {
+          variant: "unknown",
+          reason: "ledger_row_count",
+          schemaMatches: null,
+        },
       });
     else
       expect(report.funding0387).toEqual({ canonical: null, protected: null });
