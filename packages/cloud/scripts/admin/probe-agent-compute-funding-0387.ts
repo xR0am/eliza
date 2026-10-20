@@ -4,6 +4,11 @@ import { readFile } from "node:fs/promises";
 import type { AuditQueryClient } from "./audit-production-railway-database-authority";
 import type { Migration } from "./canonical-migration-ledger";
 
+import {
+  inspectGmailReceiptCatalog,
+  inspectLedgerAssociations,
+} from "./ledger-association-diagnostic";
+
 const TAG = "0387_agent_compute_funding";
 const HASHES = {
   historical:
@@ -42,6 +47,8 @@ export interface Funding0387Probe {
     status: "unique" | "none" | "ambiguous";
     canonicalTag: string | null;
   };
+  ledgerAssociations?: Awaited<ReturnType<typeof inspectLedgerAssociations>>;
+  gmailReceiptCatalog?: Awaited<ReturnType<typeof inspectGmailReceiptCatalog>>;
   schemaPurpose?: "diagnostic_only";
   schemaMatches: Record<Variant, SchemaMatch> | null;
 }
@@ -192,7 +199,20 @@ export async function probeFunding0387(
       }
       schemaMatches[key] = safe;
     }
+    const extra = !variant
+      ? {
+          ledgerAssociations: await inspectLedgerAssociations(
+            client,
+            migrations,
+          ),
+          gmailReceiptCatalog: await inspectGmailReceiptCatalog(
+            client,
+            migrations,
+          ),
+        }
+      : {};
     return {
+      ...extra,
       variant: variant ?? "unknown",
       reason: variant ? null : "unknown_hash",
       relation: {

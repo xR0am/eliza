@@ -176,6 +176,15 @@ test("changed historical fixture returns a fixed reason before any database read
       new URL("./probe-agent-compute-funding-0387.ts", import.meta.url),
       modulePath,
     );
+    for (const filename of [
+      "ledger-association-diagnostic.ts",
+      "canonical-migration-ledger.ts",
+    ]) {
+      await copyFile(
+        new URL(`./${filename}`, import.meta.url),
+        join(directory, filename),
+      );
+    }
     await writeFile(
       join(directory, "fixtures/0387-agent-compute-funding-historical.sql"),
       "PRIVATE_CHANGED_FIXTURE",

@@ -140,3 +140,14 @@ hashes. `hashAssociation` returns only a uniquely matched reviewed tag, or
 journal association; it never reassigns that row or proves the schema is ready.
 Ledger validation maps stored timestamps to current journal entries before
 checking hashes. It does not identify applied SQL from row position or tag text.
+
+For an unknown0387 hash, the same transaction observes the complete ledger in
+existing row order, up to10000 rows (larger ledgers fail closed, never truncate).
+Each association contains only a uniquely reviewed timestamp tag and hash tag,
+plus a fixed hash-match status. Counts describe unknown/ambiguous hashes;
+`recognizedHashOrder` describes only uniquely matched hashes. Unobserved tags
+include both gaps and never-applied tail entries: they are observations, not a
+migration plan. Stored row IDs, timestamps and hashes are never published.
+The Gmail receipt diagnostic checks fixed table presence/kind and the authentic
+0509 function body/properties and trigger definition/enabled state. It reads no
+receipt data and does not claim full table-schema or operational equivalence.
