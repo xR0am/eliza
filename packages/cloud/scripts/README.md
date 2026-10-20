@@ -105,3 +105,22 @@ For a divergent ledger, `migrationLedgerDiagnostics` reports a fixed reason and
 a canonical tag only when the journal uniquely identifies it. Raw database row
 IDs, timestamps, hashes and exception messages are excluded. Unknown failures
 remain classified as `unknown`; neither case admits a pending plan or a repair.
+
+If matching authorities expose a migration0387 hash mismatch, the same
+read-only audit also reports `funding0387`. The stored hash is compared privately
+with two source-verified variants: `historical` (commit57d9e8062404af41c903d34ec1599b9b743ddd6a)
+and `canonical`. It returns no stored hash. Unknown variants or errors yield no
+schema admission. This extra probe runs when either ledger reports a0387 hash
+mismatch; it never changes the failed ledger verdict or produces a pending plan.
+
+For each variant, schema flags compare reviewed column types, nullability,
+default expressions and generated/identity status; constraint definitions and
+validation status; and index definitions, readiness, validity and uniqueness.
+Unexpected catalog objects are reported only as booleans, never by name. The
+expected definitions come from isolated PGlite databases created from the exact
+historical/current SQL. PostgreSQL catalog rendering differences can cause a
+mismatch; they cannot authorize repair. Later additive migrations can also make
+an exact0387-only schema comparison false. The probe reads no funding rows and
+prints no stored defaults, constraint expressions, IDs or connection details.
+Neither a known variant nor matching schema flags authorize a ledger rewrite,
+DDL, grant issuance or app deployment.

@@ -256,3 +256,39 @@ test("unknown validation failures stay scrubbed and cannot produce a pending pla
   });
   expect(JSON.stringify(report)).not.toContain("PRIVATE_CONNECTION_STRING");
 });
+
+test("0387 probe is gated by matching authority and never changes divergent readiness", async () => {
+  const rows = ledger.map((row, index) =>
+    migrations[index].entry.tag === "0387_agent_compute_funding"
+      ? { ...row, hash: "private_unknown_hash" }
+      : row,
+  );
+  for (const matches of [true, false]) {
+    const canonicalClient = client(rows);
+    const protectedClient = client(rows, matches ? "12345" : "67890");
+    const report = await auditProductionDatabaseAuthority({
+      canonicalClient,
+      protectedClient,
+      canonicalMigrations: migrations,
+    });
+    expect(report.verdict).toBe("fail");
+    expect(report.pendingMigrationTags).toEqual({
+      canonical: null,
+      protected: null,
+    });
+    expect(
+      canonicalClient.queries.some((sql) => sql.startsWith("SELECT hash FROM")),
+    ).toBe(matches);
+    expect(
+      protectedClient.queries.some((sql) => sql.startsWith("SELECT hash FROM")),
+    ).toBe(matches);
+    if (matches)
+      expect(report.funding0387).toEqual({
+        canonical: { variant: "unknown", schemaMatches: null },
+        protected: { variant: "unknown", schemaMatches: null },
+      });
+    else
+      expect(report.funding0387).toEqual({ canonical: null, protected: null });
+    expect(JSON.stringify(report)).not.toContain("private_unknown_hash");
+  }
+});
