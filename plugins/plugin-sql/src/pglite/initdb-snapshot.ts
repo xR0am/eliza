@@ -32,7 +32,7 @@ const isMemoryDataDir = (dataDir: unknown): boolean =>
 export function initdbSnapshotPath(
   options: PGliteOptions,
   env: Record<string, string | undefined> = process.env,
-  bundleUrl: string = import.meta.url,
+  bundleUrl: string = import.meta.url
 ): string | null {
   const withData = options as PGliteOptions & {
     dataDir?: unknown;
@@ -60,7 +60,7 @@ export function readInitdbSnapshot(
     } catch {
       return null;
     }
-  },
+  }
 ): Blob | null {
   if (!path) return null;
   const bytes = size(path);
