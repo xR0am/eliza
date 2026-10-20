@@ -172,24 +172,34 @@ describe("bundle ASR artifacts", () => {
 		expect(bundleHasAsrModelFiles(root)).toBe(false);
 	});
 
-	it("propagates an unreadable ASR GGUF instead of reporting no model files", () => {
-		const root = writeManifest({});
-		const model = path.join(root, "asr", "phonon-2-fv5.gguf");
-		writeFileSync(model, gguf("parakeet-tdt"));
-		chmodSync(model, 0o000);
-		try {
-			// A staged-but-unreadable model is a broken bundle, not a bundle with
-			// no ASR artifacts: callers must not report "no ASR model is staged".
-			expect(() => readGgufArchitecture(model)).toThrow(
-				/failed to read GGUF header/,
-			);
-			expect(() => bundleHasAsrModelFiles(root)).toThrow(
-				/failed to read GGUF header/,
-			);
-		} finally {
-			chmodSync(model, 0o600);
-		}
-	});
+	// chmod cannot remove read access for uid 0 or on Windows, where the read
+	// succeeds and this assertion would fail despite correct behaviour.
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"propagates an unreadable ASR GGUF instead of reporting no model files",
+		() => {
+			const root = writeManifest({});
+			const model = path.join(root, "asr", "phonon-2-fv5.gguf");
+			writeFileSync(model, gguf("parakeet-tdt"));
+			chmodSync(model, 0o000);
+			try {
+				// A staged-but-unreadable model is a broken bundle, not a bundle
+				// with no ASR artifacts: callers must not report "no ASR model is
+				// staged". This is the read behind `Engine.startVoice()`'s
+				// `useFfiBackend && bundleHasAsrModelFiles(bundleRoot)` provenance
+				// gate (engine.ts) and `Engine.localAsrBlockersForBundle()`, so
+				// throwing here fails that call instead of skipping the gate or
+				// emitting `files.asr: no ASR model artifacts are staged`.
+				expect(() => readGgufArchitecture(model)).toThrow(
+					/failed to read GGUF header/,
+				);
+				expect(() => bundleHasAsrModelFiles(root)).toThrow(
+					/failed to read GGUF header/,
+				);
+			} finally {
+				chmodSync(model, 0o600);
+			}
+		},
+	);
 
 	it("treats a GGUF deleted mid-scan as absent, not unreadable", () => {
 		// The directory listing and the header read are separate syscalls; a file
