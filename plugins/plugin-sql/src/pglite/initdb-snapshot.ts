@@ -68,5 +68,5 @@ export function readInitdbSnapshot(
   const data = read(path);
   // gzip magic: a file that is not a gzip archive is not a snapshot.
   if (data.length < 2 || data[0] !== 0x1f || data[1] !== 0x8b) return null;
-  return new Blob([data], { type: "application/x-gzip" });
+  return new Blob([new Uint8Array(data)], { type: "application/x-gzip" });
 }
