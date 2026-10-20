@@ -27,6 +27,21 @@ export interface Funding0387Probe {
     | "ledger_row_count"
     | "unknown_hash"
     | null;
+  relation?: {
+    present: boolean;
+    kind:
+      | "table"
+      | "partitioned_table"
+      | "view"
+      | "materialized_view"
+      | "foreign_table"
+      | "other"
+      | "absent";
+  };
+  hashAssociation?: {
+    status: "unique" | "none" | "ambiguous";
+    canonicalTag: string | null;
+  };
   schemaPurpose?: "diagnostic_only";
   schemaMatches: Record<Variant, SchemaMatch> | null;
 }
@@ -94,6 +109,48 @@ export async function probeFunding0387(
     );
     // An unknown ledger hash does not prevent read-only catalog observation.
     // These flags cannot validate the ledger or authorize a migration plan.
+    const candidates = migrations.filter(
+      (migration) => migration.hash === ledger.rows[0].hash,
+    );
+    const unique =
+      candidates.length === 1 &&
+      migrations.filter(
+        (migration) => migration.entry.tag === candidates[0].entry.tag,
+      ).length === 1;
+    const hashAssociation = {
+      status: unique
+        ? ("unique" as const)
+        : candidates.length === 0
+          ? ("none" as const)
+          : ("ambiguous" as const),
+      canonicalTag: unique ? candidates[0].entry.tag : null,
+    };
+    const relationResult = await client.query<{
+      present: boolean;
+      kind: string;
+    }>(`
+      SELECT c.oid IS NOT NULL AS present,
+        CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'partitioned_table'
+          WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view'
+          WHEN 'f' THEN 'foreign_table' ELSE CASE WHEN c.oid IS NULL THEN 'absent' ELSE 'other' END END AS kind
+      FROM (SELECT to_regclass('public.agent_compute_funding') AS oid) r
+      LEFT JOIN pg_class c ON c.oid=r.oid`);
+    const relation = relationResult.rows[0];
+    const kinds = [
+      "table",
+      "partitioned_table",
+      "view",
+      "materialized_view",
+      "foreign_table",
+      "other",
+      "absent",
+    ] as const;
+    if (
+      relationResult.rows.length !== 1 ||
+      typeof relation?.present !== "boolean" ||
+      !kinds.some((kind) => kind === relation.kind)
+    )
+      throw new Error("probe_result_unavailable");
     const expected = JSON.parse(
       await readFile(
         new URL(
@@ -138,6 +195,11 @@ export async function probeFunding0387(
     return {
       variant: variant ?? "unknown",
       reason: variant ? null : "unknown_hash",
+      relation: {
+        present: relation.present,
+        kind: relation.kind as (typeof kinds)[number],
+      },
+      hashAssociation,
       schemaPurpose: "diagnostic_only",
       schemaMatches,
     };

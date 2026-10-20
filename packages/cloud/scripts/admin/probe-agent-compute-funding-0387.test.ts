@@ -65,6 +65,7 @@ test("actual historical and canonical SQL produce their exact catalog match flag
       const report = await probeFunding0387(db, migrations);
       expect(report.variant).toBe(variant);
       expect(report.reason).toBeNull();
+      expect(report.relation).toEqual({ present: true, kind: "table" });
       const match = report.schemaMatches?.[variant];
       expect(match).toBeDefined();
       expect(allTrue(match?.columns ?? {})).toBe(true);
@@ -224,5 +225,60 @@ test("unknown hashes expose only diagnostic catalog flags for actual old and new
     } finally {
       await db.close();
     }
+  }
+});
+
+test("absent funding relation and private canonical hash associations remain diagnostic", async () => {
+  const other = migrations.find(
+    (item) =>
+      item.entry.tag !== migration?.entry.tag &&
+      migrations.filter((candidate) => candidate.hash === item.hash).length ===
+        1,
+  );
+  if (!other) throw new Error("Missing unique migration fixture");
+  const db = await database(historical, other.hash);
+  try {
+    await db.exec("DROP TABLE agent_compute_funding; BEGIN READ ONLY");
+    const report = await probeFunding0387(db, migrations);
+    expect(report.relation).toEqual({ present: false, kind: "absent" });
+    expect(report.hashAssociation).toEqual({
+      status: "unique",
+      canonicalTag: other.entry.tag,
+    });
+    expect(report.variant).toBe("unknown");
+    expect(report.reason).toBe("unknown_hash");
+    expect(report.schemaPurpose).toBe("diagnostic_only");
+    expect(
+      Object.values(report.schemaMatches?.canonical.columns ?? {}).every(
+        (value) => value === false,
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(report)).not.toContain(other.hash);
+    const ambiguous = await probeFunding0387(db, [
+      ...migrations,
+      {
+        ...other,
+        entry: { ...other.entry, tag: "reviewed_duplicate_fixture" },
+      },
+    ]);
+    expect(ambiguous.hashAssociation).toEqual({
+      status: "ambiguous",
+      canonicalTag: null,
+    });
+    expect(JSON.stringify(ambiguous)).not.toContain(other.hash);
+    await db.exec("COMMIT");
+    await db.query("UPDATE drizzle.__drizzle_migrations SET hash=$1", [
+      "PRIVATE_UNKNOWN_HASH",
+    ]);
+    await db.exec("BEGIN READ ONLY");
+    const unknown = await probeFunding0387(db, migrations);
+    expect(unknown.hashAssociation).toEqual({
+      status: "none",
+      canonicalTag: null,
+    });
+    expect(JSON.stringify(unknown)).not.toContain("PRIVATE_UNKNOWN_HASH");
+    await db.exec("COMMIT");
+  } finally {
+    await db.close();
   }
 });
