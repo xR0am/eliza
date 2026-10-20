@@ -566,7 +566,8 @@ export function pageGuidance(request) {
     if (!keyboard) barInset = bottomInset;
     view.height = Math.max(
       0,
-      view.height - (keyboard ? Math.max(bottomInset, barInset) : bottomInset) / view.scale,
+      view.height -
+        (keyboard ? Math.max(bottomInset, barInset) : bottomInset) / view.scale,
     );
     const geometry = JSON.stringify([
       rect.x,
