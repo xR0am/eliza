@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pitrProvisioningPlan } from "./pitr-provisioning-plan";
+import type {
+  ResilienceEvidence,
+  ResilienceExpectation,
+} from "./preflight-railway-postgres-resilience";
 import {
   fixedUtcTarget,
   productionBackupReadiness,
@@ -357,4 +363,254 @@ test("CLI publishes split diagnostics from private fixture files without publish
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("only an independently approved exact digest and matching live PG18 authority can replace tag admission", () => {
+  const input = fixture();
+  const evidence: ResilienceEvidence = input.evidence;
+  const expected: ResilienceExpectation = input.expected;
+  const image = `ghcr.io/railwayapp-templates/postgres-ssl@sha256:${"a".repeat(64)}`;
+  input.evidence.services[0].source.image = image;
+  expect(
+    productionBackupReadiness(input).resilienceChecks.exactPostgres18Service,
+  ).toBe(false);
+  const receipt = createHash("sha256").update(image).digest("hex");
+  expected.approvedImageSha256 = receipt;
+  evidence.imageAuthority = {
+    projectId: expected.projectId,
+    environmentId: expected.environmentId,
+    serviceId: expected.serviceId,
+    imageSha256: receipt,
+    canonicalPostgresMajor: "18",
+    protectedPostgresMajor: "18",
+    protectedAuthorityMatches: true,
+  };
+  const evaluate = () =>
+    productionBackupReadiness({ ...input, evidence, expected });
+  expect(evaluate().resilienceChecks.exactPostgres18Service).toBe(true);
+  for (const patch of [
+    { serviceId: "another-service" },
+    { environmentId: "another-environment" },
+    { projectId: "another-project" },
+    { imageSha256: "b".repeat(64) },
+    { canonicalPostgresMajor: "other" as const },
+    { protectedPostgresMajor: "unavailable" as const },
+    { protectedAuthorityMatches: false },
+  ]) {
+    const good: NonNullable<ResilienceEvidence["imageAuthority"]> =
+      evidence.imageAuthority;
+    evidence.imageAuthority = { ...good, ...patch };
+    expect(evaluate().resilienceChecks.exactPostgres18Service).toBe(false);
+    evidence.imageAuthority = good;
+  }
+  input.evidence.services[0].source.image = "postgres:18";
+  expect(evaluate().resilienceChecks.exactPostgres18Service).toBe(false);
+  input.evidence.services[0].source.image = image.replace(
+    "a".repeat(64),
+    "c".repeat(64),
+  );
+  expect(evaluate().resilienceChecks.exactPostgres18Service).toBe(false);
+  input.evidence.services[0].source.image = image;
+  input.evidence.pitr.enabled = false;
+  expect(evaluate().resilienceChecks.exactPostgres18Service).toBe(true);
+  expect(evaluate().verdict).toBe("fail");
+  expect(evaluate().productionMigrationReady).toBe(false);
+  expected.approvedImageSha256 = "malformed";
+  expect(evaluate).toThrow();
+});
+
+function planFixture() {
+  const input = fixture();
+  input.evidence.services[0].source.image = `ghcr.io/railwayapp-templates/postgres-ssl@sha256:${"a".repeat(64)}`;
+  (input.evidence.pitr as Record<string, unknown>).isHaCluster = false;
+  (input.evidence.backups[0] as Record<string, unknown>).expiresAt = null;
+  return {
+    ...input,
+    baseline: {
+      data: {
+        environment: {
+          id: input.expected.environmentId,
+          config: {
+            services: {
+              [input.expected.serviceId]: {
+                source: { image: input.evidence.services[0].source.image },
+                variables: {
+                  PRIVATE_CREDENTIAL_NAME: { value: "PRIVATE_ENCRYPTED_VALUE" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    staged: {
+      data: {
+        environmentStagedChanges: {
+          id: "PRIVATE_PATCH",
+          status: "PENDING",
+          patch: {} as Record<string, unknown>,
+        },
+      },
+    },
+    template: {
+      data: {
+        template: {
+          id: "PRIVATE_TEMPLATE",
+          serializedConfig: {
+            services: {
+              root: {
+                variables: {
+                  WAL_ARCHIVE_BUCKET: { value: "PRIVATE_BUCKET_REFERENCE" },
+                },
+              },
+            },
+            buckets: { archive: { name: "PRIVATE_BUCKET" } },
+          },
+        },
+      },
+    },
+  };
+}
+
+test("read-only provisioning plan binds existing resources and reports effects without enabling changes", () => {
+  const input = planFixture();
+  const report = pitrProvisioningPlan(input);
+  expect(report.observationVerdict).toBe("reviewable");
+  expect(report.observations.templateServiceCount).toBe(1);
+  expect(report.observations.templateBucketCount).toBe(1);
+  expect(report.observations.templateDeclaresWalArchiveBucket).toBe(true);
+  expect(report.stageCreatesResources).toBe(true);
+  expect(report.atomicStagedCommitAvailable).toBe(false);
+  expect(report.provisioningEnabled).toBe(false);
+  expect(report.productionMutationPerformed).toBe(false);
+  expect(report.restoreProven).toBe(false);
+  expect(report.backupCompletionProven).toBe(false);
+  expect(report.templateEffects[0].variables[0].name).toBe(
+    "WAL_ARCHIVE_BUCKET",
+  );
+  expect(JSON.stringify(report)).not.toContain("PRIVATE_");
+  expect(JSON.stringify(report)).not.toContain(input.expected.serviceId);
+  expect(report.receipts.observedImage).toMatch(/^[a-f0-9]{64}$/);
+  for (const change of [
+    (f: ReturnType<typeof planFixture>) => {
+      f.staged.data.environmentStagedChanges.patch = {
+        services: { foreign: { variables: { PRIVATE: "secret" } } },
+      };
+    },
+    (f: ReturnType<typeof planFixture>) => {
+      (f.evidence.pitr as Record<string, unknown>).isHaCluster = true;
+    },
+    (f: ReturnType<typeof planFixture>) => {
+      f.baseline.data.environment.id = "wrong-environment";
+    },
+    (f: ReturnType<typeof planFixture>) => {
+      (f.evidence.backups[0] as Record<string, unknown>).expiresAt =
+        "2026-10-19T21:00:00Z";
+    },
+    (f: ReturnType<typeof planFixture>) => {
+      (
+        f.template.data.template.serializedConfig.services.root as Record<
+          string,
+          unknown
+        >
+      ).source = { image: "PRIVATE_REPLACEMENT_IMAGE" };
+    },
+    (f: ReturnType<typeof planFixture>) => {
+      (f.template as Record<string, unknown>).errors = [
+        { message: "PRIVATE_ERROR" },
+      ];
+    },
+  ]) {
+    const drift = planFixture();
+    change(drift);
+    const rejected = pitrProvisioningPlan(drift);
+    expect(rejected.observationVerdict).toBe("incomplete");
+    expect(rejected.provisioningEnabled).toBe(false);
+    expect(JSON.stringify(rejected)).not.toContain("PRIVATE_");
+  }
+});
+
+test("plan CLI consumes private captures and never exposes their contents", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pitr-plan-"));
+  try {
+    const input = planFixture();
+    for (const [name, value] of Object.entries(input.evidence))
+      writeFileSync(join(directory, `${name}.json`), JSON.stringify(value));
+    for (const name of ["baseline", "staged", "template"] as const)
+      writeFileSync(
+        join(directory, `pitr-plan-${name}.json`),
+        JSON.stringify(input[name]),
+      );
+    writeFileSync(
+      join(directory, "report.json"),
+      JSON.stringify(input.authorityAudit),
+    );
+    writeFileSync(
+      join(directory, "resolved-service-id"),
+      input.expected.serviceId,
+    );
+    const run = () =>
+      Bun.spawnSync(
+        [
+          process.execPath,
+          "--no-env-file",
+          new URL("./pitr-provisioning-plan.ts", import.meta.url).pathname,
+        ],
+        {
+          env: {
+            BACKUP_EVIDENCE_DIR: directory,
+            RESTORE_TARGET_UTC: "2020-01-01T00:00:00Z",
+            RAILWAY_PROJECT_ID: input.expected.projectId,
+            RAILWAY_ENVIRONMENT_ID: input.expected.environmentId,
+          },
+        },
+      );
+    const result = run();
+    const output = new TextDecoder().decode(result.stdout);
+    expect(new TextDecoder().decode(result.stderr)).toBe("");
+    expect(output).not.toContain("PRIVATE_");
+    expect(JSON.parse(output).provisioningEnabled).toBe(false);
+    writeFileSync(
+      join(directory, "pitr-plan-template.json"),
+      "PRIVATE_BROKEN_TOKEN",
+    );
+    const failed = run();
+    expect(failed.exitCode).toBe(1);
+    expect(new TextDecoder().decode(failed.stderr)).toBe("");
+    expect(JSON.parse(new TextDecoder().decode(failed.stdout)).failure).toBe(
+      "private_plan_evidence_invalid_or_unavailable",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("plan retention is tied to the selected backup and never substitutes another retained entry", () => {
+  const input = planFixture();
+  const selected = input.evidence.backups[0] as Record<string, unknown>;
+  selected.expiresAt = "2026-10-19T21:00:00Z";
+  input.evidence.backups.push({
+    ...input.evidence.backups[0],
+    id: "PRIVATE_OTHER_BACKUP",
+    createdAt: "2026-10-19T19:00:00Z",
+    expiresAt: null,
+  } as (typeof input.evidence.backups)[0]);
+  expect(pitrProvisioningPlan(input).checks.freshRetainedScheduledBackup).toBe(
+    false,
+  );
+  selected.expiresAt = null;
+  input.evidence.backups.push(input.evidence.backups[0]);
+  expect(pitrProvisioningPlan(input).checks.freshRetainedScheduledBackup).toBe(
+    false,
+  );
+  const malformed = planFixture();
+  Object.assign(
+    malformed.template.data.template.serializedConfig.services.root.variables,
+    {
+      "PRIVATE_SECRET_WITH_NEWLINE\n": { value: "private-value" },
+    },
+  );
+  expect(() => pitrProvisioningPlan(malformed)).toThrow(
+    "template_variable_shape_not_reviewable",
+  );
 });
