@@ -98,59 +98,105 @@ async function executeStageOnly(
     StageSnapshot,
     ReturnType<typeof normalizeStageObservation>
   >();
+  let postCapture = 0;
   const capture = async () => {
     if (input.signal.aborted || !(await input.sourceFresh()))
       throw Error("stage_source_unavailable");
     const readStartedAt = now();
-    const [environment, project, volumes, staged] = await Promise.all([
-      input.api("environment", { id: input.environmentId }, input.signal),
-      input.api("projectBuckets", { id: input.projectId }, input.signal),
-      input.api("volumes", { id: input.environmentId }, input.signal),
-      input.api("staged", { id: input.environmentId }, input.signal),
-    ]);
-    const edges = object(
-      object(object(volumes).data).environment,
-    ).volumeInstances;
-    const nodes = object(edges).edges;
-    if (!Array.isArray(nodes)) throw Error("stage_volume_invalid");
-    const selected = nodes
-      .map((e) => object(object(e).node))
-      .filter(
-        (n) => typeof n.id === "string" && sha(n.id) === input.volumeReceipt,
-      );
-    if (selected.length !== 1) throw Error("stage_volume_invalid");
-    const listed = await input.api(
-      "backupList",
-      { id: selected[0].id },
-      input.signal,
+    const controller = new AbortController();
+    const signal = AbortSignal.any([input.signal, controller.signal]);
+    const names = ["environment", "project", "volumes", "staged"];
+    const results = await Promise.allSettled(
+      [
+        input.api("environment", { id: input.environmentId }, signal),
+        input.api("projectBuckets", { id: input.projectId }, signal),
+        input.api("volumes", { id: input.environmentId }, signal),
+        input.api("staged", { id: input.environmentId }, signal),
+      ].map((p) =>
+        p.catch((error) => {
+          controller.abort();
+          throw error;
+        }),
+      ),
     );
-    const fresh = await input.refreshAuthority();
-    if (!(await input.sourceFresh())) throw Error("stage_source_unavailable");
-    if (
-      !Number.isFinite(readStartedAt) ||
-      now() < readStartedAt ||
-      now() - readStartedAt > 60000
-    )
-      throw Error("stage_capture_expired");
-    const observation = normalizeStageObservation({
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-      serviceId: input.serviceId,
-      sourceHead: input.sourceHead,
-      expectedVolumeReceipt: input.volumeReceipt,
-      expectedImageReceipt: input.imageReceipt,
-      approvedBackup: input.approvedBackup,
-      ...fresh,
-      now: now(),
-      environment,
-      project,
-      volumes,
-      staged,
-      backups: listed,
-    });
-    observation.snapshot.binding.observedAtMs = readStartedAt;
-    observations.set(observation.snapshot, observation);
-    return observation;
+    const raw: Record<string, unknown> = {
+      readStartedAt,
+      reads: Object.fromEntries(
+        results.flatMap((r, i) =>
+          r.status === "fulfilled" ? [[names[i], r.value]] : [],
+        ),
+      ),
+      unavailableReads: results.flatMap((r, i) =>
+        r.status === "rejected" ? [names[i]] : [],
+      ),
+    };
+    let sealed = false;
+    const sealRaw = () => {
+      if (!action.submitted || sealed) return;
+      sealed = true;
+      const filename =
+        postCapture++ === 0
+          ? "stage-raw-observation.json"
+          : "stage-raw-reconciliation.json";
+      persist(filename, raw);
+    };
+    try {
+      if (results.some((r) => r.status !== "fulfilled"))
+        throw Error("stage_read_unavailable");
+      const [environment, project, volumes, staged] = results.map(
+        (r) => (r as PromiseFulfilledResult<unknown>).value,
+      );
+      const edges = object(
+        object(object(volumes).data).environment,
+      ).volumeInstances;
+      const nodes = object(edges).edges;
+      if (!Array.isArray(nodes)) throw Error("stage_volume_invalid");
+      const selected = nodes
+        .map((e) => object(object(e).node))
+        .filter(
+          (n) => typeof n.id === "string" && sha(n.id) === input.volumeReceipt,
+        );
+      if (selected.length !== 1) throw Error("stage_volume_invalid");
+      const listed = await input.api(
+        "backupList",
+        { id: selected[0].id },
+        input.signal,
+      );
+      raw.backups = listed;
+      const fresh = await input.refreshAuthority();
+      raw.authority = fresh;
+      // Preserve actual provider evidence even when interpretation/admission must refuse it.
+      sealRaw();
+      if (!(await input.sourceFresh())) throw Error("stage_source_unavailable");
+      if (
+        !Number.isFinite(readStartedAt) ||
+        now() < readStartedAt ||
+        now() - readStartedAt > 60000
+      )
+        throw Error("stage_capture_expired");
+      const observation = normalizeStageObservation({
+        projectId: input.projectId,
+        environmentId: input.environmentId,
+        serviceId: input.serviceId,
+        sourceHead: input.sourceHead,
+        expectedVolumeReceipt: input.volumeReceipt,
+        expectedImageReceipt: input.imageReceipt,
+        approvedBackup: input.approvedBackup,
+        ...fresh,
+        now: now(),
+        environment,
+        project,
+        volumes,
+        staged,
+        backups: listed,
+      });
+      observation.snapshot.binding.observedAtMs = readStartedAt;
+      observations.set(observation.snapshot, observation);
+      return observation;
+    } catch {
+      sealRaw();
+      throw Error("stage_observation_unavailable");
+    }
   };
   const initial = await capture();
   const response = object(await input.api("template", {}, input.signal)),

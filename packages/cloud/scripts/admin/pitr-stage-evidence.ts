@@ -9,6 +9,8 @@ const NAMES = [
   "stage-workflow.json",
   "stage-observation.json",
   "stage-reconciliation.json",
+  "stage-raw-observation.json",
+  "stage-raw-reconciliation.json",
 ] as const;
 export function prepareStageEvidence(input: {
   directory: string;

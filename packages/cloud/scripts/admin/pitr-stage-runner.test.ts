@@ -160,7 +160,10 @@ async function scenario(
     | "backup_expires"
     | "stale_capture"
     | "publish_fails"
-    | "backup_ages",
+    | "backup_ages"
+    | "active_image"
+    | "post_backup_expired"
+    | "siblings_fail",
 ) {
   const f = observationFixture();
   if (mode === "backup_expires") {
@@ -177,8 +180,27 @@ async function scenario(
   const calls: string[] = [];
   const published: Record<string, unknown>[] = [];
   let staged = false;
-  const api = (async (name: string, variables: Record<string, unknown>) => {
+  let pendingReads = 0;
+  const api = (async (
+    name: string,
+    variables: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => {
     calls.push(name);
+    if (mode === "siblings_fail") {
+      if (name === "environment") throw Error("private-read-error");
+      pendingReads++;
+      return await new Promise((_, reject) => {
+        const finish = () =>
+          setTimeout(() => {
+            pendingReads--;
+            reject(Error("private-cancelled"));
+          }, 10);
+        if (signal?.aborted) finish();
+        else signal?.addEventListener("abort", finish, { once: true });
+      });
+    }
+
     if (mode === "preflight") throw Error("private-provider-sentinel");
     if (name === "environment") return f.environment;
     if (name === "projectBuckets") return f.project;
@@ -205,6 +227,13 @@ async function scenario(
       expect(input.existingRootServiceId).toBe("db");
       expect(input.serializedConfig).toEqual(template);
       staged = true;
+      if (mode === "active_image")
+        f.environment.data.environment.config.services.db.source.image =
+          "unexpected-private-image";
+      if (mode === "post_backup_expired")
+        f.backups.data.volumeInstanceBackupList[0].expiresAt =
+          "1970-01-01T00:00:02.000Z";
+
       f.project.data.project.buckets.edges.push({
         node: { id: "new", projectId: "project", name: "newname" },
       });
@@ -286,7 +315,16 @@ async function scenario(
         recipient.privateKeyPem,
       ).toString("utf8"),
     );
-    return { result, calls, published, names, modes, privateEvidence, staged };
+    return {
+      result,
+      calls,
+      published,
+      names,
+      modes,
+      privateEvidence,
+      staged,
+      pendingReads,
+    };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -359,4 +397,31 @@ test("backup max-age crossing during final await prevents stage even with no exp
   const r = await scenario("backup_ages");
   expect(r.calls).not.toContain("stageTemplate");
   expect(r.staged).toBe(false);
+});
+
+test("post-submit interpretation failures retain actual encrypted observations", async () => {
+  for (const mode of ["active_image", "post_backup_expired"] as const) {
+    const r = await scenario(mode);
+    expect(r.result.state).toBe("creation_unconfirmed");
+    expect(r.result.resourceCreationPossible).toBe(true);
+    expect(r.names).toContain("stage-raw-observation.sealed.json");
+    expect(r.names).toContain("stage-raw-reconciliation.sealed.json");
+    const sealed = r.privateEvidence
+      .map((v) => JSON.parse(v))
+      .find((v) => v.kind === "stage-raw-observation.json");
+    expect(sealed.evidence.reads.environment).toBeDefined();
+    if (mode === "active_image")
+      expect(JSON.stringify(sealed)).toContain("unexpected-private-image");
+    else expect(JSON.stringify(sealed)).toContain("1970-01-01T00:00:02.000Z");
+    expect(JSON.stringify(r.published)).not.toContain(
+      "unexpected-private-image",
+    );
+    expect(r.calls.filter((v) => v === "stageTemplate").length).toBe(1);
+  }
+});
+test("failed parallel provider read aborts and awaits sibling retirement before return", async () => {
+  const r = await scenario("siblings_fail");
+  expect(r.pendingReads).toBe(0);
+  expect(r.result.state).toBe("refused_before_stage");
+  expect(r.calls).not.toContain("stageTemplate");
 });
