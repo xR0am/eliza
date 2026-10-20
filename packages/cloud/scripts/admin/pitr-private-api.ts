@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { OBSERVED_TEMPLATE } from "./pitr-reviewed-stage";
 export const PITR_QUERIES = {
+  volumes:
+    "query Volumes($id: String!) { environment(id: $id) { id volumeInstances { edges { node { id volumeId environmentId serviceId mountPath state deletedAt isPendingDeletion sizeMB } } } } }",
   backupList:
     "query BackupList($id: String!) { volumeInstanceBackupList(volumeInstanceId: $id) { id name createdAt expiresAt } }",
   backupCreate:
