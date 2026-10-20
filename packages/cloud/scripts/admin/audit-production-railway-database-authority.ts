@@ -17,6 +17,10 @@ import {
   validateAppliedMigrationLedger,
 } from "./canonical-migration-ledger";
 import { readDatabaseIdentityReceipt } from "./database-identity-receipt";
+import {
+  type Funding0387Probe,
+  probeFunding0387,
+} from "./probe-agent-compute-funding-0387";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_EVIDENCE_BYTES = 4 * 1024 * 1024;
@@ -70,6 +74,10 @@ export interface ProductionDatabaseAuditReport {
   migrationLedgerDiagnostics: {
     canonical: LedgerDiagnostic | null;
     protected: LedgerDiagnostic | null;
+  };
+  funding0387: {
+    canonical: Funding0387Probe | null;
+    protected: Funding0387Probe | null;
   };
   pendingMigrationTags: {
     canonical: string[] | null;
@@ -153,6 +161,7 @@ export function unavailableAuditReport(
       protected: "unavailable",
     },
     migrationLedgerDiagnostics: { canonical: null, protected: null },
+    funding0387: { canonical: null, protected: null },
     pendingMigrationTags: { canonical: null, protected: null },
   };
 }
@@ -382,6 +391,25 @@ export async function auditProductionDatabaseAuthority(input: {
           protectedRequiredTables["drizzle.__drizzle_migrations"] === "present",
         ),
       ]);
+    const shouldProbe =
+      authorityMatches &&
+      [canonicalMigrationLedger, protectedMigrationLedger].some(
+        (ledger) =>
+          ledger.diagnostic?.reason === "hash_mismatch" &&
+          ledger.diagnostic.canonicalTag === "0387_agent_compute_funding",
+      );
+    const funding0387 = shouldProbe
+      ? {
+          canonical: await probeFunding0387(
+            input.canonicalClient,
+            input.canonicalMigrations,
+          ),
+          protected: await probeFunding0387(
+            input.protectedClient,
+            input.canonicalMigrations,
+          ),
+        }
+      : { canonical: null, protected: null };
     await finishReadOnly(input.protectedClient);
     await finishReadOnly(input.canonicalClient);
 
@@ -422,6 +450,7 @@ export async function auditProductionDatabaseAuthority(input: {
           ? protectedMigrationLedger.diagnostic
           : null,
       },
+      funding0387,
       // Never report a migration plan for a mismatched database authority.
       // Tags come only from this checkout after canonical ledger/hash validation.
       pendingMigrationTags: {

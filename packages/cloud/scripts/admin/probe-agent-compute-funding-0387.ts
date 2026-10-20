@@ -1,0 +1,123 @@
+/** Read-only catalog probe for the two source-verified 0387 variants. Never repairs a ledger. */
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import type { AuditQueryClient } from "./audit-production-railway-database-authority";
+import type { Migration } from "./canonical-migration-ledger";
+
+const TAG = "0387_agent_compute_funding";
+const HASHES = {
+  historical:
+    "34c9dd1817deb2fbc3fde76f30904b76e98e605fbeb3b3524593ae649c527a3b",
+  canonical: "0138969b1e4d1a7cfe93fd0af5c5b25a8f8045ef89b6e42c73467fdb2a9d2acf",
+} as const;
+type Variant = keyof typeof HASHES;
+interface SchemaMatch {
+  columns: Record<string, boolean>;
+  constraints: Record<string, boolean>;
+  indexes: Record<string, boolean>;
+  noUnexpectedColumns: boolean;
+  noUnexpectedConstraints: boolean;
+  noUnexpectedIndexes: boolean;
+}
+export interface Funding0387Probe {
+  variant: Variant | "unknown" | "unavailable";
+  schemaMatches: Record<Variant, SchemaMatch> | null;
+}
+
+// Definitions/defaults stay inside PostgreSQL comparisons. Only booleans and
+// names supplied by the reviewed fixture leave the query, never stored text.
+const SCHEMA_QUERY = `WITH
+ columns_expected AS (SELECT * FROM jsonb_to_recordset($1::jsonb) AS e(name text, type text, "notNull" boolean, "defaultExpression" text)),
+ constraints_expected AS (SELECT * FROM jsonb_to_recordset($2::jsonb) AS e(name text, definition text, validated boolean)),
+ indexes_expected AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS e(name text, definition text, valid boolean, ready boolean, "unique" boolean)),
+ relation AS (SELECT to_regclass('public.agent_compute_funding') AS oid)
+SELECT
+ (SELECT jsonb_object_agg(e.name, EXISTS(SELECT 1 FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+  WHERE a.attrelid=(SELECT oid FROM relation) AND a.attname=e.name AND a.attnum>0 AND NOT a.attisdropped
+  AND format_type(a.atttypid,a.atttypmod)=e.type AND a.attnotnull=e."notNull" AND a.attidentity='' AND a.attgenerated=''
+  AND pg_get_expr(d.adbin,d.adrelid) IS NOT DISTINCT FROM e."defaultExpression")) FROM columns_expected e) AS columns,
+ (SELECT jsonb_object_agg(e.name, EXISTS(SELECT 1 FROM pg_constraint c
+  WHERE c.conrelid=(SELECT oid FROM relation) AND c.conname=e.name AND pg_get_constraintdef(c.oid)=e.definition AND c.convalidated=e.validated)) FROM constraints_expected e) AS constraints,
+ (SELECT jsonb_object_agg(e.name, EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+  WHERE i.indrelid=(SELECT oid FROM relation) AND c.relname=e.name AND pg_get_indexdef(i.indexrelid)=e.definition
+  AND i.indisvalid=e.valid AND i.indisready=e.ready AND i.indisunique=e."unique")) FROM indexes_expected e) AS indexes,
+ NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=(SELECT oid FROM relation) AND a.attnum>0 AND NOT a.attisdropped AND a.attname NOT IN(SELECT name FROM columns_expected)) AS "noUnexpectedColumns",
+ NOT EXISTS(SELECT 1 FROM pg_constraint c WHERE c.conrelid=(SELECT oid FROM relation) AND c.conname NOT IN(SELECT name FROM constraints_expected)) AS "noUnexpectedConstraints",
+ NOT EXISTS(SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE i.indrelid=(SELECT oid FROM relation) AND c.relname NOT IN(SELECT name FROM indexes_expected)) AS "noUnexpectedIndexes"`;
+
+export async function probeFunding0387(
+  client: AuditQueryClient,
+  migrations: Migration[],
+): Promise<Funding0387Probe> {
+  try {
+    const matching = migrations.filter((m) => m.entry.tag === TAG);
+    if (matching.length !== 1 || matching[0].hash !== HASHES.canonical)
+      return { variant: "unknown", schemaMatches: null };
+    const historical = await readFile(
+      new URL(
+        "./fixtures/0387-agent-compute-funding-historical.sql",
+        import.meta.url,
+      ),
+    );
+    if (
+      createHash("sha256").update(historical).digest("hex") !==
+      HASHES.historical
+    )
+      return { variant: "unknown", schemaMatches: null };
+    const ledger = await client.query<{ hash: string }>(
+      "SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at = $1",
+      [matching[0].entry.when],
+    );
+    if (ledger.rows.length !== 1)
+      return { variant: "unknown", schemaMatches: null };
+    const variant = (Object.keys(HASHES) as Variant[]).find(
+      (key) => HASHES[key] === ledger.rows[0].hash,
+    );
+    if (!variant) return { variant: "unknown", schemaMatches: null };
+    const expected = JSON.parse(
+      await readFile(
+        new URL(
+          "./fixtures/0387-agent-compute-funding-schema.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const schemaMatches = {} as Record<Variant, SchemaMatch>;
+    for (const key of Object.keys(HASHES) as Variant[]) {
+      const fixture = expected[key];
+      const result = await client.query<SchemaMatch>(SCHEMA_QUERY, [
+        JSON.stringify(fixture.columns),
+        JSON.stringify(fixture.constraints),
+        JSON.stringify(fixture.indexes),
+      ]);
+      const row = result.rows[0];
+      if (result.rows.length !== 1 || !row)
+        throw new Error("probe_result_unavailable");
+      // Copy only allowlisted fixture names and actual boolean values.
+      const safe = {} as SchemaMatch;
+      for (const group of ["columns", "constraints", "indexes"] as const) {
+        safe[group] = {};
+        for (const entry of fixture[group]) {
+          if (typeof row[group]?.[entry.name] !== "boolean")
+            throw new Error("probe_result_unavailable");
+          safe[group][entry.name] = row[group][entry.name];
+        }
+      }
+      for (const field of [
+        "noUnexpectedColumns",
+        "noUnexpectedConstraints",
+        "noUnexpectedIndexes",
+      ] as const) {
+        if (typeof row[field] !== "boolean")
+          throw new Error("probe_result_unavailable");
+        safe[field] = row[field];
+      }
+      schemaMatches[key] = safe;
+    }
+    return { variant, schemaMatches };
+  } catch {
+    // error-policy:J1 never expose database errors, parameters or stored values.
+    return { variant: "unavailable", schemaMatches: null };
+  }
+}
