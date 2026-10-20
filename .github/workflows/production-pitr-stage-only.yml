@@ -88,16 +88,13 @@ jobs:
           [ "$HAS_RAILWAY_TOKEN" = "true" ] || missing+=(RAILWAY_TOKEN)
           for name in \
             RAILWAY_PROJECT_ID \
-            RAILWAY_ENVIRONMENT_ID; do
+            RAILWAY_ENVIRONMENT_ID \
+            RAILWAY_POSTGRES_SERVICE_ID; do
             value="${!name:-}"
             if [[ ! "$value" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
               missing+=("$name")
             fi
           done
-          if [ -n "${RAILWAY_POSTGRES_SERVICE_ID:-}" ] && \
-            [[ ! "$RAILWAY_POSTGRES_SERVICE_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
-            missing+=(RAILWAY_POSTGRES_SERVICE_ID)
-          fi
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "::error::Missing or invalid protected production audit setting name(s): ${missing[*]}"
             exit 1
