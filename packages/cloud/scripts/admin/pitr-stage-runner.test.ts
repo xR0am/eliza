@@ -31,7 +31,7 @@ function observationFixture() {
       volumeReceipt:
         "62d7a6b1211d627650e2bf0c869b69b564e2cd74290ae1dd78ae4b5e20b0cfe7",
       createdAtMs: 1000,
-      expiresAtMs: null,
+      expiresAtMs: null as number | null,
     },
     authority: {
       checks: {
@@ -132,7 +132,7 @@ function observationFixture() {
           {
             id: "backup",
             createdAt: "1970-01-01T00:00:01.000Z",
-            expiresAt: null,
+            expiresAt: null as string | null,
           },
         ],
       },
@@ -148,9 +148,25 @@ const templateReceipt = createHash("sha256")
   .update(JSON.stringify(template))
   .digest("hex");
 async function scenario(
-  mode: "valid" | "image" | "uncertain" | "preflight" | "expired",
+  mode:
+    | "valid"
+    | "image"
+    | "uncertain"
+    | "preflight"
+    | "expired"
+    | "backup_expires"
+    | "stale_capture",
 ) {
   const f = observationFixture();
+  if (mode === "backup_expires") {
+    f.approvedBackup.expiresAtMs = Date.now() + 50;
+    f.backups.data.volumeInstanceBackupList[0].expiresAt = new Date(
+      f.approvedBackup.expiresAtMs,
+    ).toISOString();
+  }
+  let sourceReads = 0;
+  let clockOffset = 0;
+  const clock = () => Date.now() + clockOffset;
   const directory = mkdtempSync(join(tmpdir(), "pitr-stage-test-"));
   const calls: string[] = [];
   const published: Record<string, unknown>[] = [];
@@ -162,7 +178,10 @@ async function scenario(
     if (name === "projectBuckets") return f.project;
     if (name === "volumes") return f.volumes;
     if (name === "staged") return f.staged;
-    if (name === "backupList") return f.backups;
+    if (name === "backupList") {
+      if (mode === "stale_capture") clockOffset = 61000;
+      return f.backups;
+    }
     if (name === "template")
       return {
         data: {
@@ -226,10 +245,15 @@ async function scenario(
     approvedBackup: { ...f.approvedBackup, verifiedRunId: 1 },
     signal: new AbortController().signal,
     api,
-    sourceFresh: async () => true,
+    sourceFresh: async () => {
+      sourceReads++;
+      if (mode === "backup_expires" && sourceReads === 5)
+        await new Promise((resolve) => setTimeout(resolve, 70));
+      return true;
+    },
     refreshAuthority: async () => ({
       authority: f.authority,
-      authorityObservedAtMs: Date.now(),
+      authorityObservedAtMs: clock(),
       pitr: f.pitr,
     }),
     publish: (r) => {
@@ -237,7 +261,11 @@ async function scenario(
     },
   };
   try {
-    const result = await runStageOnlyPolicyEngine(input, templateReceipt);
+    const result = await runStageOnlyPolicyEngine(
+      input,
+      templateReceipt,
+      clock,
+    );
     const names = readdirSync(directory);
     const modes = names.map((n) => statSync(join(directory, n)).mode & 0o777);
     const privateEvidence = names.map((n) =>
@@ -287,4 +315,18 @@ test("initial provider failure and expired review refuse before any stage", asyn
     expect(r.calls).not.toContain("stageTemplate");
     expect(JSON.stringify(r.result)).not.toContain("private-provider");
   }
+});
+
+test("backup expiry during final source freshness await prevents resource creation", async () => {
+  const r = await scenario("backup_expires");
+  expect(r.calls).not.toContain("stageTemplate");
+  expect(r.staged).toBe(false);
+  expect(r.result.state).not.toBe("staged_requires_review");
+});
+
+test("capture cannot relabel old config reads as fresh after slow later provider reads", async () => {
+  const r = await scenario("stale_capture");
+  expect(r.result.state).toBe("refused_before_stage");
+  expect(r.calls).not.toContain("stageTemplate");
+  expect(r.result.resourceCreationPossible).toBe(false);
 });

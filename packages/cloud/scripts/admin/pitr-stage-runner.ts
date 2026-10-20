@@ -58,9 +58,10 @@ export async function runStageOnly(input: StageOnlyInput) {
 export async function runStageOnlyPolicyEngine(
   input: StageOnlyInput,
   templateReceipt: string,
+  now: () => number = Date.now,
 ) {
   try {
-    return await executeStageOnly(input, templateReceipt);
+    return await executeStageOnly(input, templateReceipt, now);
   } catch {
     return {
       purpose: "production_pitr_stage_only",
@@ -75,6 +76,7 @@ export async function runStageOnlyPolicyEngine(
 async function executeStageOnly(
   input: StageOnlyInput,
   templateReceipt: string,
+  now: () => number,
 ) {
   const persist = (name: string, value: unknown) =>
     writeFileSync(join(input.directory, name), JSON.stringify(value), {
@@ -89,6 +91,7 @@ async function executeStageOnly(
   const capture = async () => {
     if (input.signal.aborted || !(await input.sourceFresh()))
       throw Error("stage_source_unavailable");
+    const readStartedAt = now();
     const [environment, project, volumes, staged] = await Promise.all([
       input.api("environment", { id: input.environmentId }, input.signal),
       input.api("projectBuckets", { id: input.projectId }, input.signal),
@@ -113,6 +116,12 @@ async function executeStageOnly(
     );
     const fresh = await input.refreshAuthority();
     if (!(await input.sourceFresh())) throw Error("stage_source_unavailable");
+    if (
+      !Number.isFinite(readStartedAt) ||
+      now() < readStartedAt ||
+      now() - readStartedAt > 60000
+    )
+      throw Error("stage_capture_expired");
     const observation = normalizeStageObservation({
       projectId: input.projectId,
       environmentId: input.environmentId,
@@ -122,13 +131,14 @@ async function executeStageOnly(
       expectedImageReceipt: input.imageReceipt,
       approvedBackup: input.approvedBackup,
       ...fresh,
-      now: Date.now(),
+      now: now(),
       environment,
       project,
       volumes,
       staged,
       backups: listed,
     });
+    observation.snapshot.binding.observedAtMs = readStartedAt;
     observations.set(observation.snapshot, observation);
     return observation;
   };
@@ -146,6 +156,7 @@ async function executeStageOnly(
     throw Error("stage_template_changed");
   const result = await stagePitrPolicyEngine(
     {
+      now,
       serializedTemplate: serialized,
       review: {
         before: initial.snapshot,
@@ -176,8 +187,10 @@ async function executeStageOnly(
           if (
             !(await input.sourceFresh()) ||
             input.signal.aborted ||
-            Date.now() >= input.expiry ||
-            Date.now() - binding.observedAtMs > 60000
+            now() >= input.expiry ||
+            (input.approvedBackup.expiresAtMs !== null &&
+              now() >= input.approvedBackup.expiresAtMs) ||
+            now() - binding.observedAtMs > 60000
           )
             throw Error("stage_action_admission_expired");
           const response = object(
@@ -214,8 +227,8 @@ async function executeStageOnly(
           return { workflowId: operation.workflowId };
         },
         async awaitComplete(id) {
-          const deadline = Date.now() + 600000;
-          while (Date.now() < deadline && !input.signal.aborted) {
+          const deadline = now() + 600000;
+          while (now() < deadline && !input.signal.aborted) {
             const result = object(
                 await input.api("workflowStatus", { id }, input.signal),
               ),
