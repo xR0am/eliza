@@ -279,3 +279,47 @@ Private captures are destroyed in the final workflow step. This workflow has no
 stage, commit, restore, deletion or database-write operation. A completed safety
 backup is not an isolated populated restore rehearsal, and does not authorize the
 subsequent provisioning or migration phases.
+
+The named safety backup workflow also accepts `reconcile_operation_receipt`.
+Set it to the exact operation-name SHA256 from an uncertain run to select a
+read-only backup-list reconciliation. Keep the reviewed volume receipt and a
+fresh review expiry. This mode never creates a backup and never falls back to
+creation. A unique retained list entry does not prove provider workflow Complete;
+no automatic retry, PITR stage or restore is authorized by its result.
+Creation receipts distinguish the final preflight from an invoked provider API.
+`requestSubmitted` records API invocation, not confirmed provider acceptance.
+
+Transport failure receipts use finite categories for invocation failures, aborts,
+timeouts, output limits, invalid JSON, HTTP status classes and allowlisted GraphQL
+extension codes. Provider text, arbitrary codes and request values remain private.
+A CLI nonzero exit always fails, even if its JSON includes data. An unknown refusal
+stays unknown; no category establishes non-acceptance or permits automatic retry.
+Reconciliation also observes the live backup mutation's argument and return-type
+contract through fixed read-only introspection. It reports booleans only. Disabled
+or malformed introspection does not discard the backup-list observation. Contract
+agreement does not authorize creation. GraphQL document validation and provider
+`BAD_USER_INPUT` now have distinct finite categories; no further create is needed
+to inspect the deployed schema.
+Reconciliation reports storage used and total MB from the same verified volume
+instance, plus listed/retained backup counts. Pinned CLI5.38 labels
+`currentSizeMB/sizeMB` as storage used/total. Missing, non-finite or impossible
+amounts remain unknown. The above-half flag compares observed usage with Railway's
+[documented manual-backup limit](https://docs.railway.com/volumes/backups).
+It is diagnostic only: being below that limit does not prove creation eligibility,
+and the operator never resizes a volume or retries a backup from this observation.
+For a separately reviewed single reproduction, `error_recipient_public_key` can
+select encrypted provider failure evidence. The existing RSA-OAEP/AES-GCM helper
+validates the public recipient before backup creation. Only GraphQL error messages
+and fixed code values are selected, with known request identifiers, operation name
+and tokens scrubbed before encryption. At most16 messages of4096 characters and
+64KiB of selected plaintext are accepted; oversized evidence is refused, not
+truncated. Plaintext stays in memory. Only a ciphertext digest and finite status
+enter the public receipt. The encrypted artifact has one-day retention and the
+private working directory is cleaned even after failure. No response data, raw
+stderr, arbitrary extensions or environment dump is captured. The private key
+stays with the local operator. Evidence capture never retries or converts a failed
+provider operation to success; it does not authorize stage, resize or migration.
+
+### Bounded backup retention observations
+
+The protected named-backup workflow's existing read-only reconciliation also reports at most 15 backup hash receipts, creation/expiry dates, scheduled/manual classification and finite sizes. It marks every tie for the newest valid creation time for preservation and distinguishes expired entries. Larger or ambiguous inventories refuse detailed output. Schedule metadata is limited to the provider enum, creation time and retention seconds; unavailable schedule observations do not invalidate reconciliation. No raw IDs, names, cron expressions or external IDs are printed. These observations support a concrete retention review; they do not authorize deletion/locking or prove backup completion/restorability. This production operator addition targets main because its protected workflow requires refs/heads/main, continuing user-authorized Cloud recovery; it does not change product runtime requirements or the MVP.
