@@ -131,6 +131,22 @@ describe("attachmentsProvider", () => {
     }
   });
 
+  it("lists the room's attachments on a turn that does not mention media, and nothing for a room without attachments", async () => {
+    const withAttachments = await attachmentsProvider.get(
+      makeRuntime([attachmentMemory()]),
+      makeMessage({ text: "can you try this?" }),
+    );
+    const withoutAttachments = await attachmentsProvider.get(
+      makeRuntime([makeMessage({ text: "earlier text-only message" })]),
+      makeMessage({ text: "can you try this?" }),
+    );
+
+    expect(withAttachments.text).toContain("# Attachments");
+    expect(withAttachments.text).toContain("webpage-old");
+    expect(withoutAttachments.text).toBe("");
+    expect(withoutAttachments.data?.visibleAttachments).toEqual([]);
+  });
+
   it("does not inject stale room attachments into sub-agent result turns", async () => {
     let historyFetches = 0;
     const result = await attachmentsProvider.get(
