@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { OBSERVED_TEMPLATE } from "./pitr-reviewed-stage";
 export const PITR_QUERIES = {
+  projectBuckets:
+    "query ProjectBuckets($id: String!) { project(id: $id) { id workspaceId buckets(first: 100) { pageInfo { hasNextPage hasPreviousPage } edges { node { id name projectId createdAt updatedAt groupId } } } } }",
   backupContract:
     'query BackupContract { mutation: __type(name: "Mutation") { fields(includeDeprecated: true) { name args { name defaultValue type { kind name ofType { kind name ofType { kind name } } } } type { kind name ofType { kind name ofType { kind name } } } } } workflow: __type(name: "WorkflowId") { fields(includeDeprecated: true) { name type { kind name ofType { kind name } } } } }',
   volumes:
