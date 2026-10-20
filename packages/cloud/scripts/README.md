@@ -265,3 +265,17 @@ reference/owned-bucket validation. These missing connections must be reviewed
 before a runnable operator is introduced. This supports the production recovery
 requirements; focused fixtures do not establish populated restore or migration
 acceptance.
+
+`production-pitr-safety-backup.yml` is the independently reviewable backup-only
+entrypoint. It runs on canonical main in the protected production environment,
+uses the checksum-pinned CLI, captures fresh read-only PG18 authority, and requires
+the reviewed immutable volume-instance SHA256 and an explicit review expiry within
+one hour. It publishes a hashed operation intent before creating one uniquely named
+backup. Completion requires the actual provider workflow to complete and the new
+exact-volume backup to remain retained at proof publication; safe receipts include
+times and `noScheduledExpiry`, never provider IDs or credentials. A changed source,
+expired authority/review, lost response or unconfirmed workflow stops without retry.
+Private captures are destroyed in the final workflow step. This workflow has no
+stage, commit, restore, deletion or database-write operation. A completed safety
+backup is not an isolated populated restore rehearsal, and does not authorize the
+subsequent provisioning or migration phases.
