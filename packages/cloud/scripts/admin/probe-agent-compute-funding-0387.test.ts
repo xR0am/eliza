@@ -87,14 +87,9 @@ test("actual historical and canonical SQL produce their exact catalog match flag
   }
 });
 
-test("unknown ledger hash, duplicate rows and changed source refuse catalog admission", async () => {
+test("duplicate rows and changed source refuse catalog observation", async () => {
   const db = await database(historical, "PRIVATE_UNKNOWN_HASH");
   try {
-    expect(await probeFunding0387(db, migrations)).toEqual({
-      variant: "unknown",
-      reason: "unknown_hash",
-      schemaMatches: null,
-    });
     await db.query("UPDATE drizzle.__drizzle_migrations SET hash=$1", [
       hashes.historical,
     ]);
@@ -121,7 +116,7 @@ test("unknown ledger hash, duplicate rows and changed source refuse catalog admi
 });
 
 test("schema drift reports booleans without stored defaults or unexpected names", async () => {
-  const db = await database(canonical, hashes.canonical);
+  const db = await database(canonical, "PRIVATE_UNKNOWN_HASH");
   try {
     await db.exec(`ALTER TABLE agent_compute_funding ALTER COLUMN provider_node_id SET DEFAULT 'PRIVATE_DEFAULT';
       ALTER TABLE agent_compute_funding ADD COLUMN "PRIVATE_COLUMN" text;
@@ -146,6 +141,7 @@ test("schema drift reports booleans without stored defaults or unexpected names"
       "PRIVATE_DEFAULT",
       "PRIVATE_COLUMN",
       hashes.canonical,
+      "PRIVATE_UNKNOWN_HASH",
     ])
       expect(text).not.toContain(privateText);
     await db.exec("COMMIT");
@@ -203,5 +199,30 @@ test("changed historical fixture returns a fixed reason before any database read
     expect(JSON.stringify(report)).not.toContain("PRIVATE");
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unknown hashes expose only diagnostic catalog flags for actual old and new schemas", async () => {
+  for (const [variant, sql] of [
+    ["historical", historical],
+    ["canonical", canonical],
+  ] as const) {
+    const db = await database(sql, "PRIVATE_UNKNOWN_HASH");
+    try {
+      await db.exec("BEGIN READ ONLY");
+      const report = await probeFunding0387(db, migrations);
+      expect(report.variant).toBe("unknown");
+      expect(report.reason).toBe("unknown_hash");
+      expect(report.schemaPurpose).toBe("diagnostic_only");
+      const match = report.schemaMatches?.[variant];
+      expect(match).toBeDefined();
+      expect(allTrue(match?.columns ?? {})).toBe(true);
+      expect(allTrue(match?.constraints ?? {})).toBe(true);
+      expect(allTrue(match?.indexes ?? {})).toBe(true);
+      expect(JSON.stringify(report)).not.toContain("PRIVATE_UNKNOWN_HASH");
+      await db.exec("COMMIT");
+    } finally {
+      await db.close();
+    }
   }
 });

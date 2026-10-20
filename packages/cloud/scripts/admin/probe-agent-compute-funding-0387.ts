@@ -27,6 +27,7 @@ export interface Funding0387Probe {
     | "ledger_row_count"
     | "unknown_hash"
     | null;
+  schemaPurpose?: "diagnostic_only";
   schemaMatches: Record<Variant, SchemaMatch> | null;
 }
 
@@ -91,12 +92,8 @@ export async function probeFunding0387(
     const variant = (Object.keys(HASHES) as Variant[]).find(
       (key) => HASHES[key] === ledger.rows[0].hash,
     );
-    if (!variant)
-      return {
-        variant: "unknown",
-        reason: "unknown_hash",
-        schemaMatches: null,
-      };
+    // An unknown ledger hash does not prevent read-only catalog observation.
+    // These flags cannot validate the ledger or authorize a migration plan.
     const expected = JSON.parse(
       await readFile(
         new URL(
@@ -138,7 +135,12 @@ export async function probeFunding0387(
       }
       schemaMatches[key] = safe;
     }
-    return { variant, reason: null, schemaMatches };
+    return {
+      variant: variant ?? "unknown",
+      reason: variant ? null : "unknown_hash",
+      schemaPurpose: "diagnostic_only",
+      schemaMatches,
+    };
   } catch {
     // error-policy:J1 never expose database errors, parameters or stored values.
     return { variant: "unavailable", reason: null, schemaMatches: null };
