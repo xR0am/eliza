@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { chmod, mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { type AddressInfo, createServer, type Server } from "node:http";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
