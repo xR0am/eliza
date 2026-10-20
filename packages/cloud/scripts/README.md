@@ -226,3 +226,19 @@ Remaining gates: populated restore coverage beyond the synthetic financial
 fixtures, uncertain-outcome read-only reconciliation, protected backup/restore
 rehearsal, maintenance fencing and reviewed business impact. Production readiness
 must remain failed until recovery and normal release verification pass.
+
+
+The optional `pitr_provisioning_plan=true` input requires a fixed restore target.
+It privately reads the existing environment config without decrypted variables,
+the staged patch, and the pinned CLI's `postgres-pitr` template query. The report
+contains only checks, counts and hashes. It distinguishes standalone topology,
+retained backup metadata, image preservation and current staged changes. This
+is a review plan, not permission to stage or deploy: provider `stageOnly` can
+create resources, and the public staged-commit API has no compare-and-swap guard.
+No mutation command is connected. Private plan evidence uses the existing cleanup.
+
+The resilience evaluator can accept an exact approved image-string SHA256 with
+matching resource-bound live PostgreSQL18 authority evidence. The approval must
+come from reviewed protected configuration; current evidence cannot approve
+itself. No workflow supplies this opt-in yet. A configured mismatch cannot fall
+back to the tag check, and PITR/backup/readiness requirements remain unchanged.
