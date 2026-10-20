@@ -9,6 +9,9 @@
  *    navigation in a hidden tab, resource prefetches or a parallel request for its address, and a
  *    Custom Tabs session's mayLaunchUrl preconnects or loads a hidden tab. Each of these is
  *    stopped in WarmupManager and CustomTabsConnection.
+ *  - A Custom Tabs warmup prepares a spare tab, which a later Custom Tab takes over. That tab is
+ *    made before the helpers that report its navigations to extensions exist, so the protection
+ *    extension never saw the refused warning redirect in it. No spare tab is made.
  * The Custom Tab or tab then navigates normally, so the protection rules decide before any
  * connection is made.
  */
@@ -35,6 +38,12 @@ export function applyNoEarlyConnection(edit, replaceOnce) {
       '        try (TraceEvent e = TraceEvent.scoped("WarmupManager.maybePrefetchDnsForUrlInBackground")) {\n            ThreadUtils.assertOnUiThread();\n',
       '        try (TraceEvent e = TraceEvent.scoped("WarmupManager.maybePrefetchDnsForUrlInBackground")) {\n            ThreadUtils.assertOnUiThread();\n            if (!isEarlyConnectionAllowed()) return;\n',
       "no DNS prefetch for an intent's address",
+    );
+    source = replaceOnce(
+      source,
+      "    public void createRegularSpareTab(Profile profile, @Nullable WebContents webContents) {\n        ThreadUtils.assertOnUiThread();\n        assert !profile.isOffTheRecord();\n",
+      "    public void createRegularSpareTab(Profile profile, @Nullable WebContents webContents) {\n        ThreadUtils.assertOnUiThread();\n        assert !profile.isOffTheRecord();\n        // A spare tab is made before the tab helpers that report its navigations exist.\n        if (!isEarlyConnectionAllowed()) return;\n",
+      "no spare tab",
     );
     return replaceOnce(
       source,

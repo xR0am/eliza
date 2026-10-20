@@ -216,7 +216,7 @@ test("Android connects to an address only through a navigation the protection ru
   assert.equal(
     android.files[warmup].match(/if \(!isEarlyConnectionAllowed\(\)\) return;/g)
       .length,
-    2,
+    3,
   );
   assert.equal(
     android.files[customTabs].match(
