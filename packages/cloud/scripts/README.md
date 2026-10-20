@@ -242,3 +242,26 @@ matching resource-bound live PostgreSQL18 authority evidence. The approval must
 come from reviewed protected configuration; current evidence cannot approve
 itself. No workflow supplies this opt-in yet. A configured mismatch cannot fall
 back to the tag check, and PITR/backup/readiness requirements remain unchanged.
+
+The `pitr-reviewed-{stage,patch}.ts`, `pitr-backup-proof.ts`, and
+`pitr-private-api.ts` modules prepare internal boundaries for this repair path.
+They have no executable workflow or automatic operation. The fixed stage wrapper
+binds the actual protected template receipt; its policy engine is separately
+exercised with synthetic fixtures. Staging can allocate a bucket and always
+requires subsequent private review. It never commits configuration. The exact
+commit boundary permits reviewed WAL archive variables only, preserves the
+original service/volume/image authority, and reports lost replies as unconfirmed.
+Practical exclusive-writer maintenance remains necessary: these checks are not
+provider atomic compare-and-swap. No automatic retry, restore, deletion, or
+rollback is performed.
+
+Backup proof requires an exact-volume unique named creation, provider workflow
+`Complete`, and a new retained matching backup. A started workflow or backup-list
+metadata alone is insufficient. Private API inputs use stdin, bounded captures,
+finite errors, and owned process-group retirement. Production integration still
+requires pinned CLI/source admission, fresh independent authority snapshots,
+private durable intent/result storage, termination wiring, and actual staged WAL
+reference/owned-bucket validation. These missing connections must be reviewed
+before a runnable operator is introduced. This supports the production recovery
+requirements; focused fixtures do not establish populated restore or migration
+acceptance.
