@@ -109,8 +109,7 @@ remain classified as `unknown`; neither case admits a pending plan or a repair.
 If matching authorities expose a migration0387 hash mismatch, the same
 read-only audit also reports `funding0387`. The stored hash is compared privately
 with two source-verified variants: `historical` (commit57d9e8062404af41c903d34ec1599b9b743ddd6a)
-and `canonical`. It returns no stored hash. Unknown variants or errors yield no
-schema admission. This extra probe runs when either ledger reports a0387 hash
+and `canonical`. It returns no stored hash. Unknown variants do not yield ledger admission; query errors yield no schema flags. This extra probe runs when either ledger reports a0387 hash
 mismatch; it never changes the failed ledger verdict or produces a pending plan.
 
 For each variant, schema flags compare reviewed column types, nullability,
@@ -120,7 +119,10 @@ Unexpected catalog objects are reported only as booleans, never by name. The
 expected definitions come from isolated PGlite databases created from the exact
 historical/current SQL. PostgreSQL catalog rendering differences can cause a
 mismatch; they cannot authorize repair. Later additive migrations can also make
-an exact0387-only schema comparison false. The probe reads no funding rows and
+an exact0387-only schema comparison false. Catalog flags are labeled `schemaPurpose: diagnostic_only`, including when the
+stored hash is unknown. They describe selected catalog objects only and never
+prove migration identity or deployment readiness. Source, fixture, and row-count
+guards still stop observation. The probe reads no funding rows and
 prints no stored defaults, constraint expressions, IDs or connection details.
 Neither a known variant nor matching schema flags authorize a ledger rewrite,
 DDL, grant issuance or app deployment.
