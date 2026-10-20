@@ -124,3 +124,9 @@ an exact0387-only schema comparison false. The probe reads no funding rows and
 prints no stored defaults, constraint expressions, IDs or connection details.
 Neither a known variant nor matching schema flags authorize a ledger rewrite,
 DDL, grant issuance or app deployment.
+
+An unknown0387 variant has a fixed `reason`: `source_guard`, `fixture_guard`,
+`ledger_row_count`, or `unknown_hash`. These distinguish source evidence failure,
+unexpected row count, and an unrecognized stored hash without publishing the
+count, stored hash, or database values. Known variants and unavailable queries
+have a null reason. These diagnostics do not authorize any database change.

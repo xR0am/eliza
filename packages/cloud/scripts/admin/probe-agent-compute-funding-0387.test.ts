@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { loadCanonicalMigrations } from "./canonical-migration-ledger";
 import { probeFunding0387 } from "./probe-agent-compute-funding-0387";
@@ -54,6 +64,7 @@ test("actual historical and canonical SQL produce their exact catalog match flag
       await db.exec("BEGIN READ ONLY");
       const report = await probeFunding0387(db, migrations);
       expect(report.variant).toBe(variant);
+      expect(report.reason).toBeNull();
       const match = report.schemaMatches?.[variant];
       expect(match).toBeDefined();
       expect(allTrue(match?.columns ?? {})).toBe(true);
@@ -81,6 +92,7 @@ test("unknown ledger hash, duplicate rows and changed source refuse catalog admi
   try {
     expect(await probeFunding0387(db, migrations)).toEqual({
       variant: "unknown",
+      reason: "unknown_hash",
       schemaMatches: null,
     });
     await db.query("UPDATE drizzle.__drizzle_migrations SET hash=$1", [
@@ -92,6 +104,7 @@ test("unknown ledger hash, duplicate rows and changed source refuse catalog admi
     );
     expect(await probeFunding0387(db, migrations)).toEqual({
       variant: "unknown",
+      reason: "ledger_row_count",
       schemaMatches: null,
     });
     const changed = migrations.map((m) =>
@@ -99,6 +112,7 @@ test("unknown ledger hash, duplicate rows and changed source refuse catalog admi
     );
     expect(await probeFunding0387(db, changed)).toEqual({
       variant: "unknown",
+      reason: "source_guard",
       schemaMatches: null,
     });
   } finally {
@@ -149,5 +163,45 @@ test("query errors never expose messages, parameters or database values", async 
     },
     migrations,
   );
-  expect(report).toEqual({ variant: "unavailable", schemaMatches: null });
+  expect(report).toEqual({
+    variant: "unavailable",
+    reason: null,
+    schemaMatches: null,
+  });
+});
+
+test("changed historical fixture returns a fixed reason before any database read", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "funding-probe-fixture-"));
+  try {
+    await mkdir(join(directory, "fixtures"));
+    const modulePath = join(directory, "probe.ts");
+    await copyFile(
+      new URL("./probe-agent-compute-funding-0387.ts", import.meta.url),
+      modulePath,
+    );
+    await writeFile(
+      join(directory, "fixtures/0387-agent-compute-funding-historical.sql"),
+      "PRIVATE_CHANGED_FIXTURE",
+    );
+    const isolated = await import(pathToFileURL(modulePath).href);
+    let reads = 0;
+    const report = await isolated.probeFunding0387(
+      {
+        query: async () => {
+          reads++;
+          throw Error("PRIVATE_DB_ERROR");
+        },
+      },
+      migrations,
+    );
+    expect(report).toEqual({
+      variant: "unknown",
+      reason: "fixture_guard",
+      schemaMatches: null,
+    });
+    expect(reads).toBe(0);
+    expect(JSON.stringify(report)).not.toContain("PRIVATE");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
