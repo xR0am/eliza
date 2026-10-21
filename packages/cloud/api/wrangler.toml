@@ -945,7 +945,6 @@ binding = "AI"
 binding = "BROWSER"
 
 [env.production.vars]
-VOICE_BATCH_STT_PROVIDER = "cartesia"
 ALPHA_OAUTH_RETURN_URLS = "https://alphacompute.ai/alphaphone/gmail/callback"
 LOGIN_API_URL = "https://steward-api-production-115d.up.railway.app"
 NODE_ENV = "production"
