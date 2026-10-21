@@ -83,27 +83,6 @@ vi.mock("../../../../lib/use-document-title", () => ({
   useDocumentTitle: () => {},
 }));
 
-vi.mock("../../../../../components/primitives", () => ({
-  Button: ({
-    asChild,
-    children,
-    className,
-    onClick,
-  }: {
-    asChild?: boolean;
-    children: ReactNode;
-    className?: string;
-    onClick?: () => void;
-  }) =>
-    asChild ? (
-      children
-    ) : (
-      <button type="button" className={className} onClick={onClick}>
-        {children}
-      </button>
-    ),
-}));
-
 import { ApiError } from "../../../../lib/api-client";
 import CliLoginPage from "../cli-login-page";
 
@@ -175,25 +154,23 @@ afterEach(() => {
 beforeEach(() => {
   navigateMock.mockReset();
   apiFetchMock.mockReset();
-  profileReadMock
-    .mockReset()
-    .mockResolvedValue({
-      success: true,
-      data: {
-        id: "cloud-fixture",
-        email: "cli-account@example.test",
-        organization_id: "org-fixture",
+  profileReadMock.mockReset().mockResolvedValue({
+    success: true,
+    data: {
+      id: "cloud-fixture",
+      email: "cli-account@example.test",
+      organization_id: "org-fixture",
+      created_at: "2026-10-01T00:00:00Z",
+      updated_at: "2026-10-01T00:00:00Z",
+      organization: {
+        id: "org-fixture",
+        name: "CLI fixture workspace",
+        slug: "fixture",
         created_at: "2026-10-01T00:00:00Z",
         updated_at: "2026-10-01T00:00:00Z",
-        organization: {
-          id: "org-fixture",
-          name: "CLI fixture workspace",
-          slug: "fixture",
-          created_at: "2026-10-01T00:00:00Z",
-          updated_at: "2026-10-01T00:00:00Z",
-        },
       },
-    });
+    },
+  });
   clearStaleStewardSession.mockReset();
   searchParamsRef.current = new URLSearchParams({ session: SESSION_ID });
   resetSessionAuth();
