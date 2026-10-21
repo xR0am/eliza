@@ -16,10 +16,12 @@ export function renderProtectionAdvisory(state) {
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(`
     :host { all: initial; display: block !important; position: sticky !important; top: 0 !important; z-index: 2147483647 !important; width: 100% !important; }
-    section { max-height: 45vh; overflow: auto; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; background: #fff2bd; color: #4a3428; border-bottom: 1px solid #9b7625; font: max(20px, 1.25rem)/1.4 system-ui,sans-serif; overflow-wrap: anywhere; }
+    /* The person's Android font size (preferred-text-scale) applies to the advice even on a page that
+       does not opt in to text scaling; a page that does already scales rem. */
+    section { max-height: 45vh; overflow: auto; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; background: #fff2bd; color: #4a3428; border-bottom: 1px solid #9b7625; font: max(calc(20px * env(preferred-text-scale, 1)), 1.25rem)/1.4 system-ui,sans-serif; overflow-wrap: anywhere; }
     .words { flex: 1 1 280px; min-width: 0; }
     p { margin: 4px 0 0; }
-    button { box-sizing: border-box; min-height: 48px; max-width: 100%; padding: 8px 18px; border: 1px solid #796c62; border-radius: 24px; background: white; color: #322921; font: 600 max(20px, 1.25rem)/1.3 system-ui,sans-serif; cursor: pointer; overflow-wrap: anywhere; }
+    button { box-sizing: border-box; min-height: calc(48px * env(preferred-text-scale, 1)); max-width: 100%; padding: 8px 18px; border: 1px solid #796c62; border-radius: 24px; background: white; color: #322921; font: 600 max(calc(20px * env(preferred-text-scale, 1)), 1.25rem)/1.3 system-ui,sans-serif; cursor: pointer; overflow-wrap: anywhere; }
     button:focus-visible { outline: 3px solid #322921; outline-offset: 2px; }
     button:disabled { cursor: default; opacity: .7; }
     @media (prefers-contrast: more) { section, button { border-width: 2px; } }
