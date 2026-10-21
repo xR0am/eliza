@@ -291,6 +291,14 @@ export async function submitWebBrowserWorkspaceForm(
 ): Promise<void> {
   const state = getBrowserWorkspaceRuntimeState("web", tab.id);
   const dom = ensureBrowserWorkspaceDom(tab);
+  // This backend submits directly, without the DOM's click validation step.
+  if (
+    !form.noValidate &&
+    !submitter?.formNoValidate &&
+    !dom.window.HTMLFormElement.prototype.reportValidity.call(form)
+  ) {
+    return;
+  }
   // A submit button's formaction/formmethod override the form's own.
   const attr = (name: string) =>
     submitter?.hasAttribute(`form${name}`)
