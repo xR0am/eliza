@@ -17,7 +17,13 @@
  *   - `StubTtsBackend` implements the same seam for scheduler tests.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -410,6 +416,35 @@ describe("EngineVoiceBridge.start — ASR region readability", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	// chmod cannot remove read access for uid 0 or on Windows, where the
+	// listing succeeds and this assertion would fail despite correct behaviour.
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"rejects when the asr directory exists but cannot be listed",
+		() => {
+			const root = bundleWithPreset();
+			const asrDir = path.join(root, "asr");
+			try {
+				mkdirSync(asrDir, { recursive: true });
+				writeFileSync(path.join(asrDir, "phonon-2-fv5.gguf"), "GGUF");
+				// EACCES is the "exists but cannot be listed" shape that a
+				// permission slip in a staged bundle produces; it must not be
+				// reported as a bundle that simply ships no decoder.
+				chmodSync(asrDir, 0o000);
+				let caught: unknown;
+				try {
+					EngineVoiceBridge.start({ bundleRoot: root, useFfiBackend: false });
+				} catch (err) {
+					caught = err;
+				}
+				expect(caught).toBeInstanceOf(VoiceStartupError);
+				expect((caught as VoiceStartupError).code).toBe("unreadable-asr-dir");
+			} finally {
+				chmodSync(asrDir, 0o700);
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("still starts a TTS-only bundle that ships no asr directory", () => {
 		const root = bundleWithPreset();
