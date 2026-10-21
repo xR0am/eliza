@@ -342,6 +342,29 @@ describe("Discord message edits", () => {
 		expect(h.sends).toEqual(["partial first", "partial second"]);
 	});
 
+	it("drops an older edit whose fetch finishes after a newer edit was stored", async () => {
+		const h = makeHarness(["first reply", "second reply"]);
+		const message = makeMessage("hihi");
+		await h.manager.handleMessage(message);
+		await h.manager.handleMessageEdit(
+			edit(message, "second edit", EDITED_AT + 1000),
+		);
+
+		await h.manager.handleMessageEdit({
+			id: MESSAGE_ID,
+			partial: true,
+			editedTimestamp: EDITED_AT,
+			fetch: async () =>
+				makeMessage("first edit", { editedTimestamp: EDITED_AT }),
+		} as never);
+
+		expect(h.stored()?.memory.content.currentMessageText).toBe("second edit");
+		expect(h.turns.map((turn) => turn.currentMessageText)).toEqual([
+			"hihi",
+			"second edit",
+		]);
+	});
+
 	it("waits for a still-running original turn and answers the edit once", async () => {
 		const h = makeHarness(["doubled again", "fixed now"]);
 		const message = makeMessage("hihi");

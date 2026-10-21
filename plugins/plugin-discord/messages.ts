@@ -1507,9 +1507,17 @@ export class MessageManager {
 			const stored = await this.runtime.getMemoryById(
 				createUniqueUuid(this.runtime, message.id),
 			);
-			// Never stored: not a message this agent took in. Same edit stamp: a
-			// redelivery, or an unfurl after an edit that was already handled.
-			if (!stored || stored.content.editedAt === editedAt) {
+			// Never stored: not a message this agent took in. A stored stamp that
+			// is the same or newer: a redelivery, an unfurl after a handled edit,
+			// or an older edit whose fetch finished after a newer one was stored.
+			// ISO stamps sort in time order.
+			const storedEditedAt = stored?.content.editedAt;
+			if (
+				!stored ||
+				(typeof storedEditedAt === "string" &&
+					editedAt !== undefined &&
+					storedEditedAt >= editedAt)
+			) {
 				return;
 			}
 			this.releaseMessageProcessing(message.id);
