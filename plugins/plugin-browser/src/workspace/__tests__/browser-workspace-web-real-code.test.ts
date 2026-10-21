@@ -2,6 +2,8 @@
  * Real-code web workspace tests for command execution against JSDOM pages.
  */
 
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetBrowserWorkspaceStateForTests,
@@ -487,6 +489,106 @@ describe("browser workspace web-mode real-code command flow", () => {
       webEnv,
     );
     expect(title.value).toBe("");
+  });
+
+  it("restores form defaults before sending a real HTTP request after reset", async () => {
+    const submitted: string[] = [];
+    const server = createServer(async (request, response) => {
+      response.setHeader("Content-Type", "text/html");
+      if (request.method === "POST") {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        submitted.push(body);
+        response.end("<h1>Saved</h1>");
+        return;
+      }
+      response.end(`<form id="edit" method="post" action="/save">
+        <input id="title" name="title" value="Original">
+        <textarea id="body" name="body">Keep this</textarea>
+        <input id="notify" name="notify" type="checkbox" checked>
+        <button id="reset-button" type="reset">Reset</button>
+        <input id="reset-input" type="reset">
+        <button id="disabled-reset" type="reset" disabled>Disabled reset</button>
+        <button id="save">Save</button>
+        </form><button id="external-reset" type="reset" form="edit">Reset externally</button>
+        <form><input id="other" value="Other form"></form>`);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw Error("No HTTP port");
+      const url = `http://127.0.0.1:${address.port}/edit`;
+      for (const [selector, subaction] of [
+        ["#reset-button", "click"],
+        ["#reset-input", "click"],
+        ["#external-reset", "press"],
+      ] as const) {
+        const tab = await openBrowserWorkspaceTab({ url }, webEnv);
+        const run = (
+          command: Parameters<typeof executeBrowserWorkspaceCommand>[0],
+        ) => executeBrowserWorkspaceCommand({ ...command, id: tab.id }, webEnv);
+        await run({ subaction: "fill", selector: "#title", value: "Wrong" });
+        await run({
+          subaction: "fill",
+          selector: "#body",
+          value: "Discard me",
+        });
+        await run({ subaction: "type", selector: "#title", value: " draft" });
+        await run({ subaction: "uncheck", selector: "#notify" });
+        await run({
+          subaction: "fill",
+          selector: "#other",
+          value: "Keep other edit",
+        });
+        await expect(
+          run({ subaction: "click", selector: "#disabled-reset" }),
+        ).rejects.toThrow(/disabled/);
+        expect(
+          (
+            await run({
+              subaction: "get",
+              selector: "#title",
+              getMode: "value",
+            })
+          ).value,
+        ).toBe("Wrong draft");
+        await run({ subaction, selector, key: "Enter" });
+        expect(submitted).toHaveLength(0);
+        expect(
+          (
+            await run({
+              subaction: "get",
+              selector: "#title",
+              getMode: "value",
+            })
+          ).value,
+        ).toBe("Original");
+        expect(
+          (await run({ subaction: "get", selector: "#body", getMode: "value" }))
+            .value,
+        ).toBe("Keep this");
+        expect(
+          (
+            await run({
+              subaction: "get",
+              selector: "#other",
+              getMode: "value",
+            })
+          ).value,
+        ).toBe("Keep other edit");
+        await run({ subaction: "click", selector: "#save" });
+        expect(submitted.splice(0)).toEqual([
+          "title=Original&body=Keep+this&notify=on",
+        ]);
+      }
+    } finally {
+      await __resetBrowserWorkspaceStateForTests();
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("closes a method=dialog form without a request and sends an invalid method as GET", async () => {
