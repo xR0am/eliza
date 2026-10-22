@@ -2,7 +2,7 @@
 
 Hosts the existing webhook and Discord gateway images. Their authentication,
 consent, receipt, queue, and leader-lease implementations remain authoritative.
-State still uses the configured external store; this wrapper does not retire Redis.
+State uses the selected stores; hosting alone does not retire Redis.
 
 Use `cloudflare/wrangler.toml` with `webhook-staging`, `webhook-production`,
 `discord-staging`, or `discord-production`. Deployments start inactive.
@@ -69,3 +69,14 @@ list duplicates are retained. Public operations cannot import. Serving closes
 imports permanently; the existing managed bot still owns queue start/stop and
 Discord nonce deduplication. Other Discord leases and routing state remain on
 their configured stores.
+
+Discord coordination can use `DISCORD_COORDINATION_STATE` when
+`CLOUD_DISCORD_COORDINATION_BACKEND=cloudflare`, with `DISCORD_COORDINATION_URL`
+set to this Worker's HTTPS `/internal/discord-coordination` endpoint and a dedicated
+`DISCORD_COORDINATION_TOKEN`. The welcome and receipt backends must also select
+Cloudflare before Redis can be omitted. Import the complete audited string/set
+snapshot privately after stopping all old writers, preserving raw values, every
+set member, and absolute expiry (null for persistent keys). Conflicting imports
+fail; serving closes import permanently. Only the existing Discord coordination
+key families and the configured leader key are accepted. Lease renewal and
+release compare the owner atomically. Redis remains the default.
