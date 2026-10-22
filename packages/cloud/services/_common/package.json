@@ -14,7 +14,8 @@
     "./node": "./src/node.ts",
     "./transport": "./src/transport.ts",
     "./testing": "./src/testing.ts",
-    "./telegram": "./src/telegram.ts"
+    "./telegram": "./src/telegram.ts",
+    "./delivery-receipts": "./src/delivery-receipts.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

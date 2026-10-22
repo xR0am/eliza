@@ -1,11 +1,16 @@
 /** Hosts the existing gateway processes; their configured stores retain authority. */
 import { Container, getContainer } from "@cloudflare/containers";
 import { configurationProof } from "./configuration-proof";
+import { handleDeliveryReceipts } from "./delivery-receipt-state";
+
+export { DeliveryReceiptState } from "./delivery-receipt-state";
+
 import { handleNetworkConsent } from "./network-consent-state";
 
 export { NetworkConsentState } from "./network-consent-state";
 
 interface Env {
+  DELIVERY_RECEIPT_STATE?: DurableObjectNamespace;
   NETWORK_CONSENT_STATE?: DurableObjectNamespace;
   GATEWAY: DurableObjectNamespace<GatewayContainer>;
   GATEWAY_ENABLED: string;
@@ -79,6 +84,8 @@ async function stopInactiveGateway(env: Env): Promise<void> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/internal/delivery-receipts")
+      return handleDeliveryReceipts(request, env);
     if (new URL(request.url).pathname === "/internal/network-consent")
       return handleNetworkConsent(request, env);
     if (new URL(request.url).pathname === "/internal/configuration-proof") {
