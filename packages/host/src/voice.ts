@@ -32,16 +32,14 @@ export function parseVoiceUiContext(value: unknown): VoiceUiContext | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
   const result: VoiceUiContext = {};
+  if (source.viewDelivery !== undefined) {
+    if (source.viewDelivery !== "completed-action") return null;
+    result.viewDelivery = "completed-action";
+  }
   if (source.uiClientId !== undefined) {
     const clientId = parseViewInteractionClientId(source.uiClientId);
     if (!clientId) return null;
     result.uiClientId = clientId;
-  }
-  if (source.viewDelivery !== undefined) {
-    // Delivery returns through the voice session itself; direct requests
-    // below additionally require a bound renderer.
-    if (source.viewDelivery !== "completed-action") return null;
-    result.viewDelivery = "completed-action";
   }
   if (source.agentActionMode !== undefined) {
     if (
