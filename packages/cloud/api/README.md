@@ -44,6 +44,14 @@ bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/se
 The suite creates and removes a unique schema and loads migrations 0544–0545.
 It must not point to a production database.
 
+A2A task storage can use the private `A2A_TASK_STATE` Durable Object. Set the
+protected release variable `CLOUD_A2A_STATE_BACKEND=cloudflare` only after stopping
+all source writers and importing complete tasks with original expiry and index
+scores. Imports reject conflicts and close permanently when an organization
+starts serving. The default remains `redis`. Concurrent updates use version
+checks; updater callbacks must be pure because a conflict retries the callback.
+Task content and tenant isolation are preserved.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:

@@ -25,6 +25,8 @@ export interface RuntimeDurableObjectNamespace {
 }
 
 export interface Bindings {
+  CLOUD_A2A_STATE_BACKEND?: string;
+  A2A_TASK_STATE?: RuntimeDurableObjectNamespace;
   /** Explicit per-turn Network context; absent disables the integration. */
   NETWORK_SHARED_ENABLED?: string;
   /** Private server-owned Network HTTP service binding; no public fetch fallback. */
