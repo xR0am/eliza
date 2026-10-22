@@ -137,7 +137,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
     expect(fixtures.profile).toHaveBeenCalledWith("/api/v1/user");
     expect(fixtures.complete).not.toHaveBeenCalled();
     await userEvent.click(
-      screen.getByRole("button", { name: "Authorize", exact: true }),
+      screen.getByRole("button", { name: "Authorize" }),
     );
     await waitFor(() => expect(fixtures.complete).toHaveBeenCalledTimes(1));
   });
@@ -148,12 +148,11 @@ describe("CLI account identity from the existing server-backed profile hook", ()
       (
         screen.getByRole("button", {
           name: "Authorize",
-          exact: true,
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
     await userEvent.click(
-      screen.getByRole("button", { name: "Cancel", exact: true }),
+      screen.getByRole("button", { name: "Cancel" }),
     );
     expect(fixtures.complete).not.toHaveBeenCalled();
   });
@@ -169,7 +168,6 @@ describe("CLI account identity from the existing server-backed profile hook", ()
       (
         screen.getByRole("button", {
           name: "Authorize",
-          exact: true,
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
@@ -184,7 +182,6 @@ describe("CLI account identity from the existing server-backed profile hook", ()
       (
         screen.getByRole("button", {
           name: "Authorize",
-          exact: true,
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false);
@@ -246,7 +243,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
     view();
     await screen.findByText("carson@example.test");
     await userEvent.click(
-      screen.getByRole("button", { name: "Cancel", exact: true }),
+      screen.getByRole("button", { name: "Cancel" }),
     );
     expect(fixtures.complete).not.toHaveBeenCalled();
   });
@@ -263,7 +260,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
     const v = view();
     await screen.findByText("carson@example.test");
     await userEvent.click(
-      screen.getByRole("button", { name: "Authorize", exact: true }),
+      screen.getByRole("button", { name: "Authorize" }),
     );
     await waitFor(() => expect(fixtures.complete).toHaveBeenCalledTimes(1));
     fixtures.profile.mockResolvedValue(
@@ -284,7 +281,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
     expect(fixtures.navigate).not.toHaveBeenCalled();
     expect(fixtures.complete).toHaveBeenCalledTimes(1);
     await userEvent.click(
-      screen.getByRole("button", { name: "Authorize", exact: true }),
+      screen.getByRole("button", { name: "Authorize" }),
     );
     await screen.findByText("Authentication Complete!");
     expect(fixtures.complete).toHaveBeenCalledTimes(2);
@@ -304,7 +301,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
     const v = view();
     await screen.findByText("carson@example.test");
     await userEvent.click(
-      screen.getByRole("button", { name: "Authorize", exact: true }),
+      screen.getByRole("button", { name: "Authorize" }),
     );
     await waitFor(() => expect(fixtures.signOut).toHaveBeenCalledTimes(1));
     fixtures.profile.mockResolvedValue(
@@ -322,7 +319,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
     expect(screen.queryByText("Authentication Error")).toBeNull();
     expect(screen.queryByText("Old session expired")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Authorize", exact: true }),
+      screen.getByRole("button", { name: "Authorize" }),
     ).toBeTruthy();
     expect(fixtures.complete).toHaveBeenCalledTimes(1);
     expect(fixtures.publish).not.toHaveBeenCalled();
@@ -418,7 +415,7 @@ describe("CLI account identity from the existing server-backed profile hook", ()
       await waitFor(() => expect(fixtures.signOut).toHaveBeenCalledTimes(1));
       if (change === "cancel")
         await userEvent.click(
-          screen.getByRole("button", { name: "Cancel", exact: true }),
+          screen.getByRole("button", { name: "Cancel" }),
         );
       else if (change === "unmount") v.unmount();
       else {
