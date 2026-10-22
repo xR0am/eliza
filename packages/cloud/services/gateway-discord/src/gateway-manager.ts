@@ -372,6 +372,8 @@ const DEFAULT_ROUTING_ADAPTERS: GatewayManagerRoutingAdapters = {
 export class GatewayManager {
   private config: GatewayConfig;
   private redis: GatewayRedis | null = null;
+  /** Shared agent-server registry; it has writers outside this gateway. */
+  private routingRedis: GatewayRedis | null = null;
   private connections: Map<string, BotConnection> = new Map();
   private startTime: Date = new Date();
   private pollInterval: NodeJS.Timeout | null = null;
@@ -434,10 +436,7 @@ export class GatewayManager {
     // when unset, so real credentials are still honored when present.
     const isTcpRedisUrl = (u: string): boolean => /^rediss?:\/\//i.test(u);
     const coordination = discordCoordinationStore();
-    if (coordination) {
-      this.redis = coordination;
-      logger.info("[GatewayManager] using Cloudflare coordination");
-    } else if (process.env.MOCK_REDIS === "1") {
+    if (process.env.MOCK_REDIS === "1") {
       this.redis = createMockRedis();
       logger.info("[GatewayManager] using in-memory mock Redis (MOCK_REDIS=1)");
     } else if (config.redisUrl && isTcpRedisUrl(config.redisUrl)) {
@@ -459,6 +458,19 @@ export class GatewayManager {
       // URL provided but no token - log warning and skip Redis
       logger.warn(
         "Redis URL provided without token - failover disabled. Set REDIS_URL (TCP) or KV_REST_API_TOKEN/redisToken (Upstash).",
+      );
+    }
+
+    this.routingRedis = this.redis;
+    if (coordination) {
+      if (!this.routingRedis) {
+        throw new Error(
+          "Shared agent routing Redis is required until its writers migrate",
+        );
+      }
+      this.redis = coordination;
+      logger.info(
+        "[GatewayManager] using Cloudflare coordination and shared Redis routing",
       );
     }
 
@@ -1596,8 +1608,8 @@ export class GatewayManager {
       }
     }
 
-    if (!this.redis) {
-      logger.warn("No Redis connection, cannot route message", {
+    if (!this.routingRedis) {
+      logger.warn("No routing store connection, cannot route message", {
         connectionId,
       });
       return;
@@ -1622,7 +1634,7 @@ export class GatewayManager {
     > = null;
     try {
       route = await this.routingAdapters.resolveAgentServer(
-        this.redis,
+        this.routingRedis,
         conn.characterId,
       );
     } catch (error) {
@@ -1642,7 +1654,7 @@ export class GatewayManager {
 
     try {
       await this.routingAdapters.refreshKedaActivity(
-        this.redis,
+        this.routingRedis,
         route.serverName,
       );
       const { channel } = message;

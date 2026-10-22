@@ -5,7 +5,7 @@ import {
 } from "@elizaos/cloud-services-common/discord-coordination";
 import type { GatewayRedis } from "./gateway-manager";
 
-/** Select before constructing a Redis client; a native gateway has no Redis dependency. */
+/** Select the Discord-owned state store; shared agent routing has a separate authority. */
 export function discordCoordinationStore(
   env: Record<string, string | undefined> = process.env,
   fetcher: (url: URL, init: RequestInit) => Promise<Response> = fetch,

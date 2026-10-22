@@ -72,12 +72,7 @@ export class GatewayContainer extends Container<Env> {
     if (!settings.GATEWAY_BOOTSTRAP_SECRET?.trim()) {
       throw new Error("GATEWAY_BOOTSTRAP_SECRET is required");
     }
-    const nativeDiscord =
-      env.GATEWAY_KIND === "discord" &&
-      settings.CLOUD_DISCORD_COORDINATION_BACKEND === "cloudflare" &&
-      settings.CLOUD_DISCORD_WELCOME_BACKEND === "cloudflare" &&
-      settings.CLOUD_GATEWAY_RECEIPTS_BACKEND === "cloudflare";
-    if (!nativeDiscord && !settings.REDIS_URL && !settings.KV_REST_API_URL) {
+    if (!settings.REDIS_URL && !settings.KV_REST_API_URL) {
       throw new Error("A durable gateway state service is required");
     }
     for (const key of ["REDIS_URL", "KV_REST_API_URL"]) {
