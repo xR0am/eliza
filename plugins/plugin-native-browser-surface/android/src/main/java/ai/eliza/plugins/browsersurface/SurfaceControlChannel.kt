@@ -21,6 +21,7 @@ internal class SurfaceControlChannel(private val webView: WebView, script: Strin
         val documentId: String,
         val sequence: Long,
         val effect: Boolean,
+        val observation: Boolean,
         val isCurrent: () -> Boolean,
         val timeout: Runnable,
     )
@@ -64,7 +65,7 @@ internal class SurfaceControlChannel(private val webView: WebView, script: Strin
                 val error = result.optJSONObject("error")
                 if (error != null) request.call.reject(error.optString("message"), error.optString("kind"))
                 else {
-                    if (!request.effect) snapshotId = result.optString("snapshotId").takeIf { it.isNotBlank() }
+                    if (request.observation) snapshotId = result.optString("snapshotId").takeIf { it.isNotBlank() }
                     request.call.resolve(JSObject().apply {
                         put("documentId", incomingDocument)
                         put("frameScope", "main")
@@ -79,7 +80,12 @@ internal class SurfaceControlChannel(private val webView: WebView, script: Strin
     }
 
     fun execute(call: PluginCall, command: JSONObject, expectedDocument: String?, isCurrent: () -> Boolean) {
-        val effect = command.optString("subaction") != "snapshot"
+        val action = command.optString("subaction")
+        val input = action in setOf("click", "fill", "scroll")
+        val effect = input && command.opt("validateOnly") != true
+        val observation = action == "snapshot"
+        val guidance = command.optJSONObject("guidance")
+        val referenced = input || (action == "guide" && guidance?.optString("kind") in setOf("show", "action-status"))
         val currentDocument = documentId
         val currentProxy = proxy
         if (currentDocument == null || currentProxy == null ||
@@ -87,7 +93,7 @@ internal class SurfaceControlChannel(private val webView: WebView, script: Strin
             call.reject("The isolated page control channel is not ready", "UNAVAILABLE")
             return
         }
-        if (effect && expectedDocument != currentDocument) {
+        if (referenced && expectedDocument != currentDocument) {
             call.reject("Observe the current document before acting", "STALE_REF")
             return
         }
@@ -95,16 +101,17 @@ internal class SurfaceControlChannel(private val webView: WebView, script: Strin
             call.reject("A page command is still awaiting its result", "BUSY")
             return
         }
-        if (effect && (snapshotId == null || command.optString("snapshotId") != snapshotId)) {
+        val expectedSnapshot = if (action == "guide") guidance?.optString("snapshotId") else command.optString("snapshotId")
+        if (referenced && (snapshotId == null || expectedSnapshot != snapshotId)) {
             call.reject("Read a fresh snapshot before acting on this page", "STALE_REF")
             return
         }
         // Native invalidation covers visibility/lifecycle changes even if the
         // DOM and its isolated-world snapshot happen to remain unchanged.
-        snapshotId = null
+        if (effect || observation) snapshotId = null
         sequence += 1
         val timeout = Runnable { interrupt("The page command timed out; observe before continuing") }
-        pending = Pending(call, currentDocument, sequence, effect, isCurrent, timeout)
+        pending = Pending(call, currentDocument, sequence, effect, observation, isCurrent, timeout)
         webView.postDelayed(timeout, 5000)
         try {
             currentProxy.postMessage(JSONObject().apply {

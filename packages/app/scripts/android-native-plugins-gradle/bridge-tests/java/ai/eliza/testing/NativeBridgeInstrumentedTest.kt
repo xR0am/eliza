@@ -37,6 +37,7 @@ class NativeBridgeTestActivity : BridgeActivity() {
 @RunWith(AndroidJUnit4::class)
 class NativeBridgeInstrumentedTest {
     private var browserFixture: java.net.ServerSocket? = null
+    private var browserRestorationPaintMs: Long? = null
     private val approvedPageRequests = java.util.concurrent.atomic.AtomicInteger(0)
 
     @org.junit.After
@@ -241,7 +242,7 @@ class NativeBridgeInstrumentedTest {
                         val capture = JSONObject(captureText)
                         if (!capture.getBoolean("done")) {
                             val name = capture.getString("name")
-                            check(name in listOf("browser-before-invalid-present.png", "browser-after-invalid-present.png"))
+                            check(name in listOf("browser-before-invalid-present.png", "browser-after-invalid-present.png", "browser-guidance.png", "browser-guidance-paused.png", "browser-guidance-cleared.png"))
                             val drawn = CountDownLatch(1)
                             scenario.onActivity { activity ->
                                 val webViews = mutableListOf<android.webkit.WebView>()
@@ -250,6 +251,8 @@ class NativeBridgeInstrumentedTest {
                                     if (view is android.view.ViewGroup) for (i in 0 until view.childCount) visit(view.getChildAt(i))
                                 }
                                 visit(activity.window.decorView)
+                                assertEquals("The native page must be shown before capture: $name", 1,
+                                    webViews.count { it !== activity.bridge.webView })
                                 val pending = java.util.concurrent.atomic.AtomicInteger(webViews.size)
                                 if (webViews.isEmpty()) drawn.countDown()
                                 for (view in webViews) view.postVisualStateCallback(0L, object : android.webkit.WebView.VisualStateCallback() {
@@ -262,7 +265,41 @@ class NativeBridgeInstrumentedTest {
                             }
                             assertTrue("Native presentation did not render", drawn.await(5, TimeUnit.SECONDS))
                             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-                            val bitmap = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                            var bitmap = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                            if (name == "browser-guidance-paused.png") {
+                                // A bridge reply can precede the compositor frame. Require
+                                // the shared renderer's grey paused tag in the actual pixels.
+                                fun hasPausedTag(image: android.graphics.Bitmap): Boolean {
+                                    var pixels = 0
+                                    for (y in 0 until image.height step 4) {
+                                        for (x in 0 until image.width step 4) {
+                                            if (image.getPixel(x, y) == android.graphics.Color.rgb(74, 74, 71)) pixels++
+                                            if (pixels >= 100) return true
+                                        }
+                                    }
+                                    return false
+                                }
+                                val started = android.os.SystemClock.elapsedRealtime()
+                                while (!hasPausedTag(bitmap) && android.os.SystemClock.elapsedRealtime() - started < 1000) {
+                                    bitmap.recycle()
+                                    Thread.sleep(50)
+                                    bitmap = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                                }
+                                assertTrue("Paused native guidance must paint its grey tag", hasPausedTag(bitmap))
+                            }
+                            if (name == "browser-guidance-cleared.png") {
+                                // The fixture's opaque page starts at screen (0,0). If its
+                                // compositor layer is missing, the dark status bar is exposed.
+                                val started = android.os.SystemClock.elapsedRealtime()
+                                while (bitmap.getPixel(5, 5) != android.graphics.Color.WHITE &&
+                                    android.os.SystemClock.elapsedRealtime() - started < 1000) {
+                                    bitmap.recycle()
+                                    Thread.sleep(50)
+                                    bitmap = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                                }
+                                browserRestorationPaintMs = android.os.SystemClock.elapsedRealtime() - started
+                                assertEquals("Restored native page must paint above the host", android.graphics.Color.WHITE, bitmap.getPixel(5, 5))
+                            }
                             val bytes = java.io.ByteArrayOutputStream()
                             try { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bytes)) }
                             finally { bitmap.recycle() }
@@ -290,6 +327,7 @@ class NativeBridgeInstrumentedTest {
                     if (descriptor.getString("directory") == "plugin-native-browser-surface") {
                         val evidence = evaluate(scenario, "JSON.stringify(window.nativeBrowserEvidence)")
                         result.put("browser", JSONObject(JSONTokener(evidence).nextValue() as String))
+                        browserRestorationPaintMs?.let { result.put("restorationPaintWaitMs", it) }
                         if (descriptor.getBoolean("surfaceControl")) {
                             assertEquals("Only the approved host load may request the other origin", 1, approvedPageRequests.get())
                             result.put("approvedPageRequests", approvedPageRequests.get())

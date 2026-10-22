@@ -70,6 +70,13 @@ An expired, unrevoked binding can renew at the same task epoch only with a highe
 binding revision and identical owner, origin, targets and display name. Revoked
 bindings and scope changes require a new epoch.
 
+`src/task-bindings.mjs` shares this binding and command-scope enforcement with
+trusted embedded-browser transports. The host supplies storage, exact-page URL
+lookup, page-ID validation and acknowledged guidance cleanup. Callers serialize
+binding changes, fence connection/account lifetime, and check the returned
+`current()` before and after asynchronous work. The module grants no page input
+by itself; the page executor still checks document, snapshot and target policy.
+
 Run `bun run --cwd packages/os test:browser` for protocol tests. CI runs this
 lane in the OS verification job (`.github/workflows/os.yml`: `verify:portable`
 runs `test`, which ends with `test:browser`) whenever a change touches

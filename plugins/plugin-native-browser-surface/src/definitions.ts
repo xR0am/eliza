@@ -38,6 +38,32 @@ export interface SurfaceOwnerOptions {
   epoch: number;
 }
 
+/** Fixed host annotation requests. Approval controls remain in the trusted host. */
+export type NativePageGuidance =
+  | { kind: "hide" | "pause" }
+  | {
+      kind: "action-status";
+      id: string;
+      snapshotId: string;
+      nodeId: string;
+      action: "click" | "fill" | "scroll";
+    }
+  | {
+      kind: "show";
+      id: string;
+      snapshotId: string;
+      nodeId: string;
+      origin: string;
+      expiresAt: number;
+      text: string;
+      detail?: string;
+      assistantName?: string;
+      tone?: "instruction" | "active" | "success";
+      action?: "click" | "fill" | "scroll";
+      keepClear?: string[];
+      restore?: boolean;
+    };
+
 export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
   /** Stable per-surface id (the Browser tab's surface id). */
   id: string;
@@ -232,7 +258,10 @@ export interface ElizaSurfaceManagerPlugin {
     options: SurfaceIdOptions & {
       documentId?: string;
       command: {
-        subaction: "snapshot" | "click" | "fill" | "scroll";
+        subaction: "snapshot" | "click" | "fill" | "scroll" | "guide";
+        /** Check the target without consuming the snapshot or dispatching input. */
+        validateOnly?: boolean;
+        guidance?: NativePageGuidance;
         snapshotId?: string;
         nodeId?: string;
         text?: string;
@@ -240,6 +269,11 @@ export interface ElizaSurfaceManagerPlugin {
         taskPolicy?: {
           origin: string;
           expiresAt: number;
+          /** Host task binding revision and the visible action preview identity. */
+          guidanceScope?: string;
+          actionId?: string;
+          expectedSelector?: string;
+          assistantName?: string;
           targets: Array<{
             selector: string;
             action: "click" | "fill" | "scroll";

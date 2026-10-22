@@ -216,7 +216,7 @@ export function createSurfaceCommandChannel({
         cancellations,
       };
     },
-    async request(input, { signal, effect } = {}) {
+    async request(input, { signal, effect, connectionId } = {}) {
       if (typeof effect !== "boolean")
         throw new TypeError(
           "Commands must declare whether they can have an effect",
@@ -225,6 +225,11 @@ export function createSurfaceCommandChannel({
       signal?.throwIfAborted();
       const actor = await owner(),
         scope = session;
+      if (connectionId !== undefined && scope?.id !== connectionId)
+        throw failure(
+          "STALE_REF",
+          "The requested surface connection was replaced",
+        );
       current(scope, actor);
       signal?.throwIfAborted();
       if (pending.size >= 16)

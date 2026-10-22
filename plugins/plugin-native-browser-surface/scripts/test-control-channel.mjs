@@ -1,11 +1,16 @@
 /** Real Chromium DOM and isolated realm; Android reply-proxy coverage is separate. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:https";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLocalAgentGateway } from "../../../packages/agent/native-host/gateway.mjs";
 import { createSurfaceCommandChannel } from "../../../packages/agent/native-host/surface-channel.mjs";
 import { connectSurfaceCommandClient } from "../../../packages/agent/native-host/surface-client.mjs";
+import { createSurfaceTaskHandler } from "../../../packages/os/browser/src/surface-task-handler.mjs";
 
 const require = createRequire(
   import.meta.resolve("@elizaos/plugin-browser/package.json"),
@@ -17,12 +22,72 @@ const source = await readFile(
   new URL("../resources/control-channel.js", import.meta.url),
   "utf8",
 );
-const server = createServer((_req, res) => {
-  res.setHeader("Content-Type", "text/html");
-  res.end(
-    `<!doctype html><input id="query" aria-label="Search query"><input type="password" value="private-value"><button type="button" id="increment" onclick="document.querySelector('output').textContent++">Increment</button><output>0</output>`,
-  );
-});
+const certificates = await mkdtemp(join(tmpdir(), "eliza-surface-control-"));
+execFileSync(
+  "openssl",
+  [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    join(certificates, "key.pem"),
+    "-out",
+    join(certificates, "cert.pem"),
+    "-days",
+    "1",
+    "-subj",
+    "/CN=localhost",
+  ],
+  { stdio: "ignore" },
+);
+const targetModule = join(certificates, "surface-target.mjs");
+execFileSync(
+  "bun",
+  [
+    "build",
+    fileURLToPath(
+      new URL(
+        "../../plugin-browser/src/native-surface-target.ts",
+        import.meta.url,
+      ),
+    ),
+    "--target=node",
+    `--outfile=${targetModule}`,
+  ],
+  { stdio: "pipe" },
+);
+const { NativeSurfaceBrowserTarget } = await import(
+  pathToFileURL(targetModule).href
+);
+const actuatorModule = join(certificates, "task-actuator.mjs");
+execFileSync(
+  "bun",
+  [
+    "build",
+    fileURLToPath(
+      new URL("../../plugin-browser/src/task-actuator.ts", import.meta.url),
+    ),
+    "--target=node",
+    "--conditions=eliza-source",
+    `--outfile=${actuatorModule}`,
+  ],
+  { stdio: "pipe" },
+);
+const { NativeTaskActuator } = await import(pathToFileURL(actuatorModule).href);
+const server = createServer(
+  {
+    key: await readFile(join(certificates, "key.pem")),
+    cert: await readFile(join(certificates, "cert.pem")),
+  },
+  (_req, res) => {
+    res.setHeader("Content-Type", "text/html");
+    res.end(
+      `<!doctype html><input id="query" aria-label="Search query"><input type="password" value="private-value"><button type="button" id="increment" onclick="document.querySelector('output').textContent++">Increment</button><output>0</output>`,
+    );
+  },
+);
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 let browser, client;
 const channel = createSurfaceCommandChannel({
@@ -66,9 +131,10 @@ try {
   browser = await puppeteer.launch({
     executablePath: process.env.ELIZA_BROWSER_EXECUTABLE,
     headless: true,
+    acceptInsecureCerts: true,
   });
   const page = await browser.newPage();
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = `https://127.0.0.1:${server.address().port}`;
   await page.goto(origin);
   const cdp = await page.createCDPSession();
   const { frameTree } = await cdp.send("Page.getFrameTree");
@@ -134,7 +200,7 @@ try {
   const dispatch = (command, extra = {}) =>
     channel.request(
       { command, extra },
-      { effect: command.subaction !== "snapshot" },
+      { effect: ["click", "fill", "scroll"].includes(command.subaction) },
     );
   const snapshot = async () =>
     (await dispatch({ subaction: "snapshot" })).result;
@@ -165,6 +231,52 @@ try {
     ...extra,
   });
   const click = action(state, "click", "#increment");
+  const guide = (guidance) => dispatch({ subaction: "guide", guidance });
+  const shown = {
+    kind: "show",
+    id: "step-1",
+    snapshotId: state.snapshotId,
+    nodeId: click.nodeId,
+    origin,
+    expiresAt: Date.now() + 15000,
+    text: "I will select Increment.",
+    assistantName: "Test helper",
+    action: "click",
+  };
+  assert.equal((await guide(shown)).result.accepted, true);
+  const status = {
+    kind: "action-status",
+    id: shown.id,
+    snapshotId: shown.snapshotId,
+    nodeId: shown.nodeId,
+    action: shown.action,
+  };
+  const readyDeadline = Date.now() + 5000;
+  while (!(await guide(status)).result.ready) {
+    assert.ok(
+      Date.now() < readyDeadline,
+      "The native action preview must become visible and ready",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(
+    await page.evaluate(() => typeof globalThis.__elizaPageGuidanceV1),
+    "undefined",
+  );
+  assert.equal((await guide({ kind: "pause" })).result.paused, true);
+  assert.equal((await guide(status)).result.ready, false);
+  assert.equal(
+    (await guide({ ...shown, restore: true })).result.accepted,
+    true,
+  );
+  assert.equal((await guide({ kind: "hide" })).result.visible, false);
+  assert.equal(
+    (await guide({ ...shown, snapshotId: "retired" })).result.reason,
+    "stale-observation",
+  );
+  await assert.rejects(guide({ ...shown, tone: "offer", answers: [] }), {
+    code: "INVALID_REQUEST",
+  });
   assert.equal((await dispatch(click)).result.dispatched, true);
   assert.equal(await page.$eval("output", (node) => node.textContent), "1");
   const consumed = sequence;
@@ -243,8 +355,266 @@ try {
     (await request("connect", { clientId: "renderer", epoch: 1 })).status,
     409,
   );
+  // The task adapter uses the same real isolated page, with a product-style
+  // UUID page identity. Only the native reply proxy is represented by this port.
+  let selected = true,
+    failCleanup = false;
+  const pageId = "page-9d7a8c01";
+  const nativePage = { id: pageId, url: origin, isCurrent: () => selected };
+  const nativeControl = async (_page, input, signal) => {
+    signal?.throwIfAborted();
+    const reply = await nativeDispatch(
+      input.command,
+      input.documentId ? { documentId: input.documentId } : {},
+    );
+    if (reply.result?.error)
+      throw Object.assign(new Error(reply.result.error.message), {
+        code: reply.result.error.kind,
+      });
+    return { ...reply, frameScope: "main" };
+  };
+  const taskHandler = createSurfaceTaskHandler({
+    getPage: async (id) => {
+      if (id !== undefined) assert.equal(id, pageId);
+      if (!selected)
+        throw Object.assign(new Error("Parked"), { code: "STALE_REF" });
+      return nativePage;
+    },
+    listPages: async () => [{ id: pageId }],
+    control: nativeControl,
+    cleanup: async (_id, kind) => {
+      const result = (
+        await nativeControl(nativePage, {
+          command: { subaction: "guide", guidance: { kind } },
+        })
+      ).result;
+      if (failCleanup) {
+        failCleanup = false;
+        throw Object.assign(new Error("Cleanup context changed"), {
+          code: "STALE_REF",
+        });
+      }
+      return result;
+    },
+    isCurrent: () => true,
+  });
+  client = await connectSurfaceCommandClient({
+    clientId: "task-renderer",
+    epoch: 3,
+    request: async (path, input, signal) => {
+      const response = await fetch(`${gatewayUrl}${path}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer fixture-host",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+        signal,
+      });
+      const body = await response.json();
+      if (!response.ok)
+        throw Object.assign(new Error(body.error), { code: body.code });
+      return body;
+    },
+    handleCommand: taskHandler,
+  });
+  await assert.rejects(
+    channel.request(
+      { type: "current-page", id: "retired-connection" },
+      { effect: false, connectionId: connection.connectionId },
+    ),
+    { code: "STALE_REF" },
+  );
+  const surfaceTarget = new NativeSurfaceBrowserTarget(channel);
+  assert.equal((await surfaceTarget.currentPage()).tabId, pageId);
+  assert.ok(surfaceTarget.getProfileId().startsWith("embedded:"));
+  const context = {
+    actorId: "synthetic-owner",
+    accountId: "synthetic-account",
+    agentId: "synthetic-agent",
+    taskId: "surface-task",
+    epoch: 1,
+  };
+  let requestId = 0;
+  const taskRequest = (message, effect = false) =>
+    channel.request(
+      { id: `surface-request-${++requestId}`, ...message },
+      { effect },
+    );
+  const binding = {
+    ...context,
+    tabId: pageId,
+    bindingRevision: 1,
+    origin,
+    expiresAt: Date.now() + 60000,
+    revoked: false,
+    assistantName: "Test helper",
+    targets: policy.targets,
+  };
+  assert.equal((await surfaceTarget.bindTask(binding)).bound, true);
+  const taskSnapshot = async () =>
+    (
+      await surfaceTarget.execute(
+        { subaction: "snapshot", id: pageId },
+        { taskContext: context },
+      )
+    ).value.result;
+  let observed = await taskSnapshot();
+  assert.equal(observed.frames[0].documentId, ready.documentId);
+  assert.equal(observed.frames[0].complete, true);
+  assert.ok(!JSON.stringify(observed).includes("private-value"));
+  const taskAction = (subaction, target, extra = {}) => ({
+    type: "command",
+    command: {
+      subaction,
+      id: pageId,
+      taskContext: context,
+      selector: observed.frames[0].elements.find(
+        (element) => element.targetSelector === target,
+      ).selector,
+      expectedSelector: target,
+      ...extra,
+    },
+  });
+  await assert.rejects(
+    taskRequest(
+      {
+        ...taskAction("click", "#increment"),
+        command: {
+          ...taskAction("click", "#increment").command,
+          taskContext: { ...context, accountId: "another" },
+        },
+      },
+      true,
+    ),
+    { code: "POLICY_BLOCKED" },
+  );
+  const increment = taskAction("click", "#increment");
+  assert.equal(
+    (
+      await surfaceTarget.execute(increment.command, {
+        taskContext: context,
+        expectedSelector: "#increment",
+      })
+    ).value.result.dispatched,
+    true,
+  );
+  assert.equal(await page.$eval("output", (node) => node.textContent), "4");
+  await assert.rejects(taskRequest(increment, true), { code: "STALE_REF" });
+  observed = await taskSnapshot();
+  assert.equal(
+    (
+      await taskRequest(
+        taskAction("fill", "#query", {
+          text: "Wikipedia from the task adapter",
+        }),
+        true,
+      )
+    ).dispatched,
+    true,
+  );
+  assert.equal(
+    await page.$eval("#query", (node) => node.value),
+    "Wikipedia from the task adapter",
+  );
+  observed = await taskSnapshot();
+  selected = false;
+  await assert.rejects(taskRequest(taskAction("click", "#increment"), true), {
+    code: "STALE_REF",
+  });
+  assert.equal(await page.$eval("output", (node) => node.textContent), "4");
+  selected = true;
+  const owner = {
+    actorId: context.actorId,
+    agentId: context.agentId,
+    connector: { source: "fixture", accountId: context.accountId },
+  };
+  const task = {
+    id: context.taskId,
+    owner,
+    epoch: 2,
+    revision: 1,
+    status: "waiting",
+    authorization: { state: "active", decisionId: "fixture-authority" },
+    allowedOrigins: [origin],
+    allowedCapabilities: ["browser.click"],
+    operations: [],
+  };
+  const actuator = new NativeTaskActuator({
+    target: surfaceTarget,
+    getTask: () => task,
+    policy: () => ({
+      tabId: pageId,
+      origin,
+      leaseMs: 60000,
+      targets: policy.targets,
+    }),
+    nextBindingRevision: () => 2,
+    resolveValue: async () => {
+      throw Error("No value needed");
+    },
+    verify: async (_proposal, before, after) =>
+      before.text.includes("4") && after.text.includes("5")
+        ? "succeeded"
+        : "unknown",
+    recordEvidence: async () => "fixture-real-page-readback",
+  });
+  const actuatorSignal = new AbortController().signal;
+  task.observation = await actuator.observe({
+    owner,
+    taskId: task.id,
+    signal: actuatorSignal,
+  });
+  const actual = actuator.readObservation(task.id, owner);
+  const proposal = {
+    id: "actuator-click",
+    taskId: task.id,
+    epoch: task.epoch,
+    authorizationId: task.authorization.decisionId,
+    observationId: task.observation.id,
+    observationVersion: task.observation.version,
+    inputRevision: task.observation.inputRevision,
+    targetRef: actual.snapshot.elements.find(
+      (element) => element.targetSelector === "#increment",
+    ).selector,
+    expectedSelector: "#increment",
+    capability: "browser.click",
+    expiresAt: Date.now() + 10000,
+  };
+  task.operations.push({ status: "dispatched", proposal });
+  const outcome = await actuator.execute(proposal, {
+    owner,
+    signal: actuatorSignal,
+    isCurrent: () => true,
+  });
+  assert.deepEqual(outcome, {
+    status: "succeeded",
+    evidenceRef: "fixture-real-page-readback",
+  });
+  assert.equal(await page.$eval("output", (node) => node.textContent), "5");
+  const renewedContext = { ...context, epoch: 2 };
+  observed = (
+    await surfaceTarget.execute(
+      { subaction: "snapshot", id: pageId },
+      { taskContext: renewedContext },
+    )
+  ).value.result;
+  failCleanup = true;
+  await assert.rejects(
+    surfaceTarget.execute(taskAction("click", "#increment").command, {
+      taskContext: renewedContext,
+      expectedSelector: "#increment",
+    }),
+    { kind: "UNCERTAIN_OUTCOME" },
+  );
+  assert.equal(
+    await page.$eval("output", (node) => node.textContent),
+    "6",
+    "Cleanup failure must not hide the real effect",
+  );
+  await taskHandler.close();
   console.log(
-    "PASS: authenticated host HTTP to isolated command channel, real click/fill, lost-effect uncertainty without replay, document and replay fences, manual input, policy requirement, fixed operations, credential exclusion",
+    "PASS: NativeTaskActuator readback, cleanup uncertainty, bound embedded task adapter and authenticated host HTTP to isolated command channel, real click/fill with visible preview, lost-effect uncertainty without replay, document and replay fences, manual input, policy requirement, fixed operations, credential exclusion",
   );
 } finally {
   await client?.close();
@@ -253,4 +623,5 @@ try {
   gateway.closeAllConnections();
   await new Promise((resolve) => gateway.close(resolve));
   await new Promise((resolve) => server.close(resolve));
+  await rm(certificates, { recursive: true, force: true });
 }

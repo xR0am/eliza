@@ -1857,7 +1857,10 @@
         await rejects("readPage", { ...identity, id, selector: ".missing" });
         const capturePresentation = async (name) => {
           window.nativeBrowserCapture = { name, done: false };
-          const deadline = Date.now() + 5000;
+          // Native waits up to five seconds for visual-state callbacks, then
+          // checks pixels, encodes PNG and sends the artifact before replying.
+          // Its caller must allow that whole bounded operation to finish.
+          const deadline = Date.now() + 20000;
           while (!window.nativeBrowserCapture.done) {
             if (Date.now() >= deadline)
               throw new Error(`Screenshot did not complete: ${name}`);
@@ -1952,6 +1955,71 @@
           const fill = command(observation, "fill", "#query", {
             text: "Wikipedia",
           });
+          assert(
+            (
+              await call("controlPage", {
+                ...fill,
+                command: { ...fill.command, validateOnly: true },
+              })
+            ).result.validated === true,
+            "native preflight validates without consuming the input reference",
+          );
+          const guide = (read, guidance) =>
+            call("controlPage", {
+              ...identity,
+              id,
+              documentId: read.documentId,
+              command: { subaction: "guide", guidance },
+            });
+          const shown = {
+            kind: "show",
+            id: "native-step",
+            snapshotId: observation.result.snapshotId,
+            nodeId: fill.command.nodeId,
+            origin: taskPolicy.origin,
+            expiresAt: Date.now() + 15000,
+            text: "I will enter a search.",
+            assistantName: "Test helper",
+            action: "fill",
+          };
+          await rejects("controlPage", {
+            ...identity,
+            id,
+            documentId: "retired-document",
+            command: { subaction: "guide", guidance: shown },
+          });
+          assert(
+            (await guide(observation, shown)).result.accepted,
+            "native guidance accepts the observed target",
+          );
+          const preview = {
+            kind: "action-status",
+            id: shown.id,
+            snapshotId: shown.snapshotId,
+            nodeId: shown.nodeId,
+            action: "fill",
+          };
+          const previewDeadline = Date.now() + 5000;
+          while (!(await guide(observation, preview)).result.ready) {
+            if (Date.now() >= previewDeadline)
+              throw new Error("Native action preview did not become ready");
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          await capturePresentation("browser-guidance.png");
+          assert(
+            (await guide(observation, { kind: "pause" })).result.paused,
+            "native guidance pauses",
+          );
+          assert(
+            !(await guide(observation, preview)).result.ready,
+            "paused guidance cannot report a ready action preview",
+          );
+          await capturePresentation("browser-guidance-paused.png");
+          assert(
+            (await guide(observation, { kind: "hide" })).result.visible ===
+              false,
+            "native guidance removal acknowledged",
+          );
           await rejects("controlPage", {
             ...fill,
             documentId: "retired-document",
@@ -1983,6 +2051,20 @@
             "native click readback sees the changed page",
           );
           await call("presentSurface", { ...identity });
+          assert(
+            (await guide(observation, { kind: "hide" })).result.visible ===
+              false,
+            "native guidance cleanup remains available while hidden",
+          );
+          await rejects("controlPage", {
+            ...identity,
+            id,
+            documentId: observation.documentId,
+            command: {
+              subaction: "guide",
+              guidance: { ...shown, snapshotId: observation.result.snapshotId },
+            },
+          });
           await rejects("controlPage", {
             ...identity,
             id,
@@ -1994,6 +2076,7 @@
             command(observation, "click", "#increment"),
           );
           const resumed = await snapshot();
+          await capturePresentation("browser-guidance-cleared.png");
           assert(
             resumed.documentId === observation.documentId,
             "native control preserves the document across Home",
