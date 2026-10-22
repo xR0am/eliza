@@ -370,7 +370,9 @@ export async function submitWebBrowserWorkspaceForm(
   for (const [key, value] of formData.entries()) {
     searchParams.append(
       normalizeLineBreaks(key),
-      normalizeLineBreaks(typeof value === "string" ? value : value.name),
+      normalizeLineBreaks(
+        typeof value === "string" ? value : (value as File).name,
+      ),
     );
   }
 
@@ -416,14 +418,16 @@ export async function submitWebBrowserWorkspaceForm(
       if (typeof value === "string") {
         parts.push(`${disposition}\r\n\r\n${normalizeLineBreaks(value)}\r\n`);
       } else {
+        // Some consumer tsconfigs type FormData entries as strings only.
+        const file = value as File;
         const bytes = await new Promise<ArrayBuffer>((resolve, reject) => {
           const reader = new dom.window.FileReader();
           reader.onload = () => resolve(reader.result as ArrayBuffer);
           reader.onerror = () => reject(reader.error);
-          reader.readAsArrayBuffer(value);
+          reader.readAsArrayBuffer(file);
         });
         parts.push(
-          `${disposition}; filename="${escapeName(value.name)}"\r\nContent-Type: ${value.type || "application/octet-stream"}\r\n\r\n`,
+          `${disposition}; filename="${escapeName(file.name)}"\r\nContent-Type: ${file.type || "application/octet-stream"}\r\n\r\n`,
           bytes,
           "\r\n",
         );
