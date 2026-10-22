@@ -29,6 +29,7 @@ export const EXTENSION_ID = "pmldpcoefklbdbgmggcejkfoinmjfeio";
 export const assetNames = [
   "background.mjs",
   "command-handler.mjs",
+  "task-bindings.mjs",
   "commands.mjs",
   "page-command.mjs",
   "figtree-OFL.txt",
@@ -65,6 +66,7 @@ const resourceIds = {
   "licenses.html": "IDR_ELIZA_BROWSER_PROTECTION_LICENSES",
   "background.mjs": "IDR_ELIZA_BROWSER_BACKGROUND",
   "command-handler.mjs": "IDR_ELIZA_BROWSER_COMMAND_HANDLER",
+  "task-bindings.mjs": "IDR_ELIZA_BROWSER_TASK_BINDINGS",
   "commands.mjs": "IDR_ELIZA_BROWSER_COMMANDS",
   "page-command.mjs": "IDR_ELIZA_BROWSER_PAGE_COMMAND",
   "figtree-OFL.txt": "IDR_ELIZA_BROWSER_GUIDE_FONT_LICENSE",
@@ -250,7 +252,7 @@ export async function generateComponentOverlay({
     replaceOnce(
       source,
       '"chrome/browser/resources/component_extension_resources.grd": {\n    "includes": [2440],\n    "structures": [2460],',
-      '"chrome/browser/resources/component_extension_resources.grd": {\n    "includes": [2440],\n    "structures": [2471],',
+      '"chrome/browser/resources/component_extension_resources.grd": {\n    "includes": [2440],\n    "structures": [2472],',
       "component resource allocation",
     ),
   );
