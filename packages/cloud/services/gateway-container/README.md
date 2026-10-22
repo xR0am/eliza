@@ -57,3 +57,15 @@ default. Stop and drain all old writers before privately importing the complete
 key/value snapshot with original absolute expiries (null means persistent) and
 the complete retry index. Conflicting imports fail, and any serving operation
 permanently closes import. Public requests cannot import or access other keys.
+
+Discord install-welcome queues use `DISCORD_WELCOME_STATE` with
+`CLOUD_DISCORD_WELCOME_BACKEND=cloudflare`, `DISCORD_WELCOME_URL` pointing to
+this Worker's HTTPS `/internal/discord-welcome`, and `DISCORD_WELCOME_TOKEN` in
+runtime configuration. Redis remains the default. Before switching, stop the
+old bot owner and wait for its queue to drain, then privately import both lists
+in Redis left-to-right order and all retained delivered markers with their
+original absolute expiry (null means persistent). Complete raw job values and
+list duplicates are retained. Public operations cannot import. Serving closes
+imports permanently; the existing managed bot still owns queue start/stop and
+Discord nonce deduplication. Other Discord leases and routing state remain on
+their configured stores.
