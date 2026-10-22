@@ -242,7 +242,7 @@ class NativeBridgeInstrumentedTest {
                         val capture = JSONObject(captureText)
                         if (!capture.getBoolean("done")) {
                             val name = capture.getString("name")
-                            check(name in listOf("browser-before-invalid-present.png", "browser-after-invalid-present.png", "browser-guidance.png", "browser-guidance-cleared.png"))
+                            check(name in listOf("browser-before-invalid-present.png", "browser-after-invalid-present.png", "browser-guidance.png", "browser-guidance-paused.png", "browser-guidance-cleared.png"))
                             val drawn = CountDownLatch(1)
                             scenario.onActivity { activity ->
                                 val webViews = mutableListOf<android.webkit.WebView>()

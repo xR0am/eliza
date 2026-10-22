@@ -2002,6 +2002,7 @@
             !(await guide(observation, preview)).result.ready,
             "paused guidance cannot report a ready action preview",
           );
+          await capturePresentation("browser-guidance-paused.png");
           assert(
             (await guide(observation, { kind: "hide" })).result.visible ===
               false,
