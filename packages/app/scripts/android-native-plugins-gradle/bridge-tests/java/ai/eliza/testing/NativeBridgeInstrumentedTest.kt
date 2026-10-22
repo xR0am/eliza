@@ -266,6 +266,27 @@ class NativeBridgeInstrumentedTest {
                             assertTrue("Native presentation did not render", drawn.await(5, TimeUnit.SECONDS))
                             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
                             var bitmap = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                            if (name == "browser-guidance-paused.png") {
+                                // A bridge reply can precede the compositor frame. Require
+                                // the shared renderer's grey paused tag in the actual pixels.
+                                fun hasPausedTag(image: android.graphics.Bitmap): Boolean {
+                                    var pixels = 0
+                                    for (y in 0 until image.height step 4) {
+                                        for (x in 0 until image.width step 4) {
+                                            if (image.getPixel(x, y) == android.graphics.Color.rgb(74, 74, 71)) pixels++
+                                            if (pixels >= 100) return true
+                                        }
+                                    }
+                                    return false
+                                }
+                                val started = android.os.SystemClock.elapsedRealtime()
+                                while (!hasPausedTag(bitmap) && android.os.SystemClock.elapsedRealtime() - started < 1000) {
+                                    bitmap.recycle()
+                                    Thread.sleep(50)
+                                    bitmap = checkNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                                }
+                                assertTrue("Paused native guidance must paint its grey tag", hasPausedTag(bitmap))
+                            }
                             if (name == "browser-guidance-cleared.png") {
                                 // The fixture's opaque page starts at screen (0,0). If its
                                 // compositor layer is missing, the dark status bar is exposed.
