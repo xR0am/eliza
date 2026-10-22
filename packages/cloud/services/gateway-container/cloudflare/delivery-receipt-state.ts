@@ -4,9 +4,10 @@ export const receiptOwner = (key: string): string =>
   `receipt-v1:${createHash("sha256").update(key).digest("hex")}`;
 const validKey = (key: unknown): key is string =>
   typeof key === "string" &&
-  /^internal-delivery:(telegram|blooio|twilio):[a-z0-9][a-z0-9_-]{0,63}:[a-zA-Z0-9:._-]{1,200}$/i.test(
+  (/^internal-delivery:(telegram|blooio|twilio):[a-z0-9][a-z0-9_-]{0,63}:[a-zA-Z0-9:._-]{1,200}$/i.test(
     key,
-  );
+  ) ||
+    /^internal-delivery:discord:[0-9]{1,32}:[a-zA-Z0-9:._-]{1,200}$/.test(key));
 /** One replay fence per original receipt key. Import expiry is never extended. */
 export class DeliveryReceiptState {
   constructor(private readonly state: DurableObjectState) {
@@ -160,7 +161,7 @@ export async function handleDeliveryReceipts(
     DELIVERY_RECEIPT_STATE?: DurableObjectNamespace;
   },
 ): Promise<Response> {
-  if (env.GATEWAY_KIND !== "webhook")
+  if (!["webhook", "discord"].includes(env.GATEWAY_KIND))
     return new Response("Not found", { status: 404 });
   let config: Record<string, unknown>;
   try {
@@ -199,6 +200,11 @@ export async function handleDeliveryReceipts(
     !["get", "set", "replace", "delete"].includes(input.operation)
   )
     return new Response("Invalid operation", { status: 400 });
+  if (
+    input.key.startsWith("internal-delivery:discord:") !==
+    (env.GATEWAY_KIND === "discord")
+  )
+    return new Response("Foreign gateway receipt", { status: 403 });
   return env.DELIVERY_RECEIPT_STATE.getByName(receiptOwner(input.key)).fetch(
     "https://receipts.internal/",
     {

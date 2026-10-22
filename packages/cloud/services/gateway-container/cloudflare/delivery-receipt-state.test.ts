@@ -179,3 +179,59 @@ test("public transport rejects imports, foreign namespaces, and unauthorized cal
     ).status,
   ).toBe(400);
 });
+
+test("Discord delivery handler replays its durable receipt after restart without another send", async () => {
+  const payload = {
+    platform: "discord",
+    discordUserId: "123456789",
+    text: "fixture only",
+    idempotencyKey: "discord-replay",
+  };
+  const deliver = () =>
+    worker.dispatchFetch("https://receipt.test/discord/deliver", {
+      method: "POST",
+      headers: { "X-Internal-Secret": "delivery-test-only" },
+      body: JSON.stringify(payload),
+    });
+  const first = await deliver();
+  expect(first.status).toBe(200);
+  expect(first.headers.get("X-Fixture-Sends")).toBe("1");
+  expect(first.headers.get("X-Fixture-Nonce")).toMatch(/^[0-9]{1,25}$/);
+  const original = (await first.json()) as Record<string, unknown>;
+  expect(original.replayed).toBe(false);
+  await worker.dispose();
+  worker = start();
+  await worker.ready;
+  const replay = await deliver();
+  expect(replay.status).toBe(200);
+  expect(replay.headers.get("X-Fixture-Sends")).toBe("0");
+  expect(await replay.json()).toEqual({ ...original, replayed: true });
+  const unknownPayload = { ...payload, idempotencyKey: "discord-unknown" };
+  const unknown = () =>
+    worker.dispatchFetch(
+      "https://receipt.test/discord/deliver?outcome=unknown",
+      {
+        method: "POST",
+        headers: { "X-Internal-Secret": "delivery-test-only" },
+        body: JSON.stringify(unknownPayload),
+      },
+    );
+  expect((await unknown()).status).toBe(202);
+  await worker.dispose();
+  worker = start();
+  await worker.ready;
+  const uncertainReplay = await unknown();
+  expect(uncertainReplay.status).toBe(202);
+  expect(uncertainReplay.headers.get("X-Fixture-Sends")).toBe("0");
+  expect(
+    (
+      await call(
+        {
+          operation: "get",
+          key: "internal-delivery:discord:123456789:discord-replay",
+        },
+        "/internal/delivery-receipts",
+      )
+    ).status,
+  ).toBe(403);
+});

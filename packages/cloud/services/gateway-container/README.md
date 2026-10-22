@@ -36,12 +36,12 @@ old writers stop. A serving read or write permanently closes imports for that
 project/address. Consent has no expiry; equal timestamps retain an opt-out.
 Other gateway state still requires its configured store.
 
-Webhook delivery receipts can use `DELIVERY_RECEIPT_STATE` with
+Webhook and Discord delivery receipts can use `DELIVERY_RECEIPT_STATE` with
 `CLOUD_GATEWAY_RECEIPTS_BACKEND=cloudflare`, `GATEWAY_RECEIPTS_URL` pointing to
 this Worker's HTTPS `/internal/delivery-receipts`, and `GATEWAY_RECEIPTS_TOKEN`
 in the runtime configuration. Redis remains the default. Transfer the original
 receipt keys, raw values, and absolute expiry times through the private binding
 only after old writers stop. Import fingerprints survive expiry; serving closes
 imports permanently. Expiry alarms remove receipt values. Public access requires
-the dedicated credential and cannot import state. This covers webhook proactive
-delivery receipts; Discord receipts and ingress holds still use their stores.
+the dedicated credential and cannot import state. Each endpoint accepts only its gateway kind’s key namespace. Ingress holds and
+Discord queues still use their existing stores.
