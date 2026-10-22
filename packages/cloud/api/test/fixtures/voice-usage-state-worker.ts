@@ -12,6 +12,7 @@ import { Hono } from "hono";
 import twilioRoute from "../../v1/twilio/voice/media/route";
 import voiceRoute from "../../v1/voice/session/ws/route";
 
+export { AuthenticationState } from "../../src/authentication-state";
 export { VoiceUsageState } from "../../src/voice-usage-state";
 
 const app = new Hono<AppEnv>();

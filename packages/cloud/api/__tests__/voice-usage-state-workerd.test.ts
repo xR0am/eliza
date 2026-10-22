@@ -18,6 +18,7 @@ describe("Cloudflare voice quota accounting", () => {
       modules: [{ type: "ESModule", path: "worker.mjs", contents: script }],
       bindings: {
         CLOUD_VOICE_USAGE_BACKEND: backend,
+        CLOUD_AUTH_STATE_BACKEND: "cloudflare",
         NODE_ENV: "production",
         MOCK_REDIS: "1",
         VOICE_REALTIME_WS_ENABLED: "true",
@@ -27,14 +28,20 @@ describe("Cloudflare voice quota accounting", () => {
         VOICE_REALTIME_ELIZA_AUTHORIZATION: "synthetic-unused-auth",
         TWILIO_AUTH_TOKEN: "synthetic-unused-twilio",
       },
-      durableObjects: binding
-        ? {
-            VOICE_USAGE_STATE: {
-              className: "VoiceUsageState",
-              useSQLite: true,
-            },
-          }
-        : {},
+      durableObjects: {
+        AUTHENTICATION_STATE: {
+          className: "AuthenticationState",
+          useSQLite: true,
+        },
+        ...(binding
+          ? {
+              VOICE_USAGE_STATE: {
+                className: "VoiceUsageState",
+                useSQLite: true,
+              },
+            }
+          : {}),
+      },
       durableObjectsPersist: directory,
       outboundService: () => {
         throw new Error("Unexpected external I/O in voice quota test");

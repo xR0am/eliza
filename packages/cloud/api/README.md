@@ -55,6 +55,17 @@ activation. Private imports reject conflicts and close permanently once the
 organization/day owner serves an ordinary operation. Speech providers and other
 Redis state are separate migration work.
 
+Authentication nonces, token revocations, voice session mappings and connection claims can use the
+private `AUTHENTICATION_STATE` Durable Object binding with
+protected deployment variable `CLOUD_AUTH_STATE_BACKEND=cloudflare`. The
+canonical release validates this selection. The default remains `redis` until a
+quiesced transfer preserves each live key's original expiration. A missing
+selected binding fails closed; the host never falls back to Redis after activation.
+The operator-only private-binding import preserves absolute expirations, rejects
+conflicts, and closes permanently for a shard once it serves an auth operation.
+Finish and verify imports before sending normal reads or writes to the target.
+This does not replace rate limits, gateway queues, or other Redis state.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
