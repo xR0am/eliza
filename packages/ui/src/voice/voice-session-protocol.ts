@@ -338,3 +338,28 @@ export function negotiateCodec(
   if (offered.includes(preferred)) return preferred;
   return offered[0] ?? null;
 }
+      userMessageId?: string;
+  if (t === "reply_complete") {
+    const frame = parsed as Record<string, unknown>;
+    if (
+      typeof frame.traceId !== "string" ||
+      !frame.traceId ||
+      frame.traceId.length > 256
+    )
+      return null;
+    if (
+      frame.userMessageId !== undefined &&
+      (typeof frame.userMessageId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          frame.userMessageId,
+        ))
+    )
+      return null;
+    return {
+      t,
+      traceId: frame.traceId,
+      ...(typeof frame.userMessageId === "string"
+        ? { userMessageId: frame.userMessageId }
+        : {}),
+    };
+  }

@@ -454,3 +454,14 @@ export const EDGE_BACKUP_VOICES: VoicePreset[] = [
     previewUrl: "",
   },
 ];
+  /** Current bound user preference; never grants system or provider permissions. */
+  agentActionMode?: "direct-request-v1";
+  }
+  if (source.agentActionMode !== undefined) {
+    if (
+      source.agentActionMode !== "direct-request-v1" ||
+      result.viewDelivery !== "completed-action" ||
+      !result.uiClientId
+    )
+      return null;
+    result.agentActionMode = "direct-request-v1";
