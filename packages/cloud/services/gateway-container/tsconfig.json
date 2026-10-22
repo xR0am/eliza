@@ -7,7 +7,9 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["@cloudflare/workers-types", "node", "bun-types"],
-    "lib": ["ES2022"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "customConditions": ["eliza-source"],
+    "allowImportingTsExtensions": true
   },
   "include": ["cloudflare/*.ts"]
 }

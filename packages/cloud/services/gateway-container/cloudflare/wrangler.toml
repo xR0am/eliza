@@ -21,6 +21,14 @@ new_sqlite_classes = ["NetworkConsentState"]
 tag = "v3-delivery-receipts"
 new_sqlite_classes = ["DeliveryReceiptState"]
 
+[[migrations]]
+tag = "v4-webhook-ingress"
+new_sqlite_classes = ["WebhookIngressState"]
+
+[[migrations]]
+tag = "v5-discord-welcome"
+new_sqlite_classes = ["DiscordWelcomeState"]
+
 [env.webhook-staging]
 name = "eliza-gateway-webhook-staging"
 
@@ -38,6 +46,10 @@ image = "../../gateway-webhook/Dockerfile"
 image_build_context = "../../../../.."
 max_instances = 1
 instance_type = "standard-1"
+
+[[env.webhook-staging.durable_objects.bindings]]
+name = "WEBHOOK_INGRESS_STATE"
+class_name = "WebhookIngressState"
 
 [[env.webhook-staging.durable_objects.bindings]]
 name = "DELIVERY_RECEIPT_STATE"
@@ -70,6 +82,10 @@ max_instances = 1
 instance_type = "standard-1"
 
 [[env.webhook-production.durable_objects.bindings]]
+name = "WEBHOOK_INGRESS_STATE"
+class_name = "WebhookIngressState"
+
+[[env.webhook-production.durable_objects.bindings]]
 name = "DELIVERY_RECEIPT_STATE"
 class_name = "DeliveryReceiptState"
 
@@ -100,6 +116,10 @@ max_instances = 1
 instance_type = "standard-1"
 
 [[env.discord-staging.durable_objects.bindings]]
+name = "DISCORD_WELCOME_STATE"
+class_name = "DiscordWelcomeState"
+
+[[env.discord-staging.durable_objects.bindings]]
 name = "DELIVERY_RECEIPT_STATE"
 class_name = "DeliveryReceiptState"
 
@@ -124,6 +144,10 @@ image = "../../gateway-discord/Dockerfile"
 image_build_context = "../../../../.."
 max_instances = 1
 instance_type = "standard-1"
+
+[[env.discord-production.durable_objects.bindings]]
+name = "DISCORD_WELCOME_STATE"
+class_name = "DiscordWelcomeState"
 
 [[env.discord-production.durable_objects.bindings]]
 name = "DELIVERY_RECEIPT_STATE"

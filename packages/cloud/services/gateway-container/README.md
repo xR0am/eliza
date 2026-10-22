@@ -50,3 +50,27 @@ only after old writers stop. Import fingerprints survive expiry; serving closes
 imports permanently. Expiry alarms remove receipt values. Public access requires
 the dedicated credential and cannot import state. Each endpoint accepts only its gateway kind’s key namespace. Ingress holds and
 Discord queues still use their existing stores.
+
+Webhook ingress uses `WEBHOOK_INGRESS_STATE` when
+`CLOUD_WEBHOOK_INGRESS_BACKEND=cloudflare`. Set `WEBHOOK_INGRESS_URL` to this
+Worker's HTTPS `/internal/webhook-ingress` endpoint and `WEBHOOK_INGRESS_TOKEN`
+in its runtime configuration. One environment-local transaction owner keeps
+dedup markers, Telegram chunk receipts, held payloads, retry scores, and leases
+consistent. Only these audited key prefixes and hold operations move; routing,
+configuration, and other stores retain their existing authority. Redis is the
+default. Stop and drain all old writers before privately importing the complete
+key/value snapshot with original absolute expiries (null means persistent) and
+the complete retry index. Conflicting imports fail, and any serving operation
+permanently closes import. Public requests cannot import or access other keys.
+
+Discord install-welcome queues use `DISCORD_WELCOME_STATE` with
+`CLOUD_DISCORD_WELCOME_BACKEND=cloudflare`, `DISCORD_WELCOME_URL` pointing to
+this Worker's HTTPS `/internal/discord-welcome`, and `DISCORD_WELCOME_TOKEN` in
+runtime configuration. Redis remains the default. Before switching, stop the
+old bot owner and wait for its queue to drain, then privately import both lists
+in Redis left-to-right order and all retained delivered markers with their
+original absolute expiry (null means persistent). Complete raw job values and
+list duplicates are retained. Public operations cannot import. Serving closes
+imports permanently; the existing managed bot still owns queue start/stop and
+Discord nonce deduplication. Other Discord leases and routing state remain on
+their configured stores.

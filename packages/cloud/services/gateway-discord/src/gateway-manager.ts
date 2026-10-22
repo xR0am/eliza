@@ -29,6 +29,7 @@ import {
   HTTP_TIMEOUT_MS,
   sendCloudUpdate,
 } from "./cloud-rest";
+import { discordWelcomeStore } from "./cloudflare-welcome-store";
 import { reconcileDiscordConnectionReady } from "./connection-lifecycle";
 import {
   type DiscordInstallWelcomeJob,
@@ -452,7 +453,7 @@ export class GatewayManager {
     const elizaAppBotToken = process.env.ELIZA_APP_DISCORD_BOT_TOKEN?.trim();
     if (elizaAppEnabled && elizaAppBotToken && this.redis) {
       this.installWelcomeQueue = new DiscordInstallWelcomeQueue(
-        this.redis,
+        discordWelcomeStore(this.redis),
         elizaAppBotToken,
       );
     }
