@@ -212,8 +212,34 @@
     // MutationObserver microtask. Never store or return form values in this monitor.
     monitor.recordMutations(monitor.observer.takeRecords());
     const bounds = (node) => {
+      if (node === document.scrollingElement)
+        return { x: 0, y: 0, width: innerWidth, height: innerHeight };
       const rect = node.getBoundingClientRect();
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    };
+    const scrollState = (node) => {
+      const root = node === document.scrollingElement;
+      const style = getComputedStyle(node);
+      const width = root ? innerWidth : node.clientWidth;
+      const height = root ? innerHeight : node.clientHeight;
+      const horizontal =
+        (root || /^(auto|scroll)$/.test(style.overflowX)) &&
+        node.scrollWidth > width;
+      const vertical =
+        (root || /^(auto|scroll)$/.test(style.overflowY)) &&
+        node.scrollHeight > height;
+      if (!horizontal && !vertical) return null;
+      const rangeX = horizontal ? node.scrollWidth - width : 0;
+      return {
+        x: node.scrollLeft,
+        y: node.scrollTop,
+        minX: style.direction === "rtl" ? -rangeX : 0,
+        maxX: style.direction === "rtl" ? 0 : rangeX,
+        maxY: vertical ? node.scrollHeight - height : 0,
+        width,
+        height,
+        document: root,
+      };
     };
     const viewport = () => ({
       width: innerWidth,
@@ -469,6 +495,8 @@
       // is skipped by its ancestor, so a large page stays linear.
       const custom = new Set();
       const candidates = [];
+      if (document.scrollingElement && scrollState(document.scrollingElement))
+        candidates.push(document.scrollingElement);
       for (const node of (
         document.body ?? document.documentElement
       ).querySelectorAll("*")) {
@@ -476,6 +504,7 @@
           candidates.push(node);
           continue;
         }
+        const scrollable = scrollState(node) !== null;
         if (
           !(
             node.matches('[onclick],[tabindex]:not([tabindex="-1"])') ||
@@ -484,8 +513,10 @@
           ) ||
           node.closest(NATIVE) ||
           node.querySelector(NATIVE)
-        )
+        ) {
+          if (scrollable) candidates.push(node);
           continue;
+        }
         let inside = false;
         for (
           let item = node.parentElement;
@@ -493,7 +524,10 @@
           item = item.parentElement
         )
           inside = custom.has(item);
-        if (inside) continue;
+        if (inside) {
+          if (scrollable) candidates.push(node);
+          continue;
+        }
         custom.add(node);
         candidates.push(node);
       }
@@ -550,6 +584,7 @@
       // task action on it after the person agrees; the page guard checks the
       // match again at the moment of the action.
       const uniqueSelector = (node) => {
+        if (node === document.documentElement) return "html";
         const unique = (selector) => {
           try {
             return (
@@ -598,10 +633,15 @@
         if (!node.checkVisibility({ checkVisibilityCSS: true })) continue;
         const id = String(nodes.size);
         const geometry = bounds(node);
+        const scroll = scrollState(node);
+        const scrollOnly =
+          !!scroll && !node.matches(NATIVE) && !custom.has(node);
         // This equality sentinel never leaves the isolated page realm.
         nodes.set(id, {
           node,
           bounds: geometry,
+          scroll,
+          scrollOnly,
           value: typeof node.value === "string" ? node.value : null,
           selection:
             node instanceof HTMLSelectElement ? node.selectedIndex : null,
@@ -614,7 +654,14 @@
           id,
           tag: node.tagName.toLowerCase(),
           role: node.getAttribute("role"),
-          label: withoutSecrets(accessibleName(node)),
+          label: withoutSecrets(
+            scrollOnly
+              ? scroll.document
+                ? "Page"
+                : groupName(node) || "Scrollable region"
+              : accessibleName(node),
+          ),
+          ...(scroll ? { scroll, scrollOnly } : {}),
           type: node.getAttribute("type"),
           ...state,
           description: withoutSecrets(state.description),
@@ -759,7 +806,8 @@
       recorded.value !== (typeof node.value === "string" ? node.value : null) ||
       recorded.selection !==
         (node instanceof HTMLSelectElement ? node.selectedIndex : null) ||
-      JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node))
+      JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node)) ||
+      JSON.stringify(recorded.scroll) !== JSON.stringify(scrollState(node))
     )
       return {
         error: {
@@ -768,6 +816,20 @@
             "The referenced page element changed; read a fresh snapshot.",
         },
       };
+    if (recorded.scrollOnly && command.subaction !== "scroll") return denied();
+    if (command.subaction === "scroll") {
+      const scroll = scrollState(node);
+      if (
+        !scroll ||
+        !{
+          up: scroll.y > 0,
+          down: scroll.y < scroll.maxY,
+          left: scroll.x > scroll.minX,
+          right: scroll.x < scroll.maxX,
+        }[command.direction]
+      )
+        return denied();
+    }
     if (policy) {
       // The native host supplies reviewed target permissions; DOM text cannot
       // grant an action. Re-check the actual node immediately before the effect.
@@ -894,7 +956,10 @@
       feedback.markActed();
     }
     delete globalThis[key];
-    if (policy && ["click", "fill", "select"].includes(command.subaction)) {
+    if (
+      policy &&
+      ["click", "fill", "select", "scroll"].includes(command.subaction)
+    ) {
       // A task fill or click must not submit a form or leave the page, also
       // not through the page's own script (an auto-submitting code field, or
       // a button that calls form.submit()). For 30 seconds, or until the next
@@ -1247,6 +1312,9 @@
     )
       return fail("stale-observation");
     const target = snapshot.nodes.get(request.nodeId)?.node;
+    const scrollGuide =
+      request.action === "scroll" ||
+      snapshot.nodes.get(request.nodeId)?.scrollOnly === true;
     if (!target?.isConnected || target.getRootNode() !== document)
       return fail("missing-target");
     // Controls the label must not cover, for example the button she presses
@@ -1271,7 +1339,11 @@
     // A step whose control is outside the visible page brings it into view, so
     // the guide never waits unseen. An action guide never scrolls: the action
     // needs the page exactly as observed.
-    const placed = target.getBoundingClientRect();
+    const targetRect = () =>
+      target === document.scrollingElement
+        ? new DOMRect(0, 0, innerWidth, innerHeight)
+        : target.getBoundingClientRect();
+    const placed = targetRect();
     const view0 = window.visualViewport;
     const placement =
       placed.width <= 0 ||
@@ -1723,7 +1795,7 @@
         frame = requestAnimationFrame(update);
         return;
       }
-      const rect = target.getBoundingClientRect();
+      const rect = targetRect();
       const view = {
         left: viewport?.offsetLeft ?? 0,
         top: viewport?.offsetTop ?? 0,
@@ -1784,6 +1856,7 @@
         const height = label.getBoundingClientRect().height,
           width = label.getBoundingClientRect().width;
         const candidates = [
+          ...(scrollGuide ? [{ x: view.left + 8, y: view.top + 8 }] : []),
           { x: rect.left, y: rect.bottom + 22, tail: "" },
           { x: rect.left, y: rect.top - height - 22, tail: "up" },
           { x: rect.right + 22, y: rect.top },
@@ -1806,7 +1879,7 @@
               p.y >= view.top + 8 &&
               p.y + height <= view.top + view.height - 8 &&
               [
-                rect,
+                ...(scrollGuide ? [] : [rect]),
                 ...clear.map((node) => node.getBoundingClientRect()),
               ].every(
                 (avoid) =>
