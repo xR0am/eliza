@@ -6,6 +6,7 @@ import { createServer } from "node:https";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLocalAgentGateway } from "../../../packages/agent/native-host/gateway.mjs";
 import { createSurfaceCommandChannel } from "../../../packages/agent/native-host/surface-channel.mjs";
@@ -13,6 +14,7 @@ import { connectSurfaceCommandClient } from "../../../packages/agent/native-host
 import { buildTaskRuntime } from "../../../packages/app/scripts/build-consumer-task-runtime.mjs";
 import { createSurfaceTaskHandler } from "../../../packages/os/browser/src/surface-task-handler.mjs";
 import {
+  GuidedWebsiteWorkflow,
   pageControls,
   pageView,
 } from "../../plugin-personal-assistant/native-host/guided-website-workflow.mjs";
@@ -58,9 +60,12 @@ const sourceCommit = execFileSync(
 ).trim();
 const runtimeModule = join(certificates, "task-runtime.mjs");
 buildTaskRuntime(runtimeModule, { sourceRoot, sourceCommit });
-const { NativeSurfaceBrowserTarget, NativeTaskActuator } = await import(
-  pathToFileURL(runtimeModule).href
-);
+const {
+  NativeSurfaceBrowserTarget,
+  NativeTaskActuator,
+  InteractiveTaskRuntime,
+  SqliteInteractiveTaskStore,
+} = await import(pathToFileURL(runtimeModule).href);
 const server = createServer(
   {
     key: await readFile(join(certificates, "key.pem")),
@@ -696,6 +701,170 @@ try {
     await page.$eval("output", (node) => node.textContent),
     "6",
     "Cleanup failure must not hide the real effect",
+  );
+  // Drive the shared planned-action workflow through the real durable task
+  // runtime, HTTP transport and DOM. The deterministic planner is not LLM proof.
+  failCleanup = false;
+  const db = new DatabaseSync(join(certificates, "planned-actions.sqlite"));
+  db.exec("PRAGMA synchronous=FULL");
+  let workflow,
+    runtime,
+    bindingRevision = 2,
+    permitted = false;
+  const plannedActuator = new NativeTaskActuator({
+    target: surfaceTarget,
+    getTask: (id) => runtime.get(id),
+    policy: (current) => ({
+      tabId: pageId,
+      origin,
+      leaseMs: 60000,
+      targets: workflow?.actionTargets(current) ?? [],
+    }),
+    nextBindingRevision: () => ++bindingRevision,
+    resolveValue: async (ref) => {
+      assert.equal(ref, "public-german");
+      return "German";
+    },
+    verify: async (proposal, before, after) =>
+      proposal.capability === "browser.select"
+        ? after.elements
+            .find((e) => e.targetSelector === "#language")
+            ?.options.find((o) => o.selected)?.label === "German"
+          ? "succeeded"
+          : "unknown"
+        : before.text.includes("6") && after.text.includes("7")
+          ? "succeeded"
+          : "unknown",
+    recordEvidence: async () => "fixture-planned-action-readback",
+  });
+  runtime = new InteractiveTaskRuntime({
+    owner,
+    store: new SqliteInteractiveTaskStore(db),
+    actuator: plannedActuator,
+  });
+  let plannedTask = runtime.create({
+    id: "planned-native-flow",
+    goalRef: "select-and-click",
+    allowedOrigins: [origin],
+    allowedCapabilities: ["browser.select", "browser.click"],
+    authorization: {
+      decisionId: "planned-authority",
+      policyRevision: "fixture-v1",
+      state: "active",
+      decidedAt: new Date().toISOString(),
+      revokedAt: null,
+    },
+  });
+  workflow = new GuidedWebsiteWorkflow({
+    runtime,
+    actuator: plannedActuator,
+    taskId: plannedTask.id,
+    authorizeAction: () => permitted,
+    planStep: ({ page: view }) => {
+      const choice = view.controls.find((c) => c.options);
+      if (!choice.options.some((o) => o.label === "German" && o.selected))
+        return {
+          status: "act",
+          kind: "agent-action",
+          action: "select",
+          ref: choice.ref,
+          valueRef: "public-german",
+          message: "Choose German",
+        };
+      if (!view.text.includes("7"))
+        return {
+          status: "act",
+          kind: "agent-action",
+          action: "click",
+          ref: view.controls.find((c) => c.label === "Increment").ref,
+          message: "Increment once",
+        };
+      return { status: "done", message: "Observed both requested changes" };
+    },
+  });
+  try {
+    plannedTask = await runtime.observe(
+      plannedTask.id,
+      plannedTask.revision,
+      false,
+    );
+    assert.equal(
+      (await workflow.refresh()).kind,
+      "blocked",
+      "A model plan cannot grant action authority",
+    );
+    const lifetime = new AbortController();
+    workflow.signal = lifetime.signal;
+    let entered;
+    const checking = new Promise((resolve) => {
+      entered = resolve;
+    });
+    workflow.authorizeAction = () => {
+      entered();
+      return new Promise(() => {});
+    };
+    const waiting = workflow.refresh();
+    await checking;
+    const beforePause = runtime.get(plannedTask.id);
+    runtime.control(beforePause.id, beforePause.revision, "pause");
+    lifetime.abort();
+    await assert.rejects(waiting, /authorization changed/i);
+    await runtime.settle(plannedTask.id);
+    assert.equal(
+      runtime.get(plannedTask.id).operations.length,
+      0,
+      "Aborted policy work cannot dispatch",
+    );
+    workflow.signal = new AbortController().signal;
+    workflow.authorizeAction = (_input, context) => {
+      assert.equal(context.signal, workflow.signal);
+      assert.equal(context.taskId, plannedTask.id);
+      return permitted;
+    };
+    const paused = runtime.get(plannedTask.id);
+    await runtime.observe(paused.id, paused.revision, true);
+    permitted = true;
+    let decision = await workflow.refresh();
+    assert.equal(decision.kind, "agent-action");
+    permitted = false;
+    assert.equal(
+      (await workflow.executeAction(decision.offerKey)).kind,
+      "blocked",
+    );
+    assert.equal(
+      runtime.get(plannedTask.id).operations.length,
+      0,
+      "Revoked host permission prevents dispatch",
+    );
+    permitted = true;
+    decision = await workflow.refresh();
+    await page.select("#language", "opaque-en");
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(
+      await page.$eval("#language", (n) => n.selectedOptions[0].label),
+      "English",
+      "A changed page is replanned without an effect",
+    );
+    assert.equal(runtime.get(plannedTask.id).operations.length, 0);
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(
+      await page.$eval("#language", (n) => n.selectedOptions[0].label),
+      "German",
+    );
+    assert.equal(decision.kind, "agent-action");
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(decision.kind, "done");
+    assert.equal(await page.$eval("output", (n) => n.textContent), "7");
+    assert.deepEqual(
+      runtime.get(plannedTask.id).operations.map((o) => o.status),
+      ["succeeded", "succeeded"],
+    );
+  } finally {
+    await plannedActuator.quiesce({ owner, taskId: plannedTask.id });
+    db.close();
+  }
+  console.log(
+    "PASS: planned select and click through durable SQLite task runtime, host permission withdrawal and stale-page replan without dispatch",
   );
   await taskHandler.close();
   console.log(
