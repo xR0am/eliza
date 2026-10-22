@@ -66,8 +66,15 @@ export function readBundleAsrProvenanceBlockers(bundleRoot: string): string[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
-	} catch {
-		return [];
+	} catch (error) {
+		// A bundle without an Eliza-1 manifest is legitimately non-strict.
+		// A manifest that exists but cannot be read or parsed is not "no
+		// provenance": surface it instead of claiming there are no blockers.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw new Error(
+			`failed to read ASR provenance manifest at ${manifestPath}`,
+			{ cause: error },
+		);
 	}
 	if (!claimsStrictRelease(parsed, { allowVersionStaging: true })) return [];
 	return collectQwenAsrProvenanceBlockers(parsed);

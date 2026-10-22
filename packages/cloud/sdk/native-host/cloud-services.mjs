@@ -1471,7 +1471,7 @@ export function createCloudRoutes({
         return true;
       }
       const nativeMatch = path.match(
-        /^\/cloud\/native\/(config|start|verify|mfa|resume|cancel)$/,
+        /^\/cloud\/native\/(config|start|verify|mfa|resume|cancel|google\/return)$/,
       );
       if (
         nativeMatch &&
@@ -1480,14 +1480,21 @@ export function createCloudRoutes({
       ) {
         if (!nativeAuth)
           throw fail(message("nativeAccountStorageIsUnavailable"), 503);
-        const operation = nativeMatch[1],
+        // `google/return` relays the app-owned Google return address; the
+        // private attempt checks its state and callback binding.
+        const operation =
+            nativeMatch[1] === "google/return"
+              ? "google-return"
+              : nativeMatch[1],
           input = method === "POST" ? await body(req, 4096) : {};
         const fields =
           operation === "start"
             ? ["email", "phone", "method"]
             : ["verify", "mfa"].includes(operation)
               ? ["sessionId", "code"]
-              : [];
+              : operation === "google-return"
+                ? ["callbackUrl"]
+                : [];
         if (Object.keys(input).some((key) => !fields.includes(key)))
           throw fail(message("unexpectedSignInFields"));
         if (operation === "cancel") {
@@ -1544,8 +1551,7 @@ export function createCloudRoutes({
         if (!attempt.poll)
           attempt.poll = (async () => {
             if (verifiedAccountStore) throw verifiedRequired();
-            if (attempt.authenticated)
-              return { status: "authenticated", connected: true };
+            if (attempt.authenticated) return attempt.authenticated;
             // The provider result is single-use: finish private persistence even if
             // the browser closes its polling request during navigation.
             const value = await parse(
@@ -1566,8 +1572,16 @@ export function createCloudRoutes({
                 await store.write(value.apiKey);
               });
               current(attempt.generation);
-              attempt.authenticated = true;
-              return { status: "authenticated", connected: true };
+              // Cloud says whether this sign-in made the account. An older Cloud
+              // sends no flag, and the reply then has no `created`.
+              attempt.authenticated = {
+                status: "authenticated",
+                connected: true,
+                ...(typeof value.accountCreated === "boolean"
+                  ? { created: value.accountCreated }
+                  : {}),
+              };
+              return attempt.authenticated;
             }
             return {
               status: ["pending", "expired", "error"].includes(value.status)

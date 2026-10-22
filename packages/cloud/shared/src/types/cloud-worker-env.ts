@@ -723,7 +723,11 @@ export interface Variables {
   apiKeyId?: string;
   /** Registered app that issued a mobile lifecycle credential. */
   apiKeySourceAppId?: string;
-  /** The Steward session of this request made a new Cloud user and organization. */
+  /**
+   * The Steward session of this request made the Cloud user's organization: this
+   * request created it, or it was created after the session was issued. Set
+   * server-side only, so retries of one sign-in get the same answer.
+   */
   stewardAccountCreated?: true;
 }
 

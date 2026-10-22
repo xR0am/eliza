@@ -1086,7 +1086,14 @@ function buildRuntimeActionNameLookup(
   }
   return lookup;
 }
-function readRuntimeActionResults(
+/**
+ * Returns the action results recorded for `messageId`, or `[]` when the caller
+ * asked about no message or the runtime exposes no reader. A reader that throws
+ * rejects with `ElizaError` (`ACTION_RESULTS_READ_FAILED`) rather than
+ * resolving `[]`: downstream `[]` means "no action succeeded", so a failed read
+ * would be reported as unexecuted model actions instead of a read failure.
+ */
+export function readRuntimeActionResults(
   runtime: AgentRuntime,
   messageId: UUID | undefined,
 ): unknown[] {
@@ -1102,9 +1109,18 @@ function readRuntimeActionResults(
     return [];
   }
   try {
-    return getActionResults(messageId);
-  } catch {
-    return [];
+    // AgentRuntime.getActionResults reads `this.stateCache`; keep the receiver.
+    return getActionResults.call(runtime, messageId);
+  } catch (error) {
+    // error-policy:J2 context-adding rethrow — downstream `[]` means "no
+    // action succeeded", so swallowing a read failure would make the route
+    // fail a completed turn closed with a false "actions were not executed"
+    // reply instead of reporting the read failure.
+    throw new ElizaError("Failed to read action results for message", {
+      code: "ACTION_RESULTS_READ_FAILED",
+      cause: error,
+      context: { messageId },
+    });
   }
 }
 function readActionResultName(result: unknown): string {

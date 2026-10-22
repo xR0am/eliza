@@ -108,6 +108,26 @@ describe("bundle ASR provenance", () => {
 
 		expect(readBundleAsrProvenanceBlockers(root)).toHaveLength(1);
 	});
+
+	it("propagates a corrupt manifest instead of reporting no provenance blockers", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "eliza-asr-provenance-"));
+		roots.push(root);
+		writeFileSync(
+			path.join(root, "eliza-1.manifest.json"),
+			'{"defaultEligible":true,',
+		);
+
+		expect(() => readBundleAsrProvenanceBlockers(root)).toThrow(
+			/failed to read ASR provenance manifest/,
+		);
+	});
+
+	it("treats a missing manifest as no provenance claim", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "eliza-asr-provenance-"));
+		roots.push(root);
+
+		expect(readBundleAsrProvenanceBlockers(root)).toEqual([]);
+	});
 });
 
 describe("bundle ASR artifacts", () => {

@@ -177,6 +177,39 @@ test("evidence persists only host-projected fields with private permissions and 
   await helper.close();
 });
 
+test("a host evidence codec encodes each record under its own extension", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(
+    createConfiguredBillHelper({
+      ...f.args,
+      evidenceCodec: { extension: "sealed", encode: (text) => text },
+    }),
+    /Invalid bill evidence codec/,
+  );
+  f.args.evidenceCodec = {
+    extension: ".sealed",
+    encode: (text) => `sealed:${Buffer.from(text).toString("base64url")}`,
+  };
+  const helper = await createConfiguredBillHelper(f.args);
+  const task = { id: "task", owner: { actorId: "owner" }, goalRef: "goal" };
+  const ref = await f.options.recordEvidence(task, {}, {}, {}, "observed");
+  const [file] = await readdir(f.args.evidenceDirectory);
+  assert.equal(file, `${ref.slice("evidence:".length)}.sealed`);
+  const stored = await readFile(join(f.args.evidenceDirectory, file), "utf8");
+  assert.doesNotMatch(stored, /observed|task/);
+  assert.deepEqual(
+    JSON.parse(
+      Buffer.from(stored.slice("sealed:".length), "base64url").toString(),
+    ),
+    { taskId: "task", status: "observed" },
+  );
+  assert.equal(
+    (await stat(join(f.args.evidenceDirectory, file))).mode & 0o777,
+    0o600,
+  );
+  await helper.close();
+});
+
 test("nonprivate evidence directory rejects startup before native connection", async (t) => {
   const f = await fixture(t);
   f.args.evidenceDirectory = f.root;
