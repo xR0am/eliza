@@ -107,6 +107,24 @@ export class BrowserSurfaceWeb
   async goBack(_options: SurfaceIdOptions): Promise<void> {
     throw this.unavailable(UNAVAILABLE);
   }
+  async goForward(_options: SurfaceIdOptions): Promise<void> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async answerDialog(
+    _options: Parameters<ElizaSurfaceManagerPlugin["answerDialog"]>[0],
+  ): Promise<void> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async openExternalLink(
+    _options: SurfaceIdOptions & { url: string },
+  ): Promise<{ status: "dispatched" }> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async setTextZoom(
+    _options: SurfaceIdOptions & { percent: number },
+  ): Promise<void> {
+    throw this.unavailable(UNAVAILABLE);
+  }
   async readPage(
     _options: SurfaceIdOptions & { selector?: string },
   ): Promise<NativePageRead> {

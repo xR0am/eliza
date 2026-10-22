@@ -78,8 +78,13 @@ export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
    * another origin (a cross-origin redirect included) is cancelled before any request and
    * reported as `navigationRequested`. The host loads it with `navigate()` once its own
    * check allows it. Non-web schemes and addresses with credentials are refused in this
-   * callback. POST form submissions and subframes are not intercepted. This is not a
-   * network filter. Default false: the page navigates by itself.
+   * callback. A main-frame request WebView sends without that callback (a POST form
+   * submission, a page's own history move) is answered locally with an empty 204 unless
+   * its origin is the committed page's or one the host approved through `navigate`,
+   * `createSurface`, `goBack` or `goForward`; it is reported with its `method` and never
+   * replayed. So a blocked host never receives the request. A tapped new window is
+   * reported with `newWindow: true`. Subframes are not intercepted. Default false: the
+   * page navigates by itself, and a tapped new window opens in place.
    */
   interceptNavigation?: boolean;
 }
@@ -92,6 +97,74 @@ export interface NavigationRequestedEvent extends SurfaceIdOptions {
   redirect: boolean;
   /** Whether the person's gesture started the navigation. */
   userGesture: boolean;
+  /** `GET`, or the method of a held submission. `navigate()` always loads with GET. */
+  method?: string;
+  /** A window the person tapped to open; it loads in this surface if allowed. */
+  newWindow?: boolean;
+}
+
+/**
+ * A JavaScript dialog (`alert`, `confirm`, `prompt`, leave-page) waiting for the host.
+ * The page is paused until `answerDialog`. Nothing is ever accepted for the person: a
+ * dialog of a hidden, closed or navigating surface is dismissed (cancelled).
+ */
+export interface DialogRequestedEvent extends SurfaceIdOptions {
+  dialogId: string;
+  kind: "alert" | "confirm" | "prompt" | "beforeunload";
+  /** Website text, plain and bounded. Show it as the website's words, never Grace's. */
+  message: string;
+  /** Prompt only: the page's suggested answer. */
+  defaultText?: string;
+  url: string | null;
+}
+
+/**
+ * The page asked for a file. Nothing is downloaded. `url` is http(s) only and can carry
+ * access tokens: keep it out of models, threads and logs.
+ */
+export interface DownloadRequestedEvent extends SurfaceIdOptions {
+  url: string | null;
+  fileName: string;
+  mimeType: string;
+  /** -1 when unknown. */
+  contentLength: number;
+  pdf: boolean;
+}
+
+/**
+ * A tapped link that belongs to another app (`tel:`, `mailto:`, `market:`, `intent:`).
+ * The page stays where it is. `openExternalLink` opens it after the host asks; `dial`
+ * only opens the dialer. `refuse` links cannot open; `fallbackUrl` is an https page an
+ * `intent:` link offered instead, which the host may check and `navigate` to.
+ */
+export interface ExternalLinkRequestedEvent extends SurfaceIdOptions {
+  url: string;
+  handoff: "send-to" | "dial" | "view" | "refuse";
+  fallbackUrl: string | null;
+}
+
+/**
+ * A sign-in page that refuses embedded WebViews (Google's `disallowed_useragent`,
+ * Facebook's OAuth dialog). It is not loaded; the host opens it in a full browser.
+ */
+export interface IdentityProviderRequestedEvent extends SurfaceIdOptions {
+  provider: "google" | "facebook";
+  url: string;
+}
+
+/**
+ * The page's renderer crashed or Android reclaimed it. The surface is already closed and
+ * its id is free; the host app keeps running. Recreate it to show `url` again.
+ */
+export interface SurfaceCrashedEvent extends SurfaceIdOptions {
+  didCrash: boolean;
+  url: string | null;
+}
+
+/** The on-screen keyboard opened or closed. `height` is in host CSS pixels. */
+export interface KeyboardChangedEvent {
+  visible: boolean;
+  height: number;
 }
 
 export interface SurfaceRect {
@@ -162,6 +235,16 @@ export interface SurfaceState {
   owner: string | null;
   session: string | null;
   epoch: number | null;
+  /** Android: the page title as plain bounded text. */
+  title?: string | null;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  /** Android: load progress, 0 to 100. */
+  progress?: number;
+  /** Android: the main-frame load error of the current page, if any. */
+  pageError?: string | null;
+  /** Android: text zoom in percent. */
+  textZoom?: number | null;
 }
 
 export interface SurfaceStateWithId extends SurfaceState {
@@ -248,6 +331,26 @@ export interface ElizaSurfaceManagerPlugin {
   reloadSurface(options: SurfaceIdOptions): Promise<void>;
   /** Move back in this surface's own history; never replays after a lost reply. */
   goBack(options: SurfaceIdOptions): Promise<void>;
+  /** Android: move forward in this surface's own history. */
+  goForward(options: SurfaceIdOptions): Promise<void>;
+  /** Android: answer a `dialogRequested` dialog once. `accept: false` cancels it. */
+  answerDialog(
+    options: SurfaceIdOptions & {
+      dialogId: string;
+      accept: boolean;
+      /** Prompt answer, at most 2000 characters. */
+      text?: string;
+    },
+  ): Promise<void>;
+  /**
+   * Android: open the other-app link the person just tapped (`externalLinkRequested`)
+   * with a fresh Intent. Rejects for any other address, and when no app handles it.
+   */
+  openExternalLink(
+    options: SurfaceIdOptions & { url: string },
+  ): Promise<{ status: "dispatched" }>;
+  /** Android: page text size in percent, 50 to 300 (100 is the page's own size). */
+  setTextZoom(options: SurfaceIdOptions & { percent: number }): Promise<void>;
   /**
    * Android isolated-world main-frame observation/input. Host-only: task policy
    * must come from the trusted task authorizer, never page or model output.
@@ -320,6 +423,30 @@ export interface ElizaSurfaceManagerPlugin {
   addListener(
     eventName: "navigationRequested",
     listener: (event: NavigationRequestedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "dialogRequested",
+    listener: (event: DialogRequestedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "downloadRequested",
+    listener: (event: DownloadRequestedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "externalLinkRequested",
+    listener: (event: ExternalLinkRequestedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "identityProviderRequested",
+    listener: (event: IdentityProviderRequestedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "surfaceCrashed",
+    listener: (event: SurfaceCrashedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "keyboardChanged",
+    listener: (event: KeyboardChangedEvent) => void,
   ): Promise<PluginListenerHandle>;
   /** Atomically hide all siblings, then present the requested surface or host. */
   presentSurface(options: PresentSurfaceOptions): Promise<void>;
