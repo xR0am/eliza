@@ -1,4 +1,3 @@
-import { deliveryReceiptStore } from "./delivery-receipts";
 /** Handles authenticated connector webhooks from verification through reply delivery. */
 
 import {
@@ -40,6 +39,7 @@ import {
   type HeldWebhookOutcome,
   holdWebhookForCutover,
 } from "./cutover-hold";
+import { deliveryReceiptStore } from "./delivery-receipts";
 import { tryConfirmIdentityLink } from "./identity-link";
 import { logger } from "./logger";
 import {

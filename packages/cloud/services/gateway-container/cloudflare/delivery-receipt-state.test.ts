@@ -288,7 +288,9 @@ test("Twilio replies retain imported and uncertain fences across restart without
     ),
   ).toBe("replayed");
   expect(sends).toBe(1);
-  expect(await store().get("reply:twilio:network:SMnative")).toEqual({
+  expect(
+    await store().get<Record<string, unknown>>("reply:twilio:network:SMnative"),
+  ).toEqual({
     state: "complete",
     providerMessageIds: ["SMfixture"],
   });
