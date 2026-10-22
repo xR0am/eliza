@@ -19,10 +19,11 @@ export interface VoiceUiContext {
   uiViewSubview?: string;
   uiTimeZone?: string;
   uiBrowserSurface?: "native";
+  /** Existing renderer claim/ack delivery protocol; not navigation authority. */
+  viewDelivery?: "completed-action";
   /** Same renderer routing ID used by its authenticated HTTP/WS client. */
   uiClientId?: string;
-  /** Host preference only; never grants system or provider permissions. */
-  viewDelivery?: "completed-action";
+  /** Current bound user preference; never grants system or provider permissions. */
   agentActionMode?: "direct-request-v1";
 }
 

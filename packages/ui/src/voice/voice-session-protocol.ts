@@ -18,6 +18,10 @@
  *   - Every server state event carries a `traceId`.
  */
 /** Wire protocol version. Bumped only on breaking control-frame changes. */
+import {
+  findViewActionHandoff,
+  type ViewActionHandoff,
+} from "@elizaos/core/protocol";
 import type { VoiceUiContext } from "@elizaos/host/protocol";
 export const VOICE_SESSION_PROTOCOL_VERSION = 1 as const;
 /** Uplink/downlink codecs negotiated in `hello`. */
@@ -66,12 +70,14 @@ export type ClientControlFrame =
   | ClientHelloFrame
   | ClientAudioMetaFrame
   | ClientAudioCapabilitiesFrame
+  | { t: "playback_complete"; traceId: string }
   | ClientBargeInFrame
   | ClientByeFrame;
 // ── Server -> client control / state events ────────────────────────────
 export interface ServerReadyEvent {
   t: "ready";
   uiContext?: boolean;
+  playbackCompletion?: boolean;
   sessionId: string;
   traceId: string;
 }
@@ -135,6 +141,9 @@ export interface ServerNavigateViewEvent {
   viewPath?: string;
   subview?: string;
   traceId: string;
+  completedActionHandoffId?: string;
+  navigationPrepared?: true;
+  navigationBinding?: ViewActionHandoff["navigationBinding"];
 }
 export type InterruptionReason = "acoustic" | "explicit";
 export interface ServerInterruptedEvent {
@@ -294,12 +303,39 @@ export function parseServerControl(raw: string): ServerControlFrame | null {
     ) {
       return null;
     }
+    const prepared =
+      Object.hasOwn(parsed, "navigationPrepared") ||
+      Object.hasOwn(parsed, "navigationBinding") ||
+      Object.hasOwn(parsed, "completedActionHandoffId");
+    const handoff = prepared
+      ? findViewActionHandoff([
+          {
+            actionName: "VIEWS_SHOW",
+            success: true,
+            values: { ...parsed, mode: "show" },
+          },
+        ])
+      : undefined;
+    if (
+      prepared &&
+      (!handoff?.navigationPrepared ||
+        !handoff.navigationBinding ||
+        !handoff.completedActionHandoffId)
+    )
+      return null;
     return {
       t,
       viewId,
       ...(viewPath ? { viewPath } : {}),
       ...(subview ? { subview } : {}),
       traceId,
+      ...(handoff?.navigationPrepared
+        ? {
+            navigationPrepared: true,
+            completedActionHandoffId: handoff.completedActionHandoffId,
+            navigationBinding: handoff.navigationBinding,
+          }
+        : {}),
     };
   }
   return parsed as ServerControlFrame;
