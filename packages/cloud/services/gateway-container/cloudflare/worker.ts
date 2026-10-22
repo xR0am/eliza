@@ -32,7 +32,10 @@ export class GatewayContainer extends Container<Env> {
       if (typeof value !== "string") {
         throw new Error("Gateway settings must be strings");
       }
-      if (!key.startsWith("RAILWAY_")) settings[key] = value;
+      // The image supplies its source marker; runtime settings cannot replace it.
+      if (!key.startsWith("RAILWAY_") && key !== "ELIZA_GATEWAY_SOURCE_SHA") {
+        settings[key] = value;
+      }
     }
     if (
       !["staging", "production"].includes(env.DEPLOYMENT_ENV) ||
