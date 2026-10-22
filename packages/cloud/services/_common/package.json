@@ -8,6 +8,7 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./network-consent": "./src/network-consent.ts",
     "./logger": "./src/logger.ts",
     "./blooio-environment": "./src/blooio-environment.ts",
     "./node": "./src/node.ts",

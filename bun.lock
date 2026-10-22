@@ -962,6 +962,7 @@
       "version": "1.0.0",
       "dependencies": {
         "@cloudflare/containers": "^0.3.7",
+        "@elizaos/cloud-services-common": "workspace:*",
       },
       "devDependencies": {
         "@biomejs/biome": "2.5.15",
@@ -969,6 +970,7 @@
         "@types/node": "22.19.17",
         "@typescript/native": "npm:typescript@^7.0.2",
         "bun-types": "1.4.2",
+        "miniflare": "4.20260730.0",
         "typescript": "^6.0.3",
       },
     },

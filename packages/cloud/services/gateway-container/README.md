@@ -25,3 +25,13 @@ secret. It returns source/environment/activation metadata and a nonce-bound dige
 never configuration values. Treat the digest as sensitive and do not log it.
 The proof works while inactive; health and container state must be checked
 separately before any traffic or ownership change.
+
+Consent can use the native `NETWORK_CONSENT_STATE` binding. Set
+`CLOUD_NETWORK_CONSENT_BACKEND=cloudflare`, `NETWORK_CONSENT_URL` to this
+Worker's HTTPS `/internal/network-consent` endpoint, and `NETWORK_CONSENT_TOKEN`
+in the runtime configuration. The endpoint works while the container is inactive.
+Only authenticated current-state reads and writes are public. Import the complete
+current projection and retained history through the private binding after all
+old writers stop. A serving read or write permanently closes imports for that
+project/address. Consent has no expiry; equal timestamps retain an opt-out.
+Other gateway state still requires its configured store.

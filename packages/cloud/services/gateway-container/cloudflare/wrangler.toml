@@ -13,6 +13,10 @@ enabled = true
 tag = "v1"
 new_sqlite_classes = ["GatewayContainer"]
 
+[[migrations]]
+tag = "v2-network-consent"
+new_sqlite_classes = ["NetworkConsentState"]
+
 [env.webhook-staging]
 name = "eliza-gateway-webhook-staging"
 
@@ -30,6 +34,10 @@ image = "../../gateway-webhook/Dockerfile"
 image_build_context = "../../../../.."
 max_instances = 1
 instance_type = "standard-1"
+
+[[env.webhook-staging.durable_objects.bindings]]
+name = "NETWORK_CONSENT_STATE"
+class_name = "NetworkConsentState"
 
 [[env.webhook-staging.durable_objects.bindings]]
 name = "GATEWAY"
@@ -52,6 +60,10 @@ image = "../../gateway-webhook/Dockerfile"
 image_build_context = "../../../../.."
 max_instances = 1
 instance_type = "standard-1"
+
+[[env.webhook-production.durable_objects.bindings]]
+name = "NETWORK_CONSENT_STATE"
+class_name = "NetworkConsentState"
 
 [[env.webhook-production.durable_objects.bindings]]
 name = "GATEWAY"
