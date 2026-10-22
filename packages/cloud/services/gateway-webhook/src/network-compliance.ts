@@ -17,7 +17,22 @@
  *    sender's ledger entry.
  */
 
-import type { ChatEvent, Platform } from "./adapters/types";
+import {
+  CONSENT_HISTORY_LIMIT,
+  cloudflareNetworkConsentLedger,
+  consentAddress,
+  type NetworkConsentEntry,
+  type NetworkConsentLedger,
+  parseConsentEntry,
+} from "@elizaos/cloud-services-common/network-consent";
+
+export {
+  consentAddress,
+  type NetworkConsentEntry,
+  type NetworkConsentLedger,
+} from "@elizaos/cloud-services-common/network-consent";
+
+import type { ChatEvent } from "./adapters/types";
 import type { GatewayRedis } from "./redis";
 
 export const NETWORK_PROJECT = "network";
@@ -123,72 +138,19 @@ export function detectNetworkKeyword(
   return null;
 }
 
-export interface NetworkConsentEntry {
-  project: string;
-  /** Service-owned app scope; absent/null is the shared line. */
-  app?: "ntwrk" | "slop" | "peon" | "friends" | null;
-  channel: Platform;
-  address: string;
-  state: "opted_in" | "opted_out";
-  /** `keyword:STOP`, `keyword:START`, `invite_acceptance`, `admin`, ... */
-  source: string;
-  providerMessageId?: string;
-  at: string;
-}
-
-/** Current consent state per (project, address), plus an append-only history. */
-export interface NetworkConsentLedger {
-  current(
-    project: string,
-    address: string,
-    app?: NetworkConsentEntry["app"],
-  ): Promise<NetworkConsentEntry | null>;
-  record(entry: NetworkConsentEntry): Promise<void>;
-}
-
-const CONSENT_HISTORY_LIMIT = 200;
-
-/** Addresses are phone numbers or handles; case and whitespace never matter. */
-export function consentAddress(address: string): string {
-  return address.trim().toLowerCase();
-}
-
-function parseConsentEntry(value: unknown): NetworkConsentEntry | null {
-  let candidate = value;
-  if (typeof candidate === "string") {
-    try {
-      candidate = JSON.parse(candidate);
-    } catch {
-      // error-policy:J3 an unreadable ledger row is treated as no consent row.
-      return null;
-    }
-  }
-  if (!candidate || typeof candidate !== "object") return null;
-  const entry = candidate as Record<string, unknown>;
-  if (
-    typeof entry.project !== "string" ||
-    typeof entry.address !== "string" ||
-    (entry.state !== "opted_in" && entry.state !== "opted_out") ||
-    typeof entry.source !== "string" ||
-    typeof entry.at !== "string" ||
-    !Number.isFinite(Date.parse(entry.at)) ||
-    (entry.app !== undefined &&
-      entry.app !== null &&
-      !["ntwrk", "slop", "peon", "friends"].includes(String(entry.app)))
-  ) {
-    return null;
-  }
-  return entry as unknown as NetworkConsentEntry;
-}
-
 /**
- * Redis-backed ledger. The current-state key has no TTL (consent must not
+ * Selected consent ledger (Redis by default). Current state has no TTL (consent must not
  * silently expire); the history list keeps the latest entries per address.
  * Postgres `network.consent_ledger` (migration 0474) is the durable audit copy.
  */
 export function redisNetworkConsentLedger(
   redis: GatewayRedis,
 ): NetworkConsentLedger {
+  const backend = process.env.CLOUD_NETWORK_CONSENT_BACKEND ?? "redis";
+  if (backend === "cloudflare")
+    return cloudflareNetworkConsentLedger(process.env);
+  if (backend !== "redis")
+    throw new Error("Invalid CLOUD_NETWORK_CONSENT_BACKEND");
   const currentKey = (
     project: string,
     address: string,
