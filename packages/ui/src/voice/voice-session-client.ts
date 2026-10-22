@@ -534,8 +534,12 @@ export function createVoiceSessionClient(
         // A retired renderer cannot keep an apparently live mic while every
         // packet is discarded. Do not retry through a changed owner/context.
         mark("not_reached(voice_context_changed)", state.traceId);
-        emitError(new Error("Voice context changed. Start voice again."));
-        void stop();
+        try {
+          emitError(new Error("Voice context changed. Start voice again."));
+        } finally {
+          // UI error reporting must not retain a retired microphone.
+          void stop();
+        }
         return;
       }
     }
@@ -768,7 +772,13 @@ export function createVoiceSessionClient(
           }
         },
         onError: (err) => {
-          if (currentCapture()) emitError(err);
+          if (!currentCapture()) return;
+          try {
+            emitError(err);
+          } finally {
+            // A failed UI error callback must not retain a live microphone.
+            void stop();
+          }
         },
         getUserMedia: options.getUserMedia,
         createAudioContext: options.createMicAudioContext,
