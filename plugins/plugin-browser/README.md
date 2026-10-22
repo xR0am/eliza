@@ -60,6 +60,25 @@ Android accessibility is a foreground-only fallback when the native profile is
 unavailable before dispatch. Desktop workspace autofill requires prior per-domain
 vault authorization and does not silently fill remote device profiles.
 
+## Embedded native pages
+
+`NativeSurfaceBrowserTarget` accepts an authenticated surface command channel.
+It supplies the existing `NativeTaskActuator` with the current selected page,
+task binding, guidance and main-frame snapshot/click/fill/scroll operations.
+Its compatibility `getProfileId()` returns an `embedded:` connection identity;
+it never claims a Chromium extension or profile. Stopping the target aborts its
+in-flight channel requests. Every request names that exact connection, so a
+replacement during account lookup cannot receive an old command. The owning
+host controls the channel lifetime.
+
+The trusted renderer composes `createSurfaceTaskHandler` from
+`packages/os/browser/src/surface-task-handler.mjs` with native page selection,
+control, inventory and annotation-cleanup ports. It reuses the task binding and
+preview checks. A cleanup failure after input remains an uncertain outcome.
+No page offer answers, arbitrary scripts, protected fills, child frames or
+coordinate input are supported by this adapter. Full general browser control
+and product composition require their own implementation and acceptance.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:

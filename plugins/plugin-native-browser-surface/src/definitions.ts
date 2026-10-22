@@ -259,6 +259,8 @@ export interface ElizaSurfaceManagerPlugin {
       documentId?: string;
       command: {
         subaction: "snapshot" | "click" | "fill" | "scroll" | "guide";
+        /** Check the target without consuming the snapshot or dispatching input. */
+        validateOnly?: boolean;
         guidance?: NativePageGuidance;
         snapshotId?: string;
         nodeId?: string;
@@ -267,6 +269,11 @@ export interface ElizaSurfaceManagerPlugin {
         taskPolicy?: {
           origin: string;
           expiresAt: number;
+          /** Host task binding revision and the visible action preview identity. */
+          guidanceScope?: string;
+          actionId?: string;
+          expectedSelector?: string;
+          assistantName?: string;
           targets: Array<{
             selector: string;
             action: "click" | "fill" | "scroll";

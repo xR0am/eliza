@@ -75,6 +75,8 @@ export function installControlChannel(pageCommand, pageGuidance) {
     }
     const policy = command.taskPolicy;
     if (
+      (command.validateOnly !== undefined &&
+        typeof command.validateOnly !== "boolean") ||
       (command.subaction === "fill" && typeof command.text !== "string") ||
       (command.subaction === "scroll" &&
         !["up", "down", "left", "right"].includes(command.direction)) ||
@@ -97,7 +99,11 @@ export function installControlChannel(pageCommand, pageGuidance) {
     }
     try {
       const snapshotId = command.subaction === "snapshot" ? identifier() : null;
-      const result = pageCommand(command, snapshotId);
+      const result = pageCommand(
+        command,
+        snapshotId,
+        command.validateOnly === true,
+      );
       reply(snapshotId && !result.error ? { ...result, snapshotId } : result);
     } catch {
       // Do not echo exception text: page values may be present in it. An

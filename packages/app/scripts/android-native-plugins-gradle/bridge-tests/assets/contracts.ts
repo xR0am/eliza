@@ -1952,6 +1952,15 @@
           const fill = command(observation, "fill", "#query", {
             text: "Wikipedia",
           });
+          assert(
+            (
+              await call("controlPage", {
+                ...fill,
+                command: { ...fill.command, validateOnly: true },
+              })
+            ).result.validated === true,
+            "native preflight validates without consuming the input reference",
+          );
           const guide = (read, guidance) =>
             call("controlPage", {
               ...identity,
