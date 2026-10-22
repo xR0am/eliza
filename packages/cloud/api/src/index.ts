@@ -49,6 +49,7 @@ import { isThinStewardPath } from "./steward/public-paths";
 export { AnonymousChatGate } from "./anonymous-chat-gate";
 export { isThinCliSessionPath } from "./cli-session-paths";
 export { DoorDashCheckoutGate } from "./doordash-checkout-gate";
+export { HfEgressState } from "./hf-egress-state";
 export { InferenceAdmissionGate } from "./inference-admission-gate";
 export { InferenceRateLimitV2RollbackFloor } from "./inference-rate-limit-v2-rollback-floor";
 export { InferenceRecoveryService } from "./inference-recovery-service";

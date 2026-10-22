@@ -25,6 +25,8 @@ export interface RuntimeDurableObjectNamespace {
 }
 
 export interface Bindings {
+  CLOUD_HF_EGRESS_BACKEND?: string;
+  HF_EGRESS_STATE?: RuntimeDurableObjectNamespace;
   /** Explicit per-turn Network context; absent disables the integration. */
   NETWORK_SHARED_ENABLED?: string;
   /** Private server-owned Network HTTP service binding; no public fetch fallback. */

@@ -44,6 +44,13 @@ bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/se
 The suite creates and removes a unique schema and loads migrations 0544–0545.
 It must not point to a production database.
 
+Monthly Hugging Face download quotas can use the private `HF_EGRESS_STATE`
+Durable Object. The protected release variable `CLOUD_HF_EGRESS_BACKEND` defaults
+to `redis`. Stop source writers and transfer each organization/month counter with
+its original expiry before selecting `cloudflare`. Imports reject conflicts and
+close permanently after normal use begins. Existing download refunds and limits
+are retained; this does not migrate other Redis state.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
