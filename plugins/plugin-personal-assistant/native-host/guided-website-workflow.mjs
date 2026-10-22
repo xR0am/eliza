@@ -210,6 +210,8 @@ export function pageView(snapshot, { controls, protectedFields }) {
         ["submits", element.submits === true ? true : null],
         ["pressable", element.pressable],
         ["inViewport", element.inViewport],
+        ["scroll", element.scroll],
+        ["scrollOnly", element.scrollOnly],
         [
           "position",
           element.bounds
