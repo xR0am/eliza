@@ -589,7 +589,13 @@ export async function startVoiceMicCapture(
   const failCapture = () => {
     if (stopped) return;
     void stop();
-    if (captureReady) options.onError?.(new VoiceMicCaptureError("Microphone capture ended unexpectedly", "start_failed"));
+    if (captureReady)
+      options.onError?.(
+        new VoiceMicCaptureError(
+          "Microphone capture ended unexpectedly",
+          "start_failed",
+        ),
+      );
   };
   const onTrackEnded = () => failCapture();
   const onContextStateChanged = () => {
@@ -603,13 +609,21 @@ export async function startVoiceMicCapture(
   if (!stopped) ctx.addEventListener?.("statechange", onContextStateChanged);
   if (stopped || audioTrack?.readyState === "ended" || ctx.state === "closed") {
     await stop();
-    throw new VoiceMicCaptureError("Microphone capture ended during startup", "start_failed");
+    throw new VoiceMicCaptureError(
+      "Microphone capture ended during startup",
+      "start_failed",
+    );
   }
 
   captureReady = true;
   return {
     get active() {
-      return !stopped && !suspended && ctx.state === "running" && audioTrack?.readyState !== "ended";
+      return (
+        !stopped &&
+        !suspended &&
+        ctx.state === "running" &&
+        audioTrack?.readyState !== "ended"
+      );
     },
     get backend() {
       return backend;

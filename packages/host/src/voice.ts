@@ -21,6 +21,9 @@ export interface VoiceUiContext {
   uiBrowserSurface?: "native";
   /** Same renderer routing ID used by its authenticated HTTP/WS client. */
   uiClientId?: string;
+  /** Host preference only; never grants system or provider permissions. */
+  viewDelivery?: "completed-action";
+  agentActionMode?: "direct-request-v1";
 }
 
 /** Small allowlist shared by the wire and loopback boundaries. */
@@ -32,6 +35,20 @@ export function parseVoiceUiContext(value: unknown): VoiceUiContext | null {
     const clientId = parseViewInteractionClientId(source.uiClientId);
     if (!clientId) return null;
     result.uiClientId = clientId;
+  }
+  if (source.viewDelivery !== undefined) {
+    if (source.viewDelivery !== "completed-action" || !result.uiClientId)
+      return null;
+    result.viewDelivery = "completed-action";
+  }
+  if (source.agentActionMode !== undefined) {
+    if (
+      source.agentActionMode !== "direct-request-v1" ||
+      result.viewDelivery !== "completed-action" ||
+      !result.uiClientId
+    )
+      return null;
+    result.agentActionMode = "direct-request-v1";
   }
   if (source.uiBrowserSurface !== undefined) {
     if (source.uiBrowserSurface !== "native") return null;
@@ -454,14 +471,3 @@ export const EDGE_BACKUP_VOICES: VoicePreset[] = [
     previewUrl: "",
   },
 ];
-  /** Current bound user preference; never grants system or provider permissions. */
-  agentActionMode?: "direct-request-v1";
-  }
-  if (source.agentActionMode !== undefined) {
-    if (
-      source.agentActionMode !== "direct-request-v1" ||
-      result.viewDelivery !== "completed-action" ||
-      !result.uiClientId
-    )
-      return null;
-    result.agentActionMode = "direct-request-v1";
