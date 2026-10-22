@@ -2400,8 +2400,19 @@ function bundleHasRegularFile(dir: string): boolean {
 	if (!existsSync(dir)) return false;
 	try {
 		return directoryHasRegularFile(dir);
-	} catch {
-		return false;
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		// A bundle without an `asr/` directory legitimately has no ASR
+		// (TTS-only bundles) and must stay `false`. Anything else means the
+		// path is there but cannot be read (ENOTDIR/EACCES/EIO), which the
+		// caller would otherwise misread as "this bundle ships no ASR".
+		if (code === "ENOENT") return false;
+		throw new VoiceStartupError(
+			"unreadable-asr-dir",
+			`[voice] ASR directory ${dir} exists but cannot be read (${
+				code ?? "unknown"
+			}): ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 }
 
