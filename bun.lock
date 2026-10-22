@@ -918,6 +918,21 @@
         "typescript": "^6.0.3",
       },
     },
+    "packages/cloud/services/agent-server-container": {
+      "name": "@elizaos/agent-server-container",
+      "version": "1.0.0",
+      "dependencies": {
+        "@cloudflare/containers": "^0.3.7",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "2.5.15",
+        "@cloudflare/workers-types": "^4.20260429.1",
+        "@types/node": "22.19.17",
+        "@typescript/native": "npm:typescript@^7.0.2",
+        "bun-types": "1.4.2",
+        "typescript": "^6.0.3",
+      },
+    },
     "packages/cloud/services/coding-remote-runner": {
       "name": "@elizaos/coding-remote-runner",
       "version": "0.1.0",
@@ -1049,6 +1064,21 @@
         "@cloudflare/containers": "^0.3.7",
       },
       "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260429.1",
+        "@types/node": "22.19.17",
+        "@typescript/native": "npm:typescript@^7.0.2",
+        "bun-types": "1.4.2",
+        "typescript": "^6.0.3",
+      },
+    },
+    "packages/cloud/services/tunnel-proxy": {
+      "name": "@elizaos/tunnel-proxy",
+      "version": "1.0.0",
+      "dependencies": {
+        "@cloudflare/containers": "^0.3.7",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "2.5.15",
         "@cloudflare/workers-types": "^4.20260429.1",
         "@types/node": "22.19.17",
         "@typescript/native": "npm:typescript@^7.0.2",
@@ -3894,6 +3924,8 @@
 
     "@elizaos/agent-server": ["@elizaos/agent-server@workspace:packages/cloud/services/agent-server"],
 
+    "@elizaos/agent-server-container": ["@elizaos/agent-server-container@workspace:packages/cloud/services/agent-server-container"],
+
     "@elizaos/app": ["@elizaos/app@workspace:packages/app"],
 
     "@elizaos/auth": ["@elizaos/auth@workspace:packages/auth"],
@@ -4143,6 +4175,8 @@
     "@elizaos/testing": ["@elizaos/testing@workspace:packages/testing"],
 
     "@elizaos/three-agent-dialogue": ["@elizaos/three-agent-dialogue@workspace:packages/benchmarks/suites/three-agent-dialogue"],
+
+    "@elizaos/tunnel-proxy": ["@elizaos/tunnel-proxy@workspace:packages/cloud/services/tunnel-proxy"],
 
     "@elizaos/ui": ["@elizaos/ui@workspace:packages/ui"],
 

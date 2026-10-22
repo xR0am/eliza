@@ -423,6 +423,8 @@
     "./lib/services/google-search": "./src/lib/services/google-search.ts",
     "./lib/services/headscale-client": "./src/lib/services/headscale-client.ts",
     "./lib/services/health-monitor": "./src/lib/services/health-monitor.ts",
+    "./lib/services/a2a-task-store": "./src/lib/services/a2a-task-store.ts",
+    "./lib/services/cloudflare-a2a-task-store": "./src/lib/services/cloudflare-a2a-task-store.ts",
     "./lib/services/hf-proxy-egress-quota": "./src/lib/services/hf-proxy-egress-quota.ts",
     "./lib/services/identity-verification-gatekeeper": "./src/lib/services/identity-verification-gatekeeper.ts",
     "./lib/services/image-generation": "./src/lib/services/image-generation.ts",
