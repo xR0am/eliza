@@ -159,10 +159,6 @@ export function setBrowserWorkspaceControlValue(
   nextValue: string,
 ): void {
   control.value = nextValue;
-  if (control.tagName === "TEXTAREA") {
-    control.textContent = nextValue;
-  }
-  control.setAttribute("value", nextValue);
 }
 
 export async function activateWebBrowserWorkspaceElement(
@@ -227,6 +223,13 @@ export async function activateWebBrowserWorkspaceElement(
   }
 
   const submitForm = findClosestBrowserWorkspaceForm(element);
+  if (
+    submitForm &&
+    ((tag === "button" && (element as HTMLButtonElement).type === "reset") ||
+      (inputElement && inputType === "reset"))
+  ) {
+    submitForm.reset();
+  }
   const submitter =
     tag === "button" && (element as HTMLButtonElement).type === "submit"
       ? (element as HTMLButtonElement)
