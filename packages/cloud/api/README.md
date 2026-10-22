@@ -86,9 +86,9 @@ be enabled and bound to that environment's callback.
 
 ### Alpha-owned managed Google returns
 
-The Alpha-owned callback rollout uses `ALPHA_OAUTH_RETURN_URLS` for exact HTTPS
+App-owned connector callbacks use `APP_OAUTH_RETURN_URLS` for exact HTTPS
 Gmail return addresses. Initiation accepts the app nonce as the only `state`
-query parameter and returns `alphaReturn: 2` when configured. The callback uses
+query parameter and returns `appReturn: 2` when configured. The callback uses
 server-owned state and returns only state/result plus `connectionId` on success.
 The app must verify that connection through its authenticated connector list.
 Denial retires state and creates no grant. Unknown state keeps existing recovery.
@@ -448,3 +448,15 @@ reuse does not establish cache-only entitlement admission: ordinary policy
 writers do not synchronously fence every cached generation. Shared allowance
 correctness is implemented; deployed latency/audio and numeric policy selection
 remain separate acceptance work. Coverage metadata does not consume allowance.
+
+## Hosted speech migration
+
+With the Workers AI binding configured, supported legacy Kokoro voice IDs select
+replacement Aura-2 voices from `KOKORO_CLOUDFLARE_VOICES`. These are replacement
+voices, not the original Kokoro identities. Responses identify the actual provider
+and speaker in `X-Eliza-TTS-Provider` and `X-Eliza-TTS-Voice`. Configured Cartesia
+defaults and custom ElevenLabs voices retain their existing selection and billing.
+Set `VOICE_BATCH_STT_PROVIDER=cloudflare` to move a pinned Whisper deployment to
+Workers AI; verify authenticated TTS/STT before retiring the old services.
+
+Workers AI TTS accepts up to 2,000 characters per request. Longer text is rejected explicitly before synthesis; it is never truncated.

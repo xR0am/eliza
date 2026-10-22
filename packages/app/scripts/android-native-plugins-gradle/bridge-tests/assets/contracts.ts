@@ -1781,6 +1781,7 @@
         process: "shared",
         storage: "shared",
         url: "about:blank",
+        interceptNavigation: descriptor.surfaceControl === true,
       });
       try {
         const state = await call("getSurfaceState", { ...identity, id });
@@ -1856,7 +1857,10 @@
         await rejects("readPage", { ...identity, id, selector: ".missing" });
         const capturePresentation = async (name) => {
           window.nativeBrowserCapture = { name, done: false };
-          const deadline = Date.now() + 5000;
+          // Native waits up to five seconds for visual-state callbacks, then
+          // checks pixels, encodes PNG and sends the artifact before replying.
+          // Its caller must allow that whole bounded operation to finish.
+          const deadline = Date.now() + 20000;
           while (!window.nativeBrowserCapture.done) {
             if (Date.now() >= deadline)
               throw new Error(`Screenshot did not complete: ${name}`);
@@ -1927,10 +1931,11 @@
             "native control excludes password values",
           );
           const taskPolicy = {
-            origin: "https://native-control.example",
+            origin: window.nativeBrowserControlOrigin,
             expiresAt: Date.now() + 60000,
             targets: [
               { selector: "#query", action: "fill" },
+              { selector: "#language", action: "select" },
               { selector: "#increment", action: "click" },
             ],
           };
@@ -1951,6 +1956,71 @@
           const fill = command(observation, "fill", "#query", {
             text: "Wikipedia",
           });
+          assert(
+            (
+              await call("controlPage", {
+                ...fill,
+                command: { ...fill.command, validateOnly: true },
+              })
+            ).result.validated === true,
+            "native preflight validates without consuming the input reference",
+          );
+          const guide = (read, guidance) =>
+            call("controlPage", {
+              ...identity,
+              id,
+              documentId: read.documentId,
+              command: { subaction: "guide", guidance },
+            });
+          const shown = {
+            kind: "show",
+            id: "native-step",
+            snapshotId: observation.result.snapshotId,
+            nodeId: fill.command.nodeId,
+            origin: taskPolicy.origin,
+            expiresAt: Date.now() + 15000,
+            text: "I will enter a search.",
+            assistantName: "Test helper",
+            action: "fill",
+          };
+          await rejects("controlPage", {
+            ...identity,
+            id,
+            documentId: "retired-document",
+            command: { subaction: "guide", guidance: shown },
+          });
+          assert(
+            (await guide(observation, shown)).result.accepted,
+            "native guidance accepts the observed target",
+          );
+          const preview = {
+            kind: "action-status",
+            id: shown.id,
+            snapshotId: shown.snapshotId,
+            nodeId: shown.nodeId,
+            action: "fill",
+          };
+          const previewDeadline = Date.now() + 5000;
+          while (!(await guide(observation, preview)).result.ready) {
+            if (Date.now() >= previewDeadline)
+              throw new Error("Native action preview did not become ready");
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          await capturePresentation("browser-guidance.png");
+          assert(
+            (await guide(observation, { kind: "pause" })).result.paused,
+            "native guidance pauses",
+          );
+          assert(
+            !(await guide(observation, preview)).result.ready,
+            "paused guidance cannot report a ready action preview",
+          );
+          await capturePresentation("browser-guidance-paused.png");
+          assert(
+            (await guide(observation, { kind: "hide" })).result.visible ===
+              false,
+            "native guidance removal acknowledged",
+          );
           await rejects("controlPage", {
             ...fill,
             documentId: "retired-document",
@@ -1968,6 +2038,26 @@
             "native fill readback sees input",
           );
           assert(
+            !JSON.stringify(observation).includes("internal-fr"),
+            "native snapshot excludes internal option values",
+          );
+          assert(
+            (
+              await call(
+                "controlPage",
+                command(observation, "select", "#language", { text: "French" }),
+              )
+            ).result.dispatched,
+            "native select dispatched",
+          );
+          observation = await snapshot();
+          assert(
+            observation.result.elements
+              .find((element) => element.targetSelector === "#language")
+              .options.find((option) => option.selected).label === "French",
+            "native select readback names the selected option",
+          );
+          assert(
             (
               await call(
                 "controlPage",
@@ -1982,6 +2072,20 @@
             "native click readback sees the changed page",
           );
           await call("presentSurface", { ...identity });
+          assert(
+            (await guide(observation, { kind: "hide" })).result.visible ===
+              false,
+            "native guidance cleanup remains available while hidden",
+          );
+          await rejects("controlPage", {
+            ...identity,
+            id,
+            documentId: observation.documentId,
+            command: {
+              subaction: "guide",
+              guidance: { ...shown, snapshotId: observation.result.snapshotId },
+            },
+          });
           await rejects("controlPage", {
             ...identity,
             id,
@@ -1993,6 +2097,7 @@
             command(observation, "click", "#increment"),
           );
           const resumed = await snapshot();
+          await capturePresentation("browser-guidance-cleared.png");
           assert(
             resumed.documentId === observation.documentId,
             "native control preserves the document across Home",
@@ -2014,6 +2119,86 @@
             resumed,
             activityResumed,
           };
+          const requested = [];
+          const navigationListener = window.Capacitor.addListener(
+            descriptor.name,
+            "navigationRequested",
+            (event) => requested.push(event),
+          );
+          try {
+            const clickLink = async (selector) => {
+              const read = await snapshot();
+              const input = command(read, "click", selector);
+              input.command.taskPolicy = {
+                ...taskPolicy,
+                targets: [{ selector, action: "click" }],
+              };
+              try {
+                assert(
+                  (await call("controlPage", input)).result.dispatched,
+                  "navigation link click dispatched",
+                );
+              } catch (error) {
+                // Navigation can retire a delivered click before its reply arrives.
+                if (error.code !== "UNCERTAIN_OUTCOME") throw error;
+              }
+            };
+            await clickLink("#same-origin");
+            const sameDeadline = Date.now() + 5000;
+            let same;
+            do {
+              same = await call("getSurfaceState", { ...identity, id });
+              if (same.currentUrl.endsWith("/same")) break;
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            } while (Date.now() < sameDeadline);
+            assert(
+              same.currentUrl === `${taskPolicy.origin}/same` &&
+                requested.length === 0,
+              `same-origin page link loads without host approval: ${JSON.stringify({ same, requested })}`,
+            );
+            await clickLink("#cross-origin");
+            const requestDeadline = Date.now() + 5000;
+            while (!requested.length && Date.now() < requestDeadline)
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            assert(
+              requested.length === 1 &&
+                requested[0].url ===
+                  `${taskPolicy.origin.replace("127.0.0.1", "localhost")}/next` &&
+                requested[0].id === id &&
+                requested[0].session === identity.session &&
+                requested[0].owner === identity.owner &&
+                requested[0].epoch === identity.epoch,
+              "cross-origin page link emits the current owner's approval request",
+            );
+            assert(
+              (await call("getSurfaceState", { ...identity, id }))
+                .currentUrl === same.currentUrl,
+              "unapproved cross-origin link leaves the current native page in place",
+            );
+            await call("navigate", { ...identity, id, url: requested[0].url });
+            await waitForPage("Approved fixture");
+            assert(
+              requested.length === 1,
+              "explicit host navigation is not intercepted again",
+            );
+            await call("navigate", {
+              ...identity,
+              id,
+              url: `${taskPolicy.origin}/redirect`,
+            });
+            const redirectDeadline = Date.now() + 5000;
+            while (requested.length < 2 && Date.now() < redirectDeadline)
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            assert(
+              requested.length === 2 &&
+                requested[1].redirect === true &&
+                requested[1].url === requested[0].url,
+              "cross-origin HTTP redirect waits for another host decision",
+            );
+            window.nativeBrowserEvidence.interception = { same, requested };
+          } finally {
+            (await navigationListener).remove();
+          }
         }
       } finally {
         await call("destroySurface", { ...identity, id });

@@ -38,6 +38,32 @@ export interface SurfaceOwnerOptions {
   epoch: number;
 }
 
+/** Fixed host annotation requests. Approval controls remain in the trusted host. */
+export type NativePageGuidance =
+  | { kind: "hide" | "pause" }
+  | {
+      kind: "action-status";
+      id: string;
+      snapshotId: string;
+      nodeId: string;
+      action: "click" | "fill" | "select" | "scroll";
+    }
+  | {
+      kind: "show";
+      id: string;
+      snapshotId: string;
+      nodeId: string;
+      origin: string;
+      expiresAt: number;
+      text: string;
+      detail?: string;
+      assistantName?: string;
+      tone?: "instruction" | "active" | "success";
+      action?: "click" | "fill" | "select" | "scroll";
+      keepClear?: string[];
+      restore?: boolean;
+    };
+
 export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
   /** Stable per-surface id (the Browser tab's surface id). */
   id: string;
@@ -47,6 +73,25 @@ export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
   process: SurfaceProcessSharing;
   /** Explicit storage policy. Required — no default. */
   storage: SurfaceStorageSharing;
+  /**
+   * Android: the page may navigate within its own origin, but a main-frame navigation to
+   * another origin (a cross-origin redirect included) is cancelled before any request and
+   * reported as `navigationRequested`. The host loads it with `navigate()` once its own
+   * check allows it. Non-web schemes and addresses with credentials are refused in this
+   * callback. POST form submissions and subframes are not intercepted. This is not a
+   * network filter. Default false: the page navigates by itself.
+   */
+  interceptNavigation?: boolean;
+}
+
+/** A cross-origin main-frame navigation an intercepting surface held for the host. */
+export interface NavigationRequestedEvent extends SurfaceIdOptions {
+  /** The address the page asked for; nothing has been requested from it yet. */
+  url: string;
+  /** A server redirect of the page's current navigation, not a new one. */
+  redirect: boolean;
+  /** Whether the person's gesture started the navigation. */
+  userGesture: boolean;
 }
 
 export interface SurfaceRect {
@@ -213,7 +258,16 @@ export interface ElizaSurfaceManagerPlugin {
     options: SurfaceIdOptions & {
       documentId?: string;
       command: {
-        subaction: "snapshot" | "click" | "fill" | "scroll";
+        subaction:
+          | "snapshot"
+          | "click"
+          | "fill"
+          | "select"
+          | "scroll"
+          | "guide";
+        /** Check the target without consuming the snapshot or dispatching input. */
+        validateOnly?: boolean;
+        guidance?: NativePageGuidance;
         snapshotId?: string;
         nodeId?: string;
         text?: string;
@@ -221,9 +275,14 @@ export interface ElizaSurfaceManagerPlugin {
         taskPolicy?: {
           origin: string;
           expiresAt: number;
+          /** Host task binding revision and the visible action preview identity. */
+          guidanceScope?: string;
+          actionId?: string;
+          expectedSelector?: string;
+          assistantName?: string;
           targets: Array<{
             selector: string;
-            action: "click" | "fill" | "scroll";
+            action: "click" | "fill" | "select" | "scroll";
           }>;
         };
       };
@@ -256,6 +315,11 @@ export interface ElizaSurfaceManagerPlugin {
   addListener(
     eventName: "navigationChanged",
     listener: (event: SurfaceIdOptions) => void,
+  ): Promise<PluginListenerHandle>;
+  /** An intercepting surface held a cross-origin navigation; `navigate()` to allow it. */
+  addListener(
+    eventName: "navigationRequested",
+    listener: (event: NavigationRequestedEvent) => void,
   ): Promise<PluginListenerHandle>;
   /** Atomically hide all siblings, then present the requested surface or host. */
   presentSurface(options: PresentSurfaceOptions): Promise<void>;

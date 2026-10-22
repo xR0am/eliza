@@ -465,6 +465,8 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         node,
         bounds: geometry,
         value: typeof node.value === "string" ? node.value : null,
+        selection:
+          node instanceof HTMLSelectElement ? node.selectedIndex : null,
       });
       const state = controlState(node);
       const form = node.form ?? node.closest("form");
@@ -478,6 +480,17 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         type: node.getAttribute("type"),
         ...state,
         description: withoutSecrets(state.description),
+        // Option labels are page-authored choices, not internal option values.
+        ...(node instanceof HTMLSelectElement && sensitivity(node) === null
+          ? {
+              options: [...node.options].map((option) => ({
+                label: hint(option.label.replace(/\s+/g, " ")),
+                disabled:
+                  option.disabled || option.parentElement?.disabled === true,
+                selected: option.selected,
+              })),
+            }
+          : {}),
         // Words that locate a control when its name is empty or repeated.
         // None of them is a field value.
         placeholder: hint(node.getAttribute("placeholder")),
@@ -547,7 +560,24 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     // A submit or page change that a task fill or click set off in this
     // document, under this binding. The watch below stopped it.
     const violation = globalThis[watchKey]?.violation;
+    // A one-shot comparison from the actual fill, kept in this isolated realm.
+    // Neither the expected text nor the field value leaves the page.
+    const inputReadback = monitor.inputReadback;
+    delete monitor.inputReadback;
     return {
+      ...(policy &&
+      inputReadback &&
+      inputReadback.scope === policy.guidanceScope
+        ? {
+            inputReadback: {
+              targetRef: inputReadback.targetRef,
+              matches:
+                inputReadback.node.isConnected &&
+                !sensitivity(inputReadback.node) &&
+                inputReadback.node.value === inputReadback.text,
+            },
+          }
+        : {}),
       ...(policy && violation && violation.scope === policy.guidanceScope
         ? { effectViolation: violation.kind }
         : {}),
@@ -589,6 +619,8 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
   if (
     !node?.isConnected ||
     recorded.value !== (typeof node.value === "string" ? node.value : null) ||
+    recorded.selection !==
+      (node instanceof HTMLSelectElement ? node.selectedIndex : null) ||
     JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node))
   )
     return {
@@ -671,7 +703,26 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     )
       return denied();
   }
-  if (command.subaction === "fill" && (node.disabled || node.readOnly))
+  const selectedOptions =
+    command.subaction === "select" && node instanceof HTMLSelectElement
+      ? [...node.options].filter(
+          (option) => option.label.replace(/\s+/g, " ").trim() === command.text,
+        )
+      : [];
+  if (
+    command.subaction === "select" &&
+    (!(node instanceof HTMLSelectElement) ||
+      node.multiple ||
+      sensitivity(node) !== null ||
+      selectedOptions.length !== 1 ||
+      selectedOptions[0].disabled ||
+      selectedOptions[0].parentElement?.disabled === true)
+  )
+    return denied();
+  if (
+    ["fill", "select"].includes(command.subaction) &&
+    (node.disabled || node.readOnly)
+  )
     return denied();
   // A control the provider disabled stays as the provider left it. A script
   // click on an aria-disabled control would still run the page's handlers.
@@ -696,7 +747,7 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     feedback.markActed();
   }
   delete globalThis[key];
-  if (policy && ["click", "fill"].includes(command.subaction)) {
+  if (policy && ["click", "fill", "select"].includes(command.subaction)) {
     // A task fill or click must not submit a form or leave the page, also
     // not through the page's own script (an auto-submitting code field, or
     // a button that calls form.submit()). For 30 seconds, or until the next
@@ -897,6 +948,20 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
       node,
       command.text,
     );
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+    if (policy && !sensitivity(node))
+      monitor.inputReadback = {
+        node,
+        text: command.text,
+        targetRef: `${state.snapshotId}:0:${command.nodeId}`,
+        scope: policy.guidanceScope,
+      };
+  } else if (command.subaction === "select") {
+    Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      "selectedIndex",
+    ).set.call(node, selectedOptions[0].index);
     node.dispatchEvent(new Event("input", { bubbles: true }));
     node.dispatchEvent(new Event("change", { bubbles: true }));
   } else if (command.subaction === "scroll") {

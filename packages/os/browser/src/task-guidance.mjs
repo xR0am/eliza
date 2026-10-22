@@ -58,7 +58,17 @@ function validLabel(g) {
     !(count("primary") && count("card"))
   );
 }
-export function createTaskGuidance(api, authorize) {
+export function createTaskGuidance(
+  api,
+  authorize,
+  {
+    validTabId = (id) =>
+      typeof id === "string" &&
+      /^\d+$/.test(id) &&
+      Number.isSafeInteger(Number(id)),
+    pageId = Number,
+  } = {},
+) {
   const active = new Map(),
     revisions = new Map(),
     queues = new Map(),
@@ -83,10 +93,7 @@ export function createTaskGuidance(api, authorize) {
   let metadata = Promise.resolve();
   const readIndex = async () => {
     const stored = (await api.storage.local.get(indexKey))[indexKey] ?? [];
-    if (
-      !Array.isArray(stored) ||
-      stored.some((id) => typeof id !== "string" || !/^\d+$/.test(id))
-    )
+    if (!Array.isArray(stored) || stored.some((id) => !validTabId(id)))
       throw new BridgeError(
         "UNAVAILABLE",
         "Guidance recovery index is invalid.",
@@ -111,7 +118,7 @@ export function createTaskGuidance(api, authorize) {
     let results;
     try {
       results = await api.scripting.executeScript({
-        target: { tabId: Number(tabId), frameIds: [0] },
+        target: { tabId: pageId(tabId), frameIds: [0] },
         func: pageGuidance,
         args: [{ kind: "hide" }],
         world: "ISOLATED",
@@ -152,7 +159,7 @@ export function createTaskGuidance(api, authorize) {
       if (
         !policy ||
         !match ||
-        !["click", "fill", "scroll"].includes(command.subaction)
+        !["click", "fill", "select", "scroll"].includes(command.subaction)
       )
         throw stale();
       const ticket = { id };
@@ -163,7 +170,7 @@ export function createTaskGuidance(api, authorize) {
       const inject = async (func, args) => {
         if (!valid()) throw stale();
         const results = await api.scripting.executeScript({
-          target: { tabId: Number(tabId), frameIds: [0] },
+          target: { tabId: pageId(tabId), frameIds: [0] },
           func,
           args,
           world: "ISOLATED",
@@ -201,6 +208,7 @@ export function createTaskGuidance(api, authorize) {
                 {
                   click: "I will select this control.",
                   fill: "I will enter the approved information here.",
+                  select: "I will choose the approved option here.",
                   scroll: "I will scroll this area.",
                 }[command.subaction],
             },
@@ -334,9 +342,7 @@ export function createTaskGuidance(api, authorize) {
         !g ||
         typeof g !== "object" ||
         Object.keys(g).some((key) => !allowed.includes(key)) ||
-        typeof g.tabId !== "string" ||
-        !/^\d+$/.test(g.tabId) ||
-        !Number.isSafeInteger(Number(g.tabId)) ||
+        !validTabId(g.tabId) ||
         !Number.isSafeInteger(g.revision) ||
         g.revision < 1 ||
         !["show", "hide", "pause"].includes(g.kind) ||
@@ -451,7 +457,7 @@ export function createTaskGuidance(api, authorize) {
             g.kind === "hide"
               ? [{ result: await hide(g.tabId) }]
               : await api.scripting.executeScript({
-                  target: { tabId: Number(g.tabId), frameIds: [0] },
+                  target: { tabId: pageId(g.tabId), frameIds: [0] },
                   func: pageGuidance,
                   args: [request],
                   world: "ISOLATED",

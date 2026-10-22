@@ -48,6 +48,7 @@ export class NativeTaskActuator {
   readonly capabilities = [
     "browser.click",
     "browser.fill",
+    "browser.select",
     "browser.scroll.up",
     "browser.scroll.down",
     "browser.scroll.left",
@@ -560,6 +561,19 @@ export class NativeTaskActuator {
     // The page tried to submit or leave because of this action. The browser
     // stopped it, but the page state is no longer the one that was reviewed.
     if (after.effectViolation !== undefined) return { status: "unknown" };
+    // Occupancy alone cannot verify a public fill: page handlers can replace it.
+    // The isolated page compares against the text from the actual dispatched fill.
+    if (proposal.capability === "browser.fill" && !protectedValueKind) {
+      const readback = after.inputReadback as
+        | { targetRef?: unknown; matches?: unknown }
+        | undefined;
+      if (
+        after.documentId !== cached.snapshot.documentId ||
+        readback?.targetRef !== proposal.targetRef ||
+        readback.matches !== true
+      )
+        return { status: "unknown" };
+    }
     const status = await this.options.verify(proposal, cached.snapshot, after);
     if (!current()) return { status: "unknown" };
     const evidenceRef = await this.options.recordEvidence(
@@ -639,15 +653,15 @@ export class NativeTaskActuator {
     const subaction = proposal.capability.split(".")[1] as
       | "click"
       | "fill"
+      | "select"
       | "scroll";
-    const resolved =
-      subaction === "fill"
-        ? await this.options.resolveValue(
-            proposal.valueRef ||
-              fail("Fill requires a protected value reference"),
-            task,
-          )
-        : undefined;
+    const resolved = ["fill", "select"].includes(subaction)
+      ? await this.options.resolveValue(
+          proposal.valueRef ||
+            fail("Fill or select requires a held value reference"),
+          task,
+        )
+      : undefined;
     if (
       resolved !== undefined &&
       typeof resolved !== "string" &&
@@ -658,6 +672,8 @@ export class NativeTaskActuator {
       fail("Invalid protected value");
     const protectedValueKind =
       typeof resolved === "object" ? resolved.kind : undefined;
+    if (subaction === "select" && protectedValueKind)
+      fail("Select cannot use a protected value");
     const text = typeof resolved === "object" ? resolved.text : resolved;
     if (
       !current() ||

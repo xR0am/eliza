@@ -29,7 +29,11 @@ Link addresses are not rewritten, and a field the page does not mark (by
 `type=password` or `autocomplete`) is not covered. Text fields and dropdowns report
 only whether they have input; fields also report whether an input/change event
 was observed in this document. These flags do not prove a value is correct or
-that a person caused the event. The value comparison stays inside
+that a person caused the event. A task-authorized public fill also keeps a one-use
+expected-value comparison in the isolated realm. The next snapshot reports its
+original target reference and whether the exact value remains, then consumes the
+comparison. It never returns either value and never creates this proof for a
+protected field. A website handler that rewrites the input fails this comparison. The value comparison stays inside
 the isolated page realm. These freshness checks do not classify a button as safe
 for a particular task or replace the host's action policy.
 Snapshots list native controls, widget roles and plain elements made
@@ -69,6 +73,13 @@ work. Binding metadata and target rules must never come from model or page text.
 An expired, unrevoked binding can renew at the same task epoch only with a higher
 binding revision and identical owner, origin, targets and display name. Revoked
 bindings and scope changes require a new epoch.
+
+`src/task-bindings.mjs` shares this binding and command-scope enforcement with
+trusted embedded-browser transports. The host supplies storage, exact-page URL
+lookup, page-ID validation and acknowledged guidance cleanup. Callers serialize
+binding changes, fence connection/account lifetime, and check the returned
+`current()` before and after asynchronous work. The module grants no page input
+by itself; the page executor still checks document, snapshot and target policy.
 
 Run `bun run --cwd packages/os test:browser` for protocol tests. CI runs this
 lane in the OS verification job (`.github/workflows/os.yml`: `verify:portable`

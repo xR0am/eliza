@@ -49,7 +49,7 @@ export function pageGuidance(request) {
     keepClear.length > 8 ||
     keepClear.some((id) => typeof id !== "string" || !/^\d+$/.test(id)) ||
     (request.action !== undefined &&
-      !["click", "fill", "scroll"].includes(request.action)) ||
+      !["click", "fill", "select", "scroll"].includes(request.action)) ||
     (request.restore !== undefined && typeof request.restore !== "boolean") ||
     window !== window.top ||
     request.origin !== location.origin ||
@@ -155,9 +155,9 @@ export function pageGuidance(request) {
     target.scrollIntoView({
       block: "center",
       inline: "nearest",
-      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? "instant"
-        : "smooth",
+      // Finish the host-owned reveal before acknowledging it. A later task
+      // snapshot must not race a smooth scroll after guidance is cleared.
+      behavior: "instant",
     });
   // The page shares document.fonts. Each document gets an unguessable family
   // added from bytes (no network or page CSP); any other face that claims it
@@ -205,6 +205,7 @@ export function pageGuidance(request) {
   style.replaceSync(
     ".ring{position:fixed;box-sizing:border-box;border-radius:8px;pointer-events:none;box-shadow:0 0 0 3px #fff,0 0 0 6px #4a3428}.ring.pulse{animation:ring .9s ease-in-out 3}@keyframes ring{50%{box-shadow:0 0 0 3px #fff,0 0 0 7px #4a34288c}}" +
       ".label{font:500 20px/1.4 var(--face);position:fixed;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;background:#fff;color:#141414;border:2px solid #b3aad3;border-radius:16px;padding:18px;box-shadow:0 8px 24px #14141324;pointer-events:none;opacity:0;transform:translateY(-8px);transition:opacity .3s ease-out,transform .3s ease-out}.label.shown{opacity:1;transform:none;pointer-events:auto}.label.tone-success{border-color:#265b19}" +
+      ".label.compact{flex-direction:row;align-items:center;gap:12px;padding:0 12px}.label.compact .row{flex:1;min-width:0}.label.compact .mark{display:none}.label.compact .title{font-size:20px;line-height:24px}.label.compact .close{flex:none;min-width:92px;padding:0 16px}" +
       ".tail{position:absolute;left:28px;top:-10px;width:16px;height:16px;box-sizing:border-box;background:#fff;border:2px solid;border-color:inherit;border-right:0;border-bottom:0;transform:rotate(45deg)}.tail.up{top:auto;bottom:-10px;border:2px solid;border-color:inherit;border-left:0;border-top:0}" +
       ".row{display:flex;gap:12px;align-items:flex-start}.mark{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;background:#d4ceea;color:#141414;font:700 20px/1 var(--face)}.tone-active .mark{background:#b3aad3}.tone-success .mark{border-radius:17px;background:#265b19;color:#fff}" +
       ".words{display:flex;flex-direction:column;gap:4px;min-width:0}.title{margin:0;font:700 22px/28px var(--face);overflow-wrap:anywhere}.detail{margin:0;font:500 17px/22px var(--face);color:#4a3428;overflow-wrap:anywhere}" +
@@ -213,7 +214,7 @@ export function pageGuidance(request) {
       ".actions{display:flex;gap:10px}.actions button{flex:1 1 0}.actions button,.close{height:64px;padding:0 28px;white-space:nowrap}.actions .primary{background:#b3aad3;box-shadow:none}[hidden]{display:none!important}" +
       ".inset{position:fixed;left:0;bottom:0;width:0;height:0;padding-bottom:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none}" +
       ".pointer{position:fixed;left:0;top:0;width:28px;height:32px;pointer-events:none;transition:left 1.4s cubic-bezier(.45,0,.25,1),top 1.4s cubic-bezier(.45,0,.25,1)}.pointer svg{display:block;fill:#141414;filter:drop-shadow(0 2px 3px #14141359)}" +
-      ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;height:34px;padding:0 12px 0 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:nowrap}.initial{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
+      ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;min-height:34px;width:max-content;box-sizing:border-box;padding:4px 12px 4px 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:normal}.name{min-width:0;overflow-wrap:anywhere}.initial{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
       ".pointer.paused{transition:none}.paused svg{fill:#73726c}.paused .tag{background:#4a4a47;color:#fff}.paused .initial{background:#fff;color:#4a4a47}" +
       ".tap{position:fixed;width:36px;height:36px;border:4px solid #141414;border-radius:50%;box-sizing:border-box;pointer-events:none;animation:tap .7s ease-out forwards}@keyframes tap{0%{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}" +
       "@media (prefers-reduced-motion:reduce){.ring.pulse,.tap{animation:none}.label,.pointer{transition:none}.label{transform:none}}",
@@ -331,6 +332,7 @@ export function pageGuidance(request) {
     request.action ? "Cancel this action" : "Dismiss guidance",
   );
   close.type = "button";
+  if (request.action) close.setAttribute("aria-label", "Cancel this action");
   close.hidden =
     !request.action && buttons.some((answer) => answer.kind === "secondary");
   label.append(...offered, close);
@@ -386,6 +388,32 @@ export function pageGuidance(request) {
   const place = (point) => {
     pointer.style.left = `${point[0] - 3}px`;
     pointer.style.top = `${point[1] - 2}px`;
+  };
+  const fitTag = () => {
+    if (pointer.style.display !== "block") return;
+    const left = (viewport?.offsetLeft ?? 0) + 8;
+    const top = (viewport?.offsetTop ?? 0) + 8;
+    const width = Math.max(0, (viewport?.width ?? innerWidth) - 16);
+    const height = Math.max(0, (viewport?.height ?? innerHeight) - 16);
+    tag.style.maxWidth = `${width}px`;
+    const cursorRect = pointer.getBoundingClientRect();
+    const tagRect = tag.getBoundingClientRect();
+    const x = Math.max(
+      left,
+      Math.min(cursorRect.left + 24, left + width - tagRect.width),
+    );
+    const below = cursorRect.top + 28;
+    const y = Math.max(
+      top,
+      Math.min(
+        below + tagRect.height <= top + height
+          ? below
+          : cursorRect.top - tagRect.height - 4,
+        top + height - tagRect.height,
+      ),
+    );
+    tag.style.left = `${x - cursorRect.left}px`;
+    tag.style.top = `${y - cursorRect.top}px`;
   };
   const hide = () => {
     ring.hidden = true;
@@ -478,6 +506,7 @@ export function pageGuidance(request) {
       place(point);
       nameTag.textContent = `${name} · paused`;
       pointer.style.display = "block";
+      fitTag();
     },
     destroy: () => {
       disposed = true;
@@ -519,6 +548,9 @@ export function pageGuidance(request) {
       face = family;
       root.style.setProperty("--face", face);
     }
+    // Follow the rendered cursor during travel and keep the full name readable
+    // at viewport edges, including the longer paused label and keyboard resize.
+    fitTag();
     if (acted || state.paused) {
       if (acted) {
         label.hidden = true;
@@ -575,6 +607,13 @@ export function pageGuidance(request) {
       view.height -
         (keyboard ? Math.max(bottomInset, barInset) : bottomInset) / view.scale,
     );
+    // A split-screen or keyboard viewport must still show the action and its
+    // full-size cancel target. Keep the target unobscured and the preview dwell.
+    const compact = Boolean(request.action && view.height < 320);
+    label.classList.toggle("compact", compact);
+    const cancelText = compact ? "Cancel" : "Cancel this action";
+    if (request.action && close.textContent !== cancelText)
+      close.textContent = cancelText;
     const geometry = JSON.stringify([
       rect.x,
       rect.y,
@@ -600,7 +639,7 @@ export function pageGuidance(request) {
       rect.bottom <= view.top + view.height
     ) {
       label.hidden = false;
-      label.style.width = `${Math.min(answers.length ? 440 : 360, view.width - 24)}px`;
+      label.style.width = `${Math.min(compact ? view.width - 16 : answers.length ? 440 : 360, view.width - (compact ? 16 : 24))}px`;
       const height = label.getBoundingClientRect().height,
         width = label.getBoundingClientRect().width;
       const candidates = [
@@ -663,6 +702,7 @@ export function pageGuidance(request) {
             ],
           );
           pointer.style.display = "block";
+          fitTag();
           pointer.getBoundingClientRect();
           pointer.style.transition = "";
           place(point);
@@ -686,6 +726,7 @@ export function pageGuidance(request) {
           pointer.style.transition = "none";
           place(point);
           pointer.style.display = "block";
+          fitTag();
           tap.style.left = `${point[0] - 18}px`;
           tap.style.top = `${point[1] - 18}px`;
           tap.hidden = !acted;
