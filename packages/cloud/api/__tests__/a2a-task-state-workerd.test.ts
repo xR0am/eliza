@@ -225,6 +225,13 @@ describe("Cloudflare A2A tasks through the existing service", () => {
       await ok({ operation: "get", taskId: "short", organization: "expiry" }),
     ).toBeNull();
     expect(await ok({ operation: "list", organization: "expiry" })).toEqual([]);
+    const retained = await ok({
+      operation: "inspect-imports",
+      organization: "expiry",
+    });
+    expect(retained).toEqual([
+      { id: "short", fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    ]);
   });
   test("selected store refuses missing bindings instead of falling back to mock Redis", async () => {
     await worker.dispose();

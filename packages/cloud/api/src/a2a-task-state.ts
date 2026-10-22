@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { TaskStoreEntry } from "@elizaos/cloud-shared/lib/services/a2a-task-store";
 import type { A2ATaskSnapshot } from "@elizaos/cloud-shared/lib/services/cloudflare-a2a-task-store";
 
@@ -17,7 +18,7 @@ export class A2ATaskState {
       "CREATE TABLE IF NOT EXISTS serving (id INTEGER PRIMARY KEY CHECK(id=1))",
     );
     state.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS imports (id TEXT PRIMARY KEY, entry TEXT NOT NULL, score REAL NOT NULL, expires_at INTEGER NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS imports (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)",
     );
   }
   private validEntry(
@@ -111,6 +112,10 @@ export class A2ATaskState {
       }
       snapshots = input.entries;
     }
+    const fingerprint = (row: A2ATaskSnapshot) =>
+      createHash("sha256")
+        .update(JSON.stringify([row.entry, row.score, row.expiresAt]))
+        .digest("hex");
     const result = this.state.storage.transactionSync(() => {
       const owner = this.state.storage.sql
         .exec<{ organization: string }>("SELECT organization FROM owner")
@@ -132,27 +137,20 @@ export class A2ATaskState {
           return { status: 409, value: null };
         for (const row of snapshots) {
           const prior = this.state.storage.sql
-            .exec<{ entry: string; score: number; expires_at: number }>(
-              "SELECT entry,score,expires_at FROM imports WHERE id=?",
+            .exec<{ fingerprint: string }>(
+              "SELECT fingerprint FROM imports WHERE id=?",
               row.taskId,
             )
             .toArray()[0];
-          if (
-            prior &&
-            (prior.entry !== JSON.stringify(row.entry) ||
-              prior.score !== row.score ||
-              prior.expires_at !== row.expiresAt)
-          )
+          if (prior && prior.fingerprint !== fingerprint(row))
             return { status: 409, value: null };
         }
         for (const row of snapshots) {
           const data = JSON.stringify(row.entry);
           this.state.storage.sql.exec(
-            "INSERT OR IGNORE INTO imports VALUES(?,?,?,?)",
+            "INSERT OR IGNORE INTO imports VALUES(?,?)",
             row.taskId,
-            data,
-            row.score,
-            row.expiresAt,
+            fingerprint(row),
           );
           if (row.expiresAt > Date.now())
             this.state.storage.sql.exec(
