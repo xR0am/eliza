@@ -129,7 +129,7 @@ jobs:
       ELIZA_VOICE_CLOUD_ENVIRONMENT: ${{ inputs.cloudflare_environment || 'staging' }}
       ELIZA_VOICE_CLOUD_COMMIT: ${{ inputs.expected_cloud_commit || github.sha }}
       ELIZA_VOICE_CLOUD_API_URL: ${{ inputs.cloudflare_environment == 'production' && 'https://api.eliza.app' || 'https://api-staging.eliza.app' }}
-      ELIZAOS_CLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+      ELIZAOS_CLOUD_API_KEY: ${{ secrets.ELIZAOS_CLOUD_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
