@@ -22,3 +22,9 @@ Run `bun run test`, `bun run typecheck`, and `bun run lint:check` here.
 After deployment, verify authenticated Redis PING, pipeline encoding, and the
 Cloud authentication nonce route before switching `KV_REST_API_URL` and
 retiring the previous bridge. Preserve its token during the transition.
+
+After live bridge validation, set the protected GitHub Environment variable
+`ELIZA_REDIS_HTTP_URL` to that environment's Cloudflare endpoint. The canonical
+Cloud CF release commits it as `KV_REST_API_URL` alongside the certified source,
+preserving the existing token. Blank leaves the current routing unchanged;
+cross-environment URLs and missing token bindings fail the release.

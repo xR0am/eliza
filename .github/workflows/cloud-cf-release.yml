@@ -1433,6 +1433,9 @@ jobs:
           # GitHub source is not yet backfilled, then names-only verified after
           # deploy. Once configured, this step converges them on every release.
           STEWARD_API_URL: ${{ secrets.STEWARD_API_URL }}
+          # Optional environment-scoped bridge cutover. Blank preserves the
+          # current URL; the paired unreadable token remains unchanged.
+          KV_REST_API_URL: ${{ vars.ELIZA_REDIS_HTTP_URL }}
           STEWARD_JWT_SECRET: ${{ secrets.STEWARD_JWT_SECRET }}
           STEWARD_SESSION_SECRET: ${{ secrets.STEWARD_SESSION_SECRET }}
           STEWARD_REQUEST_SIGNING_SECRET: ${{ secrets.STEWARD_REQUEST_SIGNING_SECRET }}
@@ -1862,6 +1865,19 @@ jobs:
           # Queue only values explicitly configured in this protected GitHub
           # environment. queue_secret intentionally skips blank values, which
           # preserves an existing Cloudflare binding that GitHub cannot recover.
+          if has_nonblank_value "$KV_REST_API_URL"; then
+            case "$DEPLOY_ENVIRONMENT:$KV_REST_API_URL" in
+              staging:https://eliza-redis-http-staging.square-rain-7251.workers.dev|production:https://eliza-redis-http-production.square-rain-7251.workers.dev) ;;
+              *) echo "::error::Redis HTTP cutover URL must match the release environment"; exit 1 ;;
+            esac
+            bridge_secret_inventory="$(bunx wrangler@4.116.0 secret list ${{ steps.env.outputs.wrangler_args }} --format json)"
+            if ! jq -e 'any(.[]; .name == "KV_REST_API_TOKEN")' <<< "$bridge_secret_inventory" >/dev/null; then
+              echo "::error::Redis HTTP cutover requires the existing environment bearer binding"
+              exit 1
+            fi
+            queue_secret KV_REST_API_URL || exit 1
+          fi
+
           managed_worker_provisioning_secrets=(
             DATABASE_URL
             HEADSCALE_API_KEY
