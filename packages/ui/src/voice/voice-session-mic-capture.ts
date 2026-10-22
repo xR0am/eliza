@@ -386,16 +386,11 @@ export async function startVoiceMicCapture(
       acquiredContext.state === "suspended" ||
       acquiredContext.state === "interrupted"
     ) {
-      try {
-        await awaitCaptureStep(acquiredContext.resume(), signal);
-        throwIfCaptureCancelled(signal);
-      } catch (ignoredError) {
-        if (ignoredError instanceof VoiceMicCaptureCancelledError) {
-          throw ignoredError;
-        }
-        // error-policy:J5 a denied resume is observed downstream: a non-running graph delivers no frames and the suspend path reports it.
-        void ignoredError;
-      }
+      await awaitCaptureStep(acquiredContext.resume(), signal);
+      throwIfCaptureCancelled(signal);
+    }
+    if (acquiredContext.state !== "running") {
+      throw new Error("Microphone audio context is not running");
     }
     acquiredSource = acquiredContext.createMediaStreamSource(stream);
     throwIfCaptureCancelled(signal);
@@ -535,8 +530,10 @@ export async function startVoiceMicCapture(
         }
       : null);
 
+  let visibilityGeneration = 0;
   const onVisibilityChange = (): void => {
     if (stopped || !visibility) return;
+    const generation = ++visibilityGeneration;
     if (visibility.isHidden()) {
       if (!suspended) {
         suspended = true;
@@ -545,10 +542,33 @@ export async function startVoiceMicCapture(
         options.onSuspend?.();
       }
     } else if (suspended) {
-      suspended = false;
-      // error-policy:J5 a failed resume is observed downstream as absent frame delivery on a non-running graph.
-      void ctx.resume().catch(() => {});
-      options.onResume?.();
+      void ctx
+        .resume()
+        .then(() => {
+          if (
+            stopped ||
+            generation !== visibilityGeneration ||
+            visibility.isHidden()
+          )
+            return;
+          if (ctx.state !== "running")
+            throw new Error("Microphone audio context is not running");
+          suspended = false;
+          options.onResume?.();
+        })
+        .catch((error: unknown) => {
+          if (stopped || generation !== visibilityGeneration) return;
+          // A non-running graph cannot resume this capture. Release the device
+          // rather than retaining an apparently active but silent microphone.
+          void stop();
+          options.onError?.(
+            new VoiceMicCaptureError(
+              "Microphone audio could not resume",
+              "start_failed",
+              error,
+            ),
+          );
+        });
     }
   };
   visibility?.addListener(onVisibilityChange);
