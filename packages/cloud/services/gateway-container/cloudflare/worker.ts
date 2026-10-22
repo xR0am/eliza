@@ -1,3 +1,7 @@
+import { handleDiscordCoordination } from "./discord-coordination-state";
+
+export { DiscordCoordinationState } from "./discord-coordination-state";
+
 /** Hosts the existing gateway processes; their configured stores retain authority. */
 import { Container, getContainer } from "@cloudflare/containers";
 import { handleWebhookIngress } from "./webhook-ingress-state";
@@ -18,6 +22,7 @@ import { handleNetworkConsent } from "./network-consent-state";
 export { NetworkConsentState } from "./network-consent-state";
 
 interface Env {
+  DISCORD_COORDINATION_STATE?: DurableObjectNamespace;
   DISCORD_WELCOME_STATE?: DurableObjectNamespace;
   WEBHOOK_INGRESS_STATE?: DurableObjectNamespace;
   DELIVERY_RECEIPT_STATE?: DurableObjectNamespace;
@@ -94,6 +99,8 @@ async function stopInactiveGateway(env: Env): Promise<void> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/internal/discord-coordination")
+      return handleDiscordCoordination(request, env);
     if (new URL(request.url).pathname === "/internal/discord-welcome")
       return handleDiscordWelcome(request, env);
     if (new URL(request.url).pathname === "/internal/webhook-ingress")

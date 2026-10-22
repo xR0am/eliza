@@ -220,7 +220,11 @@ export type {
 	PlannerTrajectory,
 	RunEvaluatorParams,
 } from "./runtime/planner-types.ts";
-export * from "./runtime/prepared-model-request";
+export type {
+	CreatePreparedModelRequestGuardArgs,
+	PreparedModelRequestBudget,
+	PreparedModelRequestGuard,
+} from "./runtime/prepared-model-request";
 export {
 	extractReplyTextFromTranscript,
 	looksLikeRawFieldTranscript,
