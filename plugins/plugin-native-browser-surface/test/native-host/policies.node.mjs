@@ -20,12 +20,15 @@ const classes = [
   "BrowserAutofillEligibility",
   "BrowserPageHandoffs",
   "BrowserMainFrameGate",
+  "BrowserProfilePolicy",
+  "BrowserCapturePolicy",
 ];
 const consumers = [
   "BrowserWebPolicyTest",
   "BrowserSessionPolicyTest",
   "BrowserLinkAutofillPolicyTest",
   "BrowserPageHandoffsTest",
+  "BrowserProfileCaptureTest",
 ];
 const bin = (name) =>
   process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, "bin", name) : name;

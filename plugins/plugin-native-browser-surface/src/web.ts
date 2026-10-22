@@ -10,6 +10,7 @@ import { WebPlugin } from "@capacitor/core";
 
 import type {
   BrowserDockState,
+  CaptureSurfaceOptions,
   CreateSurfaceOptions,
   ElizaSurfaceManagerPlugin,
   NativePageRead,
@@ -18,6 +19,7 @@ import type {
   ReconcileOwnerOptions,
   SetBoundsOptions,
   SetOcclusionRectsOptions,
+  SurfaceCapture,
   SurfaceIdOptions,
   SurfaceOwnerOptions,
   SurfaceState,
@@ -123,6 +125,19 @@ export class BrowserSurfaceWeb
   async setTextZoom(
     _options: SurfaceIdOptions & { percent: number },
   ): Promise<void> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async clearSurfaceStorage(_options: SurfaceIdOptions): Promise<void> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async purgeProfiles(
+    _options: Parameters<ElizaSurfaceManagerPlugin["purgeProfiles"]>[0],
+  ): Promise<{ purged: number }> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async captureSurface(
+    _options: CaptureSurfaceOptions,
+  ): Promise<SurfaceCapture> {
     throw this.unavailable(UNAVAILABLE);
   }
   async readPage(

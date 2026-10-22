@@ -63,6 +63,19 @@ and does nothing by itself:
   closes; the host activity keeps running. Recreate the surface to continue.
 - `keyboardChanged`: the on-screen keyboard opened or closed, with its height.
 
+Isolated surfaces get a fresh storage profile that is cleared when the surface closes
+and deleted once Android releases it. `createSurface({ ..., profileKey })` instead
+selects one persistent profile per owner and key (for example a signed-in account), so
+website sign-ins survive. `purgeProfiles({ profileKey })` removes it at once and closes
+its surfaces (`surfaceClosed`); `purgeProfiles({ idleMs })` removes keyed profiles idle
+for that long. `clearSurfaceStorage` signs one isolated surface out of every website.
+
+`captureSurface` returns a JPEG of the visible page, about 1024 px on the long edge, for
+a vision fallback. Before the copy it covers password, `cc-*`, `one-time-code` and other
+sign-in fields, host-supplied selectors and every frame the page cannot read; it removes
+the covers right after and paints over host chrome. It rejects rather than return an
+image it could not mask.
+
 Script popups never open. `getSurfaceState` also returns `title`, `canGoBack`,
 `canGoForward`, `progress`, `pageError` and `textZoom`; `setTextZoom` sets the page
 text size from 50 to 300 percent.
@@ -100,7 +113,7 @@ its document ID. Closing, hiding, navigation, or owner reconciliation interrupts
 pending work. Activity pause also fences control and keeps the page for Resume.
 Hiding or pausing requires a fresh snapshot before the next input. A lost effect reply reports an uncertain outcome; observe before
 continuing and never automatically replay the effect. This API currently covers
-the main frame's DOM commands, not child frames, screenshots or coordinate input.
+the main frame's DOM commands, not child frames or coordinate input.
 
 `bun run --cwd plugins/plugin-native-browser-surface test:control` uses
 `ELIZA_BROWSER_EXECUTABLE` to test the generated channel in a real Chromium
