@@ -44,6 +44,19 @@ bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/se
 The suite creates and removes a unique schema and loads migrations 0544–0545.
 It must not point to a production database.
 
+Rate counters can use the private `RATE_LIMIT_STATE` Durable Object with
+`CLOUD_RATE_STATE_BACKEND=cloudflare` in the protected deployment environment.
+The canonical release validates and publishes this selection. Fixed and sliding windows retain their
+existing algorithms. Each check updates its key atomically; local decision leases
+are disabled for this backend. Missing bindings and store failures reject requests.
+The default remains `redis`. Do not activate until all source writers and leases
+are drained and the retained counters have expired or been transferred. The private
+import preserves absolute expirations, timestamped counts, and counters with no
+expiry. A persistent fixed counter keeps its count and starts its recovery window
+on the first check, matching Redis. Import rejects conflicts and is permanently
+closed for a shard after its first normal operation. Other
+Redis state, including quotas and gateway queues, is separate migration work.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:
