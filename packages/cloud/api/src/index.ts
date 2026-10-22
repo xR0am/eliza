@@ -46,6 +46,7 @@ import { serveRegistryHostRequest } from "./registry-host";
 import { knownRouteShardKey } from "./router-shards";
 import { isThinStewardPath } from "./steward/public-paths";
 
+export { A2ATaskState } from "./a2a-task-state";
 export { AnonymousChatGate } from "./anonymous-chat-gate";
 export { AuthenticationState } from "./authentication-state";
 export { isThinCliSessionPath } from "./cli-session-paths";

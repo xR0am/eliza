@@ -62,6 +62,7 @@ These additional private stores also default to `redis`:
 | Monthly download quotas | `CLOUD_HF_EGRESS_BACKEND` |
 | Daily voice quotas | `CLOUD_VOICE_USAGE_BACKEND` |
 | Fixed and sliding rate limits | `CLOUD_RATE_STATE_BACKEND` |
+| A2A tasks and organization index | `CLOUD_A2A_STATE_BACKEND` |
 
 Stop source writers and transfer complete state with original expiry before
 selecting `cloudflare`. Imports reject conflicts and close permanently once

@@ -31,6 +31,8 @@ export interface Bindings {
   VOICE_USAGE_STATE?: RuntimeDurableObjectNamespace;
   CLOUD_RATE_STATE_BACKEND?: string;
   RATE_LIMIT_STATE?: RuntimeDurableObjectNamespace;
+  CLOUD_A2A_STATE_BACKEND?: string;
+  A2A_TASK_STATE?: RuntimeDurableObjectNamespace;
   CLOUD_AUTH_STATE_BACKEND?: string;
   AUTHENTICATION_STATE?: RuntimeDurableObjectNamespace;
   /** Explicit per-turn Network context; absent disables the integration. */
