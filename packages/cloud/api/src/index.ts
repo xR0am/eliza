@@ -63,6 +63,7 @@ export {
   isThinStewardPublicPath,
 } from "./steward/public-paths";
 export { TwitterOAuthRefreshCoordinator } from "./twitter-oauth-refresh-coordinator";
+export { VoiceUsageState } from "./voice-usage-state";
 
 /**
  * Full-app promises memoised per route shard (issue #22550). Each entry is a

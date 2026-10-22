@@ -44,6 +44,17 @@ bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/se
 The suite creates and removes a unique schema and loads migrations 0544–0545.
 It must not point to a production database.
 
+Voice usage quotas can use the private `VOICE_USAGE_STATE` Durable Object with
+protected deployment variable `CLOUD_VOICE_USAGE_BACKEND=cloudflare`. One owner
+atomically accounts for an organization's daily total and its users. Rounding,
+limits, releases and day boundaries use the existing quota implementation.
+Both voice socket routes require the selected durable store before accepting a
+production connection. The default remains `redis`. Stop all source writers and
+transfer the current scaled counters with their original expirations before
+activation. Private imports reject conflicts and close permanently once the
+organization/day owner serves an ordinary operation. Speech providers and other
+Redis state are separate migration work.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:

@@ -157,13 +157,24 @@ app.get("/", (c) => {
   const usageLimits = resolveVoiceUsageLimits(env);
   // Paid provider admission must be atomic across Worker isolates. The
   // isolate-local store is an explicit test/local substitute only; production
-  // refuses the upgrade when Redis EVAL is unavailable.
-  const durableStore = createDurableVoiceUsageStore(
-    env as unknown as Parameters<typeof createDurableVoiceUsageStore>[0],
-  );
-  const mockRedis = (c.env as unknown as { MOCK_REDIS?: string }).MOCK_REDIS;
-  const usageStore: VoiceUsageStore | null =
-    durableStore ?? (mockRedis === "1" ? getWorkerFallbackUsageStore() : null);
+  // refuses the upgrade when the selected durable store is unavailable.
+  let durableStore: VoiceUsageStore | null;
+  try {
+    durableStore = createDurableVoiceUsageStore(
+      env as unknown as Parameters<typeof createDurableVoiceUsageStore>[0],
+    );
+  } catch (error) {
+    // error-policy:J1 The transport refuses admission when the selected quota owner is unavailable.
+    logger.error("[voice-session-ws] usage store unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return c.json({ error: "voice realtime metering unavailable" }, 503);
+  }
+  const usageStore =
+    durableStore ??
+    (c.env.MOCK_REDIS === "1" && c.env.NODE_ENV !== "production"
+      ? getWorkerFallbackUsageStore()
+      : null);
   if (!usageStore) {
     logger.error("[voice-session-ws] atomic usage admission unavailable");
     return c.json({ error: "voice realtime metering unavailable" }, 503);
