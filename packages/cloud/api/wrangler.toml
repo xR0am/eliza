@@ -135,6 +135,10 @@ namespace_id = "1615304"
 simple = { limit = 120, period = 60 }
 
 [[durable_objects.bindings]]
+name = "VOICE_USAGE_STATE"
+class_name = "VoiceUsageState"
+
+[[durable_objects.bindings]]
 name = "HF_EGRESS_STATE"
 class_name = "HfEgressState"
 
@@ -181,6 +185,10 @@ type = "durable-object"
 storage = "sqlite"
 
 [exports.HfEgressState]
+type = "durable-object"
+storage = "sqlite"
+
+[exports.VoiceUsageState]
 type = "durable-object"
 storage = "sqlite"
 
@@ -252,6 +260,7 @@ storage = "sqlite"
 # transition the database control durable -> paused, then remove/false this
 # secondary switch; keep the durable binary deployed so recovery can converge.
 [vars]
+CLOUD_VOICE_USAGE_BACKEND = "redis"
 CLOUD_HF_EGRESS_BACKEND = "redis"
 # Switch only after quiescing and transferring live auth state.
 CLOUD_AUTH_STATE_BACKEND = "redis"
@@ -629,6 +638,7 @@ binding = "AI"
 binding = "BROWSER"
 
 [env.staging.vars]
+CLOUD_VOICE_USAGE_BACKEND = "redis"
 CLOUD_HF_EGRESS_BACKEND = "redis"
 # Switch only after quiescing and transferring live auth state.
 CLOUD_AUTH_STATE_BACKEND = "redis"
@@ -863,6 +873,10 @@ binding = "CACHE_KV"
 id = "f7e24faaff734e7c8cd8e12b093c3571"
 
 [[env.staging.durable_objects.bindings]]
+name = "VOICE_USAGE_STATE"
+class_name = "VoiceUsageState"
+
+[[env.staging.durable_objects.bindings]]
 name = "HF_EGRESS_STATE"
 class_name = "HfEgressState"
 
@@ -969,6 +983,7 @@ binding = "AI"
 binding = "BROWSER"
 
 [env.production.vars]
+CLOUD_VOICE_USAGE_BACKEND = "redis"
 CLOUD_HF_EGRESS_BACKEND = "redis"
 # Switch only after quiescing and transferring live auth state.
 CLOUD_AUTH_STATE_BACKEND = "redis"
@@ -1179,6 +1194,10 @@ id = "9f59e4ec65f048f7b87e29e7b9c5d728"
 [[env.production.kv_namespaces]]
 binding = "CACHE_KV"
 id = "1dafabf1293d4b6b97f61c5cc22d6fec"
+
+[[env.production.durable_objects.bindings]]
+name = "VOICE_USAGE_STATE"
+class_name = "VoiceUsageState"
 
 [[env.production.durable_objects.bindings]]
 name = "HF_EGRESS_STATE"
