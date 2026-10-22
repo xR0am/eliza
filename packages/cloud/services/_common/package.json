@@ -15,7 +15,8 @@
     "./transport": "./src/transport.ts",
     "./testing": "./src/testing.ts",
     "./telegram": "./src/telegram.ts",
-    "./delivery-receipts": "./src/delivery-receipts.ts"
+    "./delivery-receipts": "./src/delivery-receipts.ts",
+    "./webhook-ingress": "./src/webhook-ingress.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

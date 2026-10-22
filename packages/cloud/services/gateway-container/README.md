@@ -45,3 +45,15 @@ only after old writers stop. Import fingerprints survive expiry; serving closes
 imports permanently. Expiry alarms remove receipt values. Public access requires
 the dedicated credential and cannot import state. Each endpoint accepts only its gateway kind’s key namespace. Ingress holds and
 Discord queues still use their existing stores.
+
+Webhook ingress uses `WEBHOOK_INGRESS_STATE` when
+`CLOUD_WEBHOOK_INGRESS_BACKEND=cloudflare`. Set `WEBHOOK_INGRESS_URL` to this
+Worker's HTTPS `/internal/webhook-ingress` endpoint and `WEBHOOK_INGRESS_TOKEN`
+in its runtime configuration. One environment-local transaction owner keeps
+dedup markers, Telegram chunk receipts, held payloads, retry scores, and leases
+consistent. Only these audited key prefixes and hold operations move; routing,
+configuration, and other stores retain their existing authority. Redis is the
+default. Stop and drain all old writers before privately importing the complete
+key/value snapshot with original absolute expiries (null means persistent) and
+the complete retry index. Conflicting imports fail, and any serving operation
+permanently closes import. Public requests cannot import or access other keys.
