@@ -1025,6 +1025,20 @@
         "bun-types": "1.4.2",
       },
     },
+    "packages/cloud/services/redis-rest": {
+      "name": "@elizaos/redis-rest",
+      "version": "1.0.0",
+      "dependencies": {
+        "@cloudflare/containers": "^0.3.7",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260429.1",
+        "@types/node": "22.19.17",
+        "@typescript/native": "npm:typescript@^7.0.2",
+        "bun-types": "1.4.2",
+        "typescript": "^6.0.3",
+      },
+    },
     "packages/cloud/shared": {
       "name": "@elizaos/cloud-shared",
       "version": "0.1.0",
@@ -4099,6 +4113,8 @@
     "@elizaos/provisioning-worker": ["@elizaos/provisioning-worker@workspace:packages/cloud/services/provisioning-worker"],
 
     "@elizaos/recall-bench": ["@elizaos/recall-bench@workspace:packages/benchmarks/suites/recall-bench"],
+
+    "@elizaos/redis-rest": ["@elizaos/redis-rest@workspace:packages/cloud/services/redis-rest"],
 
     "@elizaos/repository-tools": ["@elizaos/repository-tools@workspace:packages/scripts"],
 
