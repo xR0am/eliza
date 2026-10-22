@@ -12,16 +12,24 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerBundledModels } from "./bundled-models";
 
-const originalEnv = { ...process.env };
+const originalStateDir = process.env.ELIZA_STATE_DIR;
+let stateDir: string | null = null;
 
 beforeEach(() => {
-	process.env.ELIZA_STATE_DIR = fs.mkdtempSync(
-		path.join(os.tmpdir(), "eliza-bundled-models-"),
-	);
+	stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "eliza-bundled-models-"));
+	process.env.ELIZA_STATE_DIR = stateDir;
 });
 
 afterEach(() => {
-	process.env = { ...originalEnv };
+	// Restore only the key this suite owns: replacing the whole `process.env`
+	// object would discard variables other files wrote in the same worker.
+	if (originalStateDir === undefined) {
+		delete process.env.ELIZA_STATE_DIR;
+	} else {
+		process.env.ELIZA_STATE_DIR = originalStateDir;
+	}
+	if (stateDir) fs.rmSync(stateDir, { recursive: true, force: true });
+	stateDir = null;
 });
 
 function manifestPath(): string {
@@ -48,6 +56,12 @@ describe("bundled model manifest", () => {
 		await expect(registerBundledModels()).rejects.toThrow(
 			/bundled model manifest/i,
 		);
+		// The message alone is not the contract callers branch on: pin the
+		// classification and the path so a dropped `code`/`context` fails here.
+		await expect(registerBundledModels()).rejects.toMatchObject({
+			code: "BUNDLED_MODEL_MANIFEST_INVALID",
+			context: { path: manifestPath() },
+		});
 	});
 
 	it("surfaces a manifest that is present but not a v1 model list", async () => {
@@ -55,5 +69,20 @@ describe("bundled model manifest", () => {
 		await expect(registerBundledModels()).rejects.toThrow(
 			/bundled model manifest/i,
 		);
+		await expect(registerBundledModels()).rejects.toMatchObject({
+			code: "BUNDLED_MODEL_MANIFEST_INVALID",
+			context: { path: manifestPath() },
+		});
+	});
+
+	it("surfaces an unreadable manifest instead of reporting zero bundled models", async () => {
+		// A directory where the manifest file belongs makes readFile fail with
+		// EISDIR: the file is present, so this is a broken staging step, not the
+		// legitimate "no bundled models on this platform" case.
+		fs.mkdirSync(manifestPath(), { recursive: true });
+		await expect(registerBundledModels()).rejects.toMatchObject({
+			code: "BUNDLED_MODEL_MANIFEST_UNREADABLE",
+			context: { path: manifestPath() },
+		});
 	});
 });
