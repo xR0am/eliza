@@ -1278,11 +1278,27 @@ export async function executeWebBrowserWorkspaceDomCommand(
           active,
           command.subaction === "keyboardtype" ? "type" : "keyboardinserttext",
         );
-        const nextValue =
-          command.subaction === "keyboardtype"
-            ? `${control.value ?? ""}${command.value ?? ""}`
-            : (command.value ?? "");
-        setBrowserWorkspaceControlValue(control, nextValue);
+        const text = command.value ?? "";
+        if (control.tagName === "SELECT") {
+          const nextValue =
+            command.subaction === "keyboardtype"
+              ? `${control.value}${text}`
+              : text;
+          setBrowserWorkspaceControlValue(control, nextValue);
+        } else {
+          const input = control as HTMLInputElement | HTMLTextAreaElement;
+          if (!input.readOnly && !input.matches(":disabled")) {
+            const { selectionStart, selectionEnd } = input;
+            if (selectionStart !== null && selectionEnd !== null) {
+              // Both keyboard commands insert at the caret or replace the
+              // selected text. Leave the caret after the inserted text.
+              input.setRangeText(text, selectionStart, selectionEnd, "end");
+            } else {
+              // Input types without a selection API retain append behavior.
+              setBrowserWorkspaceControlValue(input, `${input.value}${text}`);
+            }
+          }
+        }
         return {
           mode: "web",
           subaction: command.subaction,
