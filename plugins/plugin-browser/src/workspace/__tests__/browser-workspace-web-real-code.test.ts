@@ -2,12 +2,14 @@
  * Real-code web workspace tests for command execution against JSDOM pages.
  */
 
+import { createServer } from "node:http";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetBrowserWorkspaceStateForTests,
   executeBrowserWorkspaceCommand,
   openBrowserWorkspaceTab,
 } from "../browser-workspace.js";
+import { webWorkspaceState } from "../browser-workspace-state.js";
 
 const webEnv: NodeJS.ProcessEnv = {};
 
@@ -57,6 +59,97 @@ const longSnapshotHtml = `<!doctype html>
 describe("browser workspace web-mode real-code command flow", () => {
   beforeEach(async () => {
     await __resetBrowserWorkspaceStateForTests();
+  });
+
+  it("inserts keyboard text at the selection and submits the edited values", async () => {
+    const submissions: URLSearchParams[] = [];
+    const server = createServer(async (request, response) => {
+      if (request.method === "POST") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        submissions.push(new URLSearchParams(Buffer.concat(chunks).toString()));
+      }
+      response.setHeader("Content-Type", "text/html");
+      response.end(`<!doctype html><title>Keyboard editing</title>
+        <form method="post" action="/submit">
+          <input id="query" name="query" value="hello world">
+          <textarea id="notes" name="notes">first\nsecond</textarea>
+          <input id="locked" name="locked" value="keep me" readonly>
+          <button id="submit">Submit</button>
+        </form>`);
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("No HTTP port");
+    try {
+      for (const subaction of ["keyboardinserttext", "keyboardtype"] as const) {
+        const tab = await openBrowserWorkspaceTab(
+          { url: `http://127.0.0.1:${address.port}` },
+          webEnv,
+        );
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction: "focus", selector: "#query" },
+          webEnv,
+        );
+        const document = webWorkspaceState.tabs.find(
+          (entry) => entry.id === tab.id,
+        )?.dom?.window.document;
+        const query = document?.querySelector<HTMLInputElement>("#query");
+        const notes = document?.querySelector<HTMLTextAreaElement>("#notes");
+        if (!query || !notes) throw new Error("HTTP form did not load");
+        // Arrange an actual DOM selection; edits and submission use commands.
+        query.setSelectionRange(6, 11);
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction, value: "Korea" },
+          webEnv,
+        );
+        expect.soft(query.value).toBe("hello Korea");
+        expect
+          .soft([query.selectionStart, query.selectionEnd])
+          .toEqual([11, 11]);
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction, value: "!" },
+          webEnv,
+        );
+        expect.soft(query.value).toBe("hello Korea!");
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction: "focus", selector: "#notes" },
+          webEnv,
+        );
+        notes.setSelectionRange(0, 5);
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction, value: "new" },
+          webEnv,
+        );
+        expect.soft(notes.value).toBe("new\nsecond");
+        expect.soft(notes.selectionStart).toBe(3);
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction: "focus", selector: "#locked" },
+          webEnv,
+        );
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction, value: "overwrite" },
+          webEnv,
+        );
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction: "click", selector: "#submit" },
+          webEnv,
+        );
+        const received = submissions.at(-1);
+        expect.soft(received?.get("query")).toBe("hello Korea!");
+        expect
+          .soft(received?.get("notes")?.replace(/\r\n/g, "\n"))
+          .toBe("new\nsecond");
+        expect.soft(received?.get("locked")).toBe("keep me");
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("keeps navigation metadata distinct from a subsequent page read", async () => {
