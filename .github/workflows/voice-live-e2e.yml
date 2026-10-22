@@ -9,6 +9,18 @@ name: Voice Live E2E
 on:
   workflow_dispatch:
     inputs:
+      cloudflare_environment:
+        description: "Protected environment for the authenticated speech contract"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+      expected_cloud_commit:
+        description: "Exact deployed API commit; defaults to the selected workflow ref commit"
+        required: false
+        type: string
       run_cloudflare_contract:
         description: "Run the authenticated Cloudflare TTS/STT contract lane"
         required: false
@@ -111,10 +123,13 @@ jobs:
     if: ${{ github.event_name == 'schedule' || inputs.run_cloudflare_contract }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: ${{ inputs.cloudflare_environment || 'staging' }}
     env:
       ELIZA_VOICE_LIVE_CLOUDFLARE: "1"
-      ELIZA_VOICE_CLOUD_API_URL: ${{ vars.ELIZA_VOICE_CLOUD_API_URL }}
-      ELIZAOS_CLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+      ELIZA_VOICE_CLOUD_ENVIRONMENT: ${{ inputs.cloudflare_environment || 'staging' }}
+      ELIZA_VOICE_CLOUD_COMMIT: ${{ inputs.expected_cloud_commit || github.sha }}
+      ELIZA_VOICE_CLOUD_API_URL: ${{ inputs.cloudflare_environment == 'production' && 'https://api.eliza.app' || 'https://api-staging.eliza.app' }}
+      ELIZAOS_CLOUD_API_KEY: ${{ secrets.ELIZAOS_CLOUD_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

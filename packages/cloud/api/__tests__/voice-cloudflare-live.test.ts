@@ -22,11 +22,36 @@ function configuration() {
   };
 }
 
+async function verifyDeployedRelease(base: string): Promise<void> {
+  const commit = process.env.ELIZA_VOICE_CLOUD_COMMIT;
+  const environment = process.env.ELIZA_VOICE_CLOUD_ENVIRONMENT;
+  if (!commit || !/^[a-f0-9]{40}$/.test(commit)) {
+    throw new Error("Live voice requires an exact ELIZA_VOICE_CLOUD_COMMIT");
+  }
+  if (environment !== "staging" && environment !== "production") {
+    throw new Error("Live voice requires staging or production environment");
+  }
+  const canonicalOrigin =
+    environment === "production"
+      ? "https://api.eliza.app"
+      : "https://api-staging.eliza.app";
+  if (base !== canonicalOrigin) {
+    throw new Error("Live voice URL does not match its protected environment");
+  }
+  const response = await fetch(`${base}/api/health`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ commit, environment });
+}
+
 describe("Workers AI through authenticated Cloud voice routes", () => {
   maybe(
     "TTS and STT both report Cloudflare and recover the spoken phrase",
     async () => {
       const { base, headers } = configuration();
+      await verifyDeployedRelease(base);
       const tts = await fetch(`${base}/api/v1/voice/tts`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
@@ -66,14 +91,16 @@ describe("Workers AI through authenticated Cloud voice routes", () => {
       expect(transcript).toContain("hello");
       expect(transcript).toContain("eliza");
       expect(transcript).toContain("cloud");
+      await verifyDeployedRelease(base);
     },
-    200_000,
+    260_000,
   );
 
   maybe(
     "oversized text receives an explicit client error",
     async () => {
       const { base, headers } = configuration();
+      await verifyDeployedRelease(base);
       const response = await fetch(`${base}/api/v1/voice/tts`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
@@ -89,6 +116,6 @@ describe("Workers AI through authenticated Cloud voice routes", () => {
         error: "Text too long. Maximum length is 2000 characters",
       });
     },
-    40_000,
+    75_000,
   );
 });
