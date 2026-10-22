@@ -291,6 +291,29 @@ jobs:
           TURBO_SCM_BASE: ${{ steps.affected.outputs.base }}
         run: node packages/scripts/run-turbo.ts run build --concurrency=4 --output-logs=errors-only
 
+      - name: Verify CLI account confirmation and account-switch regressions
+        if: steps.affected.outputs.source == 'true'
+        timeout-minutes: 5
+        env:
+          BASE_SHA: ${{ steps.diff.outputs.merge_base }}
+          HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
+          NODE_OPTIONS: --max-old-space-size=2048
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff_status=0
+          git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \
+            packages/ui/src/cloud/public-pages/pages/auth/cli-login-page.tsx \
+            packages/ui/src/cloud/public-pages/pages/auth/__e2e__/cli-login-page.test.tsx \
+            packages/ui/src/cloud/public-pages/pages/auth/__e2e__/cli-login-page.identity.test.tsx || diff_status=$?
+          if [ "$diff_status" -eq 0 ]; then exit 0; fi
+          if [ "$diff_status" -ne 1 ]; then exit "$diff_status"; fi
+          bun run --cwd packages/ui test:e2e \
+            src/cloud/public-pages/pages/auth/__e2e__/cli-login-page.test.tsx \
+            src/cloud/public-pages/pages/auth/__e2e__/cli-login-page.identity.test.tsx \
+            --maxWorkers=1 --no-file-parallelism \
+            --execArgv=--max-old-space-size=2048
+
       - name: Verify Network Personal room routes
         if: steps.affected.outputs.cloud == 'true'
         timeout-minutes: 3
