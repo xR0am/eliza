@@ -127,1664 +127,1688 @@
   // callback. Announce again once the DOM has loaded, retaining the same ID.
   if (document.readyState === "loading")
     document.addEventListener("DOMContentLoaded", ready, { once: true });
-})(function pageCommand(command, snapshotId, validateOnly = false) {
-  const policy = command.taskPolicy;
-  const denied = () => ({
-    error: {
-      kind: "POLICY_BLOCKED",
-      message:
-        "This action requires the person or a new authorized task observation.",
-    },
-  });
-  if (
-    policy &&
-    (window !== window.top ||
-      location.origin !== policy.origin ||
-      Date.now() >= policy.expiresAt)
-  )
-    return denied();
-  const key = "__elizaBrowserControlV1";
-  const monitorKey = "__elizaBrowserObservationV1";
-  const watchKey = "__elizaTaskEffectWatchV1";
-  let monitor = globalThis[monitorKey];
-  if (!monitor || monitor.document !== document) {
-    monitor = {
-      document,
-      domRevision: 0,
-      inputRevision: 0,
-      ownedHosts: new WeakSet(),
-      editedFields: new WeakSet(),
+})(
+  function pageCommand(command, snapshotId, validateOnly = false) {
+    const policy = command.taskPolicy;
+    const denied = () => ({
+      error: {
+        kind: "POLICY_BLOCKED",
+        message:
+          "This action requires the person or a new authorized task observation.",
+      },
+    });
+    if (
+      policy &&
+      (window !== window.top ||
+        location.origin !== policy.origin ||
+        Date.now() >= policy.expiresAt)
+    )
+      return denied();
+    const key = "__elizaBrowserControlV1";
+    const monitorKey = "__elizaBrowserObservationV1";
+    const watchKey = "__elizaTaskEffectWatchV1";
+    let monitor = globalThis[monitorKey];
+    if (!monitor || monitor.document !== document) {
+      monitor = {
+        document,
+        domRevision: 0,
+        inputRevision: 0,
+        ownedHosts: new WeakSet(),
+        editedFields: new WeakSet(),
+      };
+      monitor.recordMutations = (records) => {
+        if (
+          records.some(
+            (record) =>
+              !(
+                record.type === "childList" &&
+                record.target === document.documentElement &&
+                [...record.addedNodes, ...record.removedNodes].length > 0 &&
+                [...record.addedNodes, ...record.removedNodes].every((node) =>
+                  monitor.ownedHosts.has(node),
+                )
+              ),
+          )
+        )
+          monitor.domRevision++;
+      };
+      monitor.observer = new MutationObserver(monitor.recordMutations);
+      monitor.observer.observe(document, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      });
+      const input = (event) => {
+        monitor.inputRevision++;
+        if (
+          ["input", "change"].includes(event?.type) &&
+          event.target instanceof Element
+        )
+          monitor.editedFields.add(event.target);
+      };
+      document.addEventListener("beforeinput", input, true);
+      document.addEventListener("input", input, true);
+      document.addEventListener("change", input, true);
+      document.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (event.isTrusted) input();
+        },
+        true,
+      );
+      globalThis[monitorKey] = monitor;
+    }
+    // Drain queued mutations synchronously as an effect may arrive before the
+    // MutationObserver microtask. Never store or return form values in this monitor.
+    monitor.recordMutations(monitor.observer.takeRecords());
+    const bounds = (node) => {
+      const rect = node.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     };
-    monitor.recordMutations = (records) => {
+    const viewport = () => ({
+      width: innerWidth,
+      height: innerHeight,
+      scrollX,
+      scrollY,
+      devicePixelRatio,
+      scale: visualViewport?.scale ?? 1,
+      offsetLeft: visualViewport?.offsetLeft ?? 0,
+      offsetTop: visualViewport?.offsetTop ?? 0,
+    });
+    // Shared by the snapshot and the commit guard so both name a node alike.
+    const readVisibleText = (root) => {
+      const visibleText = [];
+      const collectText = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const visibility = node.parentElement
+            ? getComputedStyle(node.parentElement).visibility
+            : "visible";
+          if (
+            visibility !== "hidden" &&
+            visibility !== "collapse" &&
+            node.textContent.trim()
+          )
+            visibleText.push(node.textContent);
+          return;
+        }
+        if (!(node instanceof Element)) return;
+        if (
+          node.matches("input,textarea,select,script,style,noscript") ||
+          node.isContentEditable
+        )
+          return;
+        const style = getComputedStyle(node);
+        if (style.display === "none") return;
+        if (node instanceof HTMLDetailsElement && !node.open) {
+          const summary = node.querySelector(":scope > summary");
+          if (summary) collectText(summary);
+          return;
+        }
+        for (const child of node.childNodes) collectText(child);
+      };
+      collectText(root);
+      return visibleText.join("\n").trim();
+    };
+    // Accessible name in the usual order. Never reads a form control value
+    // except the visible caption of a button-type input.
+    const idText = (value) =>
+      (value || "")
+        .split(/\s+/)
+        .map((id) => id && document.getElementById(id))
+        .filter(Boolean)
+        .map((ref) => readVisibleText(ref) || ref.getAttribute("aria-label"))
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+    const accessibleName = (node) => {
+      const labelled = idText(node.getAttribute("aria-labelledby"));
+      if (labelled) return labelled;
+      const aria = node.getAttribute("aria-label")?.trim();
+      if (aria) return aria;
+      const labels = [...(node.labels ?? [])]
+        .map((label) => readVisibleText(label))
+        .filter(Boolean)
+        .join(" ");
+      if (labels) return labels;
       if (
-        records.some(
-          (record) =>
-            !(
-              record.type === "childList" &&
-              record.target === document.documentElement &&
-              [...record.addedNodes, ...record.removedNodes].length > 0 &&
-              [...record.addedNodes, ...record.removedNodes].every((node) =>
-                monitor.ownedHosts.has(node),
-              )
-            ),
+        node instanceof HTMLInputElement &&
+        ["button", "submit", "reset"].includes(node.type)
+      )
+        return node.value || (node.type === "submit" ? "Submit" : "");
+      if (node instanceof HTMLInputElement && node.type === "image")
+        return node.alt || node.title || "";
+      if (node instanceof HTMLInputElement && node.type === "password")
+        return node.getAttribute("placeholder") || node.title || "Password";
+      if (
+        node instanceof HTMLInputElement ||
+        node instanceof HTMLTextAreaElement ||
+        node instanceof HTMLSelectElement ||
+        node.isContentEditable
+      )
+        return node.getAttribute("placeholder") || node.title || "";
+      return readVisibleText(node) || node.title || "";
+    };
+    // Marks fields whose value is a secret. The value itself is never read.
+    // The field's type and autocomplete tokens decide first. A field that the
+    // page does not mark is classified by its name, its id, its placeholder and
+    // its accessible name, for example "Social Security number" or
+    // "routingNumber". A task never fills such a field and a host never shows
+    // it to a model.
+    const sensitivity = (node) => {
+      if (
+        !(
+          node instanceof HTMLInputElement ||
+          node instanceof HTMLTextAreaElement ||
+          node instanceof HTMLSelectElement ||
+          node.isContentEditable
         )
       )
-        monitor.domRevision++;
+        return null;
+      const autocomplete = (node.getAttribute("autocomplete") || "")
+        .toLowerCase()
+        .split(/\s+/);
+      if (
+        (node instanceof HTMLInputElement && node.type === "password") ||
+        autocomplete.some((token) => token.endsWith("password"))
+      )
+        return "password";
+      if (autocomplete.includes("one-time-code")) return "one-time-code";
+      if (autocomplete.some((token) => token.startsWith("cc-")))
+        return "payment-card";
+      const words = [
+        node.getAttribute("name"),
+        node.id,
+        node.getAttribute("placeholder"),
+        accessibleName(node),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        // "routingNumber" and "card_cvv" become separate words.
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/[_.-]+/g, " ");
+      // "PIN code" is also the Indian postal code: a field that names itself a
+      // postal code is an address field, not a password.
+      const postal =
+        autocomplete.includes("postal-code") ||
+        /\b(?:postal|zip|post\s*code)\b/i.test(words);
+      if (
+        /\b(?:pass\s*(?:word|phrase)|pwd|security\s+answer)\b/i.test(words) ||
+        (!postal && /\bpin\b/i.test(words))
+      )
+        return "password";
+      if (
+        /\b(?:one\s*time\s*(?:pass)?code|verification\s+code|otp|2fa|mfa|passcode|authentication\s+code)\b/i.test(
+          words,
+        )
+      )
+        return "one-time-code";
+      if (
+        /\b(?:card\s*(?:number|no)|credit\s+card|debit\s+card|cvv2?|cvc|csc|security\s+code|expir(?:y|ation)\s*(?:date)?|cc\s*(?:num|number|exp))\b/i.test(
+          words,
+        )
+      )
+        return "payment-card";
+      if (
+        /\b(?:routing(?:\s+number)?|iban|swift|bic|sort\s+code|bank\s+account|checking\s+account|savings\s+account)\b/i.test(
+          words,
+        )
+      )
+        return "bank-account";
+      if (
+        /\b(?:ssn|social\s+security|social\s+insurance|tax\s+id(?:entification)?|itin|passport|driver'?s?\s+licen[cs]e|national\s+id|medicare\s+(?:number|id))\b/i.test(
+          words,
+        )
+      )
+        return "government-id";
+      return null;
     };
-    monitor.observer = new MutationObserver(monitor.recordMutations);
-    monitor.observer.observe(document, {
+    if (command.subaction === "snapshot") {
+      const controlState = (node) => {
+        const flag = (name) => node.getAttribute(name) === "true";
+        return {
+          focused: document.activeElement === node,
+          disabled: node.matches(":disabled") || flag("aria-disabled"),
+          ...(node instanceof HTMLInputElement &&
+          ["checkbox", "radio"].includes(node.type)
+            ? { checked: node.checked }
+            : node.hasAttribute("aria-checked")
+              ? { checked: flag("aria-checked") }
+              : {}),
+          ...(node.hasAttribute("aria-expanded")
+            ? { expanded: flag("aria-expanded") }
+            : {}),
+          required: node.required === true || flag("aria-required"),
+          invalid: flag("aria-invalid"),
+          // Field help and error text the page ties to this control.
+          description:
+            [
+              idText(node.getAttribute("aria-describedby")),
+              flag("aria-invalid")
+                ? idText(node.getAttribute("aria-errormessage"))
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" ") || null,
+          sensitive: sensitivity(node),
+          ...(node instanceof HTMLInputElement ||
+          node instanceof HTMLSelectElement ||
+          node instanceof HTMLTextAreaElement ||
+          node.isContentEditable
+            ? { edited: monitor.editedFields.has(node) }
+            : {}),
+          // A select can have a valid choice whose internal value is empty.
+          // Only selection/occupancy leaves the page, never the field value.
+          ...(node instanceof HTMLSelectElement
+            ? {
+                hasInput:
+                  node.selectedIndex >= 0 &&
+                  !node.validity.valueMissing &&
+                  !node.options[node.selectedIndex].disabled &&
+                  (node.value !== "" || monitor.editedFields.has(node)),
+              }
+            : (node instanceof HTMLInputElement &&
+                  ![
+                    "button",
+                    "submit",
+                    "reset",
+                    "image",
+                    "checkbox",
+                    "radio",
+                    "file",
+                    "hidden",
+                    "range",
+                    "color",
+                  ].includes(node.type)) ||
+                node instanceof HTMLTextAreaElement
+              ? { hasInput: node.value !== "" }
+              : node.isContentEditable
+                ? { hasInput: (node.textContent ?? "").trim() !== "" }
+                : {}),
+        };
+      };
+      // A page can copy what was typed in a secret field into its own text, its
+      // title or a control's name. The values are compared here, in the page, and
+      // every copy is replaced before anything is returned. Very short values are
+      // not compared: they would match ordinary words.
+      const secrets = [
+        ...new Set(
+          [...document.querySelectorAll("input,textarea")]
+            .filter((node) => sensitivity(node) !== null)
+            .map((node) => node.value)
+            .filter((value) => typeof value === "string" && value.length >= 4),
+        ),
+      ].sort((left, right) => right.length - left.length);
+      const withoutSecrets = (value) =>
+        typeof value === "string"
+          ? secrets.reduce(
+              (text, secret) => text.split(secret).join("[hidden]"),
+              value,
+            )
+          : value;
+      const nodes = new Map();
+      const elements = [];
+      // Native controls and widget roles, as assistive technology lists them.
+      const NATIVE =
+        "a,button,input,textarea,select,summary,[contenteditable=true],[role=button],[role=link],[role=textbox],[role=searchbox],[role=combobox],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=option],[role=spinbutton],[role=slider]";
+      // A page can also make a plain element pressable with an inline click
+      // handler, a tab stop or a pointer cursor, often with no name at all.
+      // The commit guard treats the same signals as a control. Only the
+      // outermost such element that holds no native control is listed.
+      // One pass in document order. The cheap attribute test runs before the
+      // style and subtree tests, and an element inside a listed custom control
+      // is skipped by its ancestor, so a large page stays linear.
+      const custom = new Set();
+      const candidates = [];
+      for (const node of (
+        document.body ?? document.documentElement
+      ).querySelectorAll("*")) {
+        if (node.matches(NATIVE)) {
+          candidates.push(node);
+          continue;
+        }
+        if (
+          !(
+            node.matches('[onclick],[tabindex]:not([tabindex="-1"])') ||
+            (getComputedStyle(node).cursor === "pointer" &&
+              getComputedStyle(node.parentElement ?? node).cursor !== "pointer")
+          ) ||
+          node.closest(NATIVE) ||
+          node.querySelector(NATIVE)
+        )
+          continue;
+        let inside = false;
+        for (
+          let item = node.parentElement;
+          item && !inside;
+          item = item.parentElement
+        )
+          inside = custom.has(item);
+        if (inside) continue;
+        custom.add(node);
+        candidates.push(node);
+      }
+      // The last visible line of text before a control, looked for among its
+      // earlier siblings and then its ancestors' earlier siblings. It names a
+      // control that has no label ("Search" beside an empty input) and tells
+      // repeated labels apart (the row text before each "Pay").
+      const nearbyText = (node) => {
+        for (
+          let item = node, depth = 0;
+          item && item !== document.body && depth < 4;
+          item = item.parentElement, depth++
+        )
+          for (
+            let sibling = item.previousSibling;
+            sibling;
+            sibling = sibling.previousSibling
+          ) {
+            const text =
+              sibling.nodeType === Node.TEXT_NODE
+                ? sibling.textContent.trim()
+                : sibling instanceof Element
+                  ? readVisibleText(sibling)
+                  : "";
+            if (text) return text.split("\n").filter(Boolean).at(-1).trim();
+          }
+        return null;
+      };
+      // The form or field group the control belongs to, by its own name.
+      const groupName = (group) =>
+        group
+          ? idText(group.getAttribute("aria-labelledby")) ||
+            group.getAttribute("aria-label")?.trim() ||
+            (group.querySelector("legend,h1,h2,h3,h4,h5,h6")
+              ? readVisibleText(group.querySelector("legend,h1,h2,h3,h4,h5,h6"))
+              : "") ||
+            null
+          : null;
+      const forms = [...document.forms];
+      // Position of an element among its siblings with the same tag, counted
+      // once per parent.
+      const typeIndexes = new Map();
+      const typeIndex = (item) => {
+        if (!typeIndexes.has(item)) {
+          const counts = {};
+          for (const sibling of item.parentElement?.children ?? [item]) {
+            counts[sibling.tagName] = (counts[sibling.tagName] ?? 0) + 1;
+            typeIndexes.set(sibling, counts[sibling.tagName]);
+          }
+        }
+        return typeIndexes.get(item);
+      };
+      // A CSS selector that matches only this node now. A host may grant one
+      // task action on it after the person agrees; the page guard checks the
+      // match again at the moment of the action.
+      const uniqueSelector = (node) => {
+        const unique = (selector) => {
+          try {
+            return (
+              selector.length <= 256 &&
+              document.querySelectorAll(selector).length === 1 &&
+              document.querySelector(selector) === node
+            );
+          } catch {
+            return false;
+          }
+        };
+        if (node.id && unique(`#${CSS.escape(node.id)}`))
+          return `#${CSS.escape(node.id)}`;
+        const name = node.getAttribute("name");
+        const named =
+          name && `${node.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+        if (named && unique(named)) return named;
+        // A child-combinator path of :nth-of-type steps from a unique id or
+        // from the root names one element. It is not searched for again here:
+        // the page guard checks that it matches only this node at the moment
+        // of a granted action.
+        const path = [];
+        for (
+          let item = node;
+          item && item !== document.documentElement;
+          item = item.parentElement
+        ) {
+          if (item !== node && item.id && unique(`#${CSS.escape(item.id)}`)) {
+            path.unshift(`#${CSS.escape(item.id)}`);
+            break;
+          }
+          path.unshift(
+            `${item.tagName.toLowerCase()}:nth-of-type(${typeIndex(item)})`,
+          );
+        }
+        const selector = path.join(" > ");
+        try {
+          return selector.length <= 256 && node.matches(selector)
+            ? selector
+            : null;
+        } catch {
+          return null;
+        }
+      };
+      for (const node of candidates) {
+        if (!node.checkVisibility({ checkVisibilityCSS: true })) continue;
+        const id = String(nodes.size);
+        const geometry = bounds(node);
+        // This equality sentinel never leaves the isolated page realm.
+        nodes.set(id, {
+          node,
+          bounds: geometry,
+          value: typeof node.value === "string" ? node.value : null,
+        });
+        const state = controlState(node);
+        const form = node.form ?? node.closest("form");
+        const hint = (value) => withoutSecrets(value?.trim() || null);
+        elements.push({
+          bounds: geometry,
+          id,
+          tag: node.tagName.toLowerCase(),
+          role: node.getAttribute("role"),
+          label: withoutSecrets(accessibleName(node)),
+          type: node.getAttribute("type"),
+          ...state,
+          description: withoutSecrets(state.description),
+          // Words that locate a control when its name is empty or repeated.
+          // None of them is a field value.
+          placeholder: hint(node.getAttribute("placeholder")),
+          title: hint(node.getAttribute("title")),
+          fieldName: hint(node.getAttribute("name")),
+          imageText: hint(
+            [...node.querySelectorAll("img[alt],svg title")]
+              .map((item) => item.getAttribute("alt") ?? item.textContent)
+              .join(" "),
+          ),
+          nearbyText: hint(nearbyText(node)),
+          // The whole row or list item a control sits in, cell by cell, such
+          // as "The Overstory | Due October 20" beside an unnamed Renew icon.
+          rowText: hint(
+            (() => {
+              const row = node.closest("tr,[role=row],li,[role=listitem]");
+              return row
+                ? readVisibleText(row).split("\n").filter(Boolean).join(" | ")
+                : null;
+            })(),
+          ),
+          form: form
+            ? { index: forms.indexOf(form), name: hint(groupName(form)) }
+            : null,
+          group: hint(groupName(node.closest("fieldset,[role=group]"))),
+          // A button that sends its form when pressed.
+          submits:
+            (node instanceof HTMLButtonElement ||
+              node instanceof HTMLInputElement) &&
+            node.form !== null &&
+            ["submit", "image"].includes(node.type),
+          pressable: custom.has(node)
+            ? node.matches("[onclick]")
+              ? "click-handler"
+              : node.matches("[tabindex]")
+                ? "tab-stop"
+                : "pointer-cursor"
+            : null,
+          inViewport:
+            geometry.width > 0 &&
+            geometry.height > 0 &&
+            geometry.x < innerWidth &&
+            geometry.y < innerHeight &&
+            geometry.x + geometry.width > 0 &&
+            geometry.y + geometry.height > 0,
+          targetSelector: uniqueSelector(node),
+          heading: node.querySelector("h1,h2,h3,h4,h5,h6")
+            ? withoutSecrets(
+                readVisibleText(node.querySelector("h1,h2,h3,h4,h5,h6")),
+              )
+            : null,
+          href:
+            node instanceof HTMLAnchorElement && /^https?:/.test(node.href)
+              ? node.href
+              : null,
+        });
+      }
+      globalThis[key] = {
+        snapshotId,
+        nodes,
+        document,
+        url: location.href,
+        domRevision: monitor.domRevision,
+        inputRevision: monitor.inputRevision,
+        viewport: viewport(),
+      };
+      // A submit or page change that a task fill or click set off in this
+      // document, under this binding. The watch below stopped it.
+      const violation = globalThis[watchKey]?.violation;
+      return {
+        ...(policy && violation && violation.scope === policy.guidanceScope
+          ? { effectViolation: violation.kind }
+          : {}),
+        url: location.href,
+        title: withoutSecrets(document.title),
+        readyState: document.readyState,
+        domRevision: monitor.domRevision,
+        inputRevision: monitor.inputRevision,
+        viewport: viewport(),
+        text: withoutSecrets(
+          readVisibleText(document.body ?? document.documentElement),
+        ),
+        complete: true,
+        omitted: [
+          "form control values and editable region contents (credential boundary)",
+          "page text, title and control names equal to the value of a password, code or card field",
+        ],
+        elements,
+      };
+    }
+    const state = globalThis[key];
+    if (
+      !state ||
+      state.snapshotId !== command.snapshotId ||
+      state.document !== document ||
+      state.url !== location.href ||
+      state.domRevision !== monitor.domRevision ||
+      state.inputRevision !== monitor.inputRevision ||
+      JSON.stringify(state.viewport) !== JSON.stringify(viewport())
+    )
+      return {
+        error: {
+          kind: "STALE_REF",
+          message: "Read a fresh snapshot of this tab.",
+        },
+      };
+    const recorded = state.nodes.get(command.nodeId);
+    const node = recorded?.node;
+    if (
+      !node?.isConnected ||
+      recorded.value !== (typeof node.value === "string" ? node.value : null) ||
+      JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node))
+    )
+      return {
+        error: {
+          kind: "STALE_REF",
+          message:
+            "The referenced page element changed; read a fresh snapshot.",
+        },
+      };
+    if (policy) {
+      // The native host supplies reviewed target permissions; DOM text cannot
+      // grant an action. Re-check the actual node immediately before the effect.
+      if (
+        !policy.targets.some((target) => {
+          // A host can bind one action to the one reviewed control it chose.
+          if (
+            policy.expectedSelector !== undefined &&
+            target.selector !== policy.expectedSelector
+          )
+            return false;
+          const permission =
+            command.subaction === "fill" &&
+            policy.protectedValueKind === "verification-code"
+              ? "fill-code"
+              : command.subaction;
+          if (target.action !== permission) return false;
+          try {
+            const matches = document.querySelectorAll(target.selector);
+            return matches.length === 1 && matches[0] === node;
+          } catch {
+            return false;
+          }
+        })
+      )
+        return denied();
+      const label = [
+        accessibleName(node),
+        node.getAttribute("aria-label"),
+        node.textContent,
+        node.title,
+        node instanceof HTMLInputElement ? node.value : "",
+        ...[...(node.labels ?? [])].map((item) => item.textContent),
+      ].join(" ");
+      // A control that commits something stays with the person, whatever its
+      // element or role. Keep this literal equal to COMMIT_CONTROL above; the
+      // function runs in the page, so it cannot read a module constant.
+      if (
+        command.subaction === "click" &&
+        (node.matches(
+          "button:not([type=button]):not([type=reset]),input[type=submit],input[type=image],input[type=password]",
+        ) ||
+          /\b(pay|pays|paying|payments?|submit|confirm|sign\s*in|log\s*in|sign\s*up|verify|send|delete|remove|cancel|close\s+account|authori[sz]e|agree|accept|save|continue|proceed|buy|purchase|place\s+(?:my\s+|your\s+|the\s+)?order|order\s+now|check\s*out|schedule|transfer|donate|subscribe)\b/i.test(
+            label,
+          ))
+      )
+        return denied();
+      if (
+        command.subaction === "fill" &&
+        (!(
+          node instanceof HTMLInputElement ||
+          node instanceof HTMLTextAreaElement ||
+          node instanceof HTMLSelectElement
+        ) ||
+          (node instanceof HTMLInputElement &&
+            ![
+              "text",
+              "email",
+              "tel",
+              "number",
+              "search",
+              "url",
+              "date",
+            ].includes(node.type)) ||
+          // A date field takes only a real calendar day, as YYYY-MM-DD.
+          (node instanceof HTMLInputElement &&
+            node.type === "date" &&
+            (!/^\d{4}-\d{2}-\d{2}$/.test(command.text) ||
+              command.text.startsWith("0000-") ||
+              Number.isNaN(Date.parse(`${command.text}T00:00:00Z`)) ||
+              new Date(`${command.text}T00:00:00Z`)
+                .toISOString()
+                .slice(0, 10) !== command.text)) ||
+          (policy.protectedValueKind === "verification-code"
+            ? !(node instanceof HTMLInputElement) ||
+              node.autocomplete !== "one-time-code" ||
+              !/^[A-Za-z0-9]{4,12}$/.test(command.text)
+            : sensitivity(node) !== null))
+      )
+        return denied();
+    }
+    if (command.subaction === "fill" && (node.disabled || node.readOnly))
+      return denied();
+    // A control the provider disabled stays as the provider left it. A script
+    // click on an aria-disabled control would still run the page's handlers.
+    if (
+      policy &&
+      command.subaction === "click" &&
+      node.matches(':disabled,[aria-disabled="true"]')
+    )
+      return denied();
+    if (validateOnly) return { validated: true };
+    if (policy?.actionId) {
+      const feedback = globalThis.__elizaPageGuidanceV1;
+      if (
+        !feedback?.actionReady?.(
+          policy.actionId,
+          command.snapshotId,
+          command.nodeId,
+          command.subaction,
+        )
+      )
+        return denied();
+      feedback.markActed();
+    }
+    delete globalThis[key];
+    if (policy && ["click", "fill"].includes(command.subaction)) {
+      // A task fill or click must not submit a form or leave the page, also
+      // not through the page's own script (an auto-submitting code field, or
+      // a button that calls form.submit()). For 30 seconds, or until the next
+      // task fill or click, watch what the page does before the person takes
+      // over by activating a control:
+      // - a form submit or a page change to another document is stopped,
+      //   except a click on a link that opens that link;
+      // - a same-document address change (history.pushState) is recorded;
+      // - a fetch, XMLHttpRequest or beacon to the page's own site is recorded.
+      //   It cannot be stopped from here and may already have committed
+      //   something (a code field that verifies itself with fetch).
+      // Snapshots report the first of these, so the host treats the outcome as
+      // unknown and pauses the task. A request still in flight when a snapshot
+      // is read shows up in a later snapshot.
+      globalThis[watchKey]?.stop();
+      const anchor =
+        command.subaction === "click" ? node.closest("a[href]") : null;
+      let personAt = Number.NEGATIVE_INFINITY;
+      let activationAt = Number.POSITIVE_INFINITY;
+      const startedAt = performance.now();
+      const controller = new AbortController();
+      const watch = {
+        violation:
+          globalThis[watchKey]?.violation?.scope === policy.guidanceScope
+            ? (globalThis[watchKey]?.violation ?? null)
+            : null,
+        stop: () => controller.abort(),
+      };
+      // A person's activated control can finish after the short typing window.
+      // Stray taps, scrolling and ordinary typing do not create that handoff.
+      // Resource start times still expose older requests delivered afterward.
+      const byPerson = (at) =>
+        at >= activationAt || (at - personAt >= 0 && at - personAt <= 1500);
+      const record = (kind) => {
+        watch.violation ??= { kind, scope: policy.guidanceScope };
+      };
+      const report = (kind, event) => {
+        if (byPerson(performance.now())) return;
+        if (event.cancelable) event.preventDefault();
+        event.stopImmediatePropagation();
+        record(kind);
+      };
+      const options = { capture: true, signal: controller.signal };
+      const person = (event) => {
+        if (event.isTrusted) personAt = performance.now();
+      };
+      const personForms = new WeakSet();
+      window.addEventListener("pointerdown", person, options);
+      window.addEventListener("keydown", person, options);
+      const activate = (event) => {
+        if (!event.isTrusted || !(event.target instanceof Element)) return;
+        const target = event.target;
+        const control = target.closest(
+          'button,input[type="submit"],input[type="button"],input[type="reset"],a[href],[role="button"],[role="link"]',
+        );
+        if (control?.matches(':disabled,[aria-disabled="true"]')) return;
+        const keyboard = event.type === "keydown";
+        const fields =
+          "textarea,select,input:not([type=submit]):not([type=button]):not([type=reset])";
+        const field = target.isContentEditable || target.matches(fields);
+        // A custom control (no button element or button role) can send its form
+        // from script seconds later. Her press on such a control makes that form
+        // hers for the rest of this watch. Only an element that presents itself
+        // as a control counts: a widget role, a tabindex, an inline click
+        // handler, or a pointer cursor on the pressed element. A press on the
+        // form's own padding, on plain text, on a field, on a label, or on an
+        // element that wraps a field is a stray tap and releases nothing.
+        const form = target.closest("form");
+        if (
+          !keyboard &&
+          form &&
+          target !== form &&
+          !field &&
+          !target.closest("label")
+        ) {
+          for (
+            let item = target;
+            item && item !== form;
+            item = item.parentElement
+          ) {
+            if (item.querySelector(fields) || item.querySelector("label"))
+              break;
+            if (
+              item === control ||
+              item.matches(
+                '[tabindex],[onclick],[role="menuitem"],[role="option"],[role="switch"],[role="checkbox"],[role="radio"],[role="tab"]',
+              ) ||
+              (item === target && getComputedStyle(item).cursor === "pointer")
+            ) {
+              if (!item.matches('[aria-disabled="true"]'))
+                personForms.add(form);
+              break;
+            }
+          }
+        }
+        const enterForm =
+          event.key === "Enter" &&
+          target instanceof HTMLInputElement &&
+          target.form;
+        const controlKey =
+          control &&
+          !field &&
+          (event.key === "Enter" ||
+            (event.key === " " && !control.matches('a[href],[role="link"]')));
+        if (keyboard ? !controlKey && !enterForm : !control) return;
+        activationAt = Math.min(activationAt, performance.now());
+      };
+      window.addEventListener("click", activate, options);
+      window.addEventListener("keydown", activate, options);
+      window.addEventListener(
+        "submit",
+        (event) => {
+          if (!personForms.has(event.target)) report("submit", event);
+        },
+        options,
+      );
+      globalThis.navigation?.addEventListener(
+        "navigate",
+        (event) => {
+          if (
+            event.userInitiated ||
+            (anchor &&
+              !event.formData &&
+              event.destination.url === anchor.href) ||
+            personForms.has(event.sourceElement?.form ?? event.sourceElement)
+          )
+            return;
+          if (event.destination.sameDocument) {
+            // Recorded, not stopped: the page's own state has already moved.
+            if (!byPerson(performance.now())) record("navigation");
+            return;
+          }
+          report(event.formData ? "submit" : "navigation", event);
+        },
+        { signal: controller.signal },
+      );
+      // The page's own site, without public-suffix data: a request host counts
+      // when its last two or its last three labels match the page's. This errs
+      // toward recording (a.co.uk and b.co.uk match), never toward missing a
+      // sibling host such as api.dkb.de for banking.dkb.de.
+      const tail = (host, count) => host.split(".").slice(-count).join(".");
+      const sameSite = (host) =>
+        host === location.hostname ||
+        tail(host, 2) === tail(location.hostname, 2) ||
+        tail(host, 3) === tail(location.hostname, 3);
+      if (typeof PerformanceObserver === "function") {
+        const requests = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            if (
+              entry.startTime < startedAt ||
+              !["fetch", "xmlhttprequest", "beacon"].includes(
+                entry.initiatorType,
+              ) ||
+              byPerson(entry.startTime)
+            )
+              continue;
+            let host = "";
+            try {
+              host = new URL(entry.name).hostname;
+            } catch {
+              continue;
+            }
+            if (sameSite(host)) {
+              record("request");
+              break;
+            }
+          }
+        });
+        requests.observe({ type: "resource" });
+        controller.signal.addEventListener("abort", () =>
+          requests.disconnect(),
+        );
+      }
+      setTimeout(() => controller.abort(), 30000);
+      globalThis[watchKey] = watch;
+    }
+    if (command.subaction === "click") {
+      node.click();
+    } else if (command.subaction === "fill") {
+      if (
+        !(
+          node instanceof HTMLInputElement ||
+          node instanceof HTMLTextAreaElement ||
+          node instanceof HTMLSelectElement
+        ) ||
+        node.disabled ||
+        node.readOnly
+      )
+        return {
+          error: {
+            kind: "UNSUPPORTED",
+            message: "The target is not an editable form control.",
+          },
+        };
+      const prototype =
+        node instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : node instanceof HTMLTextAreaElement
+            ? HTMLTextAreaElement.prototype
+            : HTMLSelectElement.prototype;
+      Object.getOwnPropertyDescriptor(prototype, "value").set.call(
+        node,
+        command.text,
+      );
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (command.subaction === "scroll") {
+      node.scrollBy({
+        top:
+          command.direction === "up"
+            ? -500
+            : command.direction === "down"
+              ? 500
+              : 0,
+        left:
+          command.direction === "left"
+            ? -500
+            : command.direction === "right"
+              ? 500
+              : 0,
+        behavior: "instant",
+      });
+    }
+    return { dispatched: true, completed: false, requiresReadback: true };
+  },
+  function pageGuidance(request) {
+    const key = "__elizaPageGuidanceV1";
+    const previous = globalThis[key];
+    if (!request || typeof request !== "object") {
+      previous?.destroy();
+      return { visible: false, reason: "invalid-context" };
+    }
+    if (request.kind === "action-status")
+      return {
+        ready:
+          previous?.actionReady?.(
+            request.id,
+            request.snapshotId,
+            request.nodeId,
+            request.action,
+          ) === true,
+        cancelled:
+          !previous ||
+          previous.id !== request.id ||
+          previous.dismissed ||
+          previous.disposed ||
+          previous.invalidated ||
+          previous.paused,
+      };
+    if (request.kind === "hide") {
+      previous?.destroy();
+      return { visible: false };
+    }
+    // Pause removes the ring, label and answers. Only the show-only cursor
+    // stays, grey, where it was last seen. A new document has nothing to pause.
+    if (request.kind === "pause") {
+      if (!previous || previous.disposed)
+        return { visible: false, paused: false };
+      previous.pause();
+      return { visible: false, paused: true };
+    }
+    const fail = (reason) => {
+      previous?.destroy();
+      return { visible: false, reason };
+    };
+    const answers = request.answers ?? [];
+    const keepClear = request.keepClear ?? [];
+    if (
+      request.kind !== "show" ||
+      (request.dismissed !== undefined &&
+        typeof request.dismissed !== "boolean") ||
+      !Array.isArray(keepClear) ||
+      keepClear.length > 8 ||
+      keepClear.some((id) => typeof id !== "string" || !/^\d+$/.test(id)) ||
+      (request.action !== undefined &&
+        !["click", "fill", "scroll"].includes(request.action)) ||
+      (request.restore !== undefined && typeof request.restore !== "boolean") ||
+      window !== window.top ||
+      request.origin !== location.origin ||
+      typeof request.id !== "string" ||
+      !request.id ||
+      request.id.length > 256 ||
+      typeof request.text !== "string" ||
+      !request.text.trim() ||
+      request.text.length > 600 ||
+      (request.detail !== undefined &&
+        (typeof request.detail !== "string" ||
+          !request.detail.trim() ||
+          request.detail.length > 300)) ||
+      (request.tone !== undefined &&
+        !["instruction", "active", "offer", "success"].includes(
+          request.tone,
+        )) ||
+      (request.assistantName !== undefined &&
+        (typeof request.assistantName !== "string" ||
+          !request.assistantName.trim() ||
+          request.assistantName.length > 32)) ||
+      !Array.isArray(answers) ||
+      answers.length > 5 ||
+      answers.some(
+        (answer) =>
+          !answer ||
+          typeof answer.id !== "string" ||
+          typeof answer.text !== "string" ||
+          !["card", "primary", "secondary"].includes(answer.kind) ||
+          (answer.tag !== undefined && typeof answer.tag !== "string"),
+      ) ||
+      answers.length > 0 !== (request.tone === "offer") ||
+      (answers.length > 0 &&
+        (request.action !== undefined ||
+          typeof request.answerKey !== "string" ||
+          !request.answerKey)) ||
+      (request.fonts !== undefined &&
+        (!Array.isArray(request.fonts) ||
+          request.fonts.some(
+            (font) => !font || typeof font.data !== "string" || !font.weight,
+          ))) ||
+      !Number.isSafeInteger(request.expiresAt) ||
+      request.expiresAt <= Date.now() ||
+      request.expiresAt > Date.now() + 300000
+    )
+      return fail("invalid-context");
+    const snapshot = globalThis.__elizaBrowserControlV1;
+    const monitor = globalThis.__elizaBrowserObservationV1;
+    if (monitor && typeof monitor.recordMutations !== "function")
+      return fail("stale-observation");
+    monitor?.recordMutations(monitor.observer.takeRecords());
+    if (
+      !snapshot ||
+      !monitor ||
+      snapshot.snapshotId !== request.snapshotId ||
+      snapshot.document !== document ||
+      snapshot.url !== location.href ||
+      snapshot.domRevision !== monitor.domRevision ||
+      snapshot.inputRevision !== monitor.inputRevision
+    )
+      return fail("stale-observation");
+    const target = snapshot.nodes.get(request.nodeId)?.node;
+    if (!target?.isConnected || target.getRootNode() !== document)
+      return fail("missing-target");
+    // Controls the label must not cover, for example the button she presses
+    // next. A control that is gone is simply not avoided.
+    const clear = keepClear
+      .map((id) => snapshot.nodes.get(id)?.node)
+      .filter((node) => node?.isConnected && node !== target);
+    // The person's Dismiss holds for this step, also after a reload of the
+    // page (the extension remembers it), until she asks to see it again.
+    const dismissed =
+      !request.restore &&
+      (request.dismissed === true ||
+        (previous?.id === request.id && previous.dismissed));
+    // A later revision of a shown step at the same target (for example its
+    // success tone) replaces the words in place: no cursor travel or slide.
+    const continued =
+      previous?.id === request.id &&
+      previous.nodeId === request.nodeId &&
+      previous.appeared === true &&
+      !previous.paused;
+    previous?.destroy();
+    // A step whose control is outside the visible page brings it into view, so
+    // the guide never waits unseen. An action guide never scrolls: the action
+    // needs the page exactly as observed.
+    const placed = target.getBoundingClientRect();
+    const view0 = window.visualViewport;
+    const placement =
+      placed.width <= 0 ||
+      placed.height <= 0 ||
+      getComputedStyle(target).visibility !== "visible"
+        ? "hidden"
+        : placed.left >= (view0?.offsetLeft ?? 0) &&
+            placed.top >= (view0?.offsetTop ?? 0) &&
+            placed.right <=
+              (view0?.offsetLeft ?? 0) + (view0?.width ?? innerWidth) &&
+            placed.bottom <=
+              (view0?.offsetTop ?? 0) + (view0?.height ?? innerHeight)
+          ? "in-view"
+          : request.action || dismissed
+            ? "off-screen"
+            : "scrolled";
+    if (placement === "scrolled")
+      target.scrollIntoView({
+        block: "center",
+        inline: "nearest",
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "instant"
+          : "smooth",
+      });
+    // The page shares document.fonts. Each document gets an unguessable family
+    // added from bytes (no network or page CSP); any other face that claims it
+    // makes the overlay use the generic system font for the rest of the document.
+    const fontKey = "__elizaGuideFontV1";
+    if (!globalThis[fontKey] && request.fonts?.length) {
+      const family = `eliza-guide-${crypto.randomUUID()}`;
+      const faces = request.fonts.map(
+        (font) =>
+          new FontFace(
+            family,
+            Uint8Array.from(atob(font.data), (c) => c.charCodeAt(0)),
+            { weight: String(font.weight) },
+          ),
+      );
+      for (const face of faces) document.fonts.add(face);
+      globalThis[fontKey] = { family, faces, foreign: false };
+    }
+    const font = globalThis[fontKey];
+    const fontFamily = () => {
+      if (font && !font.foreign)
+        for (const face of document.fonts)
+          if (
+            face.family.replace(/^["']|["']$/g, "").toLowerCase() ===
+              font.family &&
+            !font.faces.includes(face)
+          )
+            font.foreign = true;
+      return font && !font.foreign
+        ? `"${font.family}",system-ui,sans-serif`
+        : "system-ui,sans-serif";
+    };
+    globalThis.__elizaGuideCursorV1 ??= {};
+    const cursor = globalThis.__elizaGuideCursorV1;
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const name = request.assistantName?.trim() || "Eliza";
+    const initial = Array.from(name)[0].toLocaleUpperCase();
+    const tone = request.action ? "active" : request.tone || "instruction";
+    const host = document.createElement("div");
+    host.style.cssText =
+      "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";
+    const shadow = host.attachShadow({ mode: "closed" });
+    // Host-owned CSS must render on sites that disallow inline style elements.
+    const style = new CSSStyleSheet();
+    style.replaceSync(
+      ".ring{position:fixed;box-sizing:border-box;border-radius:8px;pointer-events:none;box-shadow:0 0 0 3px #fff,0 0 0 6px #4a3428}.ring.pulse{animation:ring .9s ease-in-out 3}@keyframes ring{50%{box-shadow:0 0 0 3px #fff,0 0 0 7px #4a34288c}}" +
+        ".label{font:500 20px/1.4 var(--face);position:fixed;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;background:#fff;color:#141414;border:2px solid #b3aad3;border-radius:16px;padding:18px;box-shadow:0 8px 24px #14141324;pointer-events:none;opacity:0;transform:translateY(-8px);transition:opacity .3s ease-out,transform .3s ease-out}.label.shown{opacity:1;transform:none;pointer-events:auto}.label.tone-success{border-color:#265b19}" +
+        ".tail{position:absolute;left:28px;top:-10px;width:16px;height:16px;box-sizing:border-box;background:#fff;border:2px solid;border-color:inherit;border-right:0;border-bottom:0;transform:rotate(45deg)}.tail.up{top:auto;bottom:-10px;border:2px solid;border-color:inherit;border-left:0;border-top:0}" +
+        ".row{display:flex;gap:12px;align-items:flex-start}.mark{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;background:#d4ceea;color:#141414;font:700 20px/1 var(--face)}.tone-active .mark{background:#b3aad3}.tone-success .mark{border-radius:17px;background:#265b19;color:#fff}" +
+        ".words{display:flex;flex-direction:column;gap:4px;min-width:0}.title{margin:0;font:700 22px/28px var(--face);overflow-wrap:anywhere}.detail{margin:0;font:500 17px/22px var(--face);color:#4a3428;overflow-wrap:anywhere}" +
+        "button{font:700 22px/1 var(--face);color:#141414;border:0;border-radius:20px;background:#fff;box-shadow:inset 0 0 0 1.5px #4a342899;cursor:pointer;margin:0}button:focus-visible{outline:3px solid #141414;outline-offset:3px}.answered button{cursor:default}" +
+        ".cards{display:flex;flex-direction:column;gap:10px}.card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;min-height:64px;padding:12px 20px;border-radius:16px;text-align:left}.value{font:700 22px/28px var(--face);overflow-wrap:anywhere}.purpose{font:500 17px/22px var(--face);color:#4a3428}" +
+        ".actions{display:flex;gap:10px}.actions button{flex:1 1 0}.actions button,.close{height:64px;padding:0 28px;white-space:nowrap}.actions .primary{background:#b3aad3;box-shadow:none}[hidden]{display:none!important}" +
+        ".inset{position:fixed;left:0;bottom:0;width:0;height:0;padding-bottom:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none}" +
+        ".pointer{position:fixed;left:0;top:0;width:28px;height:32px;pointer-events:none;transition:left 1.4s cubic-bezier(.45,0,.25,1),top 1.4s cubic-bezier(.45,0,.25,1)}.pointer svg{display:block;fill:#141414;filter:drop-shadow(0 2px 3px #14141359)}" +
+        ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;min-height:34px;width:max-content;box-sizing:border-box;padding:4px 12px 4px 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:normal}.name{min-width:0;overflow-wrap:anywhere}.initial{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
+        ".pointer.paused{transition:none}.paused svg{fill:#73726c}.paused .tag{background:#4a4a47;color:#fff}.paused .initial{background:#fff;color:#4a4a47}" +
+        ".tap{position:fixed;width:36px;height:36px;border:4px solid #141414;border-radius:50%;box-sizing:border-box;pointer-events:none;animation:tap .7s ease-out forwards}@keyframes tap{0%{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}" +
+        "@media (prefers-reduced-motion:reduce){.ring.pulse,.tap{animation:none}.label,.pointer{transition:none}.label{transform:none}}",
+    );
+    const element = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const root = element("div", "root");
+    const pointer = element("div", "pointer");
+    pointer.setAttribute("aria-hidden", "true");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 28 32");
+    svg.setAttribute("width", "28");
+    svg.setAttribute("height", "32");
+    const arrow = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "path",
+    );
+    arrow.setAttribute("d", "M3 2 L3 26 L9 20 L14 30 L18 28 L13 18 L22 18 Z");
+    arrow.setAttribute("stroke", "#fff");
+    arrow.setAttribute("stroke-width", "2");
+    arrow.setAttribute("stroke-linejoin", "round");
+    svg.append(arrow);
+    const nameTag = element("span", "name", name);
+    const tag = element("span", "tag");
+    tag.append(element("span", "initial", initial), nameTag);
+    pointer.append(svg, tag);
+    const tap = element("div", "tap");
+    tap.setAttribute("aria-hidden", "true");
+    // Reduced motion and in-place updates show everything without movement.
+    const instant = reduced || continued;
+    const ring = element("div", instant ? "ring" : "ring pulse");
+    ring.setAttribute("aria-hidden", "true");
+    const label = element(
+      "section",
+      `label tone-${tone}${instant ? " shown" : ""}`,
+    );
+    label.setAttribute(
+      "aria-label",
+      request.action ? `Pending ${name} action` : "Website guidance",
+    );
+    const tail = element("span", "tail");
+    tail.setAttribute("aria-hidden", "true");
+    const mark = element("span", "mark", tone === "success" ? "✓" : initial);
+    mark.setAttribute("aria-hidden", "true");
+    const words = element("div", "words");
+    words.append(element("p", "title", request.text));
+    if (request.detail) words.append(element("p", "detail", request.detail));
+    const row = element("div", "row");
+    row.append(mark, words);
+    label.append(tail, row);
+    // Personal values stay as text in this closed tree. A tap returns only the
+    // host's answer ID to the extension; the page sees a click on the host node.
+    let answered = false,
+      unobscured = false,
+      unobscuredSince = 0;
+    const choose = (id) => (event) => {
+      if (
+        !event.isTrusted ||
+        !unobscured ||
+        answered ||
+        state.paused ||
+        state.disposed ||
+        dirty ||
+        state.dismissed ||
+        !state.visible ||
+        !label.classList.contains("shown") ||
+        Date.now() - unobscuredSince < 800 ||
+        Date.now() - visibleSince < 800 ||
+        Date.now() >= request.expiresAt
+      )
+        return;
+      // At most once: the extension consumes the offer whether or not the host
+      // receives it, and the host replaces this label with its next guide.
+      answered = true;
+      label.classList.add("answered");
+      void chrome.runtime
+        .sendMessage({
+          type: "task-guide-answer",
+          guideId: request.id,
+          answerKey: request.answerKey,
+          answerId: id,
+        })
+        .catch(() => {});
+    };
+    const cards = answers.filter((answer) => answer.kind === "card");
+    const buttons = answers.filter((answer) => answer.kind !== "card");
+    const offered = [];
+    if (cards.length) {
+      const list = element("div", "cards");
+      for (const answer of cards) {
+        const card = element("button", "card");
+        card.type = "button";
+        card.append(element("span", "value", answer.text));
+        if (answer.tag) card.append(element("span", "purpose", answer.tag));
+        card.onclick = choose(answer.id);
+        list.append(card);
+      }
+      offered.push(list);
+    }
+    if (buttons.length) {
+      const list = element("div", "actions");
+      for (const answer of buttons) {
+        const button = element("button", answer.kind, answer.text);
+        button.type = "button";
+        button.onclick = choose(answer.id);
+        list.append(button);
+      }
+      offered.push(list);
+    }
+    // An offer's secondary answer is its decline; other labels keep Dismiss.
+    const close = element(
+      "button",
+      "close",
+      request.action ? "Cancel this action" : "Dismiss guidance",
+    );
+    close.type = "button";
+    close.hidden =
+      !request.action && buttons.some((answer) => answer.kind === "secondary");
+    label.append(...offered, close);
+    // Measures the bottom inset the page is drawn under (the navigation bar on Android).
+    const inset = element("div", "inset");
+    root.append(ring, label, pointer, tap, inset);
+    shadow.adoptedStyleSheets = [style];
+    shadow.append(root);
+    pointer.style.display = "none";
+    tap.hidden = true;
+    ring.hidden = true;
+    label.hidden = true;
+    monitor.ownedHosts.add(host);
+    document.documentElement.append(host);
+    // Taps count only while Chromium reports the label as fully visible: not
+    // covered by page content (including the top layer), transformed or faded.
+    const visibility = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const visible = entry.isVisible === true;
+          if (visible && !unobscured) unobscuredSince = Date.now();
+          if (!visible) unobscuredSince = 0;
+          unobscured = visible;
+        }
+      },
+      { trackVisibility: true, delay: 100 },
+    );
+    visibility.observe(label);
+    let frame,
+      face = "",
+      disposed = false,
+      dirty = false,
+      lastGeometry = "",
+      stable = 0,
+      visibleSince = 0,
+      appearedAt = 0,
+      acted = false,
+      lapsed = false,
+      travel = instant ? "done" : "idle",
+      travelAt = 0;
+    // The pointer's time is up. The host shows it again only after a fresh
+    // look at the page. Until then a show-only step keeps its words readable,
+    // without the ring, the tail, the cursor or answers.
+    const lapse = () => {
+      lapsed = true;
+      travel = "done";
+      pointer.style.display = "none";
+      ring.hidden = true;
+      tail.hidden = true;
+      for (const list of offered) list.hidden = true;
+      close.hidden = false;
+    };
+    const place = (point) => {
+      pointer.style.left = `${point[0] - 3}px`;
+      pointer.style.top = `${point[1] - 2}px`;
+    };
+    const fitTag = () => {
+      if (pointer.style.display !== "block") return;
+      const left = (viewport?.offsetLeft ?? 0) + 8;
+      const top = (viewport?.offsetTop ?? 0) + 8;
+      const width = Math.max(0, (viewport?.width ?? innerWidth) - 16);
+      const height = Math.max(0, (viewport?.height ?? innerHeight) - 16);
+      tag.style.maxWidth = `${width}px`;
+      const cursorRect = pointer.getBoundingClientRect();
+      const tagRect = tag.getBoundingClientRect();
+      const x = Math.max(
+        left,
+        Math.min(cursorRect.left + 24, left + width - tagRect.width),
+      );
+      const below = cursorRect.top + 28;
+      const y = Math.max(
+        top,
+        Math.min(
+          below + tagRect.height <= top + height
+            ? below
+            : cursorRect.top - tagRect.height - 4,
+          top + height - tagRect.height,
+        ),
+      );
+      tag.style.left = `${x - cursorRect.left}px`;
+      tag.style.top = `${y - cursorRect.top}px`;
+    };
+    const hide = () => {
+      ring.hidden = true;
+      label.hidden = true;
+      if (!instant) label.classList.remove("shown");
+      tap.hidden = true;
+      visibleSince = 0;
+      appearedAt = 0;
+      if (!state.paused) {
+        pointer.style.display = "none";
+        if (travel !== "done") travel = "idle";
+      }
+    };
+    const moving = () => {
+      hide();
+      stable = 0;
+    };
+    const invalidate = () => {
+      dirty = true;
+      state.invalidated = true;
+      hide();
+    };
+    const observer = new MutationObserver((records) => {
+      if (
+        records.some(
+          (record) => record.target !== host && !host.contains(record.target),
+        )
+      )
+        invalidate();
+    });
+    observer.observe(document, {
       subtree: true,
       childList: true,
       attributes: true,
       characterData: true,
     });
-    const input = (event) => {
-      monitor.inputRevision++;
-      if (
-        ["input", "change"].includes(event?.type) &&
-        event.target instanceof Element
-      )
-        monitor.editedFields.add(event.target);
-    };
-    document.addEventListener("beforeinput", input, true);
-    document.addEventListener("input", input, true);
-    document.addEventListener("change", input, true);
-    document.addEventListener(
-      "pointerdown",
-      (event) => {
-        if (event.isTrusted) input();
-      },
-      true,
-    );
-    globalThis[monitorKey] = monitor;
-  }
-  // Drain queued mutations synchronously as an effect may arrive before the
-  // MutationObserver microtask. Never store or return form values in this monitor.
-  monitor.recordMutations(monitor.observer.takeRecords());
-  const bounds = (node) => {
-    const rect = node.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  };
-  const viewport = () => ({
-    width: innerWidth,
-    height: innerHeight,
-    scrollX,
-    scrollY,
-    devicePixelRatio,
-    scale: visualViewport?.scale ?? 1,
-    offsetLeft: visualViewport?.offsetLeft ?? 0,
-    offsetTop: visualViewport?.offsetTop ?? 0,
-  });
-  // Shared by the snapshot and the commit guard so both name a node alike.
-  const readVisibleText = (root) => {
-    const visibleText = [];
-    const collectText = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const visibility = node.parentElement
-          ? getComputedStyle(node.parentElement).visibility
-          : "visible";
-        if (
-          visibility !== "hidden" &&
-          visibility !== "collapse" &&
-          node.textContent.trim()
-        )
-          visibleText.push(node.textContent);
-        return;
-      }
-      if (!(node instanceof Element)) return;
-      if (
-        node.matches("input,textarea,select,script,style,noscript") ||
-        node.isContentEditable
-      )
-        return;
-      const style = getComputedStyle(node);
-      if (style.display === "none") return;
-      if (node instanceof HTMLDetailsElement && !node.open) {
-        const summary = node.querySelector(":scope > summary");
-        if (summary) collectText(summary);
-        return;
-      }
-      for (const child of node.childNodes) collectText(child);
-    };
-    collectText(root);
-    return visibleText.join("\n").trim();
-  };
-  // Accessible name in the usual order. Never reads a form control value
-  // except the visible caption of a button-type input.
-  const idText = (value) =>
-    (value || "")
-      .split(/\s+/)
-      .map((id) => id && document.getElementById(id))
-      .filter(Boolean)
-      .map((ref) => readVisibleText(ref) || ref.getAttribute("aria-label"))
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-  const accessibleName = (node) => {
-    const labelled = idText(node.getAttribute("aria-labelledby"));
-    if (labelled) return labelled;
-    const aria = node.getAttribute("aria-label")?.trim();
-    if (aria) return aria;
-    const labels = [...(node.labels ?? [])]
-      .map((label) => readVisibleText(label))
-      .filter(Boolean)
-      .join(" ");
-    if (labels) return labels;
-    if (
-      node instanceof HTMLInputElement &&
-      ["button", "submit", "reset"].includes(node.type)
-    )
-      return node.value || (node.type === "submit" ? "Submit" : "");
-    if (node instanceof HTMLInputElement && node.type === "image")
-      return node.alt || node.title || "";
-    if (node instanceof HTMLInputElement && node.type === "password")
-      return node.getAttribute("placeholder") || node.title || "Password";
-    if (
-      node instanceof HTMLInputElement ||
-      node instanceof HTMLTextAreaElement ||
-      node instanceof HTMLSelectElement ||
-      node.isContentEditable
-    )
-      return node.getAttribute("placeholder") || node.title || "";
-    return readVisibleText(node) || node.title || "";
-  };
-  // Marks fields whose value is a secret. The value itself is never read.
-  // The field's type and autocomplete tokens decide first. A field that the
-  // page does not mark is classified by its name, its id, its placeholder and
-  // its accessible name, for example "Social Security number" or
-  // "routingNumber". A task never fills such a field and a host never shows
-  // it to a model.
-  const sensitivity = (node) => {
-    if (
-      !(
-        node instanceof HTMLInputElement ||
-        node instanceof HTMLTextAreaElement ||
-        node instanceof HTMLSelectElement ||
-        node.isContentEditable
-      )
-    )
-      return null;
-    const autocomplete = (node.getAttribute("autocomplete") || "")
-      .toLowerCase()
-      .split(/\s+/);
-    if (
-      (node instanceof HTMLInputElement && node.type === "password") ||
-      autocomplete.some((token) => token.endsWith("password"))
-    )
-      return "password";
-    if (autocomplete.includes("one-time-code")) return "one-time-code";
-    if (autocomplete.some((token) => token.startsWith("cc-")))
-      return "payment-card";
-    const words = [
-      node.getAttribute("name"),
-      node.id,
-      node.getAttribute("placeholder"),
-      accessibleName(node),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      // "routingNumber" and "card_cvv" become separate words.
-      .replace(/([a-z])([A-Z])/g, "$1 $2")
-      .replace(/[_.-]+/g, " ");
-    // "PIN code" is also the Indian postal code: a field that names itself a
-    // postal code is an address field, not a password.
-    const postal =
-      autocomplete.includes("postal-code") ||
-      /\b(?:postal|zip|post\s*code)\b/i.test(words);
-    if (
-      /\b(?:pass\s*(?:word|phrase)|pwd|security\s+answer)\b/i.test(words) ||
-      (!postal && /\bpin\b/i.test(words))
-    )
-      return "password";
-    if (
-      /\b(?:one\s*time\s*(?:pass)?code|verification\s+code|otp|2fa|mfa|passcode|authentication\s+code)\b/i.test(
-        words,
-      )
-    )
-      return "one-time-code";
-    if (
-      /\b(?:card\s*(?:number|no)|credit\s+card|debit\s+card|cvv2?|cvc|csc|security\s+code|expir(?:y|ation)\s*(?:date)?|cc\s*(?:num|number|exp))\b/i.test(
-        words,
-      )
-    )
-      return "payment-card";
-    if (
-      /\b(?:routing(?:\s+number)?|iban|swift|bic|sort\s+code|bank\s+account|checking\s+account|savings\s+account)\b/i.test(
-        words,
-      )
-    )
-      return "bank-account";
-    if (
-      /\b(?:ssn|social\s+security|social\s+insurance|tax\s+id(?:entification)?|itin|passport|driver'?s?\s+licen[cs]e|national\s+id|medicare\s+(?:number|id))\b/i.test(
-        words,
-      )
-    )
-      return "government-id";
-    return null;
-  };
-  if (command.subaction === "snapshot") {
-    const controlState = (node) => {
-      const flag = (name) => node.getAttribute(name) === "true";
-      return {
-        focused: document.activeElement === node,
-        disabled: node.matches(":disabled") || flag("aria-disabled"),
-        ...(node instanceof HTMLInputElement &&
-        ["checkbox", "radio"].includes(node.type)
-          ? { checked: node.checked }
-          : node.hasAttribute("aria-checked")
-            ? { checked: flag("aria-checked") }
-            : {}),
-        ...(node.hasAttribute("aria-expanded")
-          ? { expanded: flag("aria-expanded") }
-          : {}),
-        required: node.required === true || flag("aria-required"),
-        invalid: flag("aria-invalid"),
-        // Field help and error text the page ties to this control.
-        description:
-          [
-            idText(node.getAttribute("aria-describedby")),
-            flag("aria-invalid")
-              ? idText(node.getAttribute("aria-errormessage"))
-              : "",
-          ]
-            .filter(Boolean)
-            .join(" ") || null,
-        sensitive: sensitivity(node),
-        ...(node instanceof HTMLInputElement ||
-        node instanceof HTMLSelectElement ||
-        node instanceof HTMLTextAreaElement ||
-        node.isContentEditable
-          ? { edited: monitor.editedFields.has(node) }
-          : {}),
-        // A select can have a valid choice whose internal value is empty.
-        // Only selection/occupancy leaves the page, never the field value.
-        ...(node instanceof HTMLSelectElement
-          ? {
-              hasInput:
-                node.selectedIndex >= 0 &&
-                !node.validity.valueMissing &&
-                !node.options[node.selectedIndex].disabled &&
-                (node.value !== "" || monitor.editedFields.has(node)),
-            }
-          : (node instanceof HTMLInputElement &&
-                ![
-                  "button",
-                  "submit",
-                  "reset",
-                  "image",
-                  "checkbox",
-                  "radio",
-                  "file",
-                  "hidden",
-                  "range",
-                  "color",
-                ].includes(node.type)) ||
-              node instanceof HTMLTextAreaElement
-            ? { hasInput: node.value !== "" }
-            : node.isContentEditable
-              ? { hasInput: (node.textContent ?? "").trim() !== "" }
-              : {}),
-      };
-    };
-    // A page can copy what was typed in a secret field into its own text, its
-    // title or a control's name. The values are compared here, in the page, and
-    // every copy is replaced before anything is returned. Very short values are
-    // not compared: they would match ordinary words.
-    const secrets = [
-      ...new Set(
-        [...document.querySelectorAll("input,textarea")]
-          .filter((node) => sensitivity(node) !== null)
-          .map((node) => node.value)
-          .filter((value) => typeof value === "string" && value.length >= 4),
-      ),
-    ].sort((left, right) => right.length - left.length);
-    const withoutSecrets = (value) =>
-      typeof value === "string"
-        ? secrets.reduce(
-            (text, secret) => text.split(secret).join("[hidden]"),
-            value,
-          )
-        : value;
-    const nodes = new Map();
-    const elements = [];
-    // Native controls and widget roles, as assistive technology lists them.
-    const NATIVE =
-      "a,button,input,textarea,select,summary,[contenteditable=true],[role=button],[role=link],[role=textbox],[role=searchbox],[role=combobox],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=option],[role=spinbutton],[role=slider]";
-    // A page can also make a plain element pressable with an inline click
-    // handler, a tab stop or a pointer cursor, often with no name at all.
-    // The commit guard treats the same signals as a control. Only the
-    // outermost such element that holds no native control is listed.
-    // One pass in document order. The cheap attribute test runs before the
-    // style and subtree tests, and an element inside a listed custom control
-    // is skipped by its ancestor, so a large page stays linear.
-    const custom = new Set();
-    const candidates = [];
-    for (const node of (
-      document.body ?? document.documentElement
-    ).querySelectorAll("*")) {
-      if (node.matches(NATIVE)) {
-        candidates.push(node);
-        continue;
-      }
-      if (
-        !(
-          node.matches('[onclick],[tabindex]:not([tabindex="-1"])') ||
-          (getComputedStyle(node).cursor === "pointer" &&
-            getComputedStyle(node.parentElement ?? node).cursor !== "pointer")
-        ) ||
-        node.closest(NATIVE) ||
-        node.querySelector(NATIVE)
-      )
-        continue;
-      let inside = false;
-      for (
-        let item = node.parentElement;
-        item && !inside;
-        item = item.parentElement
-      )
-        inside = custom.has(item);
-      if (inside) continue;
-      custom.add(node);
-      candidates.push(node);
-    }
-    // The last visible line of text before a control, looked for among its
-    // earlier siblings and then its ancestors' earlier siblings. It names a
-    // control that has no label ("Search" beside an empty input) and tells
-    // repeated labels apart (the row text before each "Pay").
-    const nearbyText = (node) => {
-      for (
-        let item = node, depth = 0;
-        item && item !== document.body && depth < 4;
-        item = item.parentElement, depth++
-      )
-        for (
-          let sibling = item.previousSibling;
-          sibling;
-          sibling = sibling.previousSibling
-        ) {
-          const text =
-            sibling.nodeType === Node.TEXT_NODE
-              ? sibling.textContent.trim()
-              : sibling instanceof Element
-                ? readVisibleText(sibling)
-                : "";
-          if (text) return text.split("\n").filter(Boolean).at(-1).trim();
-        }
-      return null;
-    };
-    // The form or field group the control belongs to, by its own name.
-    const groupName = (group) =>
-      group
-        ? idText(group.getAttribute("aria-labelledby")) ||
-          group.getAttribute("aria-label")?.trim() ||
-          (group.querySelector("legend,h1,h2,h3,h4,h5,h6")
-            ? readVisibleText(group.querySelector("legend,h1,h2,h3,h4,h5,h6"))
-            : "") ||
-          null
-        : null;
-    const forms = [...document.forms];
-    // Position of an element among its siblings with the same tag, counted
-    // once per parent.
-    const typeIndexes = new Map();
-    const typeIndex = (item) => {
-      if (!typeIndexes.has(item)) {
-        const counts = {};
-        for (const sibling of item.parentElement?.children ?? [item]) {
-          counts[sibling.tagName] = (counts[sibling.tagName] ?? 0) + 1;
-          typeIndexes.set(sibling, counts[sibling.tagName]);
-        }
-      }
-      return typeIndexes.get(item);
-    };
-    // A CSS selector that matches only this node now. A host may grant one
-    // task action on it after the person agrees; the page guard checks the
-    // match again at the moment of the action.
-    const uniqueSelector = (node) => {
-      const unique = (selector) => {
-        try {
-          return (
-            selector.length <= 256 &&
-            document.querySelectorAll(selector).length === 1 &&
-            document.querySelector(selector) === node
-          );
-        } catch {
-          return false;
-        }
-      };
-      if (node.id && unique(`#${CSS.escape(node.id)}`))
-        return `#${CSS.escape(node.id)}`;
-      const name = node.getAttribute("name");
-      const named =
-        name && `${node.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
-      if (named && unique(named)) return named;
-      // A child-combinator path of :nth-of-type steps from a unique id or
-      // from the root names one element. It is not searched for again here:
-      // the page guard checks that it matches only this node at the moment
-      // of a granted action.
-      const path = [];
-      for (
-        let item = node;
-        item && item !== document.documentElement;
-        item = item.parentElement
-      ) {
-        if (item !== node && item.id && unique(`#${CSS.escape(item.id)}`)) {
-          path.unshift(`#${CSS.escape(item.id)}`);
-          break;
-        }
-        path.unshift(
-          `${item.tagName.toLowerCase()}:nth-of-type(${typeIndex(item)})`,
-        );
-      }
-      const selector = path.join(" > ");
-      try {
-        return selector.length <= 256 && node.matches(selector)
-          ? selector
-          : null;
-      } catch {
-        return null;
-      }
-    };
-    for (const node of candidates) {
-      if (!node.checkVisibility({ checkVisibilityCSS: true })) continue;
-      const id = String(nodes.size);
-      const geometry = bounds(node);
-      // This equality sentinel never leaves the isolated page realm.
-      nodes.set(id, {
-        node,
-        bounds: geometry,
-        value: typeof node.value === "string" ? node.value : null,
-      });
-      const state = controlState(node);
-      const form = node.form ?? node.closest("form");
-      const hint = (value) => withoutSecrets(value?.trim() || null);
-      elements.push({
-        bounds: geometry,
-        id,
-        tag: node.tagName.toLowerCase(),
-        role: node.getAttribute("role"),
-        label: withoutSecrets(accessibleName(node)),
-        type: node.getAttribute("type"),
-        ...state,
-        description: withoutSecrets(state.description),
-        // Words that locate a control when its name is empty or repeated.
-        // None of them is a field value.
-        placeholder: hint(node.getAttribute("placeholder")),
-        title: hint(node.getAttribute("title")),
-        fieldName: hint(node.getAttribute("name")),
-        imageText: hint(
-          [...node.querySelectorAll("img[alt],svg title")]
-            .map((item) => item.getAttribute("alt") ?? item.textContent)
-            .join(" "),
+    const viewport = window.visualViewport;
+    window.addEventListener("scroll", moving, true);
+    window.addEventListener("resize", moving);
+    viewport?.addEventListener("resize", moving);
+    viewport?.addEventListener("scroll", moving);
+    window.addEventListener("pagehide", invalidate);
+    document.addEventListener("beforeinput", invalidate, true);
+    document.addEventListener("change", invalidate, true);
+    // The navigation bar's inset last seen without a keyboard, kept for this document in the
+    // isolated world: a guide shown after the keyboard opened (each show is a new renderer) still
+    // knows it.
+    const insetKey = "__elizaGuideBarInsetV1";
+    const state = {
+      id: request.id,
+      nodeId: request.nodeId,
+      dismissed,
+      host,
+      shadow,
+      visible: false,
+      appeared: false,
+      paused: false,
+      disposed: false,
+      actionReady: (id, snapshotId, nodeId, action) =>
+        Boolean(
+          request.action &&
+            !acted &&
+            !disposed &&
+            !dirty &&
+            !state.paused &&
+            !state.dismissed &&
+            state.visible &&
+            visibleSince &&
+            Date.now() - visibleSince >= 800 &&
+            Date.now() < request.expiresAt &&
+            request.id === id &&
+            request.snapshotId === snapshotId &&
+            request.nodeId === nodeId &&
+            request.action === action,
         ),
-        nearbyText: hint(nearbyText(node)),
-        // The whole row or list item a control sits in, cell by cell, such
-        // as "The Overstory | Due October 20" beside an unnamed Renew icon.
-        rowText: hint(
-          (() => {
-            const row = node.closest("tr,[role=row],li,[role=listitem]");
-            return row
-              ? readVisibleText(row).split("\n").filter(Boolean).join(" | ")
-              : null;
-          })(),
-        ),
-        form: form
-          ? { index: forms.indexOf(form), name: hint(groupName(form)) }
-          : null,
-        group: hint(groupName(node.closest("fieldset,[role=group]"))),
-        // A button that sends its form when pressed.
-        submits:
-          (node instanceof HTMLButtonElement ||
-            node instanceof HTMLInputElement) &&
-          node.form !== null &&
-          ["submit", "image"].includes(node.type),
-        pressable: custom.has(node)
-          ? node.matches("[onclick]")
-            ? "click-handler"
-            : node.matches("[tabindex]")
-              ? "tab-stop"
-              : "pointer-cursor"
-          : null,
-        inViewport:
-          geometry.width > 0 &&
-          geometry.height > 0 &&
-          geometry.x < innerWidth &&
-          geometry.y < innerHeight &&
-          geometry.x + geometry.width > 0 &&
-          geometry.y + geometry.height > 0,
-        targetSelector: uniqueSelector(node),
-        heading: node.querySelector("h1,h2,h3,h4,h5,h6")
-          ? withoutSecrets(
-              readVisibleText(node.querySelector("h1,h2,h3,h4,h5,h6")),
-            )
-          : null,
-        href:
-          node instanceof HTMLAnchorElement && /^https?:/.test(node.href)
-            ? node.href
-            : null,
-      });
-    }
-    globalThis[key] = {
-      snapshotId,
-      nodes,
-      document,
-      url: location.href,
-      domRevision: monitor.domRevision,
-      inputRevision: monitor.inputRevision,
-      viewport: viewport(),
-    };
-    // A submit or page change that a task fill or click set off in this
-    // document, under this binding. The watch below stopped it.
-    const violation = globalThis[watchKey]?.violation;
-    return {
-      ...(policy && violation && violation.scope === policy.guidanceScope
-        ? { effectViolation: violation.kind }
-        : {}),
-      url: location.href,
-      title: withoutSecrets(document.title),
-      readyState: document.readyState,
-      domRevision: monitor.domRevision,
-      inputRevision: monitor.inputRevision,
-      viewport: viewport(),
-      text: withoutSecrets(
-        readVisibleText(document.body ?? document.documentElement),
-      ),
-      complete: true,
-      omitted: [
-        "form control values and editable region contents (credential boundary)",
-        "page text, title and control names equal to the value of a password, code or card field",
-      ],
-      elements,
-    };
-  }
-  const state = globalThis[key];
-  if (
-    !state ||
-    state.snapshotId !== command.snapshotId ||
-    state.document !== document ||
-    state.url !== location.href ||
-    state.domRevision !== monitor.domRevision ||
-    state.inputRevision !== monitor.inputRevision ||
-    JSON.stringify(state.viewport) !== JSON.stringify(viewport())
-  )
-    return {
-      error: {
-        kind: "STALE_REF",
-        message: "Read a fresh snapshot of this tab.",
+      markActed: () => {
+        acted = true;
+        tap.hidden = false;
+      },
+      pause: () => {
+        const shown =
+          pointer.style.display !== "none" && pointer.getBoundingClientRect();
+        const point = shown ? [shown.left + 3, shown.top + 2] : cursor.point;
+        state.paused = true;
+        state.visible = false;
+        hide();
+        if (!point) return;
+        cursor.point = point;
+        pointer.classList.add("paused");
+        place(point);
+        nameTag.textContent = `${name} · paused`;
+        pointer.style.display = "block";
+        fitTag();
+      },
+      destroy: () => {
+        disposed = true;
+        state.disposed = true;
+        cancelAnimationFrame(frame);
+        observer.disconnect();
+        visibility.disconnect();
+        window.removeEventListener("scroll", moving, true);
+        window.removeEventListener("resize", moving);
+        viewport?.removeEventListener("resize", moving);
+        viewport?.removeEventListener("scroll", moving);
+        window.removeEventListener("pagehide", invalidate);
+        document.removeEventListener("beforeinput", invalidate, true);
+        document.removeEventListener("change", invalidate, true);
+        host.remove();
+        state.visible = false;
       },
     };
-  const recorded = state.nodes.get(command.nodeId);
-  const node = recorded?.node;
-  if (
-    !node?.isConnected ||
-    recorded.value !== (typeof node.value === "string" ? node.value : null) ||
-    JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node))
-  )
-    return {
-      error: {
-        kind: "STALE_REF",
-        message: "The referenced page element changed; read a fresh snapshot.",
-      },
-    };
-  if (policy) {
-    // The native host supplies reviewed target permissions; DOM text cannot
-    // grant an action. Re-check the actual node immediately before the effect.
-    if (
-      !policy.targets.some((target) => {
-        // A host can bind one action to the one reviewed control it chose.
-        if (
-          policy.expectedSelector !== undefined &&
-          target.selector !== policy.expectedSelector
-        )
-          return false;
-        const permission =
-          command.subaction === "fill" &&
-          policy.protectedValueKind === "verification-code"
-            ? "fill-code"
-            : command.subaction;
-        if (target.action !== permission) return false;
-        try {
-          const matches = document.querySelectorAll(target.selector);
-          return matches.length === 1 && matches[0] === node;
-        } catch {
-          return false;
-        }
-      })
-    )
-      return denied();
-    const label = [
-      accessibleName(node),
-      node.getAttribute("aria-label"),
-      node.textContent,
-      node.title,
-      node instanceof HTMLInputElement ? node.value : "",
-      ...[...(node.labels ?? [])].map((item) => item.textContent),
-    ].join(" ");
-    // A control that commits something stays with the person, whatever its
-    // element or role. Keep this literal equal to COMMIT_CONTROL above; the
-    // function runs in the page, so it cannot read a module constant.
-    if (
-      command.subaction === "click" &&
-      (node.matches(
-        "button:not([type=button]):not([type=reset]),input[type=submit],input[type=image],input[type=password]",
-      ) ||
-        /\b(pay|pays|paying|payments?|submit|confirm|sign\s*in|log\s*in|sign\s*up|verify|send|delete|remove|cancel|close\s+account|authori[sz]e|agree|accept|save|continue|proceed|buy|purchase|place\s+(?:my\s+|your\s+|the\s+)?order|order\s+now|check\s*out|schedule|transfer|donate|subscribe)\b/i.test(
-          label,
-        ))
-    )
-      return denied();
-    if (
-      command.subaction === "fill" &&
-      (!(
-        node instanceof HTMLInputElement ||
-        node instanceof HTMLTextAreaElement ||
-        node instanceof HTMLSelectElement
-      ) ||
-        (node instanceof HTMLInputElement &&
-          !["text", "email", "tel", "number", "search", "url", "date"].includes(
-            node.type,
-          )) ||
-        // A date field takes only a real calendar day, as YYYY-MM-DD.
-        (node instanceof HTMLInputElement &&
-          node.type === "date" &&
-          (!/^\d{4}-\d{2}-\d{2}$/.test(command.text) ||
-            command.text.startsWith("0000-") ||
-            Number.isNaN(Date.parse(`${command.text}T00:00:00Z`)) ||
-            new Date(`${command.text}T00:00:00Z`).toISOString().slice(0, 10) !==
-              command.text)) ||
-        (policy.protectedValueKind === "verification-code"
-          ? !(node instanceof HTMLInputElement) ||
-            node.autocomplete !== "one-time-code" ||
-            !/^[A-Za-z0-9]{4,12}$/.test(command.text)
-          : sensitivity(node) !== null))
-    )
-      return denied();
-  }
-  if (command.subaction === "fill" && (node.disabled || node.readOnly))
-    return denied();
-  // A control the provider disabled stays as the provider left it. A script
-  // click on an aria-disabled control would still run the page's handlers.
-  if (
-    policy &&
-    command.subaction === "click" &&
-    node.matches(':disabled,[aria-disabled="true"]')
-  )
-    return denied();
-  if (validateOnly) return { validated: true };
-  if (policy?.actionId) {
-    const feedback = globalThis.__elizaPageGuidanceV1;
-    if (
-      !feedback?.actionReady?.(
-        policy.actionId,
-        command.snapshotId,
-        command.nodeId,
-        command.subaction,
-      )
-    )
-      return denied();
-    feedback.markActed();
-  }
-  delete globalThis[key];
-  if (policy && ["click", "fill"].includes(command.subaction)) {
-    // A task fill or click must not submit a form or leave the page, also
-    // not through the page's own script (an auto-submitting code field, or
-    // a button that calls form.submit()). For 30 seconds, or until the next
-    // task fill or click, watch what the page does before the person takes
-    // over by activating a control:
-    // - a form submit or a page change to another document is stopped,
-    //   except a click on a link that opens that link;
-    // - a same-document address change (history.pushState) is recorded;
-    // - a fetch, XMLHttpRequest or beacon to the page's own site is recorded.
-    //   It cannot be stopped from here and may already have committed
-    //   something (a code field that verifies itself with fetch).
-    // Snapshots report the first of these, so the host treats the outcome as
-    // unknown and pauses the task. A request still in flight when a snapshot
-    // is read shows up in a later snapshot.
-    globalThis[watchKey]?.stop();
-    const anchor =
-      command.subaction === "click" ? node.closest("a[href]") : null;
-    let personAt = Number.NEGATIVE_INFINITY;
-    let activationAt = Number.POSITIVE_INFINITY;
-    const startedAt = performance.now();
-    const controller = new AbortController();
-    const watch = {
-      violation:
-        globalThis[watchKey]?.violation?.scope === policy.guidanceScope
-          ? (globalThis[watchKey]?.violation ?? null)
-          : null,
-      stop: () => controller.abort(),
-    };
-    // A person's activated control can finish after the short typing window.
-    // Stray taps, scrolling and ordinary typing do not create that handoff.
-    // Resource start times still expose older requests delivered afterward.
-    const byPerson = (at) =>
-      at >= activationAt || (at - personAt >= 0 && at - personAt <= 1500);
-    const record = (kind) => {
-      watch.violation ??= { kind, scope: policy.guidanceScope };
-    };
-    const report = (kind, event) => {
-      if (byPerson(performance.now())) return;
-      if (event.cancelable) event.preventDefault();
-      event.stopImmediatePropagation();
-      record(kind);
-    };
-    const options = { capture: true, signal: controller.signal };
-    const person = (event) => {
-      if (event.isTrusted) personAt = performance.now();
-    };
-    const personForms = new WeakSet();
-    window.addEventListener("pointerdown", person, options);
-    window.addEventListener("keydown", person, options);
-    const activate = (event) => {
-      if (!event.isTrusted || !(event.target instanceof Element)) return;
-      const target = event.target;
-      const control = target.closest(
-        'button,input[type="submit"],input[type="button"],input[type="reset"],a[href],[role="button"],[role="link"]',
-      );
-      if (control?.matches(':disabled,[aria-disabled="true"]')) return;
-      const keyboard = event.type === "keydown";
-      const fields =
-        "textarea,select,input:not([type=submit]):not([type=button]):not([type=reset])";
-      const field = target.isContentEditable || target.matches(fields);
-      // A custom control (no button element or button role) can send its form
-      // from script seconds later. Her press on such a control makes that form
-      // hers for the rest of this watch. Only an element that presents itself
-      // as a control counts: a widget role, a tabindex, an inline click
-      // handler, or a pointer cursor on the pressed element. A press on the
-      // form's own padding, on plain text, on a field, on a label, or on an
-      // element that wraps a field is a stray tap and releases nothing.
-      const form = target.closest("form");
-      if (
-        !keyboard &&
-        form &&
-        target !== form &&
-        !field &&
-        !target.closest("label")
-      ) {
-        for (
-          let item = target;
-          item && item !== form;
-          item = item.parentElement
-        ) {
-          if (item.querySelector(fields) || item.querySelector("label")) break;
-          if (
-            item === control ||
-            item.matches(
-              '[tabindex],[onclick],[role="menuitem"],[role="option"],[role="switch"],[role="checkbox"],[role="radio"],[role="tab"]',
-            ) ||
-            (item === target && getComputedStyle(item).cursor === "pointer")
-          ) {
-            if (!item.matches('[aria-disabled="true"]')) personForms.add(form);
-            break;
-          }
-        }
-      }
-      const enterForm =
-        event.key === "Enter" &&
-        target instanceof HTMLInputElement &&
-        target.form;
-      const controlKey =
-        control &&
-        !field &&
-        (event.key === "Enter" ||
-          (event.key === " " && !control.matches('a[href],[role="link"]')));
-      if (keyboard ? !controlKey && !enterForm : !control) return;
-      activationAt = Math.min(activationAt, performance.now());
-    };
-    window.addEventListener("click", activate, options);
-    window.addEventListener("keydown", activate, options);
-    window.addEventListener(
-      "submit",
-      (event) => {
-        if (!personForms.has(event.target)) report("submit", event);
-      },
-      options,
-    );
-    globalThis.navigation?.addEventListener(
-      "navigate",
-      (event) => {
-        if (
-          event.userInitiated ||
-          (anchor &&
-            !event.formData &&
-            event.destination.url === anchor.href) ||
-          personForms.has(event.sourceElement?.form ?? event.sourceElement)
-        )
-          return;
-        if (event.destination.sameDocument) {
-          // Recorded, not stopped: the page's own state has already moved.
-          if (!byPerson(performance.now())) record("navigation");
-          return;
-        }
-        report(event.formData ? "submit" : "navigation", event);
-      },
-      { signal: controller.signal },
-    );
-    // The page's own site, without public-suffix data: a request host counts
-    // when its last two or its last three labels match the page's. This errs
-    // toward recording (a.co.uk and b.co.uk match), never toward missing a
-    // sibling host such as api.dkb.de for banking.dkb.de.
-    const tail = (host, count) => host.split(".").slice(-count).join(".");
-    const sameSite = (host) =>
-      host === location.hostname ||
-      tail(host, 2) === tail(location.hostname, 2) ||
-      tail(host, 3) === tail(location.hostname, 3);
-    if (typeof PerformanceObserver === "function") {
-      const requests = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          if (
-            entry.startTime < startedAt ||
-            !["fetch", "xmlhttprequest", "beacon"].includes(
-              entry.initiatorType,
-            ) ||
-            byPerson(entry.startTime)
-          )
-            continue;
-          let host = "";
-          try {
-            host = new URL(entry.name).hostname;
-          } catch {
-            continue;
-          }
-          if (sameSite(host)) {
-            record("request");
-            break;
-          }
-        }
-      });
-      requests.observe({ type: "resource" });
-      controller.signal.addEventListener("abort", () => requests.disconnect());
-    }
-    setTimeout(() => controller.abort(), 30000);
-    globalThis[watchKey] = watch;
-  }
-  if (command.subaction === "click") {
-    node.click();
-  } else if (command.subaction === "fill") {
-    if (
-      !(
-        node instanceof HTMLInputElement ||
-        node instanceof HTMLTextAreaElement ||
-        node instanceof HTMLSelectElement
-      ) ||
-      node.disabled ||
-      node.readOnly
-    )
-      return {
-        error: {
-          kind: "UNSUPPORTED",
-          message: "The target is not an editable form control.",
-        },
-      };
-    const prototype =
-      node instanceof HTMLInputElement
-        ? HTMLInputElement.prototype
-        : node instanceof HTMLTextAreaElement
-          ? HTMLTextAreaElement.prototype
-          : HTMLSelectElement.prototype;
-    Object.getOwnPropertyDescriptor(prototype, "value").set.call(
-      node,
-      command.text,
-    );
-    node.dispatchEvent(new Event("input", { bubbles: true }));
-    node.dispatchEvent(new Event("change", { bubbles: true }));
-  } else if (command.subaction === "scroll") {
-    node.scrollBy({
-      top:
-        command.direction === "up"
-          ? -500
-          : command.direction === "down"
-            ? 500
-            : 0,
-      left:
-        command.direction === "left"
-          ? -500
-          : command.direction === "right"
-            ? 500
-            : 0,
-      behavior: "instant",
-    });
-  }
-  return { dispatched: true, completed: false, requiresReadback: true };
-},function pageGuidance(request) {
-  const key = "__elizaPageGuidanceV1";
-  const previous = globalThis[key];
-  if (!request || typeof request !== "object") {
-    previous?.destroy();
-    return { visible: false, reason: "invalid-context" };
-  }
-  if (request.kind === "action-status")
-    return {
-      ready:
-        previous?.actionReady?.(
-          request.id,
-          request.snapshotId,
-          request.nodeId,
-          request.action,
-        ) === true,
-      cancelled:
-        !previous ||
-        previous.id !== request.id ||
-        previous.dismissed ||
-        previous.disposed ||
-        previous.invalidated ||
-        previous.paused,
-    };
-  if (request.kind === "hide") {
-    previous?.destroy();
-    return { visible: false };
-  }
-  // Pause removes the ring, label and answers. Only the show-only cursor
-  // stays, grey, where it was last seen. A new document has nothing to pause.
-  if (request.kind === "pause") {
-    if (!previous || previous.disposed)
-      return { visible: false, paused: false };
-    previous.pause();
-    return { visible: false, paused: true };
-  }
-  const fail = (reason) => {
-    previous?.destroy();
-    return { visible: false, reason };
-  };
-  const answers = request.answers ?? [];
-  const keepClear = request.keepClear ?? [];
-  if (
-    request.kind !== "show" ||
-    (request.dismissed !== undefined &&
-      typeof request.dismissed !== "boolean") ||
-    !Array.isArray(keepClear) ||
-    keepClear.length > 8 ||
-    keepClear.some((id) => typeof id !== "string" || !/^\d+$/.test(id)) ||
-    (request.action !== undefined &&
-      !["click", "fill", "scroll"].includes(request.action)) ||
-    (request.restore !== undefined && typeof request.restore !== "boolean") ||
-    window !== window.top ||
-    request.origin !== location.origin ||
-    typeof request.id !== "string" ||
-    !request.id ||
-    request.id.length > 256 ||
-    typeof request.text !== "string" ||
-    !request.text.trim() ||
-    request.text.length > 600 ||
-    (request.detail !== undefined &&
-      (typeof request.detail !== "string" ||
-        !request.detail.trim() ||
-        request.detail.length > 300)) ||
-    (request.tone !== undefined &&
-      !["instruction", "active", "offer", "success"].includes(request.tone)) ||
-    (request.assistantName !== undefined &&
-      (typeof request.assistantName !== "string" ||
-        !request.assistantName.trim() ||
-        request.assistantName.length > 32)) ||
-    !Array.isArray(answers) ||
-    answers.length > 5 ||
-    answers.some(
-      (answer) =>
-        !answer ||
-        typeof answer.id !== "string" ||
-        typeof answer.text !== "string" ||
-        !["card", "primary", "secondary"].includes(answer.kind) ||
-        (answer.tag !== undefined && typeof answer.tag !== "string"),
-    ) ||
-    answers.length > 0 !== (request.tone === "offer") ||
-    (answers.length > 0 &&
-      (request.action !== undefined ||
-        typeof request.answerKey !== "string" ||
-        !request.answerKey)) ||
-    (request.fonts !== undefined &&
-      (!Array.isArray(request.fonts) ||
-        request.fonts.some(
-          (font) => !font || typeof font.data !== "string" || !font.weight,
-        ))) ||
-    !Number.isSafeInteger(request.expiresAt) ||
-    request.expiresAt <= Date.now() ||
-    request.expiresAt > Date.now() + 300000
-  )
-    return fail("invalid-context");
-  const snapshot = globalThis.__elizaBrowserControlV1;
-  const monitor = globalThis.__elizaBrowserObservationV1;
-  if (monitor && typeof monitor.recordMutations !== "function")
-    return fail("stale-observation");
-  monitor?.recordMutations(monitor.observer.takeRecords());
-  if (
-    !snapshot ||
-    !monitor ||
-    snapshot.snapshotId !== request.snapshotId ||
-    snapshot.document !== document ||
-    snapshot.url !== location.href ||
-    snapshot.domRevision !== monitor.domRevision ||
-    snapshot.inputRevision !== monitor.inputRevision
-  )
-    return fail("stale-observation");
-  const target = snapshot.nodes.get(request.nodeId)?.node;
-  if (!target?.isConnected || target.getRootNode() !== document)
-    return fail("missing-target");
-  // Controls the label must not cover, for example the button she presses
-  // next. A control that is gone is simply not avoided.
-  const clear = keepClear
-    .map((id) => snapshot.nodes.get(id)?.node)
-    .filter((node) => node?.isConnected && node !== target);
-  // The person's Dismiss holds for this step, also after a reload of the
-  // page (the extension remembers it), until she asks to see it again.
-  const dismissed =
-    !request.restore &&
-    (request.dismissed === true ||
-      (previous?.id === request.id && previous.dismissed));
-  // A later revision of a shown step at the same target (for example its
-  // success tone) replaces the words in place: no cursor travel or slide.
-  const continued =
-    previous?.id === request.id &&
-    previous.nodeId === request.nodeId &&
-    previous.appeared === true &&
-    !previous.paused;
-  previous?.destroy();
-  // A step whose control is outside the visible page brings it into view, so
-  // the guide never waits unseen. An action guide never scrolls: the action
-  // needs the page exactly as observed.
-  const placed = target.getBoundingClientRect();
-  const view0 = window.visualViewport;
-  const placement =
-    placed.width <= 0 ||
-    placed.height <= 0 ||
-    getComputedStyle(target).visibility !== "visible"
-      ? "hidden"
-      : placed.left >= (view0?.offsetLeft ?? 0) &&
-          placed.top >= (view0?.offsetTop ?? 0) &&
-          placed.right <=
-            (view0?.offsetLeft ?? 0) + (view0?.width ?? innerWidth) &&
-          placed.bottom <=
-            (view0?.offsetTop ?? 0) + (view0?.height ?? innerHeight)
-        ? "in-view"
-        : request.action || dismissed
-          ? "off-screen"
-          : "scrolled";
-  if (placement === "scrolled")
-    target.scrollIntoView({
-      block: "center",
-      inline: "nearest",
-      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? "instant"
-        : "smooth",
-    });
-  // The page shares document.fonts. Each document gets an unguessable family
-  // added from bytes (no network or page CSP); any other face that claims it
-  // makes the overlay use the generic system font for the rest of the document.
-  const fontKey = "__elizaGuideFontV1";
-  if (!globalThis[fontKey] && request.fonts?.length) {
-    const family = `eliza-guide-${crypto.randomUUID()}`;
-    const faces = request.fonts.map(
-      (font) =>
-        new FontFace(
-          family,
-          Uint8Array.from(atob(font.data), (c) => c.charCodeAt(0)),
-          { weight: String(font.weight) },
-        ),
-    );
-    for (const face of faces) document.fonts.add(face);
-    globalThis[fontKey] = { family, faces, foreign: false };
-  }
-  const font = globalThis[fontKey];
-  const fontFamily = () => {
-    if (font && !font.foreign)
-      for (const face of document.fonts)
-        if (
-          face.family.replace(/^["']|["']$/g, "").toLowerCase() ===
-            font.family &&
-          !font.faces.includes(face)
-        )
-          font.foreign = true;
-    return font && !font.foreign
-      ? `"${font.family}",system-ui,sans-serif`
-      : "system-ui,sans-serif";
-  };
-  globalThis.__elizaGuideCursorV1 ??= {};
-  const cursor = globalThis.__elizaGuideCursorV1;
-  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const name = request.assistantName?.trim() || "Eliza";
-  const initial = Array.from(name)[0].toLocaleUpperCase();
-  const tone = request.action ? "active" : request.tone || "instruction";
-  const host = document.createElement("div");
-  host.style.cssText =
-    "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483647!important;pointer-events:none!important;";
-  const shadow = host.attachShadow({ mode: "closed" });
-  // Host-owned CSS must render on sites that disallow inline style elements.
-  const style = new CSSStyleSheet();
-  style.replaceSync(
-    ".ring{position:fixed;box-sizing:border-box;border-radius:8px;pointer-events:none;box-shadow:0 0 0 3px #fff,0 0 0 6px #4a3428}.ring.pulse{animation:ring .9s ease-in-out 3}@keyframes ring{50%{box-shadow:0 0 0 3px #fff,0 0 0 7px #4a34288c}}" +
-      ".label{font:500 20px/1.4 var(--face);position:fixed;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;background:#fff;color:#141414;border:2px solid #b3aad3;border-radius:16px;padding:18px;box-shadow:0 8px 24px #14141324;pointer-events:none;opacity:0;transform:translateY(-8px);transition:opacity .3s ease-out,transform .3s ease-out}.label.shown{opacity:1;transform:none;pointer-events:auto}.label.tone-success{border-color:#265b19}" +
-      ".tail{position:absolute;left:28px;top:-10px;width:16px;height:16px;box-sizing:border-box;background:#fff;border:2px solid;border-color:inherit;border-right:0;border-bottom:0;transform:rotate(45deg)}.tail.up{top:auto;bottom:-10px;border:2px solid;border-color:inherit;border-left:0;border-top:0}" +
-      ".row{display:flex;gap:12px;align-items:flex-start}.mark{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;background:#d4ceea;color:#141414;font:700 20px/1 var(--face)}.tone-active .mark{background:#b3aad3}.tone-success .mark{border-radius:17px;background:#265b19;color:#fff}" +
-      ".words{display:flex;flex-direction:column;gap:4px;min-width:0}.title{margin:0;font:700 22px/28px var(--face);overflow-wrap:anywhere}.detail{margin:0;font:500 17px/22px var(--face);color:#4a3428;overflow-wrap:anywhere}" +
-      "button{font:700 22px/1 var(--face);color:#141414;border:0;border-radius:20px;background:#fff;box-shadow:inset 0 0 0 1.5px #4a342899;cursor:pointer;margin:0}button:focus-visible{outline:3px solid #141414;outline-offset:3px}.answered button{cursor:default}" +
-      ".cards{display:flex;flex-direction:column;gap:10px}.card{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;min-height:64px;padding:12px 20px;border-radius:16px;text-align:left}.value{font:700 22px/28px var(--face);overflow-wrap:anywhere}.purpose{font:500 17px/22px var(--face);color:#4a3428}" +
-      ".actions{display:flex;gap:10px}.actions button{flex:1 1 0}.actions button,.close{height:64px;padding:0 28px;white-space:nowrap}.actions .primary{background:#b3aad3;box-shadow:none}[hidden]{display:none!important}" +
-      ".inset{position:fixed;left:0;bottom:0;width:0;height:0;padding-bottom:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none}" +
-      ".pointer{position:fixed;left:0;top:0;width:28px;height:32px;pointer-events:none;transition:left 1.4s cubic-bezier(.45,0,.25,1),top 1.4s cubic-bezier(.45,0,.25,1)}.pointer svg{display:block;fill:#141414;filter:drop-shadow(0 2px 3px #14141359)}" +
-      ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;min-height:34px;width:max-content;box-sizing:border-box;padding:4px 12px 4px 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:normal}.name{min-width:0;overflow-wrap:anywhere}.initial{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
-      ".pointer.paused{transition:none}.paused svg{fill:#73726c}.paused .tag{background:#4a4a47;color:#fff}.paused .initial{background:#fff;color:#4a4a47}" +
-      ".tap{position:fixed;width:36px;height:36px;border:4px solid #141414;border-radius:50%;box-sizing:border-box;pointer-events:none;animation:tap .7s ease-out forwards}@keyframes tap{0%{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}" +
-      "@media (prefers-reduced-motion:reduce){.ring.pulse,.tap{animation:none}.label,.pointer{transition:none}.label{transform:none}}",
-  );
-  const element = (tag, className, text) => {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined) node.textContent = text;
-    return node;
-  };
-  const root = element("div", "root");
-  const pointer = element("div", "pointer");
-  pointer.setAttribute("aria-hidden", "true");
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 28 32");
-  svg.setAttribute("width", "28");
-  svg.setAttribute("height", "32");
-  const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  arrow.setAttribute("d", "M3 2 L3 26 L9 20 L14 30 L18 28 L13 18 L22 18 Z");
-  arrow.setAttribute("stroke", "#fff");
-  arrow.setAttribute("stroke-width", "2");
-  arrow.setAttribute("stroke-linejoin", "round");
-  svg.append(arrow);
-  const nameTag = element("span", "name", name);
-  const tag = element("span", "tag");
-  tag.append(element("span", "initial", initial), nameTag);
-  pointer.append(svg, tag);
-  const tap = element("div", "tap");
-  tap.setAttribute("aria-hidden", "true");
-  // Reduced motion and in-place updates show everything without movement.
-  const instant = reduced || continued;
-  const ring = element("div", instant ? "ring" : "ring pulse");
-  ring.setAttribute("aria-hidden", "true");
-  const label = element(
-    "section",
-    `label tone-${tone}${instant ? " shown" : ""}`,
-  );
-  label.setAttribute(
-    "aria-label",
-    request.action ? `Pending ${name} action` : "Website guidance",
-  );
-  const tail = element("span", "tail");
-  tail.setAttribute("aria-hidden", "true");
-  const mark = element("span", "mark", tone === "success" ? "✓" : initial);
-  mark.setAttribute("aria-hidden", "true");
-  const words = element("div", "words");
-  words.append(element("p", "title", request.text));
-  if (request.detail) words.append(element("p", "detail", request.detail));
-  const row = element("div", "row");
-  row.append(mark, words);
-  label.append(tail, row);
-  // Personal values stay as text in this closed tree. A tap returns only the
-  // host's answer ID to the extension; the page sees a click on the host node.
-  let answered = false,
-    unobscured = false,
-    unobscuredSince = 0;
-  const choose = (id) => (event) => {
-    if (
-      !event.isTrusted ||
-      !unobscured ||
-      answered ||
-      state.paused ||
-      state.disposed ||
-      dirty ||
-      state.dismissed ||
-      !state.visible ||
-      !label.classList.contains("shown") ||
-      Date.now() - unobscuredSince < 800 ||
-      Date.now() - visibleSince < 800 ||
-      Date.now() >= request.expiresAt
-    )
-      return;
-    // At most once: the extension consumes the offer whether or not the host
-    // receives it, and the host replaces this label with its next guide.
-    answered = true;
-    label.classList.add("answered");
-    void chrome.runtime
-      .sendMessage({
-        type: "task-guide-answer",
-        guideId: request.id,
-        answerKey: request.answerKey,
-        answerId: id,
-      })
-      .catch(() => {});
-  };
-  const cards = answers.filter((answer) => answer.kind === "card");
-  const buttons = answers.filter((answer) => answer.kind !== "card");
-  const offered = [];
-  if (cards.length) {
-    const list = element("div", "cards");
-    for (const answer of cards) {
-      const card = element("button", "card");
-      card.type = "button";
-      card.append(element("span", "value", answer.text));
-      if (answer.tag) card.append(element("span", "purpose", answer.tag));
-      card.onclick = choose(answer.id);
-      list.append(card);
-    }
-    offered.push(list);
-  }
-  if (buttons.length) {
-    const list = element("div", "actions");
-    for (const answer of buttons) {
-      const button = element("button", answer.kind, answer.text);
-      button.type = "button";
-      button.onclick = choose(answer.id);
-      list.append(button);
-    }
-    offered.push(list);
-  }
-  // An offer's secondary answer is its decline; other labels keep Dismiss.
-  const close = element(
-    "button",
-    "close",
-    request.action ? "Cancel this action" : "Dismiss guidance",
-  );
-  close.type = "button";
-  close.hidden =
-    !request.action && buttons.some((answer) => answer.kind === "secondary");
-  label.append(...offered, close);
-  // Measures the bottom inset the page is drawn under (the navigation bar on Android).
-  const inset = element("div", "inset");
-  root.append(ring, label, pointer, tap, inset);
-  shadow.adoptedStyleSheets = [style];
-  shadow.append(root);
-  pointer.style.display = "none";
-  tap.hidden = true;
-  ring.hidden = true;
-  label.hidden = true;
-  monitor.ownedHosts.add(host);
-  document.documentElement.append(host);
-  // Taps count only while Chromium reports the label as fully visible: not
-  // covered by page content (including the top layer), transformed or faded.
-  const visibility = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        const visible = entry.isVisible === true;
-        if (visible && !unobscured) unobscuredSince = Date.now();
-        if (!visible) unobscuredSince = 0;
-        unobscured = visible;
-      }
-    },
-    { trackVisibility: true, delay: 100 },
-  );
-  visibility.observe(label);
-  let frame,
-    face = "",
-    disposed = false,
-    dirty = false,
-    lastGeometry = "",
-    stable = 0,
-    visibleSince = 0,
-    appearedAt = 0,
-    acted = false,
-    lapsed = false,
-    travel = instant ? "done" : "idle",
-    travelAt = 0;
-  // The pointer's time is up. The host shows it again only after a fresh
-  // look at the page. Until then a show-only step keeps its words readable,
-  // without the ring, the tail, the cursor or answers.
-  const lapse = () => {
-    lapsed = true;
-    travel = "done";
-    pointer.style.display = "none";
-    ring.hidden = true;
-    tail.hidden = true;
-    for (const list of offered) list.hidden = true;
-    close.hidden = false;
-  };
-  const place = (point) => {
-    pointer.style.left = `${point[0] - 3}px`;
-    pointer.style.top = `${point[1] - 2}px`;
-  };
-  const fitTag = () => {
-    if (pointer.style.display !== "block") return;
-    const left = (viewport?.offsetLeft ?? 0) + 8;
-    const top = (viewport?.offsetTop ?? 0) + 8;
-    const width = Math.max(0, (viewport?.width ?? innerWidth) - 16);
-    const height = Math.max(0, (viewport?.height ?? innerHeight) - 16);
-    tag.style.maxWidth = `${width}px`;
-    const cursorRect = pointer.getBoundingClientRect();
-    const tagRect = tag.getBoundingClientRect();
-    const x = Math.max(
-      left,
-      Math.min(cursorRect.left + 24, left + width - tagRect.width),
-    );
-    const below = cursorRect.top + 28;
-    const y = Math.max(
-      top,
-      Math.min(
-        below + tagRect.height <= top + height
-          ? below
-          : cursorRect.top - tagRect.height - 4,
-        top + height - tagRect.height,
-      ),
-    );
-    tag.style.left = `${x - cursorRect.left}px`;
-    tag.style.top = `${y - cursorRect.top}px`;
-  };
-  const hide = () => {
-    ring.hidden = true;
-    label.hidden = true;
-    if (!instant) label.classList.remove("shown");
-    tap.hidden = true;
-    visibleSince = 0;
-    appearedAt = 0;
-    if (!state.paused) {
-      pointer.style.display = "none";
-      if (travel !== "done") travel = "idle";
-    }
-  };
-  const moving = () => {
-    hide();
-    stable = 0;
-  };
-  const invalidate = () => {
-    dirty = true;
-    state.invalidated = true;
-    hide();
-  };
-  const observer = new MutationObserver((records) => {
-    if (
-      records.some(
-        (record) => record.target !== host && !host.contains(record.target),
-      )
-    )
-      invalidate();
-  });
-  observer.observe(document, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    characterData: true,
-  });
-  const viewport = window.visualViewport;
-  window.addEventListener("scroll", moving, true);
-  window.addEventListener("resize", moving);
-  viewport?.addEventListener("resize", moving);
-  viewport?.addEventListener("scroll", moving);
-  window.addEventListener("pagehide", invalidate);
-  document.addEventListener("beforeinput", invalidate, true);
-  document.addEventListener("change", invalidate, true);
-  // The navigation bar's inset last seen without a keyboard, kept for this document in the
-  // isolated world: a guide shown after the keyboard opened (each show is a new renderer) still
-  // knows it.
-  const insetKey = "__elizaGuideBarInsetV1";
-  const state = {
-    id: request.id,
-    nodeId: request.nodeId,
-    dismissed,
-    host,
-    shadow,
-    visible: false,
-    appeared: false,
-    paused: false,
-    disposed: false,
-    actionReady: (id, snapshotId, nodeId, action) =>
-      Boolean(
-        request.action &&
-          !acted &&
-          !disposed &&
-          !dirty &&
-          !state.paused &&
-          !state.dismissed &&
-          state.visible &&
-          visibleSince &&
-          Date.now() - visibleSince >= 800 &&
-          Date.now() < request.expiresAt &&
-          request.id === id &&
-          request.snapshotId === snapshotId &&
-          request.nodeId === nodeId &&
-          request.action === action,
-      ),
-    markActed: () => {
-      acted = true;
-      tap.hidden = false;
-    },
-    pause: () => {
-      const shown =
-        pointer.style.display !== "none" && pointer.getBoundingClientRect();
-      const point = shown ? [shown.left + 3, shown.top + 2] : cursor.point;
-      state.paused = true;
+    close.onclick = (event) => {
+      state.dismissed = true;
       state.visible = false;
       hide();
-      if (!point) return;
-      cursor.point = point;
-      pointer.classList.add("paused");
-      place(point);
-      nameTag.textContent = `${name} · paused`;
-      pointer.style.display = "block";
-      fitTag();
-    },
-    destroy: () => {
-      disposed = true;
-      state.disposed = true;
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      visibility.disconnect();
-      window.removeEventListener("scroll", moving, true);
-      window.removeEventListener("resize", moving);
-      viewport?.removeEventListener("resize", moving);
-      viewport?.removeEventListener("scroll", moving);
-      window.removeEventListener("pagehide", invalidate);
-      document.removeEventListener("beforeinput", invalidate, true);
-      document.removeEventListener("change", invalidate, true);
-      host.remove();
+      // Value-free: only this guide's ID returns, so a reload keeps it hidden.
+      if (event.isTrusted && !request.action)
+        try {
+          void chrome.runtime
+            .sendMessage({ type: "task-guide-dismissed", guideId: request.id })
+            .catch(() => {});
+        } catch {
+          // Without the extension transport the dismissal lasts for this page.
+        }
+    };
+    globalThis[key] = state;
+    const update = () => {
+      if (disposed) return;
       state.visible = false;
-    },
-  };
-  close.onclick = (event) => {
-    state.dismissed = true;
-    state.visible = false;
-    hide();
-    // Value-free: only this guide's ID returns, so a reload keeps it hidden.
-    if (event.isTrusted && !request.action)
-      try {
-        void chrome.runtime
-          .sendMessage({ type: "task-guide-dismissed", guideId: request.id })
-          .catch(() => {});
-      } catch {
-        // Without the extension transport the dismissal lasts for this page.
+      const family = fontFamily();
+      if (family !== face) {
+        face = family;
+        root.style.setProperty("--face", face);
       }
-  };
-  globalThis[key] = state;
-  const update = () => {
-    if (disposed) return;
-    state.visible = false;
-    const family = fontFamily();
-    if (family !== face) {
-      face = family;
-      root.style.setProperty("--face", face);
-    }
-    // Follow the rendered cursor during travel and keep the full name readable
-    // at viewport edges, including the longer paused label and keyboard resize.
-    fitTag();
-    if (acted || state.paused) {
-      if (acted) {
-        label.hidden = true;
-        pointer.style.display = "none";
-        tap.hidden = false;
+      // Follow the rendered cursor during travel and keep the full name readable
+      // at viewport edges, including the longer paused label and keyboard resize.
+      fitTag();
+      if (acted || state.paused) {
+        if (acted) {
+          label.hidden = true;
+          pointer.style.display = "none";
+          tap.hidden = false;
+        }
+        if (
+          Date.now() >= request.expiresAt ||
+          location.href !== snapshot.url ||
+          !host.isConnected
+        ) {
+          state.destroy();
+          return;
+        }
+        frame = requestAnimationFrame(update);
+        return;
       }
       if (
-        Date.now() >= request.expiresAt ||
+        (request.action && Date.now() >= request.expiresAt) ||
         location.href !== snapshot.url ||
-        !host.isConnected
+        !host.isConnected ||
+        !target.isConnected
       ) {
         state.destroy();
         return;
       }
-      frame = requestAnimationFrame(update);
-      return;
-    }
-    if (
-      (request.action && Date.now() >= request.expiresAt) ||
-      location.href !== snapshot.url ||
-      !host.isConnected ||
-      !target.isConnected
-    ) {
-      state.destroy();
-      return;
-    }
-    if (!lapsed && Date.now() >= request.expiresAt) lapse();
-    if (dirty || state.dismissed) {
-      hide();
-      frame = requestAnimationFrame(update);
-      return;
-    }
-    const rect = target.getBoundingClientRect();
-    const view = {
-      left: viewport?.offsetLeft ?? 0,
-      top: viewport?.offsetTop ?? 0,
-      width: viewport?.width ?? innerWidth,
-      height: viewport?.height ?? innerHeight,
-      scale: viewport?.scale ?? 1,
-    };
-    // Chromium on Android draws the page under the navigation bar and, when the keyboard opens,
-    // shrinks the visual viewport by the keyboard's height less that bar. The reported bottom is
-    // then under the keyboard by the bar's inset, which env(safe-area-inset-bottom) no longer
-    // reports. The inset last seen without a keyboard in this document is taken off again.
-    const bottomInset =
-      Number.parseFloat(getComputedStyle(inset).paddingBottom) || 0;
-    const keyboard = view.height * view.scale < innerHeight - 1;
-    if (!keyboard) globalThis[insetKey] = bottomInset;
-    const barInset = Number.isFinite(globalThis[insetKey])
-      ? globalThis[insetKey]
-      : 0;
-    view.height = Math.max(
-      0,
-      view.height -
-        (keyboard ? Math.max(bottomInset, barInset) : bottomInset) / view.scale,
-    );
-    const geometry = JSON.stringify([
-      rect.x,
-      rect.y,
-      rect.width,
-      rect.height,
-      view,
-    ]);
-    if (geometry !== lastGeometry) {
-      lastGeometry = geometry;
-      stable = 0;
-      hide();
-    } else stable++;
-    const css = getComputedStyle(target);
-    if (
-      stable >= 2 &&
-      rect.width > 0 &&
-      rect.height > 0 &&
-      css.visibility === "visible" &&
-      css.display !== "none" &&
-      rect.left >= view.left &&
-      rect.top >= view.top &&
-      rect.right <= view.left + view.width &&
-      rect.bottom <= view.top + view.height
-    ) {
-      label.hidden = false;
-      label.style.width = `${Math.min(answers.length ? 440 : 360, view.width - 24)}px`;
-      const height = label.getBoundingClientRect().height,
-        width = label.getBoundingClientRect().width;
-      const candidates = [
-        { x: rect.left, y: rect.bottom + 22, tail: "" },
-        { x: rect.left, y: rect.top - height - 22, tail: "up" },
-        { x: rect.right + 22, y: rect.top },
-        { x: rect.left - width - 22, y: rect.top },
-      ];
-      const position = candidates
-        .map((p) => ({
-          ...p,
-          x: Math.max(
-            view.left + 8,
-            Math.min(p.x, view.left + view.width - width - 8),
-          ),
-          y: Math.max(
-            view.top + 8,
-            Math.min(p.y, view.top + view.height - height - 8),
-          ),
-        }))
-        .find(
-          (p) =>
-            p.y >= view.top + 8 &&
-            p.y + height <= view.top + view.height - 8 &&
-            [rect, ...clear.map((node) => node.getBoundingClientRect())].every(
-              (avoid) =>
-                p.x + width <= avoid.left - 8 ||
-                p.x >= avoid.right + 8 ||
-                p.y + height <= avoid.top - 8 ||
-                p.y >= avoid.bottom + 8,
-            ),
-        );
-      Object.assign(ring.style, {
-        left: `${rect.left}px`,
-        top: `${rect.top}px`,
-        width: `${rect.width}px`,
-        height: `${rect.height}px`,
-        borderRadius: css.borderRadius,
-      });
-      if (position) {
-        label.style.left = `${position.x}px`;
-        label.style.top = `${position.y}px`;
-        tail.hidden = position.tail === undefined || lapsed;
-        tail.className = position.tail ? "tail up" : "tail";
-        tail.style.left = `${Math.max(14, Math.min(rect.left + 28 - position.x, width - 32))}px`;
-        const point = [
-          rect.left + Math.min(rect.width / 2, 120),
-          rect.top + rect.height / 2,
-        ];
-        const now = Date.now();
-        // Travel from where the cursor was last seen, then hide. A show-only
-        // guide never plays a tap: the person presses this control, not Eliza.
-        // An action pointer stays on its target instead.
-        if (travel === "idle") {
-          pointer.style.transition = "none";
-          place(
-            cursor.point ?? [
-              view.left + view.width * 0.78,
-              view.top + view.height * 0.67,
-            ],
-          );
-          pointer.style.display = "block";
-          fitTag();
-          pointer.getBoundingClientRect();
-          pointer.style.transition = "";
-          place(point);
-          cursor.point = point;
-          travel = "moving";
-          travelAt = now;
-        } else if (travel === "moving" && now - travelAt >= 1400) {
-          travel = "done";
-          if (!request.action) pointer.style.display = "none";
-        }
-        if (travel !== "done") {
-          label.hidden = true;
-          frame = requestAnimationFrame(update);
-          return;
-        }
-        ring.hidden = Boolean(request.action) || lapsed;
-        cursor.point = point;
-        if (!appearedAt) appearedAt = now;
-        if (now - appearedAt >= 250) label.classList.add("shown");
-        if (request.action) {
-          pointer.style.transition = "none";
-          place(point);
-          pointer.style.display = "block";
-          fitTag();
-          tap.style.left = `${point[0] - 18}px`;
-          tap.style.top = `${point[1] - 18}px`;
-          tap.hidden = !acted;
-        }
-        state.visible = true;
-        state.appeared = true;
-        if (!visibleSince) visibleSince = now;
-      } else {
+      if (!lapsed && Date.now() >= request.expiresAt) lapse();
+      if (dirty || state.dismissed) {
         hide();
-        // Only the label needs room. A show-only step keeps its ring on the
-        // control; an action still needs its label and Cancel.
-        ring.hidden = Boolean(request.action) || lapsed;
+        frame = requestAnimationFrame(update);
+        return;
       }
-    } else hide();
+      const rect = target.getBoundingClientRect();
+      const view = {
+        left: viewport?.offsetLeft ?? 0,
+        top: viewport?.offsetTop ?? 0,
+        width: viewport?.width ?? innerWidth,
+        height: viewport?.height ?? innerHeight,
+        scale: viewport?.scale ?? 1,
+      };
+      // Chromium on Android draws the page under the navigation bar and, when the keyboard opens,
+      // shrinks the visual viewport by the keyboard's height less that bar. The reported bottom is
+      // then under the keyboard by the bar's inset, which env(safe-area-inset-bottom) no longer
+      // reports. The inset last seen without a keyboard in this document is taken off again.
+      const bottomInset =
+        Number.parseFloat(getComputedStyle(inset).paddingBottom) || 0;
+      const keyboard = view.height * view.scale < innerHeight - 1;
+      if (!keyboard) globalThis[insetKey] = bottomInset;
+      const barInset = Number.isFinite(globalThis[insetKey])
+        ? globalThis[insetKey]
+        : 0;
+      view.height = Math.max(
+        0,
+        view.height -
+          (keyboard ? Math.max(bottomInset, barInset) : bottomInset) /
+            view.scale,
+      );
+      const geometry = JSON.stringify([
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        view,
+      ]);
+      if (geometry !== lastGeometry) {
+        lastGeometry = geometry;
+        stable = 0;
+        hide();
+      } else stable++;
+      const css = getComputedStyle(target);
+      if (
+        stable >= 2 &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        css.visibility === "visible" &&
+        css.display !== "none" &&
+        rect.left >= view.left &&
+        rect.top >= view.top &&
+        rect.right <= view.left + view.width &&
+        rect.bottom <= view.top + view.height
+      ) {
+        label.hidden = false;
+        label.style.width = `${Math.min(answers.length ? 440 : 360, view.width - 24)}px`;
+        const height = label.getBoundingClientRect().height,
+          width = label.getBoundingClientRect().width;
+        const candidates = [
+          { x: rect.left, y: rect.bottom + 22, tail: "" },
+          { x: rect.left, y: rect.top - height - 22, tail: "up" },
+          { x: rect.right + 22, y: rect.top },
+          { x: rect.left - width - 22, y: rect.top },
+        ];
+        const position = candidates
+          .map((p) => ({
+            ...p,
+            x: Math.max(
+              view.left + 8,
+              Math.min(p.x, view.left + view.width - width - 8),
+            ),
+            y: Math.max(
+              view.top + 8,
+              Math.min(p.y, view.top + view.height - height - 8),
+            ),
+          }))
+          .find(
+            (p) =>
+              p.y >= view.top + 8 &&
+              p.y + height <= view.top + view.height - 8 &&
+              [
+                rect,
+                ...clear.map((node) => node.getBoundingClientRect()),
+              ].every(
+                (avoid) =>
+                  p.x + width <= avoid.left - 8 ||
+                  p.x >= avoid.right + 8 ||
+                  p.y + height <= avoid.top - 8 ||
+                  p.y >= avoid.bottom + 8,
+              ),
+          );
+        Object.assign(ring.style, {
+          left: `${rect.left}px`,
+          top: `${rect.top}px`,
+          width: `${rect.width}px`,
+          height: `${rect.height}px`,
+          borderRadius: css.borderRadius,
+        });
+        if (position) {
+          label.style.left = `${position.x}px`;
+          label.style.top = `${position.y}px`;
+          tail.hidden = position.tail === undefined || lapsed;
+          tail.className = position.tail ? "tail up" : "tail";
+          tail.style.left = `${Math.max(14, Math.min(rect.left + 28 - position.x, width - 32))}px`;
+          const point = [
+            rect.left + Math.min(rect.width / 2, 120),
+            rect.top + rect.height / 2,
+          ];
+          const now = Date.now();
+          // Travel from where the cursor was last seen, then hide. A show-only
+          // guide never plays a tap: the person presses this control, not Eliza.
+          // An action pointer stays on its target instead.
+          if (travel === "idle") {
+            pointer.style.transition = "none";
+            place(
+              cursor.point ?? [
+                view.left + view.width * 0.78,
+                view.top + view.height * 0.67,
+              ],
+            );
+            pointer.style.display = "block";
+            fitTag();
+            pointer.getBoundingClientRect();
+            pointer.style.transition = "";
+            place(point);
+            cursor.point = point;
+            travel = "moving";
+            travelAt = now;
+          } else if (travel === "moving" && now - travelAt >= 1400) {
+            travel = "done";
+            if (!request.action) pointer.style.display = "none";
+          }
+          if (travel !== "done") {
+            label.hidden = true;
+            frame = requestAnimationFrame(update);
+            return;
+          }
+          ring.hidden = Boolean(request.action) || lapsed;
+          cursor.point = point;
+          if (!appearedAt) appearedAt = now;
+          if (now - appearedAt >= 250) label.classList.add("shown");
+          if (request.action) {
+            pointer.style.transition = "none";
+            place(point);
+            pointer.style.display = "block";
+            fitTag();
+            tap.style.left = `${point[0] - 18}px`;
+            tap.style.top = `${point[1] - 18}px`;
+            tap.hidden = !acted;
+          }
+          state.visible = true;
+          state.appeared = true;
+          if (!visibleSince) visibleSince = now;
+        } else {
+          hide();
+          // Only the label needs room. A show-only step keeps its ring on the
+          // control; an action still needs its label and Cancel.
+          ring.hidden = Boolean(request.action) || lapsed;
+        }
+      } else hide();
+      frame = requestAnimationFrame(update);
+    };
     frame = requestAnimationFrame(update);
-  };
-  frame = requestAnimationFrame(update);
-  return {
-    accepted: true,
-    visible: false,
-    dismissed: state.dismissed,
-    placement,
-  };
-});
+    return {
+      accepted: true,
+      visible: false,
+      dismissed: state.dismissed,
+      placement,
+    };
+  },
+);
