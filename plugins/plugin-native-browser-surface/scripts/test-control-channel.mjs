@@ -225,6 +225,32 @@ try {
     taskPolicy: policy,
     ...extra,
   });
+  // Read the shipped native asset, not only the imported Chromium source.
+  // A stale generated asset used to omit the document scroll target entirely.
+  await page.evaluate(() => {
+    document.body.style.minHeight = "2200px";
+  });
+  state = await snapshot();
+  const scrollTarget = state.elements.find(
+    (item) => item.targetSelector === "html",
+  );
+  assert.equal(scrollTarget?.scrollOnly, true);
+  assert.ok(scrollTarget.scroll.maxY > 0);
+  const scroll = action(state, "scroll", "html", {
+    direction: "down",
+    taskPolicy: {
+      ...policy,
+      targets: [{ selector: "html", action: "scroll" }],
+    },
+  });
+  assert.equal((await dispatch(scroll)).result.dispatched, true);
+  assert.ok(await page.evaluate(() => scrollY > 0));
+  await assert.rejects(dispatch(scroll), { code: "STALE_REF" });
+  await page.evaluate(() => {
+    document.body.style.minHeight = "";
+    scrollTo(0, 0);
+  });
+  state = await snapshot();
   const click = action(state, "click", "#increment");
   const guide = (guidance) => dispatch({ subaction: "guide", guidance });
   const shown = {
