@@ -1857,7 +1857,10 @@
         await rejects("readPage", { ...identity, id, selector: ".missing" });
         const capturePresentation = async (name) => {
           window.nativeBrowserCapture = { name, done: false };
-          const deadline = Date.now() + 5000;
+          // Native waits up to five seconds for visual-state callbacks, then
+          // checks pixels, encodes PNG and sends the artifact before replying.
+          // Its caller must allow that whole bounded operation to finish.
+          const deadline = Date.now() + 20000;
           while (!window.nativeBrowserCapture.done) {
             if (Date.now() >= deadline)
               throw new Error(`Screenshot did not complete: ${name}`);
