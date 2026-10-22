@@ -7,8 +7,8 @@ export function isDeliveredNavigationOnlyTurn(
   trajectory: PlannerTrajectory,
 ): boolean {
   if (
-    trajectory.plannedQueue.length ||
-    trajectory.archivedSteps.length ||
+    trajectory.plannedQueue?.length ||
+    trajectory.archivedSteps?.length ||
     trajectory.outcomeIntents?.length !== 1
   )
     return false;
