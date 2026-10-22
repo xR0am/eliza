@@ -2,6 +2,7 @@
  * Real-code web workspace tests for command execution against JSDOM pages.
  */
 
+import { createServer } from "node:http";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetBrowserWorkspaceStateForTests,
@@ -57,6 +58,94 @@ const longSnapshotHtml = `<!doctype html>
 describe("browser workspace web-mode real-code command flow", () => {
   beforeEach(async () => {
     await __resetBrowserWorkspaceStateForTests();
+  });
+
+  it("sends the form encoding and preserves its body across HTTP 307", async () => {
+    const submissions: { url: string; contentType: string; body: string }[] =
+      [];
+    const server = createServer(async (request, response) => {
+      if (request.method === "POST") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        submissions.push({
+          url: request.url ?? "",
+          contentType: request.headers["content-type"] ?? "",
+          body: Buffer.concat(chunks).toString(),
+        });
+        if (request.url === "/submit") {
+          response.writeHead(307, { Location: "/done" });
+          response.end();
+          return;
+        }
+      }
+      response.setHeader("Content-Type", "text/html");
+      response.end(`<!doctype html><title>Form encoding</title>
+        <form method="post" action="/submit" enctype="multipart/form-data">
+          <input name="query" value="hello world">
+          <input name="tag" value="one"><input name="tag" value="two">
+          <textarea name="notes">first\nsecond</textarea>
+          <input type="file" name="attachment">
+          <button id="multipart">Multipart</button>
+          <button id="plain" formenctype="text/plain">Plain</button>
+          <button id="fallback" formenctype="invalid">Fallback</button>
+        </form>`);
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("No HTTP port");
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      for (const selector of ["#multipart", "#plain", "#fallback"]) {
+        submissions.length = 0;
+        const tab = await openBrowserWorkspaceTab({ url: base }, webEnv);
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction: "click", selector },
+          webEnv,
+        );
+        expect(submissions.map(({ url }) => url)).toEqual(["/submit", "/done"]);
+        const first = submissions[0];
+        expect(submissions[1]).toEqual({ ...first, url: "/done" });
+        if (selector === "#multipart") {
+          expect
+            .soft(first.contentType)
+            .toMatch(/^multipart\/form-data; boundary=/);
+          const parsed = await new Request(base, {
+            method: "POST",
+            headers: { "Content-Type": first.contentType },
+            body: first.body,
+          }).formData();
+          expect.soft(parsed.get("query")).toBe("hello world");
+          expect.soft(parsed.getAll("tag")).toEqual(["one", "two"]);
+          expect.soft(parsed.get("notes")).toBe("first\r\nsecond");
+          expect
+            .soft(first.body)
+            .toContain(
+              'name="attachment"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n\r\n',
+            );
+        } else if (selector === "#plain") {
+          expect.soft(first.contentType).toBe("text/plain");
+          expect
+            .soft(first.body)
+            .toBe(
+              "query=hello world\r\ntag=one\r\ntag=two\r\nnotes=first\r\nsecond\r\nattachment=\r\n",
+            );
+        } else {
+          expect(first.contentType).toMatch(
+            /^application\/x-www-form-urlencoded/,
+          );
+          expect
+            .soft(new URLSearchParams(first.body).get("attachment"))
+            .toBe("");
+        }
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("keeps navigation metadata distinct from a subsequent page read", async () => {
