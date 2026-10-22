@@ -1270,7 +1270,7 @@ jobs:
         working-directory: ${{ env.CHECKOUT_DIR }}
         env:
           DEPLOY_ENVIRONMENT: ${{ steps.env.outputs.deploy_environment }}
-          STEWARD_UPSTREAM_URL: https://steward-api-staging.up.railway.app
+          STEWARD_UPSTREAM_URL: ${{ vars.ELIZA_LOGIN_API_URL || 'https://steward-api-staging.up.railway.app' }}
         run: |
           set -euo pipefail
           node packages/cloud/scripts/verify-steward-provider-discovery.ts \
@@ -1405,6 +1405,7 @@ jobs:
           NETWORK_SITE_AUTH_ORIGIN: ${{ steps.env.outputs.deploy_environment == 'staging' && vars.NETWORK_SITE_AUTH_ORIGIN || '' }}
           NETWORK_SITE_AUTH_SERVER_TOKEN: ${{ steps.env.outputs.deploy_environment == 'staging' && secrets.NETWORK_SITE_AUTH_SERVER_TOKEN || '' }}
           DEPLOY_ENVIRONMENT: ${{ steps.env.outputs.deploy_environment }}
+          LOGIN_API_URL: ${{ vars.ELIZA_LOGIN_API_URL }}
           # Phone and app voice are production features. Staging remains an
           # explicit repository-variable opt-in, while production is pinned on
           # so a managed deploy cannot silently replace wrangler.toml's true
@@ -2045,6 +2046,7 @@ jobs:
           MONOTONIC_FORWARD_PROGRESS: ${{ steps.env.outputs.deploy_environment == 'staging' }}
           SERVED_SOURCE_URL: ${{ steps.env.outputs.deploy_environment == 'production' && 'https://api.eliza.app' || 'https://api-staging.eliza.app' }}
           STEWARD_API_URL: ${{ secrets.STEWARD_API_URL }}
+          LOGIN_API_URL: ${{ vars.ELIZA_LOGIN_API_URL }}
           STEWARD_PLATFORM_KEYS: ${{ secrets.STEWARD_PLATFORM_KEYS }}
           STEWARD_TENANT_ID: elizacloud-staging
         run: |
@@ -2100,6 +2102,10 @@ jobs:
           fi
 
           args=(${{ steps.env.outputs.wrangler_args }} --secrets-file "$WORKER_SECRETS_FILE" --var ELIZA_DEPLOY_COMMIT:"$GITHUB_SHA" --var ELIZA_MOBILE_APP_AUTH_ENABLED:"$ELIZA_MOBILE_APP_AUTH_ENABLED" --var ELIZA_APP_TELEGRAM_BOT_ID:"$ELIZA_APP_TELEGRAM_BOT_ID" --var ELIZA_APP_TELEGRAM_BOT_USERNAME:"$ELIZA_APP_TELEGRAM_BOT_USERNAME" --var VOICE_REALTIME_WS_ENABLED:"$VOICE_REALTIME_WS_ENABLED" --var ELIZA_TTS_FISH_ENABLED:"$ELIZA_TTS_FISH_ENABLED" --var FISH_AUDIO_DATA_GOVERNANCE_APPROVED:"$FISH_AUDIO_DATA_GOVERNANCE_APPROVED" --var FISH_AUDIO_MODEL:"$FISH_AUDIO_MODEL" --var FISH_AUDIO_SAMPLE_RATE:"$FISH_AUDIO_SAMPLE_RATE" --var FISH_AUDIO_FIRST_AUDIO_TIMEOUT_MS:"$FISH_AUDIO_FIRST_AUDIO_TIMEOUT_MS")
+          if [ -n "${LOGIN_API_URL:-}" ]; then
+            node "$CHECKOUT_DIR/packages/cloud/scripts/verify-steward-upstream-binding.ts"
+            args+=(--var LOGIN_API_URL:"$LOGIN_API_URL")
+          fi
           if [ -n "${KOKORO_TTS_URL:-}" ]; then
             args+=(--var KOKORO_TTS_URL:"$KOKORO_TTS_URL")
           else

@@ -10,6 +10,12 @@ here. Invoke them with `bun run --cwd packages/cloud/scripts sms-gateway:verify:
 or the corresponding `sms-gateway:*` command in this package. Device installation
 and pairing remain in the app package.
 
+The protected Environment variable `ELIZA_LOGIN_API_URL` selects a login hosting
+cutover for the canonical Cloud CF release. Set it only after state transfer and
+backend readiness. The release checks the exact environment origin, probes that
+staging upstream, and publishes `LOGIN_API_URL` with the certified Worker source.
+Blank retains the repository routing default. Cross-environment URLs fail closed.
+
 Run Cloud Latency Certification from `staging` for staging or `main` for
 production. Select the matching environment and exact served commit. Both use
 `qwen-3.8-27b@high@max` by default and retain sanitized request traces. Auth cache

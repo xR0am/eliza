@@ -15,29 +15,64 @@
 
 import { pathToFileURL } from "node:url";
 
-export const CANONICAL_STEWARD_UPSTREAM_URLS = Object.freeze(
+export const CANONICAL_STEWARD_UPSTREAM_URLS: Readonly<
+  Record<"staging" | "production", string>
+> = Object.freeze(
   Object.assign(Object.create(null), {
     staging: "https://steward-api-staging.up.railway.app",
     production: "https://eliza.steward.fi",
   }),
 );
 
+/** Exact same-environment destinations during the reversible hosting cutover. */
+export const CANONICAL_LOGIN_UPSTREAM_URLS = Object.freeze({
+  staging: Object.freeze([
+    CANONICAL_STEWARD_UPSTREAM_URLS.staging,
+    "https://eliza-login-staging.square-rain-7251.workers.dev",
+  ]),
+  production: Object.freeze([
+    CANONICAL_STEWARD_UPSTREAM_URLS.production,
+    "https://steward-api-production-115d.up.railway.app",
+    "https://eliza-login-production.square-rain-7251.workers.dev",
+  ]),
+});
+
 export function verifyStewardUpstreamBinding({
   deployEnvironment,
   stewardApiUrl,
+  loginApiUrl = "",
+}: {
+  deployEnvironment: string;
+  stewardApiUrl?: unknown;
+  loginApiUrl?: unknown;
 }) {
-  const canonical = CANONICAL_STEWARD_UPSTREAM_URLS[deployEnvironment];
-  if (canonical === undefined) {
+  if (deployEnvironment !== "staging" && deployEnvironment !== "production") {
     return {
       ok: false,
       error: `DEPLOY_ENVIRONMENT "${deployEnvironment}" has no canonical Steward upstream`,
+    };
+  }
+  const canonical = CANONICAL_STEWARD_UPSTREAM_URLS[deployEnvironment];
+
+  if (
+    loginApiUrl !== "" &&
+    (typeof loginApiUrl !== "string" ||
+      !CANONICAL_LOGIN_UPSTREAM_URLS[deployEnvironment].includes(loginApiUrl))
+  ) {
+    return {
+      ok: false,
+      error: `LOGIN_API_URL does not match an approved ${deployEnvironment} login upstream; refusing a possible cross-environment auth deployment`,
     };
   }
 
   const candidate =
     typeof stewardApiUrl === "string" ? stewardApiUrl.trim() : "";
   if (candidate === "") {
-    return { ok: true, preservedExistingBinding: true, error: null };
+    return {
+      ok: true,
+      preservedExistingBinding: loginApiUrl === "",
+      error: null,
+    };
   }
 
   if (candidate !== canonical) {
@@ -55,9 +90,11 @@ function main() {
   const deployEnvironment = process.env.DEPLOY_ENVIRONMENT ?? "";
   // biome-ignore lint/suspicious/noUndeclaredEnvVars: GitHub Actions injects this protected standalone deploy-script candidate outside Turbo caching.
   const stewardApiUrl = process.env.STEWARD_API_URL ?? "";
+  const loginApiUrl = process.env.LOGIN_API_URL ?? "";
   const result = verifyStewardUpstreamBinding({
     deployEnvironment,
     stewardApiUrl,
+    loginApiUrl,
   });
 
   if (!result.ok) {
@@ -67,13 +104,13 @@ function main() {
 
   if (result.preservedExistingBinding) {
     console.log(
-      `STEWARD_API_URL has no configured ${deployEnvironment} candidate; preserving the existing Worker binding without claiming its value was verified.`,
+      `Login routing has no configured ${deployEnvironment} candidate; preserving the existing bindings without claiming their values were verified.`,
     );
     return;
   }
 
   console.log(
-    `Verified the configured ${deployEnvironment} STEWARD_API_URL candidate against the canonical upstream; the candidate value was not printed.`,
+    `Verified the configured ${deployEnvironment} login routing candidates against their approved upstreams; candidate values were not printed.`,
   );
 }
 
