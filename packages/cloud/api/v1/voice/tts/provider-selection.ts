@@ -3,10 +3,13 @@
  *
  * The route prefers an explicitly configured Cartesia cloud default, keeps
  * Workers AI as the free default when Cartesia is absent, and preserves arbitrary
- * ElevenLabs voice ids for custom voices. Explicit Kokoro-shaped ids are
+ * ElevenLabs voice ids for custom voices. Existing Kokoro voice IDs select
+ * Workers AI replacements when its binding is configured. Unknown Kokoro-shaped ids are
  * fail-closed so a typo never waits on, or bills through, the ElevenLabs
  * upstream.
  */
+
+import type { CloudflareTtsSpeaker } from "@elizaos/cloud-shared/lib/providers/cloudflare-speech";
 
 const DEFAULT_KOKORO_VOICE_ID = "af_heart";
 /**
@@ -32,6 +35,23 @@ export const KOKORO_VOICE_IDS = new Set([
   "bm_lewis",
 ]);
 
+/** Compatibility IDs select replacement voices, not the retired Kokoro models. */
+export const KOKORO_CLOUDFLARE_VOICES: Readonly<
+  Record<string, CloudflareTtsSpeaker>
+> = {
+  af_heart: "luna",
+  af_bella: "asteria",
+  af_sarah: "athena",
+  af_nicole: "andromeda",
+  af_sky: "aurora",
+  am_michael: "orion",
+  am_adam: "atlas",
+  bf_emma: "pandora",
+  bf_isabella: "helena",
+  bm_george: "draco",
+  bm_lewis: "hyperion",
+};
+
 export type TtsProvider = "cloudflare" | "cartesia" | "kokoro" | "elevenlabs";
 
 export type TtsProviderSelection =
@@ -39,7 +59,11 @@ export type TtsProviderSelection =
       ok: true;
       provider: "cloudflare";
       voiceId?: string;
-      fallbackReason: "configured-default" | "configured-default-compat";
+      speaker: CloudflareTtsSpeaker;
+      fallbackReason:
+        | "configured-default"
+        | "configured-default-compat"
+        | "legacy-voice-migration";
     }
   | {
       ok: true;
@@ -90,6 +114,15 @@ export function selectTtsProvider(args: {
   kokoroConfigured: boolean;
 }): TtsProviderSelection {
   const voiceId = args.voiceId?.trim();
+  if (args.cloudflareConfigured && voiceId && isKokoroVoiceId(voiceId)) {
+    return {
+      ok: true,
+      provider: "cloudflare",
+      voiceId,
+      speaker: KOKORO_CLOUDFLARE_VOICES[voiceId],
+      fallbackReason: "legacy-voice-migration",
+    };
+  }
 
   if (
     args.cloudflareConfigured &&
@@ -99,6 +132,7 @@ export function selectTtsProvider(args: {
     return {
       ok: true,
       provider: "cloudflare",
+      speaker: "luna",
       fallbackReason: voiceId
         ? "configured-default-compat"
         : "configured-default",
