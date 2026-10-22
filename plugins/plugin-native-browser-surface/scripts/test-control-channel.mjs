@@ -1,0 +1,951 @@
+/** Real Chromium DOM and isolated realm; Android reply-proxy coverage is separate. */
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:https";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createLocalAgentGateway } from "../../../packages/agent/native-host/gateway.mjs";
+import { createSurfaceCommandChannel } from "../../../packages/agent/native-host/surface-channel.mjs";
+import { connectSurfaceCommandClient } from "../../../packages/agent/native-host/surface-client.mjs";
+import { buildTaskRuntime } from "../../../packages/app/scripts/build-consumer-task-runtime.mjs";
+import { createSurfaceTaskHandler } from "../../../packages/os/browser/src/surface-task-handler.mjs";
+import {
+  GuidedWebsiteWorkflow,
+  pageControls,
+  pageView,
+} from "../../plugin-personal-assistant/native-host/guided-website-workflow.mjs";
+
+const require = createRequire(
+  import.meta.resolve("@elizaos/plugin-browser/package.json"),
+);
+const { default: puppeteer } = require("puppeteer-core");
+if (!process.env.ELIZA_BROWSER_EXECUTABLE)
+  throw new Error("Set ELIZA_BROWSER_EXECUTABLE");
+const source = await readFile(
+  new URL("../resources/control-channel.js", import.meta.url),
+  "utf8",
+);
+const certificates = await mkdtemp(join(tmpdir(), "eliza-surface-control-"));
+execFileSync(
+  "openssl",
+  [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    join(certificates, "key.pem"),
+    "-out",
+    join(certificates, "cert.pem"),
+    "-days",
+    "1",
+    "-subj",
+    "/CN=localhost",
+  ],
+  { stdio: "ignore" },
+);
+// Exercise the same immutable bundle consumed by product hosts, not a private
+// test entry that can conceal missing public exports. Commit candidate sources
+// before running this lane; native resources and the host bundle must agree.
+const sourceRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const sourceCommit = execFileSync(
+  "git",
+  ["-C", sourceRoot, "rev-parse", "HEAD"],
+  { encoding: "utf8" },
+).trim();
+const runtimeModule = join(certificates, "task-runtime.mjs");
+buildTaskRuntime(runtimeModule, { sourceRoot, sourceCommit });
+const {
+  NativeSurfaceBrowserTarget,
+  NativeTaskActuator,
+  InteractiveTaskRuntime,
+  SqliteInteractiveTaskStore,
+} = await import(pathToFileURL(runtimeModule).href);
+const server = createServer(
+  {
+    key: await readFile(join(certificates, "key.pem")),
+    cert: await readFile(join(certificates, "cert.pem")),
+  },
+  (_req, res) => {
+    res.setHeader("Content-Type", "text/html");
+    res.end(
+      `<!doctype html><input id="query" aria-label="Search query"><input type="password" value="private-value"><button type="button" id="increment" onclick="document.querySelector('output').textContent++">Increment</button><output>0</output><label>Language<select id="language"><option value="opaque-en">English</option><option value="opaque-fr">French</option><option value="opaque-de">German</option><option value="opaque-disabled" disabled>Unavailable</option><option value="opaque-a">Ambiguous</option><option value="opaque-b">Ambiguous</option></select></label>`,
+    );
+  },
+);
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+let browser, client;
+const channel = createSurfaceCommandChannel({
+  credentialGate: async () => "synthetic-owner",
+});
+const gateway = createLocalAgentGateway({
+  token: "fixture-agent",
+  inboundToken: "fixture-host",
+  surfaceChannel: channel,
+  hostPolicy: {
+    origins: [],
+    resetPaths: [],
+    conversationTitle: "Test",
+    abortReason: "test",
+    validateTitle() {},
+    prepareMessage() {},
+    isPaidAction: () => false,
+    formatTaskContext: () => "",
+  },
+});
+await new Promise((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+const gatewayUrl = `http://127.0.0.1:${gateway.address().port}`;
+const request = async (path, input, token = "fixture-host") => {
+  const response = await fetch(`${gatewayUrl}/browser/surface/${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+  return { status: response.status, body: await response.json() };
+};
+try {
+  assert.equal(
+    (await request("connect", { clientId: "renderer", epoch: 1 }, "wrong"))
+      .status,
+    401,
+  );
+  let connection;
+  browser = await puppeteer.launch({
+    executablePath: process.env.ELIZA_BROWSER_EXECUTABLE,
+    headless: true,
+    acceptInsecureCerts: true,
+  });
+  const page = await browser.newPage();
+  const origin = `https://127.0.0.1:${server.address().port}`;
+  await page.goto(origin);
+  const cdp = await page.createCDPSession();
+  const { frameTree } = await cdp.send("Page.getFrameTree");
+  const { executionContextId } = await cdp.send("Page.createIsolatedWorld", {
+    frameId: frameTree.frame.id,
+    worldName: "eliza-native-control-test",
+  });
+  const evaluate = async (expression) => {
+    const result = await cdp.send("Runtime.evaluate", {
+      contextId: executionContextId,
+      expression,
+      returnByValue: true,
+    });
+    assert.equal(
+      result.exceptionDetails,
+      undefined,
+      JSON.stringify(result.exceptionDetails),
+    );
+    return result.result.value;
+  };
+  const ready = await evaluate(
+    `globalThis.messages=[]; globalThis.elizaSurfaceControl={postMessage:value=>messages.push(JSON.parse(value))}; ${source}; messages.pop()`,
+  );
+  assert.equal(ready.ready, true);
+  let sequence = 0;
+  const nativeDispatch = (command, extra = {}) =>
+    evaluate(
+      `elizaSurfaceControl.onmessage({data:${JSON.stringify(JSON.stringify({ documentId: ready.documentId, sequence: ++sequence, command, ...extra }))}}); messages.pop()`,
+    );
+  client = await connectSurfaceCommandClient({
+    clientId: "renderer",
+    epoch: 1,
+    request: async (path, input, signal) => {
+      const response = await fetch(`${gatewayUrl}${path}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer fixture-host",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+        signal,
+      });
+      const body = await response.json();
+      if (!response.ok)
+        throw Object.assign(new Error(body.error), { code: body.code });
+      return body;
+    },
+    handleCommand: async (input) => {
+      const reply = await nativeDispatch(input.command, input.extra);
+      // Match the Android reply proxy, which rejects native error results.
+      if (reply.result.error)
+        throw Object.assign(new Error(reply.result.error.message), {
+          code: reply.result.error.kind,
+        });
+      return reply;
+    },
+  });
+  connection = { connectionId: client.connectionId };
+  assert.equal(
+    (await request("connect", { clientId: "renderer", epoch: 1 })).status,
+    409,
+  );
+  const dispatch = (command, extra = {}) =>
+    channel.request(
+      { command, extra },
+      {
+        effect: ["click", "fill", "select", "scroll"].includes(
+          command.subaction,
+        ),
+      },
+    );
+  const snapshot = async () =>
+    (await dispatch({ subaction: "snapshot" })).result;
+  const policy = {
+    origin,
+    expiresAt: Date.now() + 60000,
+    targets: [
+      { selector: "#increment", action: "click" },
+      { selector: "#query", action: "fill" },
+      { selector: "#language", action: "select" },
+    ],
+  };
+  let state = await snapshot();
+  assert.equal(state.complete, true);
+  assert.ok(!JSON.stringify(state).includes("private-value"));
+  assert.equal(
+    await page.evaluate(() => typeof globalThis.elizaSurfaceControl),
+    "undefined",
+  );
+  assert.equal(
+    await page.evaluate(() => typeof globalThis.__elizaBrowserControlV1),
+    "undefined",
+  );
+  const action = (state, subaction, target, extra = {}) => ({
+    subaction,
+    nodeId: state.elements.find((item) => item.targetSelector === target).id,
+    snapshotId: state.snapshotId,
+    taskPolicy: policy,
+    ...extra,
+  });
+  const click = action(state, "click", "#increment");
+  const guide = (guidance) => dispatch({ subaction: "guide", guidance });
+  const shown = {
+    kind: "show",
+    id: "step-1",
+    snapshotId: state.snapshotId,
+    nodeId: click.nodeId,
+    origin,
+    expiresAt: Date.now() + 15000,
+    text: "I will select Increment.",
+    assistantName: "Test helper",
+    action: "click",
+  };
+  assert.equal((await guide(shown)).result.accepted, true);
+  const status = {
+    kind: "action-status",
+    id: shown.id,
+    snapshotId: shown.snapshotId,
+    nodeId: shown.nodeId,
+    action: shown.action,
+  };
+  const readyDeadline = Date.now() + 5000;
+  while (!(await guide(status)).result.ready) {
+    assert.ok(
+      Date.now() < readyDeadline,
+      "The native action preview must become visible and ready",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(
+    await page.evaluate(() => typeof globalThis.__elizaPageGuidanceV1),
+    "undefined",
+  );
+  assert.equal((await guide({ kind: "pause" })).result.paused, true);
+  assert.equal((await guide(status)).result.ready, false);
+  assert.equal(
+    (await guide({ ...shown, restore: true })).result.accepted,
+    true,
+  );
+  assert.equal((await guide({ kind: "hide" })).result.visible, false);
+  assert.equal(
+    (await guide({ ...shown, snapshotId: "retired" })).result.reason,
+    "stale-observation",
+  );
+  await assert.rejects(guide({ ...shown, tone: "offer", answers: [] }), {
+    code: "INVALID_REQUEST",
+  });
+  assert.equal((await dispatch(click)).result.dispatched, true);
+  assert.equal(await page.$eval("output", (node) => node.textContent), "1");
+  const consumed = sequence;
+  await assert.rejects(dispatch(click, { sequence: consumed }), {
+    code: "STALE_REF",
+  });
+  assert.equal(await page.$eval("output", (node) => node.textContent), "1");
+  state = await snapshot();
+  const fill = action(state, "fill", "#query", { text: "Wikipedia" });
+  await assert.rejects(dispatch(fill, { documentId: "retired-document" }), {
+    code: "STALE_REF",
+  });
+  assert.equal(await page.$eval("#query", (node) => node.value), "");
+  await assert.rejects(dispatch({ ...fill, taskPolicy: null }), {
+    code: "POLICY_BLOCKED",
+  });
+  assert.equal((await dispatch(fill)).result.dispatched, true);
+  assert.equal(await page.$eval("#query", (node) => node.value), "Wikipedia");
+  state = await snapshot();
+  assert.ok(
+    !JSON.stringify(state).includes("opaque-fr"),
+    "Internal option values stay in the page",
+  );
+  for (const text of ["Missing", "Unavailable", "Ambiguous"])
+    await assert.rejects(
+      dispatch(action(state, "select", "#language", { text })),
+      { code: "POLICY_BLOCKED" },
+    );
+  const select = action(state, "select", "#language", { text: "German" });
+  await dispatch({ ...select, validateOnly: true });
+  assert.equal(
+    await page.$eval("#language", (node) => node.selectedOptions[0].label),
+    "English",
+  );
+  assert.equal((await dispatch(select)).result.dispatched, true);
+  assert.equal(
+    await page.$eval("#language", (node) => node.selectedOptions[0].label),
+    "German",
+  );
+  await assert.rejects(dispatch(select), { code: "STALE_REF" });
+  state = await snapshot();
+  await page.type("#query", " by hand");
+  await assert.rejects(
+    dispatch(action(state, "fill", "#query", { text: "overwrite" })),
+    { code: "STALE_REF" },
+  );
+  assert.equal(
+    await page.$eval("#query", (node) => node.value),
+    "Wikipedia by hand",
+  );
+  await assert.rejects(
+    dispatch({ subaction: "evaluate", script: "alert(1)" }),
+    { code: "UNSUPPORTED" },
+  );
+  // A website can define the same names in its world without replacing the
+  // channel, its sequence or the snapshot node references.
+  await page.evaluate(() => {
+    globalThis.elizaSurfaceControl = {
+      onmessage: () => {
+        throw new Error("page spoof");
+      },
+    };
+    globalThis.__elizaBrowserControlV1 = { snapshotId: "spoof" };
+  });
+  state = await snapshot();
+  assert.equal(
+    (await dispatch(action(state, "click", "#increment"))).result.dispatched,
+    true,
+  );
+  assert.equal(await page.$eval("output", (node) => node.textContent), "2");
+  // Lose the transport reply after a real DOM effect. The command is consumed,
+  // reports uncertainty and is never delivered again on the next pull.
+  state = await snapshot();
+  await client.close();
+  connection = (await request("connect", { clientId: "renderer", epoch: 2 }))
+    .body;
+  const interrupted = new AbortController();
+  const pending = channel.request(
+    { command: action(state, "click", "#increment") },
+    { effect: true, signal: interrupted.signal },
+  );
+  const uncertain = assert.rejects(pending, { code: "UNCERTAIN_OUTCOME" });
+  const delivered = (await request("pull", connection)).body.command;
+  const lost = await nativeDispatch(delivered.input.command);
+  interrupted.abort();
+  await uncertain;
+  assert.equal(await page.$eval("output", (node) => node.textContent), "3");
+  assert.equal(
+    (await request("reply", { ...connection, id: delivered.id, result: lost }))
+      .status,
+    409,
+  );
+  const afterLoss = (await request("pull", connection)).body;
+  assert.equal(afterLoss.command, null);
+  assert.deepEqual(afterLoss.cancellations, [delivered.id]);
+  assert.equal((await request("close", connection)).status, 200);
+  assert.equal(
+    (await request("connect", { clientId: "renderer", epoch: 1 })).status,
+    409,
+  );
+  // The task adapter uses the same real isolated page, with a product-style
+  // UUID page identity. Only the native reply proxy is represented by this port.
+  let selected = true,
+    failCleanup = false;
+  const pageId = "page-9d7a8c01";
+  const nativePage = { id: pageId, url: origin, isCurrent: () => selected };
+  const nativeControl = async (_page, input, signal) => {
+    signal?.throwIfAborted();
+    const reply = await nativeDispatch(
+      input.command,
+      input.documentId ? { documentId: input.documentId } : {},
+    );
+    if (reply.result?.error)
+      throw Object.assign(new Error(reply.result.error.message), {
+        code: reply.result.error.kind,
+      });
+    return { ...reply, frameScope: "main" };
+  };
+  const taskHandler = createSurfaceTaskHandler({
+    getPage: async (id) => {
+      if (id !== undefined) assert.equal(id, pageId);
+      if (!selected)
+        throw Object.assign(new Error("Parked"), { code: "STALE_REF" });
+      return nativePage;
+    },
+    listPages: async () => [{ id: pageId }],
+    control: nativeControl,
+    cleanup: async (_id, kind) => {
+      const result = (
+        await nativeControl(nativePage, {
+          command: { subaction: "guide", guidance: { kind } },
+        })
+      ).result;
+      if (failCleanup) {
+        failCleanup = false;
+        throw Object.assign(new Error("Cleanup context changed"), {
+          code: "STALE_REF",
+        });
+      }
+      return result;
+    },
+    isCurrent: () => true,
+  });
+  client = await connectSurfaceCommandClient({
+    clientId: "task-renderer",
+    epoch: 3,
+    request: async (path, input, signal) => {
+      const response = await fetch(`${gatewayUrl}${path}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer fixture-host",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input),
+        signal,
+      });
+      const body = await response.json();
+      if (!response.ok)
+        throw Object.assign(new Error(body.error), { code: body.code });
+      return body;
+    },
+    handleCommand: taskHandler,
+  });
+  await assert.rejects(
+    channel.request(
+      { type: "current-page", id: "retired-connection" },
+      { effect: false, connectionId: connection.connectionId },
+    ),
+    { code: "STALE_REF" },
+  );
+  const surfaceTarget = new NativeSurfaceBrowserTarget(channel);
+  assert.equal((await surfaceTarget.currentPage()).tabId, pageId);
+  assert.ok(surfaceTarget.getProfileId().startsWith("embedded:"));
+  const context = {
+    actorId: "synthetic-owner",
+    accountId: "synthetic-account",
+    agentId: "synthetic-agent",
+    taskId: "surface-task",
+    epoch: 1,
+  };
+  let requestId = 0;
+  const taskRequest = (message, effect = false) =>
+    channel.request(
+      { id: `surface-request-${++requestId}`, ...message },
+      { effect },
+    );
+  const binding = {
+    ...context,
+    tabId: pageId,
+    bindingRevision: 1,
+    origin,
+    expiresAt: Date.now() + 60000,
+    revoked: false,
+    assistantName: "Test helper",
+    targets: policy.targets,
+  };
+  assert.equal((await surfaceTarget.bindTask(binding)).bound, true);
+  const taskSnapshot = async () =>
+    (
+      await surfaceTarget.execute(
+        { subaction: "snapshot", id: pageId },
+        { taskContext: context },
+      )
+    ).value.result;
+  let observed = await taskSnapshot();
+  assert.equal(observed.frames[0].documentId, ready.documentId);
+  assert.equal(observed.frames[0].complete, true);
+  assert.ok(!JSON.stringify(observed).includes("private-value"));
+  const taskAction = (subaction, target, extra = {}) => ({
+    type: "command",
+    command: {
+      subaction,
+      id: pageId,
+      taskContext: context,
+      selector: observed.frames[0].elements.find(
+        (element) => element.targetSelector === target,
+      ).selector,
+      expectedSelector: target,
+      ...extra,
+    },
+  });
+  await assert.rejects(
+    taskRequest(
+      {
+        ...taskAction("click", "#increment"),
+        command: {
+          ...taskAction("click", "#increment").command,
+          taskContext: { ...context, accountId: "another" },
+        },
+      },
+      true,
+    ),
+    { code: "POLICY_BLOCKED" },
+  );
+  const increment = taskAction("click", "#increment");
+  assert.equal(
+    (
+      await surfaceTarget.execute(increment.command, {
+        taskContext: context,
+        expectedSelector: "#increment",
+      })
+    ).value.result.dispatched,
+    true,
+  );
+  assert.equal(await page.$eval("output", (node) => node.textContent), "4");
+  await assert.rejects(taskRequest(increment, true), { code: "STALE_REF" });
+  observed = await taskSnapshot();
+  assert.equal(
+    (
+      await taskRequest(
+        taskAction("fill", "#query", {
+          text: "Wikipedia from the task adapter",
+        }),
+        true,
+      )
+    ).dispatched,
+    true,
+  );
+  assert.equal(
+    await page.$eval("#query", (node) => node.value),
+    "Wikipedia from the task adapter",
+  );
+  observed = await taskSnapshot();
+  assert.equal(
+    (
+      await surfaceTarget.execute(
+        taskAction("select", "#language", { value: "English" }).command,
+        { taskContext: context, expectedSelector: "#language" },
+      )
+    ).value.result.dispatched,
+    true,
+  );
+  assert.equal(
+    await page.$eval("#language", (node) => node.selectedOptions[0].label),
+    "English",
+  );
+  observed = await taskSnapshot();
+  selected = false;
+  await assert.rejects(taskRequest(taskAction("click", "#increment"), true), {
+    code: "STALE_REF",
+  });
+  assert.equal(await page.$eval("output", (node) => node.textContent), "4");
+  selected = true;
+  const owner = {
+    actorId: context.actorId,
+    agentId: context.agentId,
+    connector: { source: "fixture", accountId: context.accountId },
+  };
+  const task = {
+    id: context.taskId,
+    owner,
+    epoch: 2,
+    revision: 1,
+    status: "waiting",
+    authorization: { state: "active", decisionId: "fixture-authority" },
+    allowedOrigins: [origin],
+    allowedCapabilities: ["browser.click", "browser.select", "browser.fill"],
+    operations: [],
+  };
+  const actuator = new NativeTaskActuator({
+    target: surfaceTarget,
+    getTask: () => task,
+    policy: () => ({
+      tabId: pageId,
+      origin,
+      leaseMs: 60000,
+      targets: policy.targets,
+    }),
+    nextBindingRevision: () => 2,
+    resolveValue: async (ref) => {
+      if (ref === "public-query") return "Exact public query";
+      assert.equal(ref, "public-choice-french");
+      return "French";
+    },
+    verify: async (proposal, before, after) =>
+      proposal.capability === "browser.fill"
+        ? "succeeded"
+        : proposal.capability === "browser.select"
+          ? after.elements
+              .find((e) => e.targetSelector === "#language")
+              ?.options?.find((o) => o.selected)?.label === "French"
+            ? "succeeded"
+            : "unknown"
+          : before.text.includes("4") && after.text.includes("5")
+            ? "succeeded"
+            : "unknown",
+    recordEvidence: async () => "fixture-real-page-readback",
+  });
+  const actuatorSignal = new AbortController().signal;
+  task.observation = await actuator.observe({
+    owner,
+    taskId: task.id,
+    signal: actuatorSignal,
+  });
+  const actual = actuator.readObservation(task.id, owner);
+  const proposal = {
+    id: "actuator-click",
+    taskId: task.id,
+    epoch: task.epoch,
+    authorizationId: task.authorization.decisionId,
+    observationId: task.observation.id,
+    observationVersion: task.observation.version,
+    inputRevision: task.observation.inputRevision,
+    targetRef: actual.snapshot.elements.find(
+      (element) => element.targetSelector === "#increment",
+    ).selector,
+    expectedSelector: "#increment",
+    capability: "browser.click",
+    expiresAt: Date.now() + 10000,
+  };
+  task.operations.push({ status: "dispatched", proposal });
+  const outcome = await actuator.execute(proposal, {
+    owner,
+    signal: actuatorSignal,
+    isCurrent: () => true,
+  });
+  assert.deepEqual(outcome, {
+    status: "succeeded",
+    evidenceRef: "fixture-real-page-readback",
+  });
+  assert.equal(await page.$eval("output", (node) => node.textContent), "5");
+  task.observation = await actuator.observe({
+    owner,
+    taskId: task.id,
+    signal: actuatorSignal,
+  });
+  const selectObservation = actuator.readObservation(task.id, owner);
+  const plannerView = pageView(
+    selectObservation.snapshot,
+    pageControls(selectObservation.snapshot),
+  );
+  const language = plannerView.controls.find(
+    (control) => control.label === "Language",
+  );
+  assert.deepEqual(
+    language.options.map((option) => option.label),
+    ["English", "French", "German", "Unavailable", "Ambiguous", "Ambiguous"],
+  );
+  assert.equal(
+    language.options.find((option) => option.label === "Unavailable").disabled,
+    true,
+  );
+  assert.equal(language.options.filter((option) => option.selected).length, 1);
+  assert.equal(JSON.stringify(plannerView).includes("opaque-"), false);
+  assert.equal(JSON.stringify(plannerView).includes("private-value"), false);
+  const selectProposal = {
+    ...proposal,
+    id: "actuator-select",
+    capability: "browser.select",
+    valueRef: "public-choice-french",
+    observationId: task.observation.id,
+    observationVersion: task.observation.version,
+    inputRevision: task.observation.inputRevision,
+    targetRef: selectObservation.snapshot.elements.find(
+      (e) => e.targetSelector === "#language",
+    ).selector,
+    expectedSelector: "#language",
+  };
+  task.operations.push({ status: "dispatched", proposal: selectProposal });
+  assert.equal(
+    (
+      await actuator.execute(selectProposal, {
+        owner,
+        signal: actuatorSignal,
+        isCurrent: () => true,
+      })
+    ).status,
+    "succeeded",
+  );
+  assert.equal(
+    await page.$eval("#language", (node) => node.selectedOptions[0].label),
+    "French",
+  );
+  for (const rewrite of [false, true]) {
+    await page.$eval(
+      "#query",
+      (node, rewrite) => {
+        node.oninput = rewrite
+          ? () => {
+              node.value = "Rewritten by website";
+            }
+          : null;
+      },
+      rewrite,
+    );
+    task.observation = await actuator.observe({
+      owner,
+      taskId: task.id,
+      signal: actuatorSignal,
+    });
+    const read = actuator.readObservation(task.id, owner);
+    const fillProposal = {
+      ...proposal,
+      id: `fill-readback-${rewrite}`,
+      capability: "browser.fill",
+      valueRef: "public-query",
+      observationId: task.observation.id,
+      observationVersion: task.observation.version,
+      inputRevision: task.observation.inputRevision,
+      targetRef: read.snapshot.elements.find(
+        (e) => e.targetSelector === "#query",
+      ).selector,
+      expectedSelector: "#query",
+      expiresAt: Date.now() + 10000,
+    };
+    task.operations.push({ status: "dispatched", proposal: fillProposal });
+    const result = await actuator.execute(fillProposal, {
+      owner,
+      signal: actuatorSignal,
+      isCurrent: () => true,
+    });
+    assert.equal(
+      result.status,
+      rewrite ? "unknown" : "succeeded",
+      "A website rewrite cannot pass even an overly permissive host verifier",
+    );
+    assert.equal(
+      await page.$eval("#query", (node) => node.value),
+      rewrite ? "Rewritten by website" : "Exact public query",
+    );
+    const again = await actuator.observe({
+      owner,
+      taskId: task.id,
+      signal: actuatorSignal,
+    });
+    task.observation = again;
+    const snapshot = actuator.readObservation(task.id, owner).snapshot;
+    assert.equal(
+      snapshot.inputReadback,
+      undefined,
+      "Fill comparison is consumed by its first readback",
+    );
+    assert.ok(
+      !JSON.stringify(snapshot).includes("Exact public query") &&
+        !JSON.stringify(snapshot).includes("Rewritten by website"),
+    );
+  }
+  await page.$eval("#query", (node) => {
+    node.oninput = null;
+  });
+  const renewedContext = { ...context, epoch: 2 };
+  observed = (
+    await surfaceTarget.execute(
+      { subaction: "snapshot", id: pageId },
+      { taskContext: renewedContext },
+    )
+  ).value.result;
+  failCleanup = true;
+  await assert.rejects(
+    surfaceTarget.execute(taskAction("click", "#increment").command, {
+      taskContext: renewedContext,
+      expectedSelector: "#increment",
+    }),
+    { kind: "UNCERTAIN_OUTCOME" },
+  );
+  assert.equal(
+    await page.$eval("output", (node) => node.textContent),
+    "6",
+    "Cleanup failure must not hide the real effect",
+  );
+  // Drive the shared planned-action workflow through the real durable task
+  // runtime, HTTP transport and DOM. The deterministic planner is not LLM proof.
+  failCleanup = false;
+  const db = new DatabaseSync(join(certificates, "planned-actions.sqlite"));
+  db.exec("PRAGMA synchronous=FULL");
+  let workflow,
+    runtime,
+    bindingRevision = 2,
+    permitted = false;
+  const plannedActuator = new NativeTaskActuator({
+    target: surfaceTarget,
+    getTask: (id) => runtime.get(id),
+    policy: (current) => ({
+      tabId: pageId,
+      origin,
+      leaseMs: 60000,
+      targets: workflow?.actionTargets(current) ?? [],
+    }),
+    nextBindingRevision: () => ++bindingRevision,
+    resolveValue: async (ref) => {
+      assert.equal(ref, "public-german");
+      return "German";
+    },
+    verify: async (proposal, before, after) =>
+      proposal.capability === "browser.select"
+        ? after.elements
+            .find((e) => e.targetSelector === "#language")
+            ?.options.find((o) => o.selected)?.label === "German"
+          ? "succeeded"
+          : "unknown"
+        : before.text.includes("6") && after.text.includes("7")
+          ? "succeeded"
+          : "unknown",
+    recordEvidence: async () => "fixture-planned-action-readback",
+  });
+  runtime = new InteractiveTaskRuntime({
+    owner,
+    store: new SqliteInteractiveTaskStore(db),
+    actuator: plannedActuator,
+  });
+  let plannedTask = runtime.create({
+    id: "planned-native-flow",
+    goalRef: "select-and-click",
+    allowedOrigins: [origin],
+    allowedCapabilities: ["browser.select", "browser.click"],
+    authorization: {
+      decisionId: "planned-authority",
+      policyRevision: "fixture-v1",
+      state: "active",
+      decidedAt: new Date().toISOString(),
+      revokedAt: null,
+    },
+  });
+  workflow = new GuidedWebsiteWorkflow({
+    runtime,
+    actuator: plannedActuator,
+    taskId: plannedTask.id,
+    authorizeAction: () => permitted,
+    planStep: ({ page: view }) => {
+      const choice = view.controls.find((c) => c.options);
+      if (!choice.options.some((o) => o.label === "German" && o.selected))
+        return {
+          status: "act",
+          kind: "agent-action",
+          action: "select",
+          ref: choice.ref,
+          valueRef: "public-german",
+          message: "Choose German",
+        };
+      if (!view.text.includes("7"))
+        return {
+          status: "act",
+          kind: "agent-action",
+          action: "click",
+          ref: view.controls.find((c) => c.label === "Increment").ref,
+          message: "Increment once",
+        };
+      return { status: "done", message: "Observed both requested changes" };
+    },
+  });
+  try {
+    plannedTask = await runtime.observe(
+      plannedTask.id,
+      plannedTask.revision,
+      false,
+    );
+    assert.equal(
+      (await workflow.refresh()).kind,
+      "blocked",
+      "A model plan cannot grant action authority",
+    );
+    const lifetime = new AbortController();
+    workflow.signal = lifetime.signal;
+    let entered;
+    const checking = new Promise((resolve) => {
+      entered = resolve;
+    });
+    workflow.authorizeAction = () => {
+      entered();
+      return new Promise(() => {});
+    };
+    const waiting = workflow.refresh();
+    await checking;
+    const beforePause = runtime.get(plannedTask.id);
+    runtime.control(beforePause.id, beforePause.revision, "pause");
+    lifetime.abort();
+    await assert.rejects(waiting, /authorization changed/i);
+    await runtime.settle(plannedTask.id);
+    assert.equal(
+      runtime.get(plannedTask.id).operations.length,
+      0,
+      "Aborted policy work cannot dispatch",
+    );
+    workflow.signal = new AbortController().signal;
+    workflow.authorizeAction = (_input, context) => {
+      assert.equal(context.signal, workflow.signal);
+      assert.equal(context.taskId, plannedTask.id);
+      return permitted;
+    };
+    const paused = runtime.get(plannedTask.id);
+    await runtime.observe(paused.id, paused.revision, true);
+    permitted = true;
+    let decision = await workflow.refresh();
+    assert.equal(decision.kind, "agent-action");
+    permitted = false;
+    assert.equal(
+      (await workflow.executeAction(decision.offerKey)).kind,
+      "blocked",
+    );
+    assert.equal(
+      runtime.get(plannedTask.id).operations.length,
+      0,
+      "Revoked host permission prevents dispatch",
+    );
+    permitted = true;
+    decision = await workflow.refresh();
+    await page.select("#language", "opaque-en");
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(
+      await page.$eval("#language", (n) => n.selectedOptions[0].label),
+      "English",
+      "A changed page is replanned without an effect",
+    );
+    assert.equal(runtime.get(plannedTask.id).operations.length, 0);
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(
+      await page.$eval("#language", (n) => n.selectedOptions[0].label),
+      "German",
+    );
+    assert.equal(decision.kind, "agent-action");
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(decision.kind, "done");
+    assert.equal(await page.$eval("output", (n) => n.textContent), "7");
+    assert.deepEqual(
+      runtime.get(plannedTask.id).operations.map((o) => o.status),
+      ["succeeded", "succeeded"],
+    );
+  } finally {
+    await plannedActuator.quiesce({ owner, taskId: plannedTask.id });
+    db.close();
+  }
+  console.log(
+    "PASS: planned select and click through durable SQLite task runtime, host permission withdrawal and stale-page replan without dispatch",
+  );
+  await taskHandler.close();
+  console.log(
+    "PASS: NativeTaskActuator readback, cleanup uncertainty, bound embedded task adapter and authenticated host HTTP to isolated command channel, real click/fill/select with visible preview and option-label readback, lost-effect uncertainty without replay, document and replay fences, manual input, policy requirement, fixed operations, credential exclusion",
+  );
+} finally {
+  await client?.close();
+  await browser?.close();
+  channel.close();
+  gateway.closeAllConnections();
+  await new Promise((resolve) => gateway.close(resolve));
+  await new Promise((resolve) => server.close(resolve));
+  await rm(certificates, { recursive: true, force: true });
+}

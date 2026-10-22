@@ -63,6 +63,111 @@ function goal(goalRef: string) {
 }
 
 describe("interactive task HTTP host", () => {
+  it.each([false, true])(
+    "completes through host review and retains the record across restart (cleanup failure: %s)",
+    async (cleanupFails) => {
+      const storage = setup();
+      const cleanup = deferred<void>();
+      const reasons: unknown[] = [];
+      let failCleanup = cleanupFails;
+      const actuator: InteractiveTaskActuator = {
+        capabilities: [],
+        async observe() {
+          throw new Error("No observation expected");
+        },
+        async execute() {
+          throw new Error("No effect expected");
+        },
+        async quiesce({ reason }) {
+          reasons.push(reason);
+          if (reason === "complete" && failCleanup) {
+            failCleanup = false;
+            throw new Error("Native cleanup unavailable");
+          }
+          await cleanup.promise;
+        },
+      };
+      const runtime = new InteractiveTaskRuntime({
+        owner,
+        store: storage.store,
+        actuator,
+      });
+      const http = await listenTaskHttp(
+        createInteractiveTaskHandler({
+          runtime,
+          authenticate: async () => owner,
+          authorizeGoal: async (ref) => goal(ref),
+        }),
+      );
+      try {
+        runtime.create(goal("read-page"));
+        expect(
+          (await http.call("/tasks/task-1/complete", { expectedRevision: 0 }))
+            .status,
+        ).toBe(404);
+        await expect(
+          runtime.complete("task-1", 0, async () => false),
+        ).rejects.toMatchObject({ code: "TASK_UNAUTHORIZED" });
+        expect(runtime.get("task-1").revision).toBe(0);
+        const authorization = deferred<boolean>();
+        const stale = runtime.complete(
+          "task-1",
+          0,
+          () => authorization.promise,
+        );
+        runtime.control("task-1", 0, "pause");
+        authorization.resolve(true);
+        await expect(stale).rejects.toMatchObject({ code: "TASK_CONFLICT" });
+        cleanup.resolve();
+        await runtime.settle();
+        // A new task represents a new verified result; a paused one cannot finish.
+        await expect(
+          runtime.complete("task-1", 1, async () => true),
+        ).rejects.toMatchObject({ code: "TASK_CONFLICT" });
+        runtime.control("task-1", 1, "cancel");
+        await runtime.settle();
+        const next = runtime.create({ ...goal("read-page"), id: "task-2" });
+        const finishing = runtime.complete(
+          next.id,
+          next.revision,
+          async () => true,
+        );
+        if (cleanupFails) {
+          await expect(finishing).rejects.toMatchObject({
+            code: "TASK_CLEANUP_UNCONFIRMED",
+          });
+          expect(runtime.get(next.id).status).toBe("completed");
+          await runtime.settle(next.id);
+        } else await finishing;
+        const completed = runtime.get(next.id);
+        expect(completed.status).toBe("completed");
+        expect(completed.epoch).toBe(next.epoch + 1);
+        expect(reasons.at(-1)).toBe("complete");
+        expect(runtime.current()).toBeNull();
+        expect(
+          (await (await http.call("/tasks/task-2")).json()).task.status,
+        ).toBe("completed");
+        await expect(
+          runtime.observe(next.id, completed.revision, true),
+        ).rejects.toThrow();
+        const restarted = new InteractiveTaskRuntime({
+          owner,
+          store: new SqliteInteractiveTaskStore(storage.db),
+          actuator,
+        });
+        expect(restarted.get(next.id).status).toBe("completed");
+        expect(restarted.events(next.id).events.at(-1)?.kind).toBe("complete");
+        expect(restarted.current()).toBeNull();
+        expect(
+          storage.store.get(next.id, { ...owner, actorId: "another-owner" }),
+        ).toBeNull();
+      } finally {
+        cleanup.resolve();
+        await http.close();
+        storage.close();
+      }
+    },
+  );
   it.each([
     { status: "succeeded" },
     { status: "failed" },
@@ -124,6 +229,10 @@ describe("interactive task HTTP host", () => {
       expect(result.status).toBe("blocked");
       expect(result.operations[0].status).toBe("unknown");
       expect(result.operations[0].evidenceRef).toBeUndefined();
+      await expect(
+        runtime.complete("task-1", result.revision, async () => true),
+      ).rejects.toThrow();
+      expect(runtime.get("task-1").operations[0].status).toBe("unknown");
       expect(
         (await (await http.call("/tasks/task-1")).json()).task.status,
       ).toBe("blocked");

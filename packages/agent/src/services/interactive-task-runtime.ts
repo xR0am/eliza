@@ -18,7 +18,12 @@ import type { SqliteInteractiveTaskStore } from "./interactive-task-store.ts";
  * Why host cleanup runs after a task control. "close" is a pause whose user
  * also closed the task surface. Actuator-internal cleanup passes no reason.
  */
-export type TaskCleanupReason = "pause" | "close" | "cancel" | "revoke";
+export type TaskCleanupReason =
+  | "pause"
+  | "close"
+  | "cancel"
+  | "revoke"
+  | "complete";
 
 export interface InteractiveTaskActuator {
   readonly capabilities: readonly string[];
@@ -173,6 +178,13 @@ export class InteractiveTaskRuntime {
   control(
     id: string,
     expectedRevision: number,
+    type: Exclude<TaskCleanupReason, "complete">,
+  ): InteractiveTask {
+    return this.applyControl(id, expectedRevision, type);
+  }
+  private applyControl(
+    id: string,
+    expectedRevision: number,
     type: TaskCleanupReason,
   ): InteractiveTask {
     this.requireHealthy();
@@ -202,6 +214,29 @@ export class InteractiveTaskRuntime {
         this.startCleanup(id, type);
       }
     }
+  }
+  /** Trusted host only: verify and save the requested result before calling this.
+   * Completion records task state, not proof that the goal was achieved. The
+   * renderer cannot supply a result or invoke this through the HTTP handler.
+   */
+  async complete(
+    id: string,
+    expectedRevision: number,
+    stillAuthorized: () => Promise<boolean>,
+  ): Promise<InteractiveTask> {
+    this.requireHealthy();
+    const task = this.get(id);
+    if (task.status !== "active" || task.revision !== expectedRevision)
+      throw new ElizaError("Task is no longer active at this revision", {
+        code: "TASK_CONFLICT",
+      });
+    if (!(await stillAuthorized()))
+      throw new ElizaError("Task authorization changed", {
+        code: "TASK_UNAUTHORIZED",
+      });
+    const result = this.applyControl(id, expectedRevision, "complete");
+    await this.settle(id);
+    return result;
   }
   private begin(id: string): AbortController {
     this.requireHealthy();

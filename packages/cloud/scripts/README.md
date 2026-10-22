@@ -10,6 +10,12 @@ here. Invoke them with `bun run --cwd packages/cloud/scripts sms-gateway:verify:
 or the corresponding `sms-gateway:*` command in this package. Device installation
 and pairing remain in the app package.
 
+The protected Environment variable `ELIZA_LOGIN_API_URL` selects a login hosting
+cutover for the canonical Cloud CF release. Set it only after state transfer and
+backend readiness. The release checks the exact environment origin, probes that
+staging upstream, and publishes `LOGIN_API_URL` with the certified Worker source.
+Blank retains the repository routing default. Cross-environment URLs fail closed.
+
 Run Cloud Latency Certification from `staging` for staging or `main` for
 production. Select the matching environment and exact served commit. Both use
 `qwen-3.8-27b@high@max` by default and retain sanitized request traces. Auth cache
@@ -66,8 +72,22 @@ bun packages/cloud/scripts/admin/recipient-envelope.ts open --private-key key.pe
 The mint script's stdout is piped only into the sealer (RSA-OAEP-256 wrapping
 an AES-256-GCM key), and only the sealed envelope is uploaded. Defaults: 5
 single-use `alpha-staging-qa` codes and one 50-redemption `alpha-staging-shared`
-code, 183 days each. The pepper is the staging Environment secret
-`ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER`. Delete the artifact after download.
+code, 183 days each, family `alpha_phone`, plan `plus_monthly`. The pepper is
+the staging Environment secret `ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER`. Delete
+the artifact after download.
+
+Optional inputs set the campaign: `family` (`alpha_phone` or `grace_pilot`),
+`plan` (`plus_monthly` or `pro_monthly`), `duration_days` (1 to 731) or
+`duration_months` (1 to 24, not both), `requires_no_paid_plan`, and
+`expires_at` (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ`, in the future). For
+example, a Grace pilot wave of single-use codes:
+
+```sh
+gh workflow run cloud-staging-mint-grant-codes.yml --ref staging \
+  -f expected_cloud_commit=<staging head> -f recipient_public_key="$(cat key.pub.b64)" \
+  -f family=grace_pilot -f duration_months=6 -f requires_no_paid_plan=true \
+  -f single_use_count=20 -f single_use_label=grace-pilot-wave-1 -f shared_max_redemptions=0
+```
 
 ## Production test grant
 
@@ -330,4 +350,4 @@ The protected named-backup workflow's existing read-only reconciliation also rep
 
 The runner preserves private intent and baseline files, waits for the returned workflow, then verifies the sole observed new bucket and WAL references. Image, credential, volume and unrelated config changes are refused. A lost reply or prohibited patch permits one read-only reconciliation; it never retries, commits, deletes or claims migration readiness. Existing failed backup attempts and list-only reconciliation receipts do not qualify.
 
-`pitr-stage-operator.ts` composes fresh bounded read-only authority capture, authenticated completed-backup evidence, and recipient-encrypted stage evidence. It refuses outside canonical main GitHub Actions context. Private stage intent, workflow, observations and reconciliation are encrypted before writing; public receipts contain only hashes and fixed outcomes. `production-pitr-stage-only.yml` connects this entrypoint through manual dispatch only, on the exact reviewed main commit and protected production environment. It requires a valid project, environment and service UUID, a completed backup run, exact volume/image receipts, a short-lived review, a writer-maintenance receipt and a recipient public key. It uploads only encrypted evidence on every outcome and always removes private authority captures. If upload fails, cleanup retains ciphertext and fails; this does not prove that a durable copy exists. Before dispatch, independently review writer exclusivity and all input receipts. GitHub registration on the default branch requires a separate refusal-only stub with matching inputs; the main workflow alone must not be described as registered. No workflow dispatch is part of this change. Stage creation may create a bucket even without commit. No current backup-capacity decision is assumed resolved. An exact patch commit remains a separate reviewed operation.
+`pitr-stage-operator.ts` composes fresh bounded read-only authority capture, authenticated completed-backup evidence, and recipient-encrypted stage evidence. It refuses outside canonical main GitHub Actions context. Private stage intent, workflow, observations and reconciliation are encrypted before writing; public receipts contain only hashes and fixed outcomes. `production-pitr-stage-only.yml` connects this entrypoint through manual dispatch only, on the exact reviewed main commit and protected production environment. It requires a valid project, environment and service UUID, a completed backup run, exact volume/image receipts, a short-lived review, a writer-maintenance receipt and a recipient public key. It uploads only encrypted evidence on every outcome and always removes private authority captures. If upload fails, cleanup retains ciphertext and fails; this does not prove that a durable copy exists. Before dispatch, independently review writer exclusivity and all input receipts. The default branch registers the same manual inputs. The canonical-main guard refuses runs from develop and staging before any provider operation. Production runs still require the exact reviewed main commit and all protected inputs. No workflow dispatch is part of this change. Stage creation may create a bucket even without commit. No current backup-capacity decision is assumed resolved. An exact patch commit remains a separate reviewed operation.

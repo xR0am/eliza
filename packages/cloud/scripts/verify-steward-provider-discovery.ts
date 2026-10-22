@@ -5,6 +5,7 @@
  */
 
 import { pathToFileURL } from "node:url";
+import { CANONICAL_LOGIN_UPSTREAM_URLS } from "./verify-steward-upstream-binding.ts";
 
 export type ProviderDiscoverySurface = "upstream" | "proxy";
 
@@ -58,7 +59,7 @@ const DANGEROUS_JSON_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const ENVIRONMENT_CONTRACTS = Object.freeze({
   staging: Object.freeze({
     tenantId: "elizacloud-staging",
-    upstreamOrigin: "https://steward-api-staging.up.railway.app",
+    upstreamOrigins: CANONICAL_LOGIN_UPSTREAM_URLS.staging,
     proxyOrigins: Object.freeze([
       "https://api-staging.eliza.app",
       "https://cloud-staging.eliza.app",
@@ -320,7 +321,7 @@ function validateProviderDiscoveryConfig(config: {
   const baseUrl = requiredOrigin(config.baseUrl);
   const contract = ENVIRONMENT_CONTRACTS[environment];
   const allowedOrigins =
-    surface === "upstream" ? [contract.upstreamOrigin] : contract.proxyOrigins;
+    surface === "upstream" ? contract.upstreamOrigins : contract.proxyOrigins;
   if (!allowedOrigins.includes(baseUrl)) {
     throw new Error(
       `--base-url is not a canonical ${environment} ${surface} origin`,

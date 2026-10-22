@@ -9,13 +9,13 @@ name: Voice Live E2E
 on:
   workflow_dispatch:
     inputs:
-      run_railway_contract:
-        description: "Run the Railway Kokoro/Whisper live contract lane"
+      run_cloudflare_contract:
+        description: "Run the authenticated Cloudflare TTS/STT contract lane"
         required: false
         default: true
         type: boolean
-      run_web_live_railway:
-        description: "Run the provisioned browser mic→agent→audio Railway lane"
+      run_web_live_cloudflare:
+        description: "Run the provisioned browser mic→agent→audio Cloudflare lane"
         required: false
         default: false
         type: boolean
@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload matrix probe report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-platform-matrix-index
           path: |
@@ -105,24 +105,16 @@ jobs:
             ${{ runner.temp }}/voice-platform-matrix/index.html
           if-no-files-found: error
 
-  # Live contract against the two Railway voice services (Kokoro TTS + Whisper
-  # STT). It runs the in-repo round-trip test (voice-kokoro-whisper-live.test.ts,
-  # which was referenced by zero workflows) so a dead or drifted service pages as
-  # a red run instead of a silent user report. Hits public HTTPS only, so it runs
-  # on a cheap GitHub-hosted runner — no GPU/self-hosted staging. The service URLs
-  # come from repo variables set at deploy time (see the two service READMEs under
-  # packages/cloud/services/voice-*); the test falls back to its own defaults when
-  # they are unset, so the lane still exercises the provisioned instances.
-  voice-railway-contract:
-    name: Railway Kokoro/Whisper live contract
-    if: ${{ github.event_name == 'schedule' || inputs.run_railway_contract }}
+  # Verify the authenticated application routes and their actual provider headers.
+  voice-cloudflare-contract:
+    name: Cloudflare authenticated speech contract
+    if: ${{ github.event_name == 'schedule' || inputs.run_cloudflare_contract }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      ELIZA_VOICE_LIVE_RAILWAY: "1"
-      KOKORO_TTS_URL: ${{ vars.ELIZA_VOICE_KOKORO_TTS_URL }}
-      WHISPER_STT_URL: ${{ vars.ELIZA_VOICE_WHISPER_STT_URL }}
-      WHISPER_STT_MODEL: ${{ vars.ELIZA_VOICE_WHISPER_STT_MODEL }}
+      ELIZA_VOICE_LIVE_CLOUDFLARE: "1"
+      ELIZA_VOICE_CLOUD_API_URL: ${{ vars.ELIZA_VOICE_CLOUD_API_URL }}
+      ELIZAOS_CLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -134,37 +126,35 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Run live Railway voice contract
+      - name: Run authenticated Cloudflare speech contract
         run: |
           set -euo pipefail
-          PRIVATE_LOG=$(mktemp "$RUNNER_TEMP/voice-railway-contract.XXXXXX")
+          PRIVATE_LOG=$(mktemp "$RUNNER_TEMP/voice-cloudflare-contract.XXXXXX")
           trap 'rm -f "$PRIVATE_LOG"' EXIT
-          if bun test packages/cloud/api/__tests__/voice-kokoro-whisper-live.test.ts > "$PRIVATE_LOG" 2>&1; then
-            echo "phase=railway-contract status=passed code=VOICE_CONTRACT_PASSED"
+          if bun test packages/cloud/api/__tests__/voice-cloudflare-live.test.ts > "$PRIVATE_LOG" 2>&1; then
+            echo "phase=cloudflare-contract status=passed code=VOICE_CONTRACT_PASSED"
           else
-            echo "phase=railway-contract status=failed code=VOICE_CONTRACT_FAILED" >&2
+            echo "phase=cloudflare-contract status=failed code=VOICE_CONTRACT_FAILED" >&2
             exit 1
           fi
 
   # The service contract above does not exercise the shipped browser surface.
   # This separately gated job runs the exact live matrix cell from #16937 only
-  # when a runner has been provisioned with Railway voice endpoints and a real
+  # when a runner has been provisioned with Cloudflare voice endpoints and a real
   # model credential. The schedule stays opt-in through the repository variable
   # so an unprovisioned nightly cannot turn into a misleading red run.
-  voice-web-live-railway:
-    name: Web Railway live mic → agent → audible TTS
-    if: ${{ (github.event_name == 'schedule' && vars.ELIZA_VOICE_WEB_LIVE_READY == '1') || (github.event_name == 'workflow_dispatch' && inputs.run_web_live_railway) }}
+  voice-web-live-cloudflare:
+    name: Web Cloudflare live mic → agent → audible TTS
+    if: ${{ (github.event_name == 'schedule' && vars.ELIZA_VOICE_WEB_LIVE_READY == '1') || (github.event_name == 'workflow_dispatch' && inputs.run_web_live_cloudflare) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       E2E_RECORD: "1"
       ELIZA_UI_SMOKE_LIVE_STACK: "1"
-      ELIZA_VOICE_LIVE_RAILWAY: "1"
+      ELIZA_VOICE_LIVE_CLOUDFLARE: "1"
       ELIZA_VOICE_MATRIX_SESSION_ID: ${{ github.run_id }}-${{ github.run_attempt }}-web-live
       ELIZA_PROVIDER: "cerebras"
-      KOKORO_TTS_URL: ${{ vars.ELIZA_VOICE_KOKORO_TTS_URL }}
-      WHISPER_STT_URL: ${{ vars.ELIZA_VOICE_WHISPER_STT_URL }}
-      WHISPER_STT_MODEL: ${{ vars.ELIZA_VOICE_WHISPER_STT_MODEL }}
+      ELIZAOS_CLOUD_BASE_URL: ${{ vars.ELIZA_VOICE_CLOUD_API_URL }}/api/v1
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       ELIZAOS_CLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
     steps:
@@ -185,11 +175,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CEREBRAS_API_KEY:-}" ]; then
-            echo "::error::The web Railway voice lane requires the provisioned CEREBRAS_API_KEY live model credential."
+            echo "::error::The web Cloudflare voice lane requires the provisioned CEREBRAS_API_KEY live model credential."
             exit 1
           fi
           if [ -z "${ELIZAOS_CLOUD_API_KEY:-}" ]; then
-            echo "::error::The web Railway voice lane requires ELIZACLOUD_API_KEY so the app's authenticated Cloud STT/TTS proxies can reach Railway."
+            echo "::error::The web Cloudflare voice lane requires ELIZACLOUD_API_KEY so the app's authenticated Cloud STT/TTS proxies can reach Cloudflare."
             exit 1
           fi
 
@@ -225,16 +215,16 @@ jobs:
 
       - name: Prove the live cell is explicit when ungated
         env:
-          ELIZA_VOICE_LIVE_RAILWAY: ""
+          ELIZA_VOICE_LIVE_CLOUDFLARE: ""
         run: |
           set -euo pipefail
           node packages/app/scripts/voice/voice-matrix.ts \
-            --platform web.live.railway-roundtrip \
+            --platform web.live.cloudflare-roundtrip \
             --out "$RUNNER_TEMP/voice-web-live-ungated"
 
       - name: Record visible mic, silence, and TTS-drop failure cells
         env:
-          ELIZA_VOICE_LIVE_RAILWAY: ""
+          ELIZA_VOICE_LIVE_CLOUDFLARE: ""
         run: |
           set -euo pipefail
           node packages/app/scripts/voice/voice-matrix.ts \
@@ -269,7 +259,7 @@ jobs:
           node packages/app/scripts/voice/voice-matrix.ts \
             --run \
             --require-green \
-            --platform web.live.railway-roundtrip \
+            --platform web.live.cloudflare-roundtrip \
             --out "$RUNNER_TEMP/voice-web-live-matrix"
 
       - name: Stop browser system-output capture
@@ -310,11 +300,11 @@ jobs:
             --matrix "$RUNNER_TEMP/voice-web-live-matrix/voice-matrix.json" \
             --out "$RUNNER_TEMP/voice-web-final"
 
-      - name: Upload web Railway voice evidence
+      - name: Upload web Cloudflare voice evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: voice-web-live-railway
+          name: voice-web-live-cloudflare
           path: ${{ runner.temp }}/voice-web-final
           if-no-files-found: ignore
           retention-days: 14
@@ -392,7 +382,7 @@ jobs:
           file "$LIB"
 
       - name: Upload fused lib artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-fused-lib-linux-x64-cpu
           path: fused-lib
@@ -627,7 +617,7 @@ jobs:
 
       - name: Upload privacy-safe real voice matrix proof
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-real-acoustic-matrix
           path: ${{ runner.temp }}/voice-real-proof
@@ -712,7 +702,7 @@ jobs:
 
       - name: Upload macOS Electrobun matrix
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-macos-electrobun-matrix
           path: ${{ runner.temp }}/voice-macos-electrobun-final
@@ -796,7 +786,7 @@ jobs:
 
       - name: Upload Windows Electrobun matrix
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-windows-electrobun-matrix
           path: ${{ runner.temp }}/voice-windows-electrobun-final
@@ -841,7 +831,7 @@ jobs:
 
       - name: Upload iOS matrix
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-ios-matrix
           path: |
@@ -893,7 +883,7 @@ jobs:
 
       - name: Upload Android matrix
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: voice-android-matrix
           path: |

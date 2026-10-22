@@ -610,6 +610,7 @@ binding = "AI"
 binding = "BROWSER"
 
 [env.staging.vars]
+APP_OAUTH_RETURN_URLS = "https://alphacompute.ai/alphaphone/gmail/staging/callback"
 NODE_ENV = "production"
 LOGIN_API_URL = "https://steward-api-staging.up.railway.app"
 # Signed Twilio callbacks and media-stream URLs must use the externally routed
@@ -635,14 +636,8 @@ PERSONAL_TELEGRAM_DELIVERY_EPOCH1_COMPAT_ENABLED = "true"
 # Emit per-turn inference spans at info for the staging latency matrix without
 # changing production log volume or recording prompt content.
 ELIZA_INFERENCE_TIMING = "info"
-# Self-hosted TEI embeddings sidecar (packages/cloud/services/embeddings,
-# bge-small-en-v1.5, 384 dims). The sidecar requires a bearer credential —
-# LOCAL_EMBEDDINGS_API_KEY is published as a Worker secret by cloud-cf-release
-# and must never appear in a [vars] block.
-LOCAL_EMBEDDINGS_BASE_URL = "https://embeddings-staging-staging.up.railway.app"
-# Parity wave 2 (staging-only prove-out): durable tenant memory rows for every
-# Shared turn, plus flag-gated semantic recall over them via the sidecar.
-# Reversible: delete both lines to return to byte-identical pre-parity turns.
+# Shared semantic recall uses the native Workers AI binding with the same
+# canonical BGE representation as the embedding API.
 SHARED_MEMORY_TABLES_ENABLED = "true"
 SHARED_RECALL_ENABLED = "true"
 # Apps (Product 2): wire the real deploy trigger so POST /api/v1/apps/:id/deploy
@@ -944,6 +939,7 @@ binding = "AI"
 binding = "BROWSER"
 
 [env.production.vars]
+APP_OAUTH_RETURN_URLS = "https://alphacompute.ai/alphaphone/gmail/callback"
 LOGIN_API_URL = "https://steward-api-production-115d.up.railway.app"
 NODE_ENV = "production"
 # Signed Twilio callbacks and media-stream URLs must use the externally routed
