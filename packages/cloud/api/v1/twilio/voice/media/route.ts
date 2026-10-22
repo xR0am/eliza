@@ -193,6 +193,25 @@ app.get("/", async (c) => {
     logger.error("[twilio-media] provider/config missing; refusing upgrade");
     return c.json({ error: "voice realtime session misconfigured" }, 503);
   }
+  let durableStore: VoiceUsageStore | null;
+  try {
+    durableStore = createDurableVoiceUsageStore(
+      env as unknown as Parameters<typeof createDurableVoiceUsageStore>[0],
+    );
+  } catch (error) {
+    // error-policy:J1 Check the quota owner before accepting a socket or acquiring capacity.
+    logger.error("[twilio-media] usage store unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return c.json({ error: "voice realtime metering unavailable" }, 503);
+  }
+  const usageStore =
+    durableStore ??
+    (c.env.MOCK_REDIS === "1" && c.env.NODE_ENV !== "production"
+      ? getFallbackUsageStore()
+      : null);
+  if (!usageStore)
+    return c.json({ error: "voice realtime metering unavailable" }, 503);
   const WebSocketPairCtor = (
     globalThis as { WebSocketPair?: new () => [unknown, unknown] }
   ).WebSocketPair;
@@ -225,10 +244,6 @@ app.get("/", async (c) => {
   } & ServerWebSocketLike;
   server.accept();
 
-  const durableStore = createDurableVoiceUsageStore(
-    env as unknown as Parameters<typeof createDurableVoiceUsageStore>[0],
-  );
-  const usageStore: VoiceUsageStore = durableStore ?? getFallbackUsageStore();
   let executionContext: BridgeExecutionContext | undefined;
   try {
     executionContext = c.executionCtx;
