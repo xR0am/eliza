@@ -246,6 +246,15 @@ verify_webhook_gateway_binding_candidates() {
   local secret_inventory
   secret_inventory="$(bunx wrangler@4.116.0 secret list "${wrangler_args[@]}" --format json)"
 
+  case "$ELIZA_APP_WEBHOOK_GATEWAY_URL" in
+    https://eliza-gateway-webhook-staging.square-rain-7251.workers.dev|https://eliza-gateway-webhook-production.square-rain-7251.workers.dev)
+      printf '%s' "$secret_inventory" | node \
+        "$CHECKOUT_DIR/packages/cloud/scripts/verify-webhook-gateway-binding.ts" \
+        "${worker_secret_names[@]}"
+      return $?
+      ;;
+  esac
+
   # Names-only wiring (above/below) proves a binding NAME exists or
   # is queued; it cannot prove the VALUE still matches the live
   # gateway's. Fetch that live value from Railway — the same

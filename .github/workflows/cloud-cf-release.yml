@@ -99,6 +99,8 @@ on:
         required: false
       ELIZA_APP_TELEGRAM_WEBHOOK_SECRET:
         required: false
+      GATEWAY_WEBHOOK_BOOTSTRAP_SECRET:
+        required: false
       ELIZA_APP_WEBHOOK_GATEWAY_SECRET:
         required: false
       ELIZA_MOBILE_APP_AUTH_APP_ID:
@@ -1460,6 +1462,7 @@ jobs:
           ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER: ${{ secrets.ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER }}
           OIDC_CLIENTS: ${{ secrets.OIDC_CLIENTS }}
           ELIZA_APP_WEBHOOK_GATEWAY_URL: ${{ vars.ELIZA_APP_WEBHOOK_GATEWAY_URL }}
+          GATEWAY_WEBHOOK_BOOTSTRAP_SECRET: ${{ secrets.GATEWAY_WEBHOOK_BOOTSTRAP_SECRET }}
           ELIZA_APP_WEBHOOK_GATEWAY_SECRET: ${{ secrets.ELIZA_APP_WEBHOOK_GATEWAY_SECRET }}
           # The edge Telegram route needs both values in the Worker. They are
           # required and replaced atomically with the exact attested source;
