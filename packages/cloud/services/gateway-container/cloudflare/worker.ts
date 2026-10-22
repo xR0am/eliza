@@ -96,7 +96,13 @@ export default {
       return new Response("Gateway deployment inactive", { status: 503 });
     }
     // Keep the raw body and signed headers for the existing gateway to verify.
-    return getContainer(env.GATEWAY, "gateway").fetch(request);
+    const upstream = await getContainer(env.GATEWAY, "gateway").fetch(request);
+    if (upstream.webSocket) return upstream;
+    const response = new Response(upstream.body, upstream);
+    response.headers.set("x-eliza-gateway-host", "cloudflare");
+    response.headers.set("x-eliza-gateway-environment", env.DEPLOYMENT_ENV);
+    response.headers.set("x-eliza-gateway-source", env.BUILD_ID);
+    return response;
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     if (env.GATEWAY_ENABLED !== "true") {

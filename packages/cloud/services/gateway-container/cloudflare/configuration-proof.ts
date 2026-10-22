@@ -2,6 +2,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const PROOF_SETTINGS = [
+  "GATEWAY_INTERNAL_SECRET",
   "ELIZA_CLOUD_URL",
   "AGENT_ROUTER_ORIGIN_HOST",
   "ELIZA_CLOUD_AGENT_BASE_DOMAIN",
