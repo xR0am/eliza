@@ -110,6 +110,9 @@ export function pageGuidance(request) {
   )
     return fail("stale-observation");
   const target = snapshot.nodes.get(request.nodeId)?.node;
+  const scrollGuide =
+    request.action === "scroll" ||
+    snapshot.nodes.get(request.nodeId)?.scrollOnly === true;
   if (!target?.isConnected || target.getRootNode() !== document)
     return fail("missing-target");
   // Controls the label must not cover, for example the button she presses
@@ -134,7 +137,11 @@ export function pageGuidance(request) {
   // A step whose control is outside the visible page brings it into view, so
   // the guide never waits unseen. An action guide never scrolls: the action
   // needs the page exactly as observed.
-  const placed = target.getBoundingClientRect();
+  const targetRect = () =>
+    target === document.scrollingElement
+      ? new DOMRect(0, 0, innerWidth, innerHeight)
+      : target.getBoundingClientRect();
+  const placed = targetRect();
   const view0 = window.visualViewport;
   const placement =
     placed.width <= 0 ||
@@ -583,7 +590,7 @@ export function pageGuidance(request) {
       frame = requestAnimationFrame(update);
       return;
     }
-    const rect = target.getBoundingClientRect();
+    const rect = targetRect();
     const view = {
       left: viewport?.offsetLeft ?? 0,
       top: viewport?.offsetTop ?? 0,
@@ -643,6 +650,7 @@ export function pageGuidance(request) {
       const height = label.getBoundingClientRect().height,
         width = label.getBoundingClientRect().width;
       const candidates = [
+        ...(scrollGuide ? [{ x: view.left + 8, y: view.top + 8 }] : []),
         { x: rect.left, y: rect.bottom + 22, tail: "" },
         { x: rect.left, y: rect.top - height - 22, tail: "up" },
         { x: rect.right + 22, y: rect.top },
@@ -664,7 +672,10 @@ export function pageGuidance(request) {
           (p) =>
             p.y >= view.top + 8 &&
             p.y + height <= view.top + view.height - 8 &&
-            [rect, ...clear.map((node) => node.getBoundingClientRect())].every(
+            [
+              ...(scrollGuide ? [] : [rect]),
+              ...clear.map((node) => node.getBoundingClientRect()),
+            ].every(
               (avoid) =>
                 p.x + width <= avoid.left - 8 ||
                 p.x >= avoid.right + 8 ||

@@ -20,8 +20,12 @@ snapshot-bound element selectors. Any effect invalidates that frame's references
 A dispatch receipt requires fresh observation to establish the website result.
 Snapshots include document identity, target bounds, viewport, DOM revision and
 input revision. Effects reject changed URLs, page mutations, user input, field
-values or target geometry; read again after manual progress. Form/editable values
-are excluded from snapshot text and labels. A page can copy what was typed in a
+values or target geometry; read again after manual progress. Scrollable documents
+and regions expose their current position and range as observed targets. Manual
+region scrolling invalidates old refs; scrolling
+requires room in the requested direction. Scroll-only regions cannot be clicked.
+Document guidance uses the visible viewport without moving the page. Form/editable
+values are excluded from snapshot text and labels. A page can copy what was typed in a
 password, one-time-code or card field into its own text, title or control
 names; every copy of such a value of four or more characters is replaced by
 `[hidden]` in the snapshot text, title, labels, descriptions and headings.
