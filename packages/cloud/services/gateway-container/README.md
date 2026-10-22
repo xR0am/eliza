@@ -41,7 +41,7 @@ old writers stop. A serving read or write permanently closes imports for that
 project/address. Consent has no expiry; equal timestamps retain an opt-out.
 Other gateway state still requires its configured store.
 
-Webhook and Discord delivery receipts can use `DELIVERY_RECEIPT_STATE` with
+Webhook and Discord delivery receipts, including Twilio inbound reply fences, can use `DELIVERY_RECEIPT_STATE` with
 `CLOUD_GATEWAY_RECEIPTS_BACKEND=cloudflare`, `GATEWAY_RECEIPTS_URL` pointing to
 this Worker's HTTPS `/internal/delivery-receipts`, and `GATEWAY_RECEIPTS_TOKEN`
 in the runtime configuration. Redis remains the default. Transfer the original
