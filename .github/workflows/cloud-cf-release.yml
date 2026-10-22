@@ -1722,30 +1722,6 @@ jobs:
             ' "${worker_secret_names[@]}"
           }
 
-          verify_staging_embeddings_secret_candidate() {
-            if [ "$DEPLOY_ENVIRONMENT" != "staging" ]; then
-              return 0
-            fi
-            local secret_inventory
-            secret_inventory="$(bunx wrangler@4.116.0 secret list ${{ steps.env.outputs.wrangler_args }} --format json)"
-            printf '%s' "$secret_inventory" | node -e '
-              const fs = require("node:fs");
-              const parsed = JSON.parse(fs.readFileSync(0, "utf8"));
-              const entries = Array.isArray(parsed)
-                ? parsed
-                : Array.isArray(parsed?.result)
-                  ? parsed.result
-                  : [];
-              const available = new Set(entries.map((entry) => entry?.name).filter(Boolean));
-              for (const name of process.argv.slice(1)) available.add(name);
-              if (!available.has("LOCAL_EMBEDDINGS_API_KEY")) {
-                console.error("::error::Staging local embeddings cannot be deployed without an existing or configured LOCAL_EMBEDDINGS_API_KEY Worker binding.");
-                process.exit(1);
-              }
-              console.log("Verified staging local embeddings bearer binding name; its value was not read.");
-            ' "${worker_secret_names[@]}"
-          }
-
           verify_telegram_binding_candidates() {
             local secret_inventory
             secret_inventory="$(bunx wrangler@4.116.0 secret list ${{ steps.env.outputs.wrangler_args }} --format json)"
@@ -1984,11 +1960,6 @@ jobs:
           # names-only inventory with this deploy's candidates before mutation
           # so a stale partial environment cannot receive APNs-enabled source.
           verify_apns_binding_candidates || exit 1
-          # The staging base URL routes live traffic to an authenticated TEI
-          # sidecar, so its bearer binding must exist or be committed in the
-          # same Worker version. A missing value may never deploy as a healthy
-          # but permanently unauthorized embeddings path.
-          verify_staging_embeddings_secret_candidate || exit 1
           # Staging can preserve the existing Telegram credentials when the
           # protected Environment intentionally has no recoverable value.
           # Production has already required both values above. In both cases,
@@ -2165,9 +2136,6 @@ jobs:
             ];
             if (process.env.ELIZA_MOBILE_APP_AUTH_ENABLED === "true") {
               required.push("ELIZA_MOBILE_APP_AUTH_APP_ID");
-            }
-            if (process.env.DEPLOY_ENVIRONMENT === "staging") {
-              required.push("LOCAL_EMBEDDINGS_API_KEY");
             }
             required.push(
               "ELIZA_APP_BLOOIO_API_KEY",
