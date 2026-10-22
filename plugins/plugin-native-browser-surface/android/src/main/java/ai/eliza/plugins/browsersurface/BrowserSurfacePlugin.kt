@@ -842,7 +842,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
     fun controlPage(call: PluginCall) {
         val id = call.getString("id")
         val command = call.getObject("command")
-        if (id == null || command == null || command.optString("subaction") !in setOf("snapshot", "click", "fill", "scroll")) {
+        if (id == null || command == null || command.optString("subaction") !in setOf("snapshot", "click", "fill", "scroll", "guide")) {
             call.reject("controlPage requires a surface and a fixed page command", "INVALID_REQUEST")
             return
         }
@@ -855,9 +855,14 @@ class ElizaSurfaceManagerPlugin : Plugin() {
             }
             val revision = surface.pageRevision
             val url = surface.webView.url
+            // Removing host annotations remains possible after Home or Pause.
+            // This exception never admits page reads, input or new guidance.
+            val cleanup = command.optString("subaction") == "guide" &&
+                command.optJSONObject("guidance")?.optString("kind") in setOf("hide", "pause")
             control.execute(call, command, call.getString("documentId")) {
-                activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && activeOwners.isActive(identity) && surfaces[id] === surface && !surface.disposed &&
-                    surface.foregrounded && surface.webView.progress == 100 && surface.pageError == null &&
+                activeOwners.isActive(identity) && surfaces[id] === surface && !surface.disposed &&
+                    (cleanup || (activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                    surface.foregrounded && surface.webView.progress == 100 && surface.pageError == null)) &&
                     surface.pageRevision == revision && surface.webView.url == url
             }
         }

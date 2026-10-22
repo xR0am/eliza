@@ -1,5 +1,5 @@
 /** Runs only in a native-owned isolated world, never in the website world. */
-export function installControlChannel(pageCommand) {
+export function installControlChannel(pageCommand, pageGuidance) {
   if (window !== window.top || !/^https?:$/.test(location.protocol)) return;
   const channel = globalThis.elizaSurfaceControl;
   // randomUUID requires a secure context; getRandomValues also works on HTTP
@@ -43,6 +43,25 @@ export function installControlChannel(pageCommand) {
     // Consume before execution. A lost reply must never replay an effect.
     sequence = request.sequence;
     const command = request.command;
+    if (command?.subaction === "guide") {
+      const guidance = command.guidance;
+      if (
+        !guidance ||
+        !["show", "hide", "pause", "action-status"].includes(guidance.kind) ||
+        guidance.answers !== undefined ||
+        guidance.answerKey !== undefined ||
+        guidance.tone === "offer"
+      ) {
+        reject("INVALID_REQUEST", "A fixed host guidance command is required.");
+        return;
+      }
+      try {
+        reply(pageGuidance(guidance));
+      } catch {
+        reject("UNAVAILABLE", "The page guidance did not return a result.");
+      }
+      return;
+    }
     if (
       !command ||
       !["snapshot", "click", "fill", "scroll"].includes(command.subaction)
@@ -91,7 +110,10 @@ export function installControlChannel(pageCommand) {
   };
   const ready = () => send({ ready: true, documentId });
   window.addEventListener("pagehide", (event) => {
-    if (event.isTrusted) active = false;
+    if (event.isTrusted) {
+      active = false;
+      pageGuidance({ kind: "hide" });
+    }
   });
   window.addEventListener("pageshow", (event) => {
     if (!event.isTrusted) return;

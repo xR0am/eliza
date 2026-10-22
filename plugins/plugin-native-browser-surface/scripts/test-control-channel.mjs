@@ -134,7 +134,7 @@ try {
   const dispatch = (command, extra = {}) =>
     channel.request(
       { command, extra },
-      { effect: command.subaction !== "snapshot" },
+      { effect: ["click", "fill", "scroll"].includes(command.subaction) },
     );
   const snapshot = async () =>
     (await dispatch({ subaction: "snapshot" })).result;
@@ -165,6 +165,52 @@ try {
     ...extra,
   });
   const click = action(state, "click", "#increment");
+  const guide = (guidance) => dispatch({ subaction: "guide", guidance });
+  const shown = {
+    kind: "show",
+    id: "step-1",
+    snapshotId: state.snapshotId,
+    nodeId: click.nodeId,
+    origin,
+    expiresAt: Date.now() + 15000,
+    text: "I will select Increment.",
+    assistantName: "Test helper",
+    action: "click",
+  };
+  assert.equal((await guide(shown)).result.accepted, true);
+  const status = {
+    kind: "action-status",
+    id: shown.id,
+    snapshotId: shown.snapshotId,
+    nodeId: shown.nodeId,
+    action: shown.action,
+  };
+  const readyDeadline = Date.now() + 5000;
+  while (!(await guide(status)).result.ready) {
+    assert.ok(
+      Date.now() < readyDeadline,
+      "The native action preview must become visible and ready",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(
+    await page.evaluate(() => typeof globalThis.__elizaPageGuidanceV1),
+    "undefined",
+  );
+  assert.equal((await guide({ kind: "pause" })).result.paused, true);
+  assert.equal((await guide(status)).result.ready, false);
+  assert.equal(
+    (await guide({ ...shown, restore: true })).result.accepted,
+    true,
+  );
+  assert.equal((await guide({ kind: "hide" })).result.visible, false);
+  assert.equal(
+    (await guide({ ...shown, snapshotId: "retired" })).result.reason,
+    "stale-observation",
+  );
+  await assert.rejects(guide({ ...shown, tone: "offer", answers: [] }), {
+    code: "INVALID_REQUEST",
+  });
   assert.equal((await dispatch(click)).result.dispatched, true);
   assert.equal(await page.$eval("output", (node) => node.textContent), "1");
   const consumed = sequence;
