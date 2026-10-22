@@ -1,7 +1,7 @@
 {
   "name": "@elizaos/plugin-agent-orchestrator",
   "version": "2.0.3-beta.7",
-  "description": "Canonical ElizaOS plugin for spawning and orchestrating coding agents via native Agent Client Protocol transports \u2014 combined with workspace lifecycle, GitHub integration, task share, runtime-driven sub-agent routing, and supporting services.",
+  "description": "Canonical ElizaOS plugin for spawning and orchestrating coding agents via native Agent Client Protocol transports — combined with workspace lifecycle, GitHub integration, task share, runtime-driven sub-agent routing, and supporting services.",
   "type": "module",
   "main": "dist/node/index.node.js",
   "module": "dist/node/index.node.js",
@@ -117,11 +117,11 @@
     "bun-types": "1.4.2",
     "@typescript/native": "npm:typescript@^7.0.2",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.3",
+    "vitest": "^5.0.5",
     "@elizaos/testing": "workspace:*",
     "@elizaos/plugin-assistant": "workspace:*",
-    "playwright": "^1.64.0",
-    "tsup": "^8.5.1",
+    "playwright": "^1.64.1",
+    "tsup": "^9.0.0",
     "vite": "^8.3.3",
     "@elizaos/plugin-elizacloud": "workspace:*"
   },
