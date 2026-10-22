@@ -148,6 +148,14 @@ test("import preserves original expiry and remains sealed after restart and dele
 test("public transport rejects imports, foreign namespaces, and unauthorized calls", async () => {
   const input = { operation: "get", key: key("auth") };
   expect(
+    (
+      await call(
+        { ...input, operation: ["get"] },
+        "/internal/delivery-receipts",
+      )
+    ).status,
+  ).toBe(400);
+  expect(
     (await call(input, "/internal/delivery-receipts", "wrong")).status,
   ).toBe(401);
   expect(

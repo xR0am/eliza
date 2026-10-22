@@ -67,7 +67,10 @@ export class NetworkConsentState {
       !validApp(app)
     )
       return new Response("Invalid consent identity", { status: 400 });
-    if (!["current", "record", "import", "history"].includes(String(operation)))
+    if (
+      typeof operation !== "string" ||
+      !["current", "record", "import", "history"].includes(operation)
+    )
       return new Response("Invalid operation", { status: 400 });
     const entry =
       operation === "record" ? entryFor(input.entry, project, address) : null;
@@ -240,7 +243,8 @@ export async function handleNetworkConsent(
     return new Response("Invalid operation", { status: 400 });
   const input = body as Record<string, unknown>;
   if (
-    !["current", "record"].includes(String(input.operation)) ||
+    typeof input.operation !== "string" ||
+    !["current", "record"].includes(input.operation) ||
     typeof input.project !== "string" ||
     !input.project ||
     typeof input.address !== "string" ||

@@ -54,7 +54,8 @@ export class DeliveryReceiptState {
     const { operation, key, value, expected, seconds, expiresAt } = input;
     if (
       !validKey(key) ||
-      !["get", "set", "replace", "delete", "import"].includes(String(operation))
+      typeof operation !== "string" ||
+      !["get", "set", "replace", "delete", "import"].includes(operation)
     )
       return new Response("Invalid operation", { status: 400 });
     if (expected !== undefined && typeof expected !== "string")
@@ -194,7 +195,8 @@ export async function handleDeliveryReceipts(
   const input = body as Record<string, unknown>;
   if (
     !validKey(input.key) ||
-    !["get", "set", "replace", "delete"].includes(String(input.operation))
+    typeof input.operation !== "string" ||
+    !["get", "set", "replace", "delete"].includes(input.operation)
   )
     return new Response("Invalid operation", { status: 400 });
   return env.DELIVERY_RECEIPT_STATE.getByName(receiptOwner(input.key)).fetch(
