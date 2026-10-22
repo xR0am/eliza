@@ -254,6 +254,10 @@ describe("browser workspace web-mode real-code command flow", () => {
         const query = document?.querySelector<HTMLInputElement>("#query");
         const notes = document?.querySelector<HTMLTextAreaElement>("#notes");
         if (!query || !notes) throw new Error("HTTP form did not load");
+        // Focus leaves the caret after prefilled text, so typing appends.
+        expect
+          .soft([query.selectionStart, query.selectionEnd])
+          .toEqual([11, 11]);
         // Arrange an actual DOM selection; edits and submission use commands.
         query.setSelectionRange(6, 11);
         await executeBrowserWorkspaceCommand(
@@ -783,8 +787,13 @@ describe("browser workspace web-mode real-code command flow", () => {
               ? { subaction: "click", selector: "#send" }
               : { subaction: "press", selector: "#email", key: "Enter" },
           );
-        await submit();
+        const blocked = await submit();
         expect(submissions).toEqual([]);
+        // The agent learns which field blocked the submission.
+        expect(blocked.value).toMatchObject({
+          submitted: false,
+          invalid: { message: expect.any(String) },
+        });
         await run({
           subaction: "fill",
           selector: "#email",

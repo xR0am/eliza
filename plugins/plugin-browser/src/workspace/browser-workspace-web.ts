@@ -908,6 +908,24 @@ export async function executeWebBrowserWorkspaceUtilityCommand(
   });
 }
 
+/**
+ * A user clicking into a filled field types after its text. jsdom leaves an
+ * untouched field's caret at 0, so keyboard insertion would prepend; a later
+ * explicit selection still wins.
+ */
+function placeCaretAtEndOnFocus(element: Element): void {
+  const tag = element.tagName;
+  if (tag !== "INPUT" && tag !== "TEXTAREA") return;
+  const input = element as HTMLInputElement | HTMLTextAreaElement;
+  try {
+    if (input.selectionStart === null) return;
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+  } catch {
+    // error-policy:J3 input types without a selection API keep no caret.
+  }
+}
+
 export async function executeWebBrowserWorkspaceDomCommand(
   command: BrowserWorkspaceCommand,
 ): Promise<BrowserWorkspaceCommandResult> {
@@ -1119,6 +1137,7 @@ export async function executeWebBrowserWorkspaceDomCommand(
           case "focus":
             if (typeof (element as HTMLElement).focus === "function") {
               (element as HTMLElement).focus();
+              placeCaretAtEndOnFocus(element);
             }
             return {
               mode: "web",
@@ -1234,6 +1253,7 @@ export async function executeWebBrowserWorkspaceDomCommand(
         }
         if (typeof (element as HTMLElement).focus === "function") {
           (element as HTMLElement).focus();
+          placeCaretAtEndOnFocus(element);
         }
         return {
           mode: "web",
@@ -1413,12 +1433,20 @@ export async function executeWebBrowserWorkspaceDomCommand(
             Array.from(form.elements).filter(blocksImplicitSubmission).length <=
               1)
         ) {
-          await submitWebBrowserWorkspaceForm(tab, form, submitter);
+          const invalid = await submitWebBrowserWorkspaceForm(
+            tab,
+            form,
+            submitter,
+          );
           return {
             mode: "web",
             subaction: command.subaction,
             tab: cloneWebBrowserWorkspaceTabState(tab),
-            value: { key, url: tab.url },
+            value: {
+              key,
+              url: tab.url,
+              ...(invalid ? { submitted: false, invalid } : {}),
+            },
           };
         }
 
@@ -1443,6 +1471,7 @@ export async function executeWebBrowserWorkspaceDomCommand(
         }
         if (typeof (element as HTMLElement).focus === "function") {
           (element as HTMLElement).focus();
+          placeCaretAtEndOnFocus(element);
         }
         return {
           mode: "web",

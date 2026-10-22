@@ -237,7 +237,11 @@ export async function activateWebBrowserWorkspaceElement(
         ? inputElement
         : undefined;
   if (submitForm && (tag === "form" || submitter)) {
-    await submitWebBrowserWorkspaceForm(tab, submitForm, submitter);
+    const invalid = await submitWebBrowserWorkspaceForm(
+      tab,
+      submitForm,
+      submitter,
+    );
     return {
       mode: "web",
       subaction,
@@ -246,6 +250,7 @@ export async function activateWebBrowserWorkspaceElement(
         clickCount: subaction === "dblclick" ? 2 : 1,
         selector: buildBrowserWorkspaceElementSelector(element),
         url: tab.url,
+        ...(invalid ? { submitted: false, invalid } : {}),
       },
     };
   }
@@ -308,11 +313,18 @@ export function scrollWebBrowserWorkspaceTarget(
   };
 }
 
+/** The first control that blocked a submission, so the agent can fix it. */
+export interface BrowserWorkspaceInvalidControl {
+  selector: string;
+  message: string;
+}
+
+/** Submits `form`, or returns the first invalid control when constraint validation blocks it. */
 export async function submitWebBrowserWorkspaceForm(
   tab: WebBrowserWorkspaceTabState,
   form: HTMLFormElement,
   submitter?: HTMLButtonElement | HTMLInputElement,
-): Promise<void> {
+): Promise<BrowserWorkspaceInvalidControl | undefined> {
   const state = getBrowserWorkspaceRuntimeState("web", tab.id);
   const dom = ensureBrowserWorkspaceDom(tab);
   // This backend submits directly, without the DOM's click validation step.
@@ -321,7 +333,15 @@ export async function submitWebBrowserWorkspaceForm(
     !submitter?.formNoValidate &&
     !dom.window.HTMLFormElement.prototype.reportValidity.call(form)
   ) {
-    return;
+    const invalid = Array.from(form.elements).find(
+      (control) => (control as HTMLInputElement).validity?.valid === false,
+    ) as HTMLInputElement | undefined;
+    return invalid
+      ? {
+          selector: buildBrowserWorkspaceElementSelector(invalid),
+          message: invalid.validationMessage || "This field is invalid.",
+        }
+      : { selector: "form", message: "The form is invalid." };
   }
   // A submit button's form attributes override the form's own.
   const attr = (name: string) =>
