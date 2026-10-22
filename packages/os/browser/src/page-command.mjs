@@ -74,8 +74,34 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
   // MutationObserver microtask. Never store or return form values in this monitor.
   monitor.recordMutations(monitor.observer.takeRecords());
   const bounds = (node) => {
+    if (node === document.scrollingElement)
+      return { x: 0, y: 0, width: innerWidth, height: innerHeight };
     const rect = node.getBoundingClientRect();
     return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  };
+  const scrollState = (node) => {
+    const root = node === document.scrollingElement;
+    const style = getComputedStyle(node);
+    const width = root ? innerWidth : node.clientWidth;
+    const height = root ? innerHeight : node.clientHeight;
+    const horizontal =
+      (root || /^(auto|scroll)$/.test(style.overflowX)) &&
+      node.scrollWidth > width;
+    const vertical =
+      (root || /^(auto|scroll)$/.test(style.overflowY)) &&
+      node.scrollHeight > height;
+    if (!horizontal && !vertical) return null;
+    const rangeX = horizontal ? node.scrollWidth - width : 0;
+    return {
+      x: node.scrollLeft,
+      y: node.scrollTop,
+      minX: style.direction === "rtl" ? -rangeX : 0,
+      maxX: style.direction === "rtl" ? 0 : rangeX,
+      maxY: vertical ? node.scrollHeight - height : 0,
+      width,
+      height,
+      document: root,
+    };
   };
   const viewport = () => ({
     width: innerWidth,
@@ -331,6 +357,8 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     // is skipped by its ancestor, so a large page stays linear.
     const custom = new Set();
     const candidates = [];
+    if (document.scrollingElement && scrollState(document.scrollingElement))
+      candidates.push(document.scrollingElement);
     for (const node of (
       document.body ?? document.documentElement
     ).querySelectorAll("*")) {
@@ -338,6 +366,7 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         candidates.push(node);
         continue;
       }
+      const scrollable = scrollState(node) !== null;
       if (
         !(
           node.matches('[onclick],[tabindex]:not([tabindex="-1"])') ||
@@ -346,8 +375,10 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         ) ||
         node.closest(NATIVE) ||
         node.querySelector(NATIVE)
-      )
+      ) {
+        if (scrollable) candidates.push(node);
         continue;
+      }
       let inside = false;
       for (
         let item = node.parentElement;
@@ -355,7 +386,10 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         item = item.parentElement
       )
         inside = custom.has(item);
-      if (inside) continue;
+      if (inside) {
+        if (scrollable) candidates.push(node);
+        continue;
+      }
       custom.add(node);
       candidates.push(node);
     }
@@ -412,6 +446,7 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     // task action on it after the person agrees; the page guard checks the
     // match again at the moment of the action.
     const uniqueSelector = (node) => {
+      if (node === document.documentElement) return "html";
       const unique = (selector) => {
         try {
           return (
@@ -460,10 +495,14 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
       if (!node.checkVisibility({ checkVisibilityCSS: true })) continue;
       const id = String(nodes.size);
       const geometry = bounds(node);
+      const scroll = scrollState(node);
+      const scrollOnly = !!scroll && !node.matches(NATIVE) && !custom.has(node);
       // This equality sentinel never leaves the isolated page realm.
       nodes.set(id, {
         node,
         bounds: geometry,
+        scroll,
+        scrollOnly,
         value: typeof node.value === "string" ? node.value : null,
         selection:
           node instanceof HTMLSelectElement ? node.selectedIndex : null,
@@ -476,7 +515,14 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         id,
         tag: node.tagName.toLowerCase(),
         role: node.getAttribute("role"),
-        label: withoutSecrets(accessibleName(node)),
+        label: withoutSecrets(
+          scrollOnly
+            ? scroll.document
+              ? "Page"
+              : groupName(node) || "Scrollable region"
+            : accessibleName(node),
+        ),
+        ...(scroll ? { scroll, scrollOnly } : {}),
         type: node.getAttribute("type"),
         ...state,
         description: withoutSecrets(state.description),
@@ -621,7 +667,8 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     recorded.value !== (typeof node.value === "string" ? node.value : null) ||
     recorded.selection !==
       (node instanceof HTMLSelectElement ? node.selectedIndex : null) ||
-    JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node))
+    JSON.stringify(recorded.bounds) !== JSON.stringify(bounds(node)) ||
+    JSON.stringify(recorded.scroll) !== JSON.stringify(scrollState(node))
   )
     return {
       error: {
@@ -629,6 +676,20 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         message: "The referenced page element changed; read a fresh snapshot.",
       },
     };
+  if (recorded.scrollOnly && command.subaction !== "scroll") return denied();
+  if (command.subaction === "scroll") {
+    const scroll = scrollState(node);
+    if (
+      !scroll ||
+      !{
+        up: scroll.y > 0,
+        down: scroll.y < scroll.maxY,
+        left: scroll.x > scroll.minX,
+        right: scroll.x < scroll.maxX,
+      }[command.direction]
+    )
+      return denied();
+  }
   if (policy) {
     // The native host supplies reviewed target permissions; DOM text cannot
     // grant an action. Re-check the actual node immediately before the effect.
@@ -747,7 +808,10 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     feedback.markActed();
   }
   delete globalThis[key];
-  if (policy && ["click", "fill", "select"].includes(command.subaction)) {
+  if (
+    policy &&
+    ["click", "fill", "select", "scroll"].includes(command.subaction)
+  ) {
     // A task fill or click must not submit a form or leave the page, also
     // not through the page's own script (an auto-submitting code field, or
     // a button that calls form.submit()). For 30 seconds, or until the next

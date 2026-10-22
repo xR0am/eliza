@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { testOutputPath } from "../../../scripts/lib/test-output.ts";
 import { pageCommand } from "../src/commands.mjs";
+import { pageGuidance } from "../src/page-guidance.mjs";
 
 const require = createRequire(
   import.meta.resolve("@elizaos/plugin-browser/package.json"),
@@ -447,6 +448,191 @@ try {
   cases.push(
     "a granted fill reaches an ordinary unlabeled field by its unique selector and never an unmarked SSN or routing field",
   );
+  await page.evaluate(() => {
+    document.body.innerHTML = `<div id="region" aria-label="Results" style="height:120px;width:240px;overflow:auto"><div style="height:900px;width:900px">Scrollable results</div></div><div id="click-region" tabindex="0" aria-label="Scrollable choice" onclick="this.dataset.clicked='yes'" style="height:60px;overflow:auto"><div style="height:500px">Choice content</div></div>`;
+    document.body.style.height = "3000px";
+    window.scrollTo(0, 0);
+  });
+  state = await snapshot();
+  const root = state.value.elements.find((element) => element.scroll?.document);
+  assert.equal(root.targetSelector, "html");
+  assert.equal(root.scroll.y, 0);
+  assert.equal(root.scrollOnly, true);
+  assert.equal(
+    state.value.elements.find(
+      (element) => element.targetSelector === "#click-region",
+    ).scrollOnly,
+    false,
+  );
+  assert.equal(
+    (await act(state, "click", "Scrollable choice")).dispatched,
+    true,
+  );
+  assert.equal(
+    await page.$eval("#click-region", (node) => node.dataset.clicked),
+    "yes",
+  );
+  state = await snapshot();
+
+  assert.equal(
+    (await act(state, "click", "Page")).error.kind,
+    "POLICY_BLOCKED",
+  );
+  assert.equal(
+    (await act(state, "scroll", "Page", { direction: "down" })).dispatched,
+    true,
+  );
+  state = await snapshot();
+  assert.equal(
+    state.value.elements.find((element) => element.scroll?.document).scroll.y,
+    500,
+  );
+  const originalViewport = page.viewport();
+  for (const [size, viewport] of [
+    ["desktop", { width: 800, height: 600 }],
+    ["compact", { width: 400, height: 191 }],
+  ]) {
+    await page.setViewport(viewport);
+    state = await snapshot();
+    const rootNow = state.value.elements.find(
+      (element) => element.scroll?.document,
+    );
+    const guide = await cdp.send("Runtime.evaluate", {
+      contextId: executionContextId,
+      expression: `(${pageGuidance.toString()})(${JSON.stringify({ kind: "show", id: "root-scroll", origin: new URL(page.url()).origin, snapshotId: state.id, nodeId: rootNow.id, text: "Scroll the page down", action: "scroll", expiresAt: Date.now() + 60000 })})`,
+      returnByValue: true,
+    });
+    assert.equal(guide.exceptionDetails, undefined);
+    assert.equal(guide.result.value.placement, "in-view");
+    let scrollReady = false;
+    for (let attempt = 0; attempt < 60 && !scrollReady; attempt++) {
+      const status = await cdp.send("Runtime.evaluate", {
+        contextId: executionContextId,
+        expression: `(${pageGuidance.toString()})(${JSON.stringify({ kind: "action-status", id: "root-scroll", snapshotId: state.id, nodeId: rootNow.id, action: "scroll" })})`,
+        returnByValue: true,
+      });
+      scrollReady = status.result.value?.ready === true;
+      if (!scrollReady)
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.equal(
+      scrollReady,
+      true,
+      "A whole-page scroll must have a visible preview and Cancel",
+    );
+    const scrollOut = testOutputPath("browser-page-freshness");
+    await mkdir(scrollOut, { recursive: true });
+    await page.screenshot({ path: `${scrollOut}/root-scroll-${size}.png` });
+
+    assert.equal(
+      await page.evaluate(() => scrollY),
+      500,
+      "Guidance must not reveal the whole document by scrolling to its middle",
+    );
+    await cdp.send("Runtime.evaluate", {
+      contextId: executionContextId,
+      expression: `(${pageGuidance.toString()})({kind:'hide'})`,
+    });
+  }
+  await page.setViewport(originalViewport);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  state = await snapshot();
+  assert.equal(
+    (await act(state, "scroll", "Results", { direction: "down" })).dispatched,
+    true,
+  );
+  state = await snapshot();
+  const region = state.value.elements.find(
+    (element) => element.targetSelector === "#region",
+  );
+  assert.equal(region.scroll.y, 500);
+  assert.equal(await page.evaluate(() => scrollY), 0);
+  await page.evaluate(
+    () => (document.querySelector("#region").scrollTop = 600),
+  );
+  assert.equal(
+    (await act(state, "scroll", "Results", { direction: "down" })).error.kind,
+    "STALE_REF",
+  );
+  await page.evaluate(
+    () => (document.querySelector("#region").scrollTop = 900),
+  );
+  state = await snapshot();
+  assert.equal(
+    (await act(state, "scroll", "Results", { direction: "down" })).error.kind,
+    "POLICY_BLOCKED",
+  );
+  assert.equal(
+    (await act(state, "scroll", "Results", { direction: "right" })).dispatched,
+    true,
+  );
+  state = await snapshot();
+  assert.equal(
+    state.value.elements.find((element) => element.targetSelector === "#region")
+      .scroll.x,
+    500,
+  );
+  await page.evaluate(() => {
+    const node = document.querySelector("#region");
+    node.style.direction = "rtl";
+    node.scrollLeft = 0;
+  });
+  state = await snapshot();
+  assert.equal(
+    (await act(state, "scroll", "Results", { direction: "left" })).dispatched,
+    true,
+  );
+  state = await snapshot();
+  assert.equal(
+    state.value.elements.find((element) => element.targetSelector === "#region")
+      .scroll.x,
+    -500,
+  );
+  cases.push(
+    "observed document and nested scrolling, viewport guidance, manual-scroll freshness and end-of-region refusal",
+  );
+  await page.evaluate(() =>
+    document
+      .querySelector("#region")
+      .addEventListener(
+        "scroll",
+        () => history.pushState({}, "", "#scroll-effect"),
+        { once: true },
+      ),
+  );
+  state = await snapshot();
+  assert.equal(
+    (
+      await act(state, "scroll", "Results", {
+        direction: "up",
+        taskPolicy: {
+          origin: new URL(page.url()).origin,
+          expiresAt: Date.now() + 60000,
+          guidanceScope: "scroll-test",
+          targets: [{ selector: "#region", action: "scroll" }],
+        },
+      })
+    ).dispatched,
+    true,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const watched = await run(
+    {
+      subaction: "snapshot",
+      taskPolicy: {
+        origin: new URL(page.url()).origin,
+        expiresAt: Date.now() + 60000,
+        guidanceScope: "scroll-test",
+        targets: [],
+      },
+    },
+    `snapshot-${++sequence}`,
+  );
+  assert.ok(
+    watched.effectViolation,
+    "A scroll handler that navigates must leave uncertainty evidence",
+  );
+  cases.push("task scrolling retains the navigation/effect watch");
   const out = testOutputPath("browser-page-freshness");
   await mkdir(out, { recursive: true });
   await writeFile(
