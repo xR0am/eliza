@@ -886,7 +886,9 @@ jobs:
     # never cancel) — same protection migrate-db already has.
     # Release serialization is the caller job lock in cloud-cf-deploy.yml (#18092).
     # Hosted unconditionally to preserve CI/placement workload separation.
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: ubuntu-latest moved to 26.04, whose /tmp is a 7.9G tmpfs
+    # that this /tmp checkout and build overfill (EDQUOT in the core build).
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     # Schema gate (#11208): the Worker talks to the database, so it only
     # deploys after migrate-db succeeded for this same commit. A failed or
@@ -2112,7 +2114,9 @@ jobs:
     # prod Pages deploy instead of cancelling it (#11640).
     # Release serialization is the caller job lock in cloud-cf-deploy.yml (#18092).
     # Hosted unconditionally to preserve CI/placement workload separation.
-    runs-on: ubuntu-latest
+    # Pinned to 24.04: ubuntu-latest moved to 26.04, whose /tmp is a 7.9G tmpfs
+    # that this /tmp checkout and build overfill (EDQUOT in the core build).
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     # Release gate (#11208/#18088): canonical Pages aliases wait for the matching
     # API deployment and the artifact built by this protected release.
