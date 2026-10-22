@@ -38,8 +38,9 @@ export function parseVoiceUiContext(value: unknown): VoiceUiContext | null {
     result.uiClientId = clientId;
   }
   if (source.viewDelivery !== undefined) {
-    if (source.viewDelivery !== "completed-action" || !result.uiClientId)
-      return null;
+    // Delivery returns through the voice session itself; direct requests
+    // below additionally require a bound renderer.
+    if (source.viewDelivery !== "completed-action") return null;
     result.viewDelivery = "completed-action";
   }
   if (source.agentActionMode !== undefined) {

@@ -7,6 +7,19 @@ describe("voice host preferences", () => {
       parseVoiceUiContext({ uiClientId: "phone-1", uiViewPath: "/chat" }),
     ).toEqual({ uiClientId: "phone-1", uiViewPath: "/chat" });
   });
+  test("accepts completed-action delivery for a renderer without a client id", () => {
+    expect(
+      parseVoiceUiContext({
+        viewDelivery: "completed-action",
+        uiBrowserSurface: "native",
+        uiViewPath: "/chat",
+      }),
+    ).toEqual({
+      viewDelivery: "completed-action",
+      uiBrowserSurface: "native",
+      uiViewPath: "/chat",
+    });
+  });
   test("admits direct requests only with a bound completed-action renderer", () => {
     const context = {
       uiClientId: "phone-1",
