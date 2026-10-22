@@ -122,7 +122,7 @@ describe("attachments in prior dialogue", () => {
     ).toEqual(["h1", "h2"]);
   });
 
-  it("shows the description, not the full attachment text, in both rooms", () => {
+  it("adds same-room descriptions and preserves complete cross-room attachment text", () => {
     const withText = {
       ...generated,
       content: {
@@ -136,9 +136,12 @@ describe("attachments in prior dialogue", () => {
     const sameRoom = content(render([withText]), "history:generated");
     expect(sameRoom).toBe(content(render([generated]), "history:generated"));
     expect(sameRoom).not.toContain("FULL TRANSCRIPT");
-    expect(
-      content(render([], [elsewhere]), "verified-cross-room:elsewhere"),
-    ).toBe(sameRoom);
+    const crossRoom = content(
+      render([], [elsewhere]),
+      "verified-cross-room:elsewhere",
+    );
+    expect(crossRoom).toContain("FULL TRANSCRIPT");
+    expect(crossRoom).toContain("here's your image.");
   });
 
   it("still quotes the original text of a message with attachments", () => {

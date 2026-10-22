@@ -107,9 +107,12 @@ export function priorDialogueContent(text: string, speaker?: string): string {
   return `${speaker}: ${text}`;
 }
 
-/** One entry per attachment of a prior message: label, media type and
- * description. URLs and the full attachment text stay out of history. */
-function priorDialogueAttachmentSummary(memory: Memory): string {
+/** One entry per attachment: label, media type and description. Authorized
+ * cross-room history also retains its existing complete attachment text. */
+function priorDialogueAttachmentSummary(
+  memory: Memory,
+  includeText = false,
+): string {
   return (memory.content.attachments ?? [])
     .map((attachment) => {
       const label =
@@ -118,8 +121,21 @@ function priorDialogueAttachmentSummary(memory: Memory): string {
         attachment.id ??
         "attachment";
       const mediaType = attachment.mimeType ?? attachment.contentType;
-      return `[attachment: ${label}${mediaType ? `; ${mediaType}` : ""}${attachment.description ? `; ${attachment.description}` : ""}]`;
+      const readable = includeText
+        ? (attachment.text ?? attachment.description)
+        : attachment.description;
+      return `[attachment: ${label}${mediaType ? `; ${mediaType}` : ""}${readable ? `; ${readable}` : ""}]`;
     })
+    .join(" ");
+}
+
+/** Preserve complete attachment text in the authorized cross-room projection. */
+export function verifiedCrossRoomContent(memory: Memory): string {
+  return [
+    getUserMessageText(memory),
+    priorDialogueAttachmentSummary(memory, true),
+  ]
+    .filter(Boolean)
     .join(" ");
 }
 
@@ -391,12 +407,7 @@ export function appendPriorDialogueEvents(
     if (memory.entityId === runtime.agentId && !includeOwnReplies) {
       continue;
     }
-    const content = [
-      getUserMessageText(memory),
-      priorDialogueAttachmentSummary(memory),
-    ]
-      .filter(Boolean)
-      .join(" ");
+    const content = verifiedCrossRoomContent(memory);
     if (!content || looksLikePriorDialogueArtifact(content)) continue;
     const isOwnReply = memory.entityId === runtime.agentId;
     const speakerName = isOwnReply
