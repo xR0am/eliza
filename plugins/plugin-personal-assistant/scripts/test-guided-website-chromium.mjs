@@ -555,6 +555,44 @@ try {
   assert.equal(decision.kind, "done", JSON.stringify(decision));
   await record("done", decision);
   assert.deepEqual(renewed, ["The Overstory"]);
+  // The trusted host verifies and saves the result before retiring task authority.
+  // A planner's "done" alone is not authorization to complete the journal.
+  assert.match(
+    await page.$eval("body", (body) => body.innerText),
+    /The Overstory/,
+  );
+  writeFileSync(
+    join(output, "verified-result.json"),
+    `${JSON.stringify({
+      goal: GOAL,
+      renewed,
+      page: await page.$eval("body", (body) => body.innerText),
+    })}\n`,
+    { mode: 0o600, flush: true },
+  );
+  const reviewed = runtime.get(task.id);
+  const completed = await runtime.complete(
+    task.id,
+    reviewed.revision,
+    async () => true,
+  );
+  assert.equal(completed.status, "completed");
+  assert.equal(runtime.current(), null);
+  assert.equal(await guideVisible(), false);
+  await assert.rejects(runtime.observe(task.id, completed.revision, true));
+  const reopened = new DatabaseSync(join(root, "tasks.sqlite"));
+  reopened.exec("PRAGMA synchronous = FULL");
+  try {
+    const retained = new runtimeModule.SqliteInteractiveTaskStore(reopened);
+    assert.equal(retained.get(task.id, owner).status, "completed");
+    assert.equal(
+      retained.events(task.id, owner).events.at(-1).kind,
+      "complete",
+    );
+    assert.equal(retained.get(task.id, { ...owner, actorId: "other" }), null);
+  } finally {
+    reopened.close();
+  }
   // The model never saw a protected field's words or a field value, and the
   // task made exactly one effect: the agreed email fill.
   const modelInput = JSON.stringify(planCalls.map((call) => call.input));
@@ -579,6 +617,11 @@ try {
         planCalls,
         evidence,
         operations: runtime.get(task.id).operations,
+        completion: {
+          status: completed.status,
+          persisted: true,
+          guidanceRemoved: true,
+        },
         scope:
           "Real Chromium page, extension command handler, framed native socket transport, task actuator, runtime and SQLite journal, real model calls. Not covered: installed extension native-host launch, Android, live third-party website.",
       },
