@@ -5,8 +5,10 @@
  */
 import { createServer, type Server } from "node:http";
 import {
+  createModelAttemptAllowance,
   type GenerateTextParams,
   type IAgentRuntime,
+  runWithStreamingContext,
   runWithTrajectoryContext,
 } from "@elizaos/core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,7 +32,11 @@ beforeAll(async () => {
     request.on("end", () => {
       const body = JSON.parse(input) as Record<string, unknown>;
       const primary = request.url?.startsWith("/primary/");
-      requests.push({ path: request.url ?? "", auth: request.headers.authorization, body });
+      requests.push({
+        path: request.url ?? "",
+        auth: request.headers.authorization,
+        body,
+      });
       const status = primary ? primaryStatus : fallbackStatus;
       if (primary && partialStream) {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -97,7 +103,11 @@ beforeAll(async () => {
                 finish_reason: tool ? "tool_calls" : "stop",
               },
             ],
-            usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+            usage: {
+              prompt_tokens: 20,
+              completion_tokens: 5,
+              total_tokens: 25,
+            },
           })
         );
       }
@@ -149,7 +159,10 @@ function runtime(overrides: Record<string, string> = {}) {
   return {
     runtime: {
       getSetting: (key: string) => settings[key],
-      character: { name: "Fixture", system: "Preserve the user's constraints." },
+      character: {
+        name: "Fixture",
+        system: "Preserve the user's constraints.",
+      },
       emitEvent: async (_name: string, event: unknown) => {
         events.push(event);
       },
@@ -169,7 +182,10 @@ const params: GenerateTextParams = {
       description: "Open a view",
       parameters: {
         type: "object",
-        properties: { operation: { type: "string" }, viewId: { type: "string" } },
+        properties: {
+          operation: { type: "string" },
+          viewId: { type: "string" },
+        },
         required: ["operation", "viewId"],
         additionalProperties: false,
       },
@@ -185,9 +201,16 @@ describe("explicit OpenRouter fallback", () => {
     const result = await handleTextSmall(agent, params);
     expect(result).toMatchObject({
       toolCalls: [
-        { id: "tool-home", name: "VIEWS", arguments: { operation: "show", viewId: "chat" } },
+        {
+          id: "tool-home",
+          name: "VIEWS",
+          arguments: { operation: "show", viewId: "chat" },
+        },
       ],
-      providerMetadata: { provider: "openrouter", modelName: "qwen/qwen3.8-27b" },
+      providerMetadata: {
+        provider: "openrouter",
+        modelName: "qwen/qwen3.8-27b",
+      },
     });
     expect(requests).toHaveLength(2);
     expect(requests.map(({ auth }) => auth)).toEqual([
@@ -204,7 +227,10 @@ describe("explicit OpenRouter fallback", () => {
       sort: "latency",
     });
     expect(events).toContainEqual(
-      expect.objectContaining({ provider: "openrouter", modelName: "qwen/qwen3.8-27b" })
+      expect.objectContaining({
+        provider: "openrouter",
+        modelName: "qwen/qwen3.8-27b",
+      })
     );
     await handleTextSmall(agent, params);
     expect(requests).toHaveLength(3);
@@ -298,14 +324,18 @@ describe("explicit OpenRouter fallback", () => {
   it.each([400, 401])("does not hide primary HTTP %s behind another provider", async (status) => {
     primaryStatus = status;
     const { runtime: agent } = runtime();
-    await expect(handleTextSmall(agent, params)).rejects.toMatchObject({ statusCode: status });
+    await expect(handleTextSmall(agent, params)).rejects.toMatchObject({
+      statusCode: status,
+    });
     expect(requests).toHaveLength(1);
   });
 
   it("keeps alternate-provider rate limits isolated and never loops between providers", async () => {
     fallbackStatus = 429;
     const { runtime: agent } = runtime();
-    await expect(handleTextSmall(agent, params)).rejects.toMatchObject({ statusCode: 429 });
+    await expect(handleTextSmall(agent, params)).rejects.toMatchObject({
+      statusCode: 429,
+    });
     await expect(handleTextSmall(agent, params)).rejects.toMatchObject({
       name: "ProviderRateLimitCooldownError",
       statusCode: 429,
@@ -315,7 +345,89 @@ describe("explicit OpenRouter fallback", () => {
 
   it("requires explicit model and credentials before crossing the provider boundary", async () => {
     const { runtime: agent } = runtime({ OPENROUTER_FALLBACK_MODEL: "" });
-    await expect(handleTextSmall(agent, params)).rejects.toMatchObject({ statusCode: 429 });
+    await expect(handleTextSmall(agent, params)).rejects.toMatchObject({
+      statusCode: 429,
+    });
     expect(requests).toHaveLength(1);
   });
+});
+
+describe("bounded trial across actual OpenRouter wire rewrites", () => {
+  it.each(["admitted", "postrewrite-too-large"])(
+    "charges each physical route only after its final rewrite: %s",
+    async (mode) => {
+      const params = {
+        prompt: "Complete original fallback prompt",
+        stream: false,
+        maxTokens: 17,
+      };
+      let inputBound = 262144;
+      if (mode === "postrewrite-too-large") {
+        await handleTextSmall(runtime().runtime, params);
+        expect(requests).toHaveLength(2);
+        inputBound = Buffer.byteLength(JSON.stringify(requests[1].body), "utf8") - 1;
+        expect(Buffer.byteLength(JSON.stringify(requests[0].body), "utf8")).toBeLessThan(
+          inputBound
+        );
+        requests = [];
+      }
+      const stop = new AbortController();
+      const allowance = createModelAttemptAllowance({
+        signal: stop.signal,
+        budgetMicroUsd: 1000000,
+        maxAttempts: 2,
+        maxOutputTokens: 17,
+        expiresAt: Date.now() + 60000,
+        tariffs: [
+          {
+            provider: "openai-compatible",
+            model: "qwen-3.8-27b",
+            route: baseURL + "/primary/v1",
+            inputNanoUsdPerToken: 100,
+            outputNanoUsdPerToken: 100,
+            inputTokenUpperBound: inputBound,
+          },
+          {
+            provider: "openai-compatible",
+            model: "qwen/qwen3.8-27b",
+            route: baseURL + "/fallback/v1",
+            inputNanoUsdPerToken: 100,
+            outputNanoUsdPerToken: 100,
+            inputTokenUpperBound: inputBound,
+          },
+        ],
+      });
+      const lease = allowance.openTurn("fallback-turn", stop.signal);
+      try {
+        await runWithStreamingContext(
+          {
+            messageId: "fallback-turn",
+            modelAttemptTurnId: "fallback-turn",
+            modelAttemptLease: lease,
+            abortSignal: stop.signal,
+          },
+          async () => {
+            const call = handleTextSmall(runtime().runtime, params);
+            if (mode === "admitted") {
+              await expect(call).resolves.toBeTruthy();
+              expect(requests).toHaveLength(2);
+              expect(requests[1].body.provider).toMatchObject({
+                require_parameters: true,
+                data_collection: "deny",
+              });
+              expect(JSON.stringify(requests[1].body)).toContain(params.prompt);
+            } else {
+              await expect(call).rejects.toMatchObject({
+                code: "MODEL_ATTEMPT_POLICY_ROUTE",
+              });
+              expect(requests).toHaveLength(1);
+            }
+          }
+        );
+      } finally {
+        lease.close();
+        allowance.close();
+      }
+    }
+  );
 });
