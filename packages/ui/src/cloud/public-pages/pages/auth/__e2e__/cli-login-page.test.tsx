@@ -142,9 +142,11 @@ function render(node: ReactNode) {
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   identityClients.push(client);
-  return renderComponent(
-    <QueryClientProvider client={client}>{node}</QueryClientProvider>,
-  );
+  return renderComponent(node, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
 }
 afterEach(() => {
   for (const client of identityClients) client.clear();
