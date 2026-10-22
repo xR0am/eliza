@@ -295,8 +295,8 @@ jobs:
         if: steps.affected.outputs.source == 'true'
         timeout-minutes: 5
         env:
-          BASE_SHA: ${{ steps.affected.outputs.base }}
-          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ steps.diff.outputs.merge_base }}
+          HEAD_SHA: ${{ steps.diff.outputs.head_sha }}
           NODE_OPTIONS: --max-old-space-size=2048
         shell: bash
         run: |
