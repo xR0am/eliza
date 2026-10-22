@@ -64,6 +64,8 @@ export interface MicAudioContextLike {
   resume(): Promise<void>;
   suspend?(): Promise<void>;
   close(): Promise<void>;
+  addEventListener?(type: "statechange", listener: () => void): void;
+  removeEventListener?(type: "statechange", listener: () => void): void;
 }
 
 export interface AudioNodeLike {
@@ -552,10 +554,12 @@ export async function startVoiceMicCapture(
   visibility?.addListener(onVisibilityChange);
 
   let onAbort: (() => void) | null = null;
+  let detachCaptureLifecycle = () => {};
 
   const stop = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
+    detachCaptureLifecycle();
     if (onAbort && signal) signal.removeEventListener("abort", onAbort);
     visibility?.removeListener(onVisibilityChange);
     if (workletNode) {
@@ -581,9 +585,31 @@ export async function startVoiceMicCapture(
   }
   signal?.addEventListener("abort", onAbort, { once: true });
 
+  let captureReady = false;
+  const failCapture = () => {
+    if (stopped) return;
+    void stop();
+    if (captureReady) options.onError?.(new VoiceMicCaptureError("Microphone capture ended unexpectedly", "start_failed"));
+  };
+  const onTrackEnded = () => failCapture();
+  const onContextStateChanged = () => {
+    if (ctx.state === "closed") failCapture();
+  };
+  detachCaptureLifecycle = () => {
+    audioTrack?.removeEventListener?.("ended", onTrackEnded);
+    ctx.removeEventListener?.("statechange", onContextStateChanged);
+  };
+  audioTrack?.addEventListener?.("ended", onTrackEnded);
+  if (!stopped) ctx.addEventListener?.("statechange", onContextStateChanged);
+  if (stopped || audioTrack?.readyState === "ended" || ctx.state === "closed") {
+    await stop();
+    throw new VoiceMicCaptureError("Microphone capture ended during startup", "start_failed");
+  }
+
+  captureReady = true;
   return {
     get active() {
-      return !stopped && !suspended;
+      return !stopped && !suspended && ctx.state === "running" && audioTrack?.readyState !== "ended";
     },
     get backend() {
       return backend;
