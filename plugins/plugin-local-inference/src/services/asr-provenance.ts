@@ -170,13 +170,24 @@ export function bundleHasAsrModelFiles(bundleRoot: string): boolean {
 	const asrDir = path.join(bundleRoot, "asr");
 	if (!existsSync(asrDir)) return false;
 	try {
-		return readdirSync(asrDir, { withFileTypes: true }).some(
-			(entry) =>
-				entry.isFile() &&
-				entry.name.toLowerCase().endsWith(".gguf") &&
-				readGgufArchitecture(path.join(asrDir, entry.name)) ===
-					PARAKEET_TDT_ARCHITECTURE,
-		);
+		// A readable Parakeet GGUF wins regardless of listing order; an
+		// unreadable sibling only matters when no usable model is present.
+		let unreadable: unknown;
+		for (const entry of readdirSync(asrDir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".gguf"))
+				continue;
+			try {
+				if (
+					readGgufArchitecture(path.join(asrDir, entry.name)) ===
+					PARAKEET_TDT_ARCHITECTURE
+				)
+					return true;
+			} catch (error) {
+				unreadable ??= error;
+			}
+		}
+		if (unreadable !== undefined) throw unreadable;
+		return false;
 	} catch (error) {
 		// error-policy:J3 an `asr/` directory removed mid-scan is legitimately
 		// "no model staged". An unreadable directory, or an unreadable GGUF

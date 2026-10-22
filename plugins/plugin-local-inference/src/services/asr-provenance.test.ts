@@ -201,6 +201,52 @@ describe("bundle ASR artifacts", () => {
 		},
 	);
 
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"accepts a readable Parakeet GGUF beside an unreadable one",
+		() => {
+			const root = writeManifest({});
+			const broken = path.join(root, "asr", "a-broken.gguf");
+			writeFileSync(broken, gguf("parakeet-tdt"));
+			writeFileSync(
+				path.join(root, "asr", "z-phonon-2.gguf"),
+				gguf("parakeet-tdt"),
+			);
+			chmodSync(broken, 0o000);
+			try {
+				// Listing order must not turn a usable bundle into a broken one.
+				expect(bundleHasAsrModelFiles(root)).toBe(true);
+			} finally {
+				chmodSync(broken, 0o600);
+			}
+		},
+	);
+
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"propagates an unreadable asr/ directory instead of reporting no model",
+		() => {
+			const root = writeManifest({});
+			const asrDir = path.join(root, "asr");
+			writeFileSync(
+				path.join(asrDir, "phonon-2-fv5.gguf"),
+				gguf("parakeet-tdt"),
+			);
+			chmodSync(asrDir, 0o000);
+			try {
+				expect(() => bundleHasAsrModelFiles(root)).toThrow(/EACCES/);
+			} finally {
+				chmodSync(asrDir, 0o700);
+			}
+		},
+	);
+
+	it("propagates an asr/ path that cannot be listed without relying on mode bits", () => {
+		const root = writeManifest({});
+		// `asr` is a regular file, so the listing fails with ENOTDIR for any uid.
+		rmSync(path.join(root, "asr"), { recursive: true, force: true });
+		writeFileSync(path.join(root, "asr"), "not a directory");
+		expect(() => bundleHasAsrModelFiles(root)).toThrow(/ENOTDIR/);
+	});
+
 	it("treats a GGUF deleted mid-scan as absent, not unreadable", () => {
 		// The directory listing and the header read are separate syscalls; a file
 		// removed between them is legitimately "not there".
