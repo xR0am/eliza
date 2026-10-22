@@ -1735,6 +1735,13 @@ jobs:
           echo "::error::API health did not serve the deployed commit ${expected_commit} for ${expected_environment}."
           exit 1
 
+      - name: Verify served Cloudflare webhook gateway routing
+        if: steps.cf.outputs.configured == 'true' && steps.freshness.outputs.should_deploy == 'true' && vars.GATEWAY_WEBHOOK_CLOUDFLARE_ACTIVE == 'true'
+        working-directory: ${{ env.CHECKOUT_DIR }}
+        env:
+          DEPLOY_ENVIRONMENT: ${{ steps.env.outputs.deploy_environment }}
+        run: node packages/cloud/scripts/verify-served-webhook-gateway.ts
+
       - name: Verify deployed Telegram identity readiness
         if: steps.cf.outputs.configured == 'true' && steps.freshness.outputs.should_deploy == 'true'
         env:

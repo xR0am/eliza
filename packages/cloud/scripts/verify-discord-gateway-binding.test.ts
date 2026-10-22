@@ -10,6 +10,7 @@ import {
   verifyCloudflareGatewayConfiguration,
 } from "./verify-cloudflare-gateway-configuration.ts";
 import { verifyDiscordGatewayBinding } from "./verify-discord-gateway-binding.ts";
+import { verifyServedWebhookGateway } from "./verify-served-webhook-gateway.ts";
 
 const options = {
   environment: "staging",
@@ -17,6 +18,58 @@ const options = {
   bootstrapSecret: "fixture-bootstrap",
   internalSecret: "fixture-delivery",
 };
+
+for (const scenario of [
+  "cloudflare",
+  "stopped-railway",
+  "running-railway",
+  "wrong-environment",
+  "different-image",
+]) {
+  test(`served webhook routing verifies destination: ${scenario}`, async (t) => {
+    let calls = 0;
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (input: string | URL, init: RequestInit) => {
+        calls++;
+        assert.equal(init.redirect, "error");
+        const headers = new Headers({
+          "x-eliza-gateway-host": "cloudflare",
+          "x-eliza-gateway-environment": "staging",
+          "x-eliza-gateway-source": "a".repeat(40),
+        });
+        if (calls === 1) {
+          assert.equal(
+            String(input),
+            `${CLOUDFLARE_WEBHOOK_GATEWAY_URLS.staging}/health`,
+          );
+          return new Response("healthy", { headers });
+        }
+        const url = new URL(input);
+        assert.equal(url.origin, "https://api-staging.eliza.app");
+        assert.equal(url.pathname, "/api/eliza-app/webhook/whatsapp");
+        assert.match(
+          url.searchParams.get("hub.verify_token") ?? "",
+          /^invalid-migration-probe-/,
+        );
+        if (scenario.endsWith("railway"))
+          headers.delete("x-eliza-gateway-host");
+        if (scenario === "wrong-environment")
+          headers.set("x-eliza-gateway-environment", "production");
+        if (scenario === "different-image")
+          headers.set("x-eliza-gateway-source", "b".repeat(40));
+        return new Response("Forbidden", {
+          status: scenario === "stopped-railway" ? 404 : 403,
+          headers,
+        });
+      },
+    );
+    if (scenario === "cloudflare") await verifyServedWebhookGateway("staging");
+    else await assert.rejects(verifyServedWebhookGateway("staging"));
+    assert.equal(calls, 2);
+  });
+}
 
 test("Discord cutover verifies the selected delivery credential with a fresh authenticated nonce", async (t) => {
   let calls = 0;
