@@ -43,6 +43,7 @@ type config struct {
 	authKey       string
 	controlURL    string
 	publicHost    string
+	publicAliases []string
 	tailnetDomain string
 	stateDir      string
 	hostname      string
@@ -132,13 +133,7 @@ func main() {
 			return
 		}
 
-		targetHost, ok := targetHostForRequest(
-			r.Host,
-			cfg.publicHost,
-			cfg.tailnetDomain,
-			cfg.signingSecret,
-			cfg.allowUnsigned,
-		)
+		targetHost, ok := cfg.targetForRequest(r.Host)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -197,6 +192,11 @@ func loadConfig() (config, error) {
 	cfg.publicHost = normalizeHost(cfg.publicHost)
 	cfg.tailnetDomain = normalizeHost(cfg.tailnetDomain)
 	cfg.hostname = normalizeHost(cfg.hostname)
+	aliases, err := parsePublicAliases(os.Getenv("TUNNEL_PROXY_HOST_ALIASES"))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.publicAliases = aliases
 
 	if cfg.stateURL != "" || cfg.stateToken != "" {
 		if _, err := newRemoteStateStore(cfg.stateURL, cfg.stateToken); err != nil {
@@ -236,6 +236,42 @@ func firstEnv(primary string, legacy string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// Aliases preserve previously issued URLs during a public-domain migration.
+// Each hostname still passes the same label signature and expiry checks.
+func parsePublicAliases(raw string) ([]string, error) {
+	var aliases []string
+	if strings.TrimSpace(raw) == "" {
+		return aliases, nil
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(entry)), ".")
+		if len(host) == 0 || len(host) > 253 || !strings.Contains(host, ".") {
+			return nil, errors.New("TUNNEL_PROXY_HOST_ALIASES must contain comma-separated DNS hostnames")
+		}
+		for _, label := range strings.Split(host, ".") {
+			if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+				return nil, errors.New("invalid DNS label in TUNNEL_PROXY_HOST_ALIASES")
+			}
+			for _, ch := range label {
+				if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '-') {
+					return nil, errors.New("invalid DNS character in TUNNEL_PROXY_HOST_ALIASES")
+				}
+			}
+		}
+		aliases = append(aliases, host)
+	}
+	return aliases, nil
+}
+
+func (cfg config) targetForRequest(host string) (string, bool) {
+	for _, publicHost := range append([]string{cfg.publicHost}, cfg.publicAliases...) {
+		if target, ok := targetHostForRequest(host, publicHost, cfg.tailnetDomain, cfg.signingSecret, cfg.allowUnsigned); ok {
+			return target, true
+		}
+	}
+	return "", false
 }
 
 func targetHostForRequest(

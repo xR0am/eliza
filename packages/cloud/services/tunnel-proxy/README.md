@@ -5,6 +5,10 @@ Keep hostname signatures, expiry checks, and tailnet isolation enforced.
 
 Configure `HEADSCALE_PUBLIC_URL`, `TUNNEL_PROXY_TS_AUTHKEY`, `TUNNEL_PROXY_HOST`,
 `TUNNEL_TAILNET_DOMAIN`, and `TUNNEL_HOSTNAME_SIGNING_SECRET` for the deployment.
+When changing the public domain, set `TUNNEL_PROXY_HOST_ALIASES` to the explicit,
+comma-separated previous hostnames. Both domains use the same signed, expiring
+labels and tailnet. Route each configured wildcard to this proxy; do not add
+another environment's domain.
 Use the Go version in `go.mod`. Build and test from this directory:
 
 ```bash
