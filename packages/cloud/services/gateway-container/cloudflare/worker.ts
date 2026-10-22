@@ -1,5 +1,6 @@
 /** Hosts the existing gateway processes; their configured stores retain authority. */
 import { Container, getContainer } from "@cloudflare/containers";
+import { configurationProof } from "./configuration-proof";
 
 interface Env {
   GATEWAY: DurableObjectNamespace<GatewayContainer>;
@@ -71,6 +72,9 @@ async function stopInactiveGateway(env: Env): Promise<void> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/internal/configuration-proof") {
+      return configurationProof(request, env);
+    }
     if (env.GATEWAY_ENABLED !== "true") {
       await stopInactiveGateway(env);
       return new Response("Gateway deployment inactive", { status: 503 });
