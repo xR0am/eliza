@@ -7,6 +7,9 @@ const validKey = (key: unknown): key is string =>
   (/^internal-delivery:(telegram|blooio|twilio):[a-z0-9][a-z0-9_-]{0,63}:[a-zA-Z0-9:._-]{1,200}$/i.test(
     key,
   ) ||
+    /^reply:twilio:[a-z0-9][a-z0-9_-]{0,63}:[a-zA-Z0-9:._-]{1,200}$/i.test(
+      key,
+    ) ||
     /^internal-delivery:discord:[0-9]{1,32}:[a-zA-Z0-9:._-]{1,200}$/.test(key));
 /** One replay fence per original receipt key. Import expiry is never extended. */
 export class DeliveryReceiptState {

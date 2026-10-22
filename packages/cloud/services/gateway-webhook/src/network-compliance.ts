@@ -17,6 +17,7 @@
  *    sender's ledger entry.
  */
 
+import type { DeliveryReceiptStore } from "@elizaos/cloud-services-common/delivery-receipts";
 import {
   CONSENT_HISTORY_LIMIT,
   cloudflareNetworkConsentLedger,
@@ -295,14 +296,14 @@ const REPLY_FENCE_TTL_SECONDS = 14 * 24 * 60 * 60;
  * provider receipt, and release it only on an explicit provider rejection.
  */
 export async function sendWithTwilioReplyFence(
-  redis: GatewayRedis,
+  receipts: Pick<DeliveryReceiptStore, "set" | "del">,
   project: string,
   messageId: string,
   send: () => Promise<string[] | false>,
   isExplicitRejection: (error: unknown) => boolean,
 ): Promise<"sent" | "replayed" | "suppressed"> {
   const key = `reply:twilio:${project}:${messageId}`;
-  const claimed = await redis.set(key, "indeterminate", {
+  const claimed = await receipts.set(key, "indeterminate", {
     nx: true,
     ex: REPLY_FENCE_TTL_SECONDS,
   });
@@ -310,10 +311,10 @@ export async function sendWithTwilioReplyFence(
   try {
     const providerMessageIds = await send();
     if (providerMessageIds === false) {
-      await redis.set(key, "suppressed", { ex: REPLY_FENCE_TTL_SECONDS });
+      await receipts.set(key, "suppressed", { ex: REPLY_FENCE_TTL_SECONDS });
       return "suppressed";
     }
-    await redis.set(
+    await receipts.set(
       key,
       JSON.stringify({ state: "complete", providerMessageIds }),
       { ex: REPLY_FENCE_TTL_SECONDS },
@@ -322,7 +323,7 @@ export async function sendWithTwilioReplyFence(
   } catch (error) {
     if (isExplicitRejection(error)) {
       try {
-        await redis.del(key);
+        await receipts.del(key);
       } catch {
         // error-policy:J6 the tombstone outlives a lost release; the provider
         // rejection below remains the primary outcome.

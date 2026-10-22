@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cloudflareDeliveryReceiptStore } from "@elizaos/cloud-services-common/delivery-receipts";
 import { Miniflare } from "miniflare";
+import { sendWithTwilioReplyFence } from "../../gateway-webhook/src/network-compliance";
 
 let worker: Miniflare;
 let directory: string;
@@ -234,4 +235,126 @@ test("Discord delivery handler replays its durable receipt after restart without
       )
     ).status,
   ).toBe(403);
+});
+
+test("Twilio replies retain imported and uncertain fences across restart without another send", async () => {
+  let sends = 0;
+  const send = async () => {
+    sends++;
+    return ["SMfixture"];
+  };
+  const importedKey = "reply:twilio:network:SMimported";
+  expect(
+    (
+      await call({
+        operation: "import",
+        key: importedKey,
+        value: "indeterminate",
+        expiresAt: Date.now() + 60_000,
+        sourceQuiesced: true,
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMimported",
+      send,
+      () => false,
+    ),
+  ).toBe("replayed");
+  expect(sends).toBe(0);
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMnative",
+      send,
+      () => false,
+    ),
+  ).toBe("sent");
+  expect(sends).toBe(1);
+  await worker.dispose();
+  worker = start();
+  await worker.ready;
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMnative",
+      send,
+      () => false,
+    ),
+  ).toBe("replayed");
+  expect(sends).toBe(1);
+  expect(await store().get("reply:twilio:network:SMnative")).toEqual({
+    state: "complete",
+    providerMessageIds: ["SMfixture"],
+  });
+  const failure = new Error("fixture transport uncertainty");
+  await expect(
+    sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMunknown",
+      async () => {
+        throw failure;
+      },
+      () => false,
+    ),
+  ).rejects.toThrow("fixture transport uncertainty");
+  await worker.dispose();
+  worker = start();
+  await worker.ready;
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMunknown",
+      send,
+      () => false,
+    ),
+  ).toBe("replayed");
+  expect(sends).toBe(1);
+  await expect(
+    sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMrejected",
+      async () => {
+        throw failure;
+      },
+      () => true,
+    ),
+  ).rejects.toThrow();
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMrejected",
+      send,
+      () => false,
+    ),
+  ).toBe("sent");
+  expect(sends).toBe(2);
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMsuppressed",
+      async () => false,
+      () => false,
+    ),
+  ).toBe("suppressed");
+  expect(
+    await sendWithTwilioReplyFence(
+      store(),
+      "network",
+      "SMsuppressed",
+      send,
+      () => false,
+    ),
+  ).toBe("replayed");
+  expect(sends).toBe(2);
 });
