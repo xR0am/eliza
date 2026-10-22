@@ -29,6 +29,10 @@ new_sqlite_classes = ["WebhookIngressState"]
 tag = "v5-discord-welcome"
 new_sqlite_classes = ["DiscordWelcomeState"]
 
+[[migrations]]
+tag = "v6-discord-coordination"
+new_sqlite_classes = ["DiscordCoordinationState"]
+
 [env.webhook-staging]
 name = "eliza-gateway-webhook-staging"
 
@@ -156,3 +160,11 @@ class_name = "DeliveryReceiptState"
 [[env.discord-production.durable_objects.bindings]]
 name = "GATEWAY"
 class_name = "GatewayContainer"
+
+[[env.discord-staging.durable_objects.bindings]]
+name = "DISCORD_COORDINATION_STATE"
+class_name = "DiscordCoordinationState"
+
+[[env.discord-production.durable_objects.bindings]]
+name = "DISCORD_COORDINATION_STATE"
+class_name = "DiscordCoordinationState"
