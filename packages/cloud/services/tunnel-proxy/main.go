@@ -15,9 +15,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"tailscale.com/tsnet"
@@ -47,6 +49,8 @@ type config struct {
 	port          string
 	signingSecret string
 	allowUnsigned bool
+	stateURL      string
+	stateToken    string
 }
 
 type targetHostContextKey struct{}
@@ -68,9 +72,18 @@ func main() {
 		Ephemeral:  false,
 		UserLogf:   log.Printf,
 	}
+	if cfg.stateURL != "" {
+		durable, err := newRemoteStateStore(cfg.stateURL, cfg.stateToken)
+		if err != nil {
+			log.Fatalf("configure tsnet state: %v", err)
+		}
+		ts.Store = durable
+	}
 	defer ts.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	shutdown, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := context.WithTimeout(shutdown, 2*time.Minute)
 	defer cancel()
 	status, err := ts.Up(ctx)
 	if err != nil {
@@ -93,7 +106,7 @@ func main() {
 			// The upstream is a customer-owned tailscale serve endpoint inside
 			// the private tailnet. Headscale MagicDNS, ACLs, and WireGuard peer
 			// identity provide the trust boundary here; public TLS terminates at
-			// Railway before this proxy.
+			// the hosting edge before this proxy.
 			InsecureSkipVerify: true,
 		},
 	}
@@ -150,9 +163,20 @@ func main() {
 		cfg.publicHost,
 		cfg.tailnetDomain,
 	)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		<-shutdown.Done()
+		drain, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(drain); err != nil {
+			log.Printf("shutdown HTTP server: %v", err)
+		}
+	}()
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
 	}
+	<-drained
 }
 
 func loadConfig() (config, error) {
@@ -166,12 +190,19 @@ func loadConfig() (config, error) {
 		port:          firstEnv("PORT", "", defaultPort),
 		signingSecret: strings.TrimSpace(os.Getenv("TUNNEL_HOSTNAME_SIGNING_SECRET")),
 		allowUnsigned: readBoolEnv("TUNNEL_ALLOW_UNSIGNED_HOSTNAMES"),
+		stateURL:      strings.TrimSpace(os.Getenv("TSNET_STATE_URL")),
+		stateToken:    strings.TrimSpace(os.Getenv("TSNET_STATE_TOKEN")),
 	}
 	cfg.controlURL = strings.TrimRight(cfg.controlURL, "/")
 	cfg.publicHost = normalizeHost(cfg.publicHost)
 	cfg.tailnetDomain = normalizeHost(cfg.tailnetDomain)
 	cfg.hostname = normalizeHost(cfg.hostname)
 
+	if cfg.stateURL != "" || cfg.stateToken != "" {
+		if _, err := newRemoteStateStore(cfg.stateURL, cfg.stateToken); err != nil {
+			return cfg, err
+		}
+	}
 	if cfg.authKey == "" {
 		return cfg, errors.New("TUNNEL_PROXY_TS_AUTHKEY is required")
 	}
