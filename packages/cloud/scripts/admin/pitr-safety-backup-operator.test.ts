@@ -127,7 +127,10 @@ test("authority expiry during precreation provider reads prevents backup mutatio
       }
       return result;
     };
-    expect((await runSafetyBackup(input)).state).toBe("unconfirmed");
+    const result = await runSafetyBackup(input);
+    expect(result.state).toBe("unconfirmed");
+    expect(result.requestSubmitted).toBe(false);
+    expect("phase" in result && result.phase).toBe("create_preflight");
     expect(calls).not.toContain("backupCreate");
   });
 });
@@ -139,7 +142,10 @@ test("review expiry during the final source check prevents creation", async () =
       if (++checks === 4) input.expiry = Date.now() - 1;
       return true;
     };
-    expect((await runSafetyBackup(input)).state).toBe("unconfirmed");
+    const result = await runSafetyBackup(input);
+    expect(result.state).toBe("unconfirmed");
+    expect(result.requestSubmitted).toBe(false);
+    expect("phase" in result && result.phase).toBe("create_preflight");
     expect(calls).not.toContain("backupCreate");
   });
 });
@@ -174,5 +180,198 @@ test("retention expiring during final source check cannot publish completed proo
     } finally {
       clock?.mockRestore();
     }
+  });
+});
+
+test("exact operation reconciliation reads only, distinguishes absent/unique/ambiguous and never claims Complete", async () => {
+  await fixture(async (input, calls) => {
+    const original = input.api,
+      name = `alpha-pitr-safety-${"a".repeat(32)}`;
+    input.reconcileOperationReceipt = createHash("sha256")
+      .update(name)
+      .digest("hex");
+    for (const count of [0, 1, 2]) {
+      calls.length = 0;
+      input.api = async (op, vars, signal) => {
+        if (op !== "backupList") return original(op, vars, signal);
+        calls.push(op);
+        return {
+          data: {
+            volumeInstanceBackupList: Array.from({ length: count }, (_, i) => ({
+              id: `backup${i}`,
+              name,
+              createdAt: new Date(Date.now() - 1000).toISOString(),
+              expiresAt: null,
+            })),
+          },
+        };
+      };
+      const result = await runSafetyBackup(input);
+      expect(result.state).toBe("observed_read_only");
+      expect("matchingBackup" in result && result.matchingBackup).toBe(
+        ["absent", "unique", "ambiguous"][count],
+      );
+      expect(result.requestSubmitted).toBe(false);
+      expect(result.workflowComplete).toBe(false);
+      expect("apiContract" in result && result.apiContract?.available).toBe(
+        false,
+      );
+      expect(
+        calls.every((op) =>
+          [
+            "volumes",
+            "backupList",
+            "backupContract",
+            "backupSchedules",
+          ].includes(op),
+        ),
+      ).toBe(true);
+    }
+  });
+});
+test("malformed reconciliation reference refuses instead of falling back to creation", async () => {
+  await fixture(async (input, calls) => {
+    input.reconcileOperationReceipt = "not-a-hash";
+    await expect(runSafetyBackup(input)).rejects.toThrow(
+      "reconcile_operation_invalid",
+    );
+    expect(calls).not.toContain("backupCreate");
+  });
+});
+test("create uncertainty reports invocation boundary and finite failure only", async () => {
+  await fixture(async (input, calls) => {
+    const original = input.api;
+    input.api = async (op, vars, signal) => {
+      if (op === "backupCreate") {
+        calls.push(op);
+        throw Error("private provider value");
+      }
+      return original(op, vars, signal);
+    };
+    const result = await runSafetyBackup(input);
+    expect(result.state).toBe("unconfirmed");
+    expect(result.requestSubmitted).toBe(true);
+    expect("phase" in result && result.phase).toBe("create_request");
+    expect("failureCategory" in result && result.failureCategory).toBe(
+      "unclassified_private_failure",
+    );
+    expect(JSON.stringify(result)).not.toContain("private provider value");
+    expect(calls.filter((v) => v === "backupCreate")).toHaveLength(1);
+  });
+});
+
+test("unique malformed backup identity cannot produce a retained reconciliation receipt", async () => {
+  await fixture(async (input, calls) => {
+    const original = input.api,
+      name = `alpha-pitr-safety-${"b".repeat(32)}`;
+    input.reconcileOperationReceipt = createHash("sha256")
+      .update(name)
+      .digest("hex");
+    for (const id of [undefined, null, "", 42]) {
+      input.api = async (op, vars, signal) =>
+        op === "backupList"
+          ? {
+              data: {
+                volumeInstanceBackupList: [
+                  {
+                    id,
+                    name,
+                    createdAt: new Date(Date.now() - 1000).toISOString(),
+                    expiresAt: null,
+                  },
+                ],
+              },
+            }
+          : original(op, vars, signal);
+      await expect(runSafetyBackup(input)).rejects.toThrow(
+        "reconcile_backup_identity_invalid",
+      );
+    }
+    expect(calls).not.toContain("backupCreate");
+  });
+});
+
+test("finite transport refusal survives the public receipt without retry", async () => {
+  await fixture(async (input, calls) => {
+    const original = input.api;
+    input.api = async (op, vars, signal) => {
+      if (op === "backupCreate") {
+        calls.push(op);
+        throw Error("private_provider_permission");
+      }
+      return original(op, vars, signal);
+    };
+    const result = await runSafetyBackup(input);
+    expect(result.state).toBe("unconfirmed");
+    expect("failureCategory" in result && result.failureCategory).toBe(
+      "private_provider_permission",
+    );
+    expect(result.automaticRetryAllowed).toBe(false);
+    expect(calls.filter((v) => v === "backupCreate")).toHaveLength(1);
+  });
+});
+
+test("read-only exact-volume capacity reports the documented half-capacity boundary without mutation", async () => {
+  await fixture(async (input, calls) => {
+    input.reconcileOperationReceipt = "a".repeat(64);
+    const original = input.api;
+    for (const [used, total, known, above] of [
+      [49, 100, true, false],
+      [50, 100, true, false],
+      [51, 100, true, true],
+      [101, 100, false, null],
+      [-1, 100, false, null],
+      [null, 100, false, null],
+      [1, 0, false, null],
+      [1, 2147483648, false, null],
+      [Infinity, 100, false, null],
+    ] as const) {
+      input.api = async (op, vars, signal) => {
+        const result = await original(op, vars, signal);
+        if (op === "volumes") {
+          const value = result as {
+            data: {
+              environment: {
+                volumeInstances: { edges: { node: Record<string, unknown> }[] };
+              };
+            };
+          };
+          value.data.environment.volumeInstances.edges[0].node.currentSizeMB =
+            used;
+          value.data.environment.volumeInstances.edges[0].node.sizeMB = total;
+        }
+        return result;
+      };
+      const result = await runSafetyBackup(input);
+      expect("matchingBackup" in result && result.matchingBackup).toBe(
+        "absent",
+      );
+      const capacity =
+        "volumeCapacity" in result ? result.volumeCapacity : null;
+      expect(capacity?.usageKnown).toBe(known);
+      expect(capacity?.aboveManualBackupHalfCapacity).toBe(above);
+      expect(capacity?.usedMB).toBe(known ? used : null);
+      expect(capacity?.capacityMB).toBe(known ? total : null);
+      expect(JSON.stringify(result)).not.toContain("volumeId");
+    }
+    expect(
+      calls.every((op) =>
+        ["volumes", "backupList", "backupContract", "backupSchedules"].includes(
+          op,
+        ),
+      ),
+    ).toBe(true);
+  });
+});
+
+test("invalid diagnostic recipient prevents backup creation", async () => {
+  await fixture(async (input, calls) => {
+    await expect(
+      runSafetyBackup({
+        ...input,
+        errorRecipientPublicKey: "invalid-private-key",
+      }),
+    ).rejects.toThrow("provider_evidence_recipient_invalid");
+    expect(calls).not.toContain("backupCreate");
   });
 });

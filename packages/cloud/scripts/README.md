@@ -66,8 +66,22 @@ bun packages/cloud/scripts/admin/recipient-envelope.ts open --private-key key.pe
 The mint script's stdout is piped only into the sealer (RSA-OAEP-256 wrapping
 an AES-256-GCM key), and only the sealed envelope is uploaded. Defaults: 5
 single-use `alpha-staging-qa` codes and one 50-redemption `alpha-staging-shared`
-code, 183 days each. The pepper is the staging Environment secret
-`ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER`. Delete the artifact after download.
+code, 183 days each, family `alpha_phone`, plan `plus_monthly`. The pepper is
+the staging Environment secret `ELIZA_SUBSCRIPTION_GRANT_CODE_PEPPER`. Delete
+the artifact after download.
+
+Optional inputs set the campaign: `family` (`alpha_phone` or `grace_pilot`),
+`plan` (`plus_monthly` or `pro_monthly`), `duration_days` (1 to 731) or
+`duration_months` (1 to 24, not both), `requires_no_paid_plan`, and
+`expires_at` (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ`, in the future). For
+example, a Grace pilot wave of single-use codes:
+
+```sh
+gh workflow run cloud-staging-mint-grant-codes.yml --ref staging \
+  -f expected_cloud_commit=<staging head> -f recipient_public_key="$(cat key.pub.b64)" \
+  -f family=grace_pilot -f duration_months=6 -f requires_no_paid_plan=true \
+  -f single_use_count=20 -f single_use_label=grace-pilot-wave-1 -f shared_max_redemptions=0
+```
 
 ## Production test grant
 
@@ -279,3 +293,55 @@ Private captures are destroyed in the final workflow step. This workflow has no
 stage, commit, restore, deletion or database-write operation. A completed safety
 backup is not an isolated populated restore rehearsal, and does not authorize the
 subsequent provisioning or migration phases.
+
+The named safety backup workflow also accepts `reconcile_operation_receipt`.
+Set it to the exact operation-name SHA256 from an uncertain run to select a
+read-only backup-list reconciliation. Keep the reviewed volume receipt and a
+fresh review expiry. This mode never creates a backup and never falls back to
+creation. A unique retained list entry does not prove provider workflow Complete;
+no automatic retry, PITR stage or restore is authorized by its result.
+Creation receipts distinguish the final preflight from an invoked provider API.
+`requestSubmitted` records API invocation, not confirmed provider acceptance.
+
+Transport failure receipts use finite categories for invocation failures, aborts,
+timeouts, output limits, invalid JSON, HTTP status classes and allowlisted GraphQL
+extension codes. Provider text, arbitrary codes and request values remain private.
+A CLI nonzero exit always fails, even if its JSON includes data. An unknown refusal
+stays unknown; no category establishes non-acceptance or permits automatic retry.
+Reconciliation also observes the live backup mutation's argument and return-type
+contract through fixed read-only introspection. It reports booleans only. Disabled
+or malformed introspection does not discard the backup-list observation. Contract
+agreement does not authorize creation. GraphQL document validation and provider
+`BAD_USER_INPUT` now have distinct finite categories; no further create is needed
+to inspect the deployed schema.
+Reconciliation reports storage used and total MB from the same verified volume
+instance, plus listed/retained backup counts. Pinned CLI5.38 labels
+`currentSizeMB/sizeMB` as storage used/total. Missing, non-finite or impossible
+amounts remain unknown. The above-half flag compares observed usage with Railway's
+[documented manual-backup limit](https://docs.railway.com/volumes/backups).
+It is diagnostic only: being below that limit does not prove creation eligibility,
+and the operator never resizes a volume or retries a backup from this observation.
+For a separately reviewed single reproduction, `error_recipient_public_key` can
+select encrypted provider failure evidence. The existing RSA-OAEP/AES-GCM helper
+validates the public recipient before backup creation. Only GraphQL error messages
+and fixed code values are selected, with known request identifiers, operation name
+and tokens scrubbed before encryption. At most16 messages of4096 characters and
+64KiB of selected plaintext are accepted; oversized evidence is refused, not
+truncated. Plaintext stays in memory. Only a ciphertext digest and finite status
+enter the public receipt. The encrypted artifact has one-day retention and the
+private working directory is cleaned even after failure. No response data, raw
+stderr, arbitrary extensions or environment dump is captured. The private key
+stays with the local operator. Evidence capture never retries or converts a failed
+provider operation to success; it does not authorize stage, resize or migration.
+
+### Bounded backup retention observations
+
+The protected named-backup workflow's existing read-only reconciliation also reports at most 15 backup hash receipts, creation/expiry dates, scheduled/manual classification and finite sizes. It marks every tie for the newest valid creation time for preservation and distinguishes expired entries. Larger or ambiguous inventories refuse detailed output. Schedule metadata is limited to the provider enum, creation time and retention seconds; unavailable schedule observations do not invalidate reconciliation. No raw IDs, names, cron expressions or external IDs are printed. These observations support a concrete retention review; they do not authorize deletion/locking or prove backup completion/restorability. This production operator addition targets main because its protected workflow requires refs/heads/main, continuing user-authorized Cloud recovery; it does not change product runtime requirements or the MVP.
+
+### PITR stage composition and manual protected workflow
+
+`pitr-stage-runner.ts` composes the reviewed stage boundary. It requires a completed, retained backup receipt from an authenticated, explicitly reviewed protected workflow run. It captures authority, exact image/volume, active config, existing buckets and staged changes. All reads must fit a 60-second observation window. It rechecks source freshness, review expiry and backup retention immediately before the one stage-only submission.
+
+The runner preserves private intent and baseline files, waits for the returned workflow, then verifies the sole observed new bucket and WAL references. Image, credential, volume and unrelated config changes are refused. A lost reply or prohibited patch permits one read-only reconciliation; it never retries, commits, deletes or claims migration readiness. Existing failed backup attempts and list-only reconciliation receipts do not qualify.
+
+`pitr-stage-operator.ts` composes fresh bounded read-only authority capture, authenticated completed-backup evidence, and recipient-encrypted stage evidence. It refuses outside canonical main GitHub Actions context. Private stage intent, workflow, observations and reconciliation are encrypted before writing; public receipts contain only hashes and fixed outcomes. `production-pitr-stage-only.yml` connects this entrypoint through manual dispatch only, on the exact reviewed main commit and protected production environment. It requires a valid project, environment and service UUID, a completed backup run, exact volume/image receipts, a short-lived review, a writer-maintenance receipt and a recipient public key. It uploads only encrypted evidence on every outcome and always removes private authority captures. If upload fails, cleanup retains ciphertext and fails; this does not prove that a durable copy exists. Before dispatch, independently review writer exclusivity and all input receipts. The default branch registers the same manual inputs. The canonical-main guard refuses runs from develop and staging before any provider operation. Production runs still require the exact reviewed main commit and all protected inputs. No workflow dispatch is part of this change. Stage creation may create a bucket even without commit. No current backup-capacity decision is assumed resolved. An exact patch commit remains a separate reviewed operation.
