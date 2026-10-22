@@ -54,6 +54,10 @@ export function parseBrowserAddressInput(
           : `${options.defaultProtocol}//${value}`,
     );
   } catch {
+    // A bracketed token that only looked IPv6-shaped ([1:30], [a:b]) was
+    // typed as a search, not an address.
+    if (value.startsWith("[") && !explicit && !domain)
+      return { kind: "search", query: value };
     return { kind: "rejected", reason: "invalid-url" };
   }
   if (url.protocol !== "http:" && url.protocol !== "https:")

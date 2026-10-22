@@ -27,6 +27,8 @@ describe("parseBrowserAddressInput bracketed IPv6", () => {
     ["[abc]", "[abc]"],
     ["[50%]", "[50%]"],
     ["[::1]junk", "[::1]junk"],
+    ["[1:30]", "[1:30]"],
+    ["[a:b]", "[a:b]"],
   ])("keeps %s as a search query", (input, query) => {
     expect(parseBrowserAddressInput(input, OPTS)).toEqual({
       kind: "search",
