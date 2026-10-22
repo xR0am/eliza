@@ -1259,7 +1259,7 @@
       ".actions{display:flex;gap:10px}.actions button{flex:1 1 0}.actions button,.close{height:64px;padding:0 28px;white-space:nowrap}.actions .primary{background:#b3aad3;box-shadow:none}[hidden]{display:none!important}" +
       ".inset{position:fixed;left:0;bottom:0;width:0;height:0;padding-bottom:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none}" +
       ".pointer{position:fixed;left:0;top:0;width:28px;height:32px;pointer-events:none;transition:left 1.4s cubic-bezier(.45,0,.25,1),top 1.4s cubic-bezier(.45,0,.25,1)}.pointer svg{display:block;fill:#141414;filter:drop-shadow(0 2px 3px #14141359)}" +
-      ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;height:34px;padding:0 12px 0 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:nowrap}.initial{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
+      ".tag{position:absolute;left:24px;top:28px;display:flex;align-items:center;gap:8px;min-height:34px;width:max-content;box-sizing:border-box;padding:4px 12px 4px 8px;border-radius:9px;background:#b3aad3;color:#141414;box-shadow:0 3px 10px #14141340;font:700 18px/1 var(--face);white-space:normal}.name{min-width:0;overflow-wrap:anywhere}.initial{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:5px;background:#141414;color:#b3aad3;font-size:12px}" +
       ".pointer.paused{transition:none}.paused svg{fill:#73726c}.paused .tag{background:#4a4a47;color:#fff}.paused .initial{background:#fff;color:#4a4a47}" +
       ".tap{position:fixed;width:36px;height:36px;border:4px solid #141414;border-radius:50%;box-sizing:border-box;pointer-events:none;animation:tap .7s ease-out forwards}@keyframes tap{0%{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}" +
       "@media (prefers-reduced-motion:reduce){.ring.pulse,.tap{animation:none}.label,.pointer{transition:none}.label{transform:none}}",
@@ -1433,6 +1433,32 @@
     pointer.style.left = `${point[0] - 3}px`;
     pointer.style.top = `${point[1] - 2}px`;
   };
+  const fitTag = () => {
+    if (pointer.style.display !== "block") return;
+    const left = (viewport?.offsetLeft ?? 0) + 8;
+    const top = (viewport?.offsetTop ?? 0) + 8;
+    const width = Math.max(0, (viewport?.width ?? innerWidth) - 16);
+    const height = Math.max(0, (viewport?.height ?? innerHeight) - 16);
+    tag.style.maxWidth = `${width}px`;
+    const cursorRect = pointer.getBoundingClientRect();
+    const tagRect = tag.getBoundingClientRect();
+    const x = Math.max(
+      left,
+      Math.min(cursorRect.left + 24, left + width - tagRect.width),
+    );
+    const below = cursorRect.top + 28;
+    const y = Math.max(
+      top,
+      Math.min(
+        below + tagRect.height <= top + height
+          ? below
+          : cursorRect.top - tagRect.height - 4,
+        top + height - tagRect.height,
+      ),
+    );
+    tag.style.left = `${x - cursorRect.left}px`;
+    tag.style.top = `${y - cursorRect.top}px`;
+  };
   const hide = () => {
     ring.hidden = true;
     label.hidden = true;
@@ -1524,6 +1550,7 @@
       place(point);
       nameTag.textContent = `${name} · paused`;
       pointer.style.display = "block";
+      fitTag();
     },
     destroy: () => {
       disposed = true;
@@ -1565,6 +1592,9 @@
       face = family;
       root.style.setProperty("--face", face);
     }
+    // Follow the rendered cursor during travel and keep the full name readable
+    // at viewport edges, including the longer paused label and keyboard resize.
+    fitTag();
     if (acted || state.paused) {
       if (acted) {
         label.hidden = true;
@@ -1709,6 +1739,7 @@
             ],
           );
           pointer.style.display = "block";
+          fitTag();
           pointer.getBoundingClientRect();
           pointer.style.transition = "";
           place(point);
@@ -1732,6 +1763,7 @@
           pointer.style.transition = "none";
           place(point);
           pointer.style.display = "block";
+          fitTag();
           tap.style.left = `${point[0] - 18}px`;
           tap.style.top = `${point[1] - 18}px`;
           tap.hidden = !acted;

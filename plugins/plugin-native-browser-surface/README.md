@@ -93,6 +93,14 @@ above. It uses a local synthetic document, checks real click/fill readback, stal
 references and document IDs, and hides/restores the same page. This lane requires
 a provider with isolated-world support and fails if it is unavailable.
 
+The isolated channel also accepts `guide` commands for the shared page guidance
+renderer: show an observed target, check action-preview readiness, pause or hide.
+Show and readiness requests require the current document and snapshot. Annotations
+do not consume input references. Hide and pause remain available after the surface
+is hidden, but cannot read or change website controls. Native answer offers are
+not supported; product approval stays in its trusted host. Hosts must still bind
+task authority and wait for a valid action preview before dispatching input.
+
 Android foreground-service hosts can share `ChromiumBrowserConnection`: construct
 it with the service context, call `start()` after entering foreground, and
 `close()` when the service stops. Call its lifecycle methods on the main thread.

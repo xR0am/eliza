@@ -774,6 +774,44 @@ try {
   await until(shown);
   await call(pageGuidance, { kind: "hide" });
   cases.push("a remembered dismissal keeps the step hidden until restored");
+  await page.setViewport({ width: 320, height: 480 });
+  await page.goto(`${origin}/labels`);
+  await isolate();
+  await page.evaluate(() => {
+    document.querySelector("#first").style.cssText =
+      "left:220px;top:30px;width:90px;padding:8px";
+  });
+  element = await read("narrow-action");
+  await show("narrow-action", element("First step"), {
+    id: "narrow-action",
+    action: "click",
+    assistantName: "Test helper",
+  });
+  await until(shown);
+  const assertTagFits = async () => {
+    const rect = await part(
+      ".tag",
+      "({left:n.getBoundingClientRect().left,right:n.getBoundingClientRect().right,top:n.getBoundingClientRect().top,bottom:n.getBoundingClientRect().bottom,scroll:n.scrollWidth,width:n.clientWidth})",
+    );
+    assert.ok(
+      rect.left >= 8 &&
+        rect.right <= 312 &&
+        rect.top >= 8 &&
+        rect.bottom <= 472,
+      JSON.stringify(rect),
+    );
+    assert.ok(rect.scroll <= rect.width, JSON.stringify(rect));
+  };
+  await assertTagFits();
+  await page.screenshot({ path: `${output}/narrow-action-tag.png` });
+  await call(pageGuidance, { kind: "pause" });
+  await settle();
+  await assertTagFits();
+  await page.screenshot({ path: `${output}/narrow-paused-tag.png` });
+  await call(pageGuidance, { kind: "hide" });
+  cases.push(
+    "action and paused name tags stay fully readable at the narrow viewport edge",
+  );
   await writeFile(
     `${output}/verification.json`,
     JSON.stringify(
