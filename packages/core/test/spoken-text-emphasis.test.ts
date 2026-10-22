@@ -39,6 +39,18 @@ describe("sanitizeSpeechText star spans", () => {
 		).toBe("Sure. Can I tell you a secret?");
 	});
 
+	it("speaks a lone italic word after a colon or opening a sentence", () => {
+		expect(sanitizeSpeechText("Your choices: *yes* or *no*.")).toBe(
+			"Your choices: yes or no.",
+		);
+		expect(sanitizeSpeechText("*Important:* call your doctor today.")).toBe(
+			"Important: call your doctor today.",
+		);
+		expect(sanitizeSpeechText("Pick one. *Carefully* read the label.")).toBe(
+			"Pick one. Carefully read the label.",
+		);
+	});
+
 	it("speaks bold at the start of a sentence", () => {
 		expect(sanitizeSpeechText("**Your flight** leaves at nine.")).toBe(
 			"Your flight leaves at nine.",
