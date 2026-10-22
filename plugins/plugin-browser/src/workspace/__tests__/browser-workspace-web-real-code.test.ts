@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetBrowserWorkspaceStateForTests,
   executeBrowserWorkspaceCommand,
+  listBrowserWorkspaceTabs,
   openBrowserWorkspaceTab,
 } from "../browser-workspace.js";
 import { webWorkspaceState } from "../browser-workspace-state.js";
@@ -59,6 +60,70 @@ const longSnapshotHtml = `<!doctype html>
 describe("browser workspace web-mode real-code command flow", () => {
   beforeEach(async () => {
     await __resetBrowserWorkspaceStateForTests();
+  });
+
+  it("keeps document fragments through real HTTP loads and form redirects", async () => {
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      const url = new URL(request.url ?? "/", "http://localhost");
+      if (url.pathname === "/redirect" || url.pathname === "/submit") {
+        response.writeHead(303, {
+          Location: url.searchParams.get("to") ?? "/done",
+        });
+        response.end();
+        return;
+      }
+      response.setHeader("Content-Type", "text/html");
+      response.end(`<!doctype html><title>Fragment destination</title>
+        <h1 id="details">Details</h1><h2 id="receipt">Receipt</h2>
+        <form method="post" action="/submit#receipt">
+          <button id="submit">Submit</button>
+        </form>`);
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("No HTTP port");
+    const base = `http://127.0.0.1:${address.port}`;
+    try {
+      for (const [path, expected] of [
+        ["/done#details", "/done#details"],
+        ["/redirect#details", "/done#details"],
+        ["/redirect?to=%2Fdone%23receipt#details", "/done#receipt"],
+        ["/redirect?to=%2Fdone%23#details", "/done#"],
+      ]) {
+        const tab = await openBrowserWorkspaceTab(
+          { url: `${base}${path}` },
+          webEnv,
+        );
+        await executeBrowserWorkspaceCommand(
+          { id: tab.id, subaction: "get", selector: "title" },
+          webEnv,
+        );
+        const loaded = (await listBrowserWorkspaceTabs(webEnv)).find(
+          (entry) => entry.id === tab.id,
+        );
+        expect.soft(loaded?.url, path).toBe(`${base}${expected}`);
+      }
+      const form = await openBrowserWorkspaceTab(
+        { url: `${base}/form` },
+        webEnv,
+      );
+      const submitted = await executeBrowserWorkspaceCommand(
+        { id: form.id, subaction: "click", selector: "#submit" },
+        webEnv,
+      );
+      expect.soft(submitted.tab?.url).toBe(`${base}/done#receipt`);
+      expect(requests).toContain("POST /submit");
+      expect(requests.every((request) => !request.includes("#"))).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("sends the form encoding and preserves its body across HTTP 307", async () => {

@@ -88,7 +88,27 @@ function resolveRedirectLocation(response: Response, fromUrl: string): string {
       `Browser workspace redirect (${response.status}) from "${fromUrl}" has no Location header.`,
     );
   }
-  return assertBrowserWorkspaceUrl(new URL(location, fromUrl).toString());
+  const nextUrl = new URL(location, fromUrl);
+  // A redirect without a fragment inherits it (RFC 9110, section 10.2.2).
+  // An explicit trailing # clears it instead.
+  const fragmentIndex = fromUrl.indexOf("#");
+  if (!location.includes("#") && fragmentIndex !== -1) {
+    nextUrl.hash = fromUrl.slice(fragmentIndex);
+  }
+  return assertBrowserWorkspaceUrl(nextUrl.toString());
+}
+
+function resolveResponseDocumentUrl(
+  response: Response,
+  requestUrl: string,
+): string {
+  // Fetch response URLs omit fragments. Keep the document's navigation target.
+  const responseUrl = response.url?.trim() || requestUrl;
+  const fragmentIndex = requestUrl.indexOf("#");
+  return assertBrowserWorkspaceUrl(
+    responseUrl.split("#")[0] +
+      (fragmentIndex === -1 ? "" : requestUrl.slice(fragmentIndex)),
+  );
 }
 
 export function ensureBrowserWorkspaceFormControlElement(
@@ -440,9 +460,7 @@ export async function submitWebBrowserWorkspaceForm(
   }
 
   const html = await response.text();
-  const finalUrl = assertBrowserWorkspaceUrl(
-    response.url?.trim() || requestUrl,
-  );
+  const finalUrl = resolveResponseDocumentUrl(response, requestUrl);
   if (finalUrl !== requestUrl) {
     assertBrowserWorkspaceUrlAllowed(finalUrl, "navigate", "click");
   }
@@ -549,9 +567,7 @@ export async function loadWebBrowserWorkspaceTabDocument(
   }
 
   const html = await response.text();
-  const finalUrl = assertBrowserWorkspaceUrl(
-    response.url?.trim() || requestUrl,
-  );
+  const finalUrl = resolveResponseDocumentUrl(response, requestUrl);
   if (finalUrl !== tab.url) {
     assertBrowserWorkspaceUrlAllowed(finalUrl, "navigate", "open");
   }
