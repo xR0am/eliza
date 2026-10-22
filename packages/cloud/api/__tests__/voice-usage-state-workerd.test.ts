@@ -109,6 +109,7 @@ describe("Cloudflare voice quota accounting", () => {
       "utf8",
     );
     worker = start();
+    await worker.ready;
   }, 120000);
   afterAll(async () => {
     await worker?.dispose();
