@@ -448,3 +448,15 @@ reuse does not establish cache-only entitlement admission: ordinary policy
 writers do not synchronously fence every cached generation. Shared allowance
 correctness is implemented; deployed latency/audio and numeric policy selection
 remain separate acceptance work. Coverage metadata does not consume allowance.
+
+## Hosted speech migration
+
+With the Workers AI binding configured, supported legacy Kokoro voice IDs select
+replacement Aura-2 voices from `KOKORO_CLOUDFLARE_VOICES`. These are replacement
+voices, not the original Kokoro identities. Responses identify the actual provider
+and speaker in `X-Eliza-TTS-Provider` and `X-Eliza-TTS-Voice`. Configured Cartesia
+defaults and custom ElevenLabs voices retain their existing selection and billing.
+Set `VOICE_BATCH_STT_PROVIDER=cloudflare` to move a pinned Whisper deployment to
+Workers AI; verify authenticated TTS/STT before retiring the old services.
+
+Workers AI TTS accepts up to 2,000 characters per request. Longer text is rejected explicitly before synthesis; it is never truncated.

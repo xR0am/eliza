@@ -5,7 +5,7 @@ import { ElizaError } from "@elizaos/core";
 export class CloudflareSpeechError extends ElizaError {
   constructor(
     message: string,
-    readonly status: 502 | 503,
+    readonly status: 400 | 502 | 503,
     code: string,
     cause?: unknown,
   ) {
@@ -29,6 +29,20 @@ async function runSpeech(operation: () => Promise<unknown>): Promise<unknown> {
 
 export const CLOUDFLARE_STT_MODEL = "@cf/openai/whisper-large-v3-turbo";
 export const CLOUDFLARE_TTS_MODEL = "@cf/deepgram/aura-2-en";
+export const CLOUDFLARE_TTS_MAX_CHARACTERS = 2000;
+
+export type CloudflareTtsSpeaker =
+  | "luna"
+  | "asteria"
+  | "athena"
+  | "andromeda"
+  | "aurora"
+  | "orion"
+  | "atlas"
+  | "pandora"
+  | "helena"
+  | "draco"
+  | "hyperion";
 
 export interface CloudflareSpeechBinding {
   run(
@@ -39,7 +53,7 @@ export interface CloudflareSpeechBinding {
     model: typeof CLOUDFLARE_TTS_MODEL,
     input: {
       text: string;
-      speaker: "luna";
+      speaker: CloudflareTtsSpeaker;
       encoding: "mp3" | "linear16";
       container?: "wav";
       sample_rate?: number;
@@ -89,6 +103,7 @@ export async function synthesizeCloudflareAudio(
   text: string,
   wav: boolean,
   signal?: AbortSignal,
+  speaker: CloudflareTtsSpeaker = "luna",
 ): Promise<ReadableStream<Uint8Array>> {
   if (!binding)
     throw new CloudflareSpeechError(
@@ -96,11 +111,17 @@ export async function synthesizeCloudflareAudio(
       503,
       "SPEECH_PROVIDER_UNCONFIGURED",
     );
+  if (text.length > CLOUDFLARE_TTS_MAX_CHARACTERS)
+    throw new CloudflareSpeechError(
+      `Workers AI speech accepts at most ${CLOUDFLARE_TTS_MAX_CHARACTERS} characters`,
+      400,
+      "SPEECH_TEXT_TOO_LONG",
+    );
   signal?.throwIfAborted();
   const result = await runSpeech(() =>
     binding.run(CLOUDFLARE_TTS_MODEL, {
       text,
-      speaker: "luna",
+      speaker,
       ...(wav
         ? { encoding: "linear16" as const, container: "wav" as const, sample_rate: 24000 }
         : { encoding: "mp3" as const }),

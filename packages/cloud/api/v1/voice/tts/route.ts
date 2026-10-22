@@ -1,4 +1,5 @@
 import {
+  CLOUDFLARE_TTS_MAX_CHARACTERS,
   CloudflareSpeechError,
   synthesizeCloudflareAudio,
 } from "@elizaos/cloud-shared/lib/providers/cloudflare-speech";
@@ -248,6 +249,10 @@ async function __hono_POST(c: AppContext) {
           kokoroConfigured: Boolean(kokoroBaseUrl),
         })
       : undefined;
+    const maxTextLength =
+      providerSelection?.ok && providerSelection.provider === "cloudflare"
+        ? CLOUDFLARE_TTS_MAX_CHARACTERS
+        : MAX_TEXT_LENGTH;
     if (body && !body.text) {
       pendingResponse = Response.json(
         { error: "No text provided" },
@@ -258,10 +263,10 @@ async function __hono_POST(c: AppContext) {
         { error: "Text cannot be empty" },
         { status: 400 },
       );
-    } else if (body && body.text.length > MAX_TEXT_LENGTH) {
+    } else if (body && body.text.length > maxTextLength) {
       pendingResponse = Response.json(
         {
-          error: `Text too long. Maximum length is ${MAX_TEXT_LENGTH} characters`,
+          error: `Text too long. Maximum length is ${maxTextLength} characters`,
         },
         { status: 400 },
       );
@@ -385,6 +390,7 @@ async function __hono_POST(c: AppContext) {
         text,
         wantWav,
         c.req.raw.signal,
+        providerSelection.speaker,
       );
       timings.synthesisMs = Date.now() - synthesisStart;
       return new Response(audio, {
@@ -392,6 +398,7 @@ async function __hono_POST(c: AppContext) {
           "Content-Type": wantWav ? "audio/wav" : "audio/mpeg",
           "Cache-Control": "no-store",
           ...buildTtsObservabilityHeaders("cloudflare", timings),
+          "X-Eliza-TTS-Voice": providerSelection.speaker,
         },
       });
     }
