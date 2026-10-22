@@ -10,19 +10,30 @@ export const CLOUDFLARE_WEBHOOK_GATEWAY_URLS: Readonly<Record<string, string>> =
       "https://eliza-gateway-webhook-production.square-rain-7251.workers.dev",
   });
 
+export const CLOUDFLARE_DISCORD_GATEWAY_URLS: Readonly<Record<string, string>> =
+  Object.freeze({
+    staging:
+      "https://eliza-gateway-discord-staging.square-rain-7251.workers.dev",
+    production:
+      "https://eliza-gateway-discord-production.square-rain-7251.workers.dev",
+  });
+
 export async function verifyCloudflareGatewayConfiguration(options: {
   environment: string;
+  kind?: "webhook" | "discord";
   origin: string;
   bootstrapSecret: string;
   settings: Record<string, string>;
   sourceSha?: string;
   enabled?: boolean;
 }): Promise<void> {
-  const canonical = Object.hasOwn(
-    CLOUDFLARE_WEBHOOK_GATEWAY_URLS,
-    options.environment,
-  )
-    ? CLOUDFLARE_WEBHOOK_GATEWAY_URLS[options.environment]
+  const kind = options.kind ?? "webhook";
+  const origins =
+    kind === "discord"
+      ? CLOUDFLARE_DISCORD_GATEWAY_URLS
+      : CLOUDFLARE_WEBHOOK_GATEWAY_URLS;
+  const canonical = Object.hasOwn(origins, options.environment)
+    ? origins[options.environment]
     : undefined;
   if (!canonical || options.origin !== canonical) {
     throw new Error("Gateway origin does not match the protected environment");
@@ -57,7 +68,7 @@ export async function verifyCloudflareGatewayConfiguration(options: {
   const proof = body as Record<string, unknown>;
   if (
     proof.environment !== options.environment ||
-    proof.kind !== "webhook" ||
+    proof.kind !== kind ||
     proof.enabled !== (options.enabled ?? true) ||
     typeof proof.sourceSha !== "string" ||
     !/^[a-f0-9]{40}$/.test(proof.sourceSha) ||
