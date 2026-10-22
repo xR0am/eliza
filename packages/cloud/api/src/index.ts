@@ -57,6 +57,7 @@ export { InferenceRecoveryService } from "./inference-recovery-service";
 export { OnboardingSessionCoordinator } from "./onboarding-session-coordinator";
 export { PersonalDeliveryProjection } from "./personal-delivery-projection";
 export { PersonalTelegramDelivery } from "./personal-telegram-delivery";
+export { RateLimitState } from "./rate-limit-state";
 export { SharedRuntimeConversation } from "./shared-runtime-conversation";
 export {
   isThinStewardEmailAuthPath,

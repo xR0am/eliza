@@ -29,6 +29,8 @@ export interface Bindings {
   HF_EGRESS_STATE?: RuntimeDurableObjectNamespace;
   CLOUD_VOICE_USAGE_BACKEND?: string;
   VOICE_USAGE_STATE?: RuntimeDurableObjectNamespace;
+  CLOUD_RATE_STATE_BACKEND?: string;
+  RATE_LIMIT_STATE?: RuntimeDurableObjectNamespace;
   CLOUD_AUTH_STATE_BACKEND?: string;
   AUTHENTICATION_STATE?: RuntimeDurableObjectNamespace;
   /** Explicit per-turn Network context; absent disables the integration. */
