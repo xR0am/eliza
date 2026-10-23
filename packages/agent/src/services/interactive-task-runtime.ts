@@ -317,8 +317,17 @@ export class InteractiveTaskRuntime {
       type: "retract-origin",
       origin,
     });
+    // The fence's cleanup hides guidance; let it finish before the scope change
+    // quiesces again, so the two never race on the same guidance revision.
+    // The narrower scope is applied to the page even if that cleanup failed.
+    let cleanupError: unknown;
+    try {
+      await this.settle(id);
+    } catch (error) {
+      cleanupError = error;
+    }
     await this.applyScope(task);
-    await this.settle(id);
+    if (cleanupError !== undefined) throw cleanupError;
     return task;
   }
   /** Re-apply the persisted origin scope, for example after a host restart. */

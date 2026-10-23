@@ -37,7 +37,7 @@ const goal = {
   allowedOrigins: [SSA],
 };
 
-function setup(options: { scopeFails?: boolean } = {}) {
+function setup(options: { scopeFails?: boolean; slowQuiesce?: boolean } = {}) {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA synchronous = FULL");
   const store = new SqliteInteractiveTaskStore(db);
@@ -47,9 +47,15 @@ function setup(options: { scopeFails?: boolean } = {}) {
   const scopes: { epoch: number; allowedOrigins: readonly string[] }[] = [];
   const quiesced: string[] = [];
   let release: (() => void) | undefined;
+  let quiescing = 0;
   const actuator: InteractiveTaskActuator = {
     capabilities: ["browser.click"],
     async quiesce({ taskId }) {
+      quiescing++;
+      // A real guidance hide waits for the browser's acknowledgement.
+      if (options.slowQuiesce)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      quiescing--;
       quiesced.push(taskId);
     },
     async observe() {
@@ -65,6 +71,11 @@ function setup(options: { scopeFails?: boolean } = {}) {
     },
     async scopeChanged({ epoch, allowedOrigins }) {
       if (options.scopeFails) throw new Error("surface gone");
+      // The browser actuator hides guidance here too; a concurrent hide from
+      // the fence's cleanup would supersede its revision and fail the change.
+      if (options.slowQuiesce)
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      if (quiescing > 0) throw new Error("guidance hide raced");
       scopes.push({ epoch, allowedOrigins: [...allowedOrigins] });
     },
     async execute() {
@@ -329,6 +340,23 @@ describe("host-authorized task origin extension", () => {
     expect(task.allowedOrigins).toEqual([SSA]);
   });
 
+  it("applies a retraction only after the fence's cleanup finished", async () => {
+    const { runtime, scopes, goTo } = setup({ slowQuiesce: true });
+    let task = runtime.create(goal);
+    task = await runtime.observe(task.id, task.revision);
+    task = await runtime.extendOrigin(
+      task.id,
+      task.revision,
+      LOGIN,
+      async () => "check-login-1",
+    );
+    goTo(LOGIN);
+    task = await runtime.observe(task.id, task.revision);
+    task = await runtime.retractOrigin(task.id, task.revision, LOGIN);
+    expect(task.allowedOrigins).toEqual([SSA]);
+    expect(scopes.at(-1)).toEqual({ epoch: task.epoch, allowedOrigins: [SSA] });
+  });
+
   it("reports an unconfirmed page policy and can re-apply the persisted scope", async () => {
     const { runtime } = setup({ scopeFails: true });
     let task = runtime.create(goal);
@@ -409,6 +437,34 @@ describe("origin scope journal validation", () => {
         ],
       }),
     ).toThrow(/origin chain/);
+  });
+
+  it("keeps the origin chain ordered when an observation clock goes back", () => {
+    let task = step(base(), {
+      type: "observe",
+      observation: observation(SSA, 1),
+    });
+    task = step(task, {
+      type: "extend-origin",
+      origin: LOGIN,
+      checkRef: "check",
+    });
+    task = step(task, {
+      type: "observe",
+      observation: { ...observation(LOGIN, 2), observedAt: 900 },
+    });
+    validateInteractiveTask(task);
+    expect(task.originChain?.map((item) => item.at)).toEqual([1001, 1001]);
+    task = step(task, {
+      type: "observe",
+      observation: { ...observation(SSA, 3), observedAt: 950 },
+    });
+    validateInteractiveTask(task);
+    expect(task.originChain?.map((item) => item.origin)).toEqual([
+      SSA,
+      LOGIN,
+      SSA,
+    ]);
   });
 
   it("bounds grants and keeps the latest chain steps", () => {

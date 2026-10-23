@@ -496,11 +496,14 @@ function recordOriginStep(
 	observation: TaskObservation,
 ): void {
 	const chain = task.originChain;
-	if (!chain || chain.at(-1)?.origin === observation.origin) return;
+	const last = chain?.at(-1);
+	if (!chain || last?.origin === observation.origin) return;
 	chain.push({
 		origin: observation.origin,
 		epoch: task.epoch,
-		at: observation.observedAt,
+		// Observation clocks need not be monotonic; the chain must stay ordered
+		// or the stored task would no longer validate.
+		at: Math.max(observation.observedAt, last?.at ?? 0),
 	});
 	if (chain.length > MAX_TASK_ORIGIN_CHAIN)
 		chain.splice(0, chain.length - MAX_TASK_ORIGIN_CHAIN);
