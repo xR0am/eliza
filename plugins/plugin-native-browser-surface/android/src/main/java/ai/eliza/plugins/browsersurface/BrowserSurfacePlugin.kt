@@ -721,17 +721,25 @@ class ElizaSurfaceManagerPlugin : Plugin() {
             webView.webViewClient = object : WebViewClient() {
                 // loadUrl() (the host's navigate) never reaches this callback, so an approved
                 // address is not intercepted again. POST form submissions do not reach it either;
-                // shouldInterceptRequest holds those.
+                // shouldInterceptRequest holds those. A server redirect does: one that continues
+                // the host's approved navigation goes on; any other is decided like a link, and a
+                // held redirect ends that approval (BrowserMainFrameGate).
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     val surface = surfaces[id]
                     if (surface == null || surface.webView !== view) return false
                     val target = request.url.toString()
                     if (request.isForMainFrame && handOff(id, surface, target, request.hasGesture())) return true
                     if (!surface.interceptNavigation) return false
+                    val redirect = request.isRedirect && request.isForMainFrame
+                    if (redirect && surface.gate.redirect(target)) return false
                     return when (BrowserNavigationPolicy.decide(view.url, target, request.isForMainFrame)) {
                         BrowserNavigationPolicy.Decision.ALLOW -> false
-                        BrowserNavigationPolicy.Decision.BLOCK -> true
+                        BrowserNavigationPolicy.Decision.BLOCK -> {
+                            if (redirect) surface.gate.settle(null)
+                            true
+                        }
                         BrowserNavigationPolicy.Decision.REQUEST -> {
+                            if (redirect) surface.gate.settle(null)
                             if (isLive(surface)) {
                                 notifyListeners("navigationRequested", surfaceEvent(id, surface).apply {
                                     put("url", target)
@@ -787,6 +795,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
+                    gate.settle(url)
                     val surface = surfaces[id] ?: return
                     if (surface.webView !== view || surface.disposed || view.url != url) return
                     if (!isLive(surface)) return
