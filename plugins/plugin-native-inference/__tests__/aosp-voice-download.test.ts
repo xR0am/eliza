@@ -233,7 +233,7 @@ describe("pinned mobile voice bundle", () => {
     }
     const asr = files.filter((f) => f.role.startsWith("asr-"));
     expect(asr.map((f) => f.sha256)).toEqual([
-      "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
+      "c0f6ad42f0a5b481904416077dde0a1a78e5b8642295fdf2356ace822588c3df",
     ]);
     const vad = files.find((f) => f.role === "vad");
     expect(vad?.sha256).toBe(
@@ -460,8 +460,8 @@ describe("pinned mobile voice bundle", () => {
       asrBackend: "parakeet",
       path: "asr/phonon-2-fv5.gguf",
       sha256:
-        "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
-      bytes: 330632256,
+        "c0f6ad42f0a5b481904416077dde0a1a78e5b8642295fdf2356ace822588c3df",
+      bytes: 208932352,
       license: "CC-BY-4.0",
       status: "unpublished",
       notice: {
