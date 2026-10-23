@@ -98,7 +98,14 @@ export interface NativeTaskContext {
 export interface NativeTaskBinding extends NativeTaskContext {
   tabId: string;
   bindingRevision: number;
+  /** The origin of the page the binding starts on. */
   origin: string;
+  /**
+   * Every origin the bound page may be observed and acted on (2 to 16, `origin`
+   * included), for a task the host extended. Requires the `task-origins` peer
+   * capability. Absent: `origin` alone.
+   */
+  origins?: string[];
   expiresAt: number;
   revoked: boolean;
   /** Overlay display name (cursor tag and label mark). Defaults to "Eliza". */
@@ -107,6 +114,85 @@ export interface NativeTaskBinding extends NativeTaskContext {
     selector: string;
     action: "click" | "fill" | "fill-code" | "select" | "scroll";
   }>;
+}
+/** Longest life of a consented-commit grant, from the person's yes to its use. */
+export const COMMIT_GRANT_MAX_MS = 60000;
+/**
+ * A host-issued, single-use grant for one commit (a submit, or a fill or
+ * select that sends its form) the person explicitly said yes to. The host
+ * issues it only after recording her yes to this exact step, control and
+ * value. The browser checks every field, spends it once, and reports the
+ * effect as a consented commit; without one, commits stay blocked.
+ */
+export interface NativeCommitGrant {
+  /** Unique per yes; a spent ID is refused. */
+  grantId: string;
+  taskId: string;
+  epoch: number;
+  /** Must equal the task binding origin. Never crosses origins. */
+  origin: string;
+  /** The observed control (`<snapshotId>:0:<node>`): one page revision. */
+  targetRef: string;
+  /** The reviewed binding selector of the same control. */
+  selector: string;
+  subaction: "click" | "fill" | "select";
+  /**
+   * Lowercase hex SHA-256 of the exact fill/select text she approved.
+   * Required for fill and select; not allowed on click.
+   */
+  valueHash?: string;
+  /** Epoch milliseconds, at most COMMIT_GRANT_MAX_MS ahead at use. */
+  expiresAt: number;
+}
+/** Shape and scope checks shared by the trusted transports. */
+export function validCommitGrant(
+  grant: unknown,
+  expected: {
+    taskContext: NativeTaskContext;
+    subaction: string;
+    targetRef?: string;
+    selector?: string;
+    now: number;
+  },
+): grant is NativeCommitGrant {
+  const value = grant as Partial<NativeCommitGrant> | null;
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as object).every((key) =>
+      [
+        "grantId",
+        "taskId",
+        "epoch",
+        "origin",
+        "targetRef",
+        "selector",
+        "subaction",
+        "valueHash",
+        "expiresAt",
+      ].includes(key),
+    ) &&
+    typeof value?.grantId === "string" &&
+    /^[A-Za-z0-9_.:@-]{1,256}$/.test(value.grantId) &&
+    value.taskId === expected.taskContext.taskId &&
+    value.epoch === expected.taskContext.epoch &&
+    typeof value.origin === "string" &&
+    value.subaction === expected.subaction &&
+    ["click", "fill", "select"].includes(value.subaction) &&
+    typeof value.targetRef === "string" &&
+    value.targetRef === expected.targetRef &&
+    typeof value.selector === "string" &&
+    value.selector === expected.selector &&
+    Number.isSafeInteger(value.expiresAt) &&
+    Number(value.expiresAt) > expected.now &&
+    Number(value.expiresAt) <= expected.now + COMMIT_GRANT_MAX_MS &&
+    // A click carries no value; a fill or select must name its exact value.
+    (value.subaction === "click"
+      ? value.valueHash === undefined
+      : typeof value.valueHash === "string" &&
+        /^[0-9a-f]{64}$/.test(value.valueHash))
+  );
 }
 interface NativeReply {
   resolve(value: unknown): void;
@@ -820,6 +906,12 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
         "This browser does not enforce task bindings.",
         { targetId: this.id },
       );
+    if (binding.origins !== undefined && !this.advertised.has("task-origins"))
+      throw new BrowserDispatchFailure(
+        "UNSUPPORTED",
+        "This browser does not support a task with more than one website.",
+        { targetId: this.id },
+      );
     if (
       binding.assistantName !== undefined &&
       !this.advertised.has("task-guide-label")
@@ -886,8 +978,27 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
       actionText?: string;
       /** The one reviewed binding target (CSS selector) this action is for. */
       expectedSelector?: string;
+      /** Host-issued grant for the one commit the person said yes to. */
+      commitGrant?: NativeCommitGrant;
     } = {},
   ): Promise<BrowserWorkspaceCommandResult> {
+    if (
+      options.commitGrant !== undefined &&
+      (!options.taskContext ||
+        !this.advertised.has("task-commit-grant") ||
+        !validCommitGrant(options.commitGrant, {
+          taskContext: options.taskContext,
+          subaction: command.subaction,
+          targetRef: command.selector,
+          selector: options.expectedSelector,
+          now: Date.now(),
+        }))
+    )
+      throw new BrowserDispatchFailure(
+        "POLICY_BLOCKED",
+        "A commit grant must match this bound task action and be current.",
+        { targetId: this.id },
+      );
     if (
       options.expectedSelector !== undefined &&
       (!options.taskContext ||
@@ -929,11 +1040,13 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
       protectedValueKind: _untrusted,
       actionText: _untrustedText,
       expectedSelector: _untrustedTarget,
+      commitGrant: _untrustedGrant,
       ...safeCommand
     } = command as BrowserWorkspaceCommand & {
       protectedValueKind?: unknown;
       actionText?: unknown;
       expectedSelector?: unknown;
+      commitGrant?: unknown;
     };
     command = safeCommand as BrowserWorkspaceCommand;
     if (
@@ -999,6 +1112,9 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
           ...(options.expectedSelector === undefined
             ? {}
             : { expectedSelector: options.expectedSelector }),
+          ...(options.commitGrant === undefined
+            ? {}
+            : { commitGrant: options.commitGrant }),
         }
       : command;
     const result = await this.request(scopedCommand, options.signal);

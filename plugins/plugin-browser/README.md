@@ -163,6 +163,47 @@ does after the 30 seconds is not watched. `showGuidance` accepts
 `keepClearRefs` (controls the label must not cover, peer capability
 `task-guide-keep-clear`) and returns `placement` and `dismissed`.
 
+A task is bound to its starting origin. When a site hands the person to another
+one (`https://www.ssa.gov` to `https://secure.login.gov` and back), the trusted
+host checks that exact origin (blocklist, look-alike) and calls
+`InteractiveTaskRuntime.extendOrigin(id, revision, origin, checkOrigin)`; it is
+never automatic. The `extend-origin` transition adds the origin under a new
+epoch, records the grant with the check reference, and from then on records the
+origin chain (`originChain`) and each observed origin in the event journal.
+`retractOrigin` removes a granted origin (the starting ones stay) and fences
+in-flight work like pause. The runtime then calls the actuator's
+`scopeChanged`: `NativeTaskActuator` drops page facts and guidance from the old
+scope and calls the host's `applyOrigins`, for example the native surface's
+`setTaskOrigins`. The next binding of an extended task carries every allowed
+origin as `origins` (peer capability `task-origins`); each observation records
+the page's own origin, and each command stays scoped to the origin of the page
+it reads or acts on.
+
+A consented commit is the one exception, and only for a step the person said
+yes to. The host passes a `commitGrant` callback to `NativeTaskActuator`; it
+returns a `NativeCommitGrant` only after the host has recorded her explicit yes
+to this exact step, control and (for a fill or select) value, and `undefined`
+for every other action. A grant names the task, epoch, binding origin, the
+observed control (`targetRef`, so one page observation), its reviewed
+`selector` (the proposal's `expectedSelector`), the subaction, for a fill or
+select the required lowercase SHA-256 `valueHash` of the exact text (a click
+carries none), and `expiresAt` at most
+`COMMIT_GRANT_MAX_MS` (60 seconds) ahead. The actuator refuses a mismatched
+grant before dispatch, and only a peer advertising `task-commit-grant` receives
+one. The browser checks every field again, spends the grant once (a spent ID is
+refused, also after a bridge restart; a refusal after admission still spends
+it), and lets the commit control be pressed. The watch then lets exactly one
+commit through: the submit of the granted control's own form to the page's
+origin with its page load (POST or GET), or, when no such page load is under
+way, one own-site request (a script form or button that sends with fetch). A
+snapshot reports it as `consentedCommit` (`{ grantId, kind }`). A submit the
+page cancels cannot be sent later. A second submit, another form, a submit to
+another origin, any further own-site request, a same-document address change
+and any other move to another document are still stopped or recorded as
+`effectViolation`, which the actuator treats as an unknown outcome. The actuator treats
+a `consentedCommit` for any other grant as an unknown outcome. Without a grant
+nothing changes: commit controls stay blocked.
+
 `NativeSocketBrowserTarget.currentPage()` is a trusted host read of the page the
 person sees in the connected profile. It sends one `list` command and returns the
 single active HTTPS tab as `{ tabId, origin, title }`: the origin without path,

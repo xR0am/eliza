@@ -111,6 +111,8 @@ export {
 export {
 	createInteractiveTask,
 	type InteractiveTask,
+	MAX_TASK_ORIGIN_CHAIN,
+	MAX_TASK_ORIGIN_GRANTS,
 	sameTaskOwner,
 	TASK_ACTION_NOT_DISPATCHED,
 	TASK_ACTION_NOT_DISPATCHED_REF,
@@ -118,6 +120,8 @@ export {
 	type TaskContext,
 	type TaskObservation,
 	type TaskOperation,
+	type TaskOriginGrant,
+	type TaskOriginStep,
 	type TaskOwner,
 	type TaskTransition,
 	transitionInteractiveTask,

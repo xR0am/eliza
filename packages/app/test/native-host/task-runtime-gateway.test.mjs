@@ -359,7 +359,7 @@ test("concurrent same-account reads and planner access remain authorized", async
   assert.equal((await older).status, 200);
 });
 
-async function actuatorFixture(t, { leaseMs = 60000 } = {}) {
+async function actuatorFixture(t, { leaseMs = 60000, commitGrant, now } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "eliza-native-refusal-"));
   const bundlePath = join(directory, "task-runtime.mjs");
   buildTaskRuntime(bundlePath);
@@ -405,6 +405,9 @@ async function actuatorFixture(t, { leaseMs = 60000 } = {}) {
                       ...(state.violation && state.effects
                         ? { effectViolation: state.violation }
                         : {}),
+                      ...(state.consented && state.effects
+                        ? { consentedCommit: state.consented }
+                        : {}),
                     },
                   ],
                 }
@@ -436,6 +439,7 @@ async function actuatorFixture(t, { leaseMs = 60000 } = {}) {
         ...host,
         target,
         nextBindingRevision: () => ++revision,
+        ...(now ? { now } : {}),
         policy: () => ({
           tabId: "1",
           origin: "https://example.org",
@@ -451,6 +455,7 @@ async function actuatorFixture(t, { leaseMs = 60000 } = {}) {
         },
         verify: async () => "succeeded",
         recordEvidence: async () => "evidence:test",
+        ...(commitGrant ? { commitGrant } : {}),
       }),
   });
   t.after(async () => {
@@ -512,14 +517,15 @@ test("a browser refusal before the effect is a failed operation, not an unknown 
 });
 
 test("observing after the browser lease expires renews it with a new binding revision", async (t) => {
-  const f = await actuatorFixture(t, { leaseMs: 300 });
+  let now = Date.now();
+  const f = await actuatorFixture(t, { leaseMs: 300, now: () => now });
   let current = f.runtime.current();
   current = await f.runtime.observe(current.id, current.revision);
   // Within the lease, the binding is reused.
   current = await f.runtime.observe(current.id, current.revision);
   assert.equal(f.state.bindings.length, 1);
-  await new Promise((resolve) => setTimeout(resolve, 350));
-  const renewedAt = Date.now();
+  now += 350;
+  const renewedAt = now;
   current = await f.runtime.observe(current.id, current.revision);
   assert.deepEqual(
     f.state.bindings.map((binding) => binding.bindingRevision),
@@ -563,4 +569,70 @@ test("a host-chosen target must be a reviewed target, and a stopped page submit 
   const stopped = await f.click("set-off-submit");
   assert.equal(stopped.operations.at(-1).status, "unknown");
   assert.equal(stopped.status, "blocked");
+});
+
+test("a host commit grant reaches the browser only for its exact action, and its consented commit is trusted", async (t) => {
+  let issue = () => undefined;
+  const f = await actuatorFixture(t, {
+    commitGrant: (task, proposal) => issue(task, proposal),
+  });
+  const grantFor = (task, proposal, extra = {}) => ({
+    grantId: `yes:${proposal.id}`,
+    taskId: task.id,
+    epoch: task.epoch,
+    origin: "https://example.org",
+    targetRef: proposal.targetRef,
+    selector: "#ordinary",
+    subaction: "click",
+    expiresAt: Date.now() + 30000,
+    ...extra,
+  });
+  // Without a grant nothing extra is sent: commits stay blocked in the page.
+  assert.equal(
+    (await f.click("plain", { expectedSelector: "#ordinary" })).operations.at(
+      -1,
+    ).status,
+    "succeeded",
+  );
+  assert.equal(f.state.options.commitGrant, undefined);
+  // A grant for another control, origin, epoch or a long life is refused
+  // before anything reaches the browser.
+  for (const extra of [
+    { selector: "#other" },
+    { origin: "https://evil.example" },
+    { epoch: 99 },
+    { expiresAt: Date.now() + 120000 },
+    { subaction: "fill" },
+  ]) {
+    const effects = f.state.effects;
+    issue = (task, proposal) => grantFor(task, proposal, extra);
+    const refused = await f.click(`bad-${Object.keys(extra)[0]}`, {
+      expectedSelector: "#ordinary",
+    });
+    assert.equal(refused.operations.at(-1).status, "failed");
+    assert.equal(refused.operations.at(-1).evidenceRef, "not-dispatched");
+    assert.equal(f.state.effects, effects);
+  }
+  // A grant needs the reviewed control the person said yes to.
+  issue = (task, proposal) => grantFor(task, proposal);
+  assert.equal(
+    (await f.click("no-target")).operations.at(-1).evidenceRef,
+    "not-dispatched",
+  );
+  // The matching grant is sent with the action; the browser's consented
+  // commit for that grant is a verified result, not an unknown one.
+  issue = (task, proposal) => {
+    f.state.consented = { grantId: `yes:${proposal.id}`, kind: "submit" };
+    return grantFor(task, proposal);
+  };
+  const committed = await f.click("pay", { expectedSelector: "#ordinary" });
+  assert.equal(committed.operations.at(-1).status, "succeeded");
+  assert.equal(f.state.options.commitGrant.grantId, "yes:pay");
+  assert.equal(f.state.options.expectedSelector, "#ordinary");
+  // A consented commit the host did not grant for this action is unknown.
+  issue = () => undefined;
+  f.state.consented = { grantId: "yes:someone-else", kind: "submit" };
+  const foreign = await f.click("foreign", { expectedSelector: "#ordinary" });
+  assert.equal(foreign.operations.at(-1).status, "unknown");
+  assert.equal(foreign.status, "blocked");
 });

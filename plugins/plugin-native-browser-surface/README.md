@@ -42,9 +42,19 @@ Non-web schemes and addresses with credentials are refused when WebView sends th
 this callback. A main-frame request that WebView sends without that callback (a POST
 form submission, a page's own history move) gets a local empty 204 unless its origin is
 the committed page's or one the host approved (`navigate`, `createSurface`, `goBack`,
-`goForward`). It is reported with its `method` and never replayed, so a blocked host
-never receives it. A tapped new window is reported with `newWindow: true`. Subframes are
-not intercepted; this is not a subresource filter.
+`goForward`) for the length of that navigation, the https upgrade of either included.
+It is reported with its `method` and never replayed, so a blocked host never receives it.
+A server redirect of an address the host loaded goes on without asking again only while
+it stays within the approved origin or its https upgrade. A tapped new window is
+reported with `newWindow: true`. Subframes are not intercepted; this is not a
+subresource filter.
+
+When the host extends a running task to another website after its own check (for
+example `https://www.ssa.gov` hands the person to `https://secure.login.gov`), it calls
+`setTaskOrigins({ id, owner, session, epoch, origins })` with the task's exact HTTPS
+origins. A page on one of them may then move to another, a POST included, without a
+hold; every other origin is still held. `origins: []` ends the extension. Nothing is
+added without this call, and the list ends with the surface.
 
 A website never acts for the person through a surface. Android reports these as events
 and does nothing by itself:
@@ -75,6 +85,16 @@ a vision fallback. Before the copy it covers password, `cc-*`, `one-time-code` a
 sign-in fields, host-supplied selectors and every frame the page cannot read; it removes
 the covers right after and paints over host chrome. It rejects rather than return an
 image it could not mask.
+
+Android `observeHistory` exposes adjacent same-origin destinations with opaque,
+short-lived references. `navigateHistory` consumes a reference once and dispatches
+through the native-owned isolated world: Android's ordinary Back/Forward API can
+skip history entries. Hidden, paused, replaced or changed history refuses the
+reference. Navigation can retire the reply; `UNCERTAIN_OUTCOME` requires page
+readback, never replay. A dispatch receipt does not prove arrival or task success.
+These are host primitives, not agent authorization: the caller must compose task
+scope, origin approval, preview and durable effect recording. Cross-origin history
+and iOS are not supported by these methods. Form POST resubmission is refused.
 
 Script popups never open. `getSurfaceState` also returns `title`, `canGoBack`,
 `canGoForward`, `progress`, `pageError` and `textZoom`; `setTextZoom` sets the page

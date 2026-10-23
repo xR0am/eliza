@@ -43,6 +43,29 @@ export function installControlChannel(pageCommand, pageGuidance) {
     // Consume before execution. A lost reply must never replay an effect.
     sequence = request.sequence;
     const command = request.command;
+    // Only the native observed-history entrypoint can send this command. The
+    // public controlPage whitelist excludes it; no page/model offset is accepted.
+    if (command?.subaction === "native-history") {
+      if (
+        ![-1, 1].includes(command.offset) ||
+        command.url !== location.href ||
+        command.length !== history.length
+      ) {
+        reject("STALE_REF", "The observed history changed before dispatch.");
+        return;
+      }
+      try {
+        pageGuidance({ kind: "hide" });
+        History.prototype.go.call(history, command.offset);
+        reply({ dispatched: true, requiresReadback: true });
+      } catch {
+        reject(
+          "UNCERTAIN_OUTCOME",
+          "Read the page before continuing after history navigation.",
+        );
+      }
+      return;
+    }
     if (command?.subaction === "guide") {
       const guidance = command.guidance;
       if (
@@ -92,7 +115,16 @@ export function installControlChannel(pageCommand, pageGuidance) {
               target &&
               typeof target.selector === "string" &&
               ["click", "fill", "select", "scroll"].includes(target.action),
-          )))
+          ) ||
+          // The host spent this grant for one commit of the reviewed control.
+          (policy.commitGrant !== undefined &&
+            (!policy.commitGrant ||
+              typeof policy.commitGrant !== "object" ||
+              typeof policy.commitGrant.grantId !== "string" ||
+              !Number.isSafeInteger(policy.commitGrant.expiresAt) ||
+              typeof policy.expectedSelector !== "string" ||
+              policy.commitGrant.selector !== policy.expectedSelector ||
+              !["click", "fill", "select"].includes(command.subaction)))))
     ) {
       reject(
         "INVALID_REQUEST",
