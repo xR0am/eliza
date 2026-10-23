@@ -46,7 +46,7 @@
  *
  * `pickDefaultVoiceProvider` gives the platform/mode *preference*.
  * `resolveDefaultTtsProvider` (below) turns that preference into a concrete
- * provider against the runtime's actual capabilities — Kokoro on-device when
+ * provider against the runtime's actual capabilities — Paradee on-device when
  * staged, else Kokoro via Eliza Cloud when a session exists, else ElevenLabs
  * (key-gated), else browser SpeechSynthesis — so a default is never pinned to a
  * backend that will fail on the first utterance.
@@ -104,7 +104,7 @@ export function pickDefaultVoiceProvider(
 
 /**
  * Runtime capabilities observed at resolution time. `pickDefaultVoiceProvider`
- * expresses the *preferred* Kokoro path per platform/mode; this fills in whether
+ * expresses the *preferred* speech path per platform/mode; this fills in whether
  * that path can actually run right now, so the default can fall through instead
  * of pinning a backend that will 503/401 on the first utterance.
  */
@@ -141,13 +141,13 @@ export const BROWSER_TTS_PROVIDER: VoiceProvider = "robot-voice";
  * and what the runtime can actually do right now. This is the "no explicit user
  * choice" chain the product wants for bidirectional voice:
  *
- *   Kokoro on-device (`local-inference`, when its engine is staged)
+ *   Paradee v1.1 on-device (`local-inference`, when its engine is staged)
  *     → Kokoro via Eliza Cloud (`eliza-cloud`, when a cloud session exists)
  *     → ElevenLabs (`elevenlabs`, only if a key is configured)
  *     → browser SpeechSynthesis ({@link BROWSER_TTS_PROVIDER}).
  *
  * The preferred entry point (from {@link pickDefaultVoiceProvider}) only orders
- * the two Kokoro transports for this platform — on desktop/mobile-local the
+ * the two speech transports for this platform — on desktop/mobile-local the
  * on-device path is tried first; on web/cloud the cloud path is. Whatever the
  * preference, an unavailable backend is skipped, never selected-then-failed.
  * ElevenLabs is deliberately last and key-gated: it is slow and never a silent
@@ -155,7 +155,7 @@ export const BROWSER_TTS_PROVIDER: VoiceProvider = "robot-voice";
  * returns a provider that cannot run.
  *
  * Native mobile is not modeled here: `useVoiceChat` unconditionally routes the
- * reply through the native TalkMode engine (on-device Kokoro) on a Capacitor
+ * reply through the native TalkMode engine (on-device Paradee) on a Capacitor
  * platform, ahead of this web dispatch, so the on-device voice is used there
  * regardless of the resolved provider value.
  */
@@ -165,7 +165,7 @@ export function resolveDefaultTtsProvider(
 ): VoiceProvider {
   const preferred = pickDefaultVoiceProvider(input).tts;
 
-  // On-device Kokoro first when the platform/mode preference chose it AND the
+  // On-device Paradee first when the platform/mode preference chose it AND the
   // engine is actually staged. A desktop/mobile-local box whose voice bundle
   // isn't downloaded yet skips this and falls to the cloud path below.
   if (preferred === "local-inference" && capabilities.localInferenceTtsReady) {
@@ -174,12 +174,12 @@ export function resolveDefaultTtsProvider(
 
   // Eliza Cloud Kokoro when a linked cloud session with a working TTS proxy
   // exists. This is the default on web/cloud, and the fallback when on-device
-  // Kokoro isn't staged.
+  // Paradee isn't staged.
   if (capabilities.cloudVoiceAvailable) {
     return "eliza-cloud";
   }
 
-  // On-device Kokoro is still preferable to ElevenLabs/browser even when the
+  // On-device Paradee is still preferable to ElevenLabs/browser even when the
   // platform preferred the cloud path but no cloud session is available — a
   // staged local voice beats a key-gated remote one.
   if (capabilities.localInferenceTtsReady) {
@@ -187,7 +187,7 @@ export function resolveDefaultTtsProvider(
   }
 
   // ElevenLabs only with a configured key. Never a silent default (slow + gated)
-  // — reached only when no Kokoro transport is available.
+  // — reached only when no on-device or cloud speech transport is available.
   if (capabilities.elevenLabsKeyConfigured) {
     return "elevenlabs";
   }
