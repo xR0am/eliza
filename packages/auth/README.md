@@ -206,11 +206,19 @@ The container owns no durable files. PostgreSQL remains the authoritative store
 on Railway; use its external connection endpoint from Cloudflare. Retire only
 the application services after cutover, preserving the database services.
 
+Redis can remain on Railway. Use its authenticated external `rediss://` endpoint
+as `REDIS_URL`. For a private certificate authority, set `STEWARD_REDIS_TLS_CA`
+to its PEM certificate on the login Worker. Both shared-state and token-revocation
+connections use this trust setting and still verify the server certificate and
+hostname. No certificate file or custom image is needed. Keep the existing Redis
+database and credentials; leave the optional native state backend URLs unset.
+
 The edge overwrites forwarding headers and the container trusts one proxy hop.
 Cloud's proxy signs its edge-observed client IP with the existing shared
 `STEWARD_REQUEST_SIGNING_SECRET`; deploy this proxy before routing cross-zone
 traffic to login, preserving independent client rate-limit buckets.
-Set `STEWARD_RATE_LIMIT_URL` to the login Worker's `/internal/rate-limit` URL and
+To move rate limits from Redis, set `STEWARD_RATE_LIMIT_URL` to the login Worker's
+`/internal/rate-limit` URL and
 set the same `STEWARD_RATE_LIMIT_TOKEN` secret on that Worker. Vault and proxy
 sliding-window admission then uses its durable SQLite counter store. Missing or
 failed admission never retries against Redis; transfer existing counters before
