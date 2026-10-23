@@ -124,6 +124,18 @@ export function installControlChannel(pageCommand, pageGuidance) {
               !Number.isSafeInteger(policy.commitGrant.expiresAt) ||
               typeof policy.expectedSelector !== "string" ||
               policy.commitGrant.selector !== policy.expectedSelector ||
+              // The bridge checked these; a malformed one is never ignored.
+              (policy.commitGrant.requestTarget !== undefined &&
+                (!policy.commitGrant.requestTarget ||
+                  typeof policy.commitGrant.requestTarget !== "object" ||
+                  typeof (
+                    policy.commitGrant.requestTarget.url ??
+                    policy.commitGrant.requestTarget.path
+                  ) !== "string" ||
+                  typeof policy.commitGrant.requestTarget.method !==
+                    "string")) ||
+              (policy.commitGrant.formHash !== undefined &&
+                !/^[0-9a-f]{64}$/.test(policy.commitGrant.formHash)) ||
               !["click", "fill", "select"].includes(command.subaction)))))
     ) {
       reject(

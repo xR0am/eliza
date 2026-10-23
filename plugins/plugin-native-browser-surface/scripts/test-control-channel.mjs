@@ -62,6 +62,7 @@ const sourceCommit = execFileSync(
 const runtimeModule = join(certificates, "task-runtime.mjs");
 buildTaskRuntime(runtimeModule, { sourceRoot, sourceCommit });
 const {
+  commitFormHash,
   NativeSurfaceBrowserTarget,
   NativeTaskActuator,
   InteractiveTaskRuntime,
@@ -1120,6 +1121,7 @@ try {
   assert.deepEqual(observed.frames[0].consentedCommit, {
     grantId: "pay-yes",
     kind: "submit",
+    formHash: commitFormHash([]),
   });
   assert.equal(observed.frames[0].effectViolation, undefined);
   // The spent grant cannot commit again, even for a fresh observation.
@@ -1154,7 +1156,7 @@ try {
       );
     });
   });
-  const sendClick = async (epoch, onclick) => {
+  const sendClick = async (epoch, onclick, grantFields = {}) => {
     await page.evaluate((script) => {
       document.querySelector("#send").setAttribute("onclick", script);
     }, onclick);
@@ -1203,6 +1205,7 @@ try {
             selector: "#send",
             subaction: "click",
             expiresAt: Date.now() + 30000,
+            ...grantFields,
           },
         })
       ).value.result.dispatched,
@@ -1231,13 +1234,18 @@ try {
   // default button and overrides nothing, is consented.
   sent = await sendClick(9, "event.preventDefault();this.form.requestSubmit()");
   assert.equal(sent.effectViolation, undefined);
-  assert.deepEqual(sent.consentedCommit, { grantId: "send-9", kind: "submit" });
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-9",
+    kind: "submit",
+    formHash: commitFormHash([]),
+  });
   // The granted submitter itself is consented.
   sent = await sendClick(10, "");
   assert.equal(sent.effectViolation, undefined);
   assert.deepEqual(sent.consentedCommit, {
     grantId: "send-10",
     kind: "submit",
+    formHash: commitFormHash([]),
   });
   assert.deepEqual(
     posted.filter((path) => path !== "/paid"),
@@ -1256,6 +1264,87 @@ try {
   assert.ok(!posted.includes("/exfil"));
   console.log(
     "PASS: a consented commit is only the granted submitter's own submit; another submitter, form.submit() and an overriding implicit submit are refused",
+  );
+  // A consented commit is bound to its exact request and form contents.
+  await page.evaluate(() => {
+    const send = document.querySelector("#send");
+    send.removeAttribute("formaction");
+    send.insertAdjacentHTML(
+      "beforebegin",
+      '<input name="amount" aria-label="Amount" value="12">',
+    );
+  });
+  const reviewed = commitFormHash([["amount", "12"]]);
+  // A same-site fetch to another path than the form's action is not the
+  // granted request: it is reported, with no consented commit.
+  sent = await sendClick(
+    12,
+    "event.preventDefault();fetch('/exfil-fetch',{method:'POST'})",
+  );
+  assert.equal(sent.effectViolation, "request");
+  assert.equal(sent.consentedCommit, undefined);
+  // ... nor is a request the grant declares a target for, to another path.
+  sent = await sendClick(
+    13,
+    "event.preventDefault();fetch('/exfil-fetch',{method:'POST'})",
+    { requestTarget: { path: "/charge", method: "POST" } },
+  );
+  assert.equal(sent.effectViolation, "request");
+  assert.equal(sent.consentedCommit, undefined);
+  // The declared request target is consented.
+  sent = await sendClick(
+    14,
+    "event.preventDefault();fetch('/charge',{method:'POST'})",
+    { requestTarget: { path: "/charge", method: "POST" } },
+  );
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-14",
+    kind: "request",
+  });
+  // Without a formHash the page reports the hash of the form data sent, and
+  // it equals the host helper's for the same fields.
+  sent = await sendClick(15, "");
+  assert.equal(sent.effectViolation, undefined);
+  assert.equal(sent.consentedCommit.formHash, reviewed);
+  // A matching formHash is consented.
+  sent = await sendClick(16, "", { formHash: reviewed });
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-16",
+    kind: "submit",
+    formHash: reviewed,
+  });
+  const transfers = posted.filter((path) => path === "/transfer").length;
+  // A field value changed after her yes, or an added hidden input, is refused.
+  sent = await sendClick(17, "this.form.amount.value='9999'", {
+    formHash: reviewed,
+  });
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  await page.evaluate(() => {
+    document.querySelector("#transfer").amount.value = "12";
+  });
+  sent = await sendClick(
+    18,
+    "const extra=document.createElement('input');extra.type='hidden';extra.name='to';extra.value='mallory';this.form.append(extra)",
+    { formHash: reviewed },
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  assert.equal(posted.filter((path) => path === "/transfer").length, transfers);
+  await page.evaluate(() =>
+    document.querySelector('#transfer input[name="to"]').remove(),
+  );
+  // A script form.submit() into a new window is reported.
+  sent = await sendClick(
+    19,
+    "event.preventDefault();this.form.target='_blank';this.form.submit();this.form.target=''",
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  console.log(
+    "PASS: a consented commit is bound to its request and form contents; another path, a changed field, an added hidden input and a form.submit() into a new window are refused or reported, and the host and page form hashes agree",
   );
   await taskHandler.close();
   console.log(

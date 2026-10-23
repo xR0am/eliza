@@ -901,6 +901,7 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
             consentedCommit: {
               grantId: consented.grantId,
               kind: consented.kind,
+              ...(consented.formHash ? { formHash: consented.formHash } : {}),
             },
           }
         : {}),
@@ -1113,13 +1114,21 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     // With a commit grant, the one commit the person said yes to goes ahead,
     // once: either the submit the granted control itself sends (and the page
     // load it sends) to the page's origin, or, when no such page load is under
-    // way, one own-site request (a script form or a button that sends with
-    // fetch). Snapshots report it as a consented commit. A submit from another
-    // submitter of the same form, a request that differs from the granted
-    // control's (action, method, target or encoding), a script form.submit(),
-    // a second submit, another form, another origin, any further own-site
-    // request and every other page change, same-document address changes
-    // included, are still stopped or recorded as above.
+    // way, the one own-site request the grant names (a script form or a button
+    // that sends with fetch). That request is the grant's requestTarget or,
+    // without one, the granted submit button's form action; a control that is
+    // no submit button and names no requestTarget has none. Its URL must be
+    // equal; its method only where the page can see it (a beacon is a POST;
+    // fetch and XHR methods are not observable here). A grant with a formHash
+    // consents a submit only when the form data actually sent hashes the
+    // same, and a request only after such a submit. Snapshots report it as a
+    // consented commit, with the hash of the form data sent. A submit from
+    // another submitter of the same form, a request that differs from the
+    // granted control's (action, method, target or encoding), changed or
+    // added form data, a script form.submit() (also one into another window,
+    // which is reported), a second submit, another form, another origin, any
+    // other own-site request and every other page change, same-document
+    // address changes included, are still stopped or recorded as above.
     globalThis[watchKey]?.stop();
     const anchor =
       command.subaction === "click" ? node.closest("a[href]") : null;
@@ -1177,6 +1186,144 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         (element) => element.form === grantedForm && submitControl(element),
       ) === node &&
       !overrides.some((attribute) => node.hasAttribute(attribute));
+    // The one request the grant consents besides its form's page load. A
+    // declared target is matched exactly; a GET form's action by origin and
+    // path, since the submit replaces its query.
+    const declared = grant?.requestTarget ?? null;
+    const expectedRequest = (() => {
+      try {
+        if (declared)
+          return {
+            url: new URL(declared.url ?? declared.path, location.origin).href,
+            method: declared.method,
+            exact: true,
+          };
+        if (grantedRequest === null || grantedRequest.method === "dialog")
+          return null;
+        return {
+          url: new URL(grantedRequest.action, location.href).href,
+          method: grantedRequest.method.toUpperCase(),
+          exact: grantedRequest.method !== "get",
+        };
+      } catch {
+        return null;
+      }
+    })();
+    const sameUrl = (url, expected) => {
+      try {
+        const a = new URL(url, location.href);
+        const b = new URL(expected.url);
+        a.hash = "";
+        b.hash = "";
+        return expected.exact
+          ? a.href === b.href
+          : a.origin === b.origin && a.pathname === b.pathname;
+      } catch {
+        return false;
+      }
+    };
+    // Keep identical to commitFormHash in plugin-browser's
+    // commit-form-hash.ts: hosts compute a grant's formHash with it.
+    const commitFormHash = (entries) => {
+      const pairs = [];
+      const normal = (text) => text.replace(/\r\n?/g, "\n").normalize("NFC");
+      for (const [name, value] of entries)
+        if (typeof value === "string")
+          pairs.push([normal(name), normal(value)]);
+      const bytes = new TextEncoder().encode(
+        `eliza-commit-form-v1\n${JSON.stringify(pairs)}`,
+      );
+      const k = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+      ];
+      const hash = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
+        0x1f83d9ab, 0x5be0cd19,
+      ];
+      const padded = new Uint8Array(((bytes.length + 72) >> 6) << 6);
+      padded.set(bytes);
+      padded[bytes.length] = 0x80;
+      const view = new DataView(padded.buffer);
+      view.setUint32(
+        padded.length - 8,
+        Math.floor((bytes.length * 8) / 2 ** 32),
+      );
+      view.setUint32(padded.length - 4, (bytes.length * 8) >>> 0);
+      const w = new Uint32Array(64);
+      const rotate = (x, n) => (x >>> n) | (x << (32 - n));
+      for (let offset = 0; offset < padded.length; offset += 64) {
+        for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4);
+        for (let i = 16; i < 64; i++)
+          w[i] =
+            w[i - 16] +
+            (rotate(w[i - 15], 7) ^ rotate(w[i - 15], 18) ^ (w[i - 15] >>> 3)) +
+            w[i - 7] +
+            (rotate(w[i - 2], 17) ^ rotate(w[i - 2], 19) ^ (w[i - 2] >>> 10));
+        let [a, b, c, d, e, f, g, h] = hash;
+        for (let i = 0; i < 64; i++) {
+          const t1 =
+            (h +
+              (rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25)) +
+              ((e & f) ^ (~e & g)) +
+              k[i] +
+              w[i]) |
+            0;
+          const t2 =
+            ((rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22)) +
+              ((a & b) ^ (a & c) ^ (b & c))) |
+            0;
+          h = g;
+          g = f;
+          f = e;
+          e = (d + t1) | 0;
+          d = c;
+          c = b;
+          b = a;
+          a = (t1 + t2) | 0;
+        }
+        [a, b, c, d, e, f, g, h].forEach((value, i) => {
+          hash[i] = (hash[i] + value) | 0;
+        });
+      }
+      return hash
+        .map((value) => (value >>> 0).toString(16).padStart(8, "0"))
+        .join("");
+    };
+    // Our own FormData read fires the form's formdata event; it is no submit.
+    let reading = false;
+    const formDataHash = (form, submitter) => {
+      reading = true;
+      try {
+        let data;
+        try {
+          data = new FormData(form, submitter);
+        } catch {
+          data = new FormData(form);
+          if (submitter?.name) data.append(submitter.name, submitter.value);
+        }
+        return commitFormHash(data);
+      } catch {
+        return null;
+      } finally {
+        reading = false;
+      }
+    };
+    // The hash of the form data sent is reported unless the granted form has a
+    // password, code or card field and the host did not name the hash itself.
+    const reportHash =
+      grant?.formHash !== undefined ||
+      (grantedForm !== null &&
+        ![...grantedForm.elements].some((element) => sensitivity(element)));
     // submits: 0 until the granted control's submit event; its page load may
     // then follow once (pending, to action by method). spent: the one commit
     // went through.
@@ -1189,6 +1336,8 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
           method: "",
           implicit: false,
           spent: false,
+          formHash: null,
+          formMatched: false,
         }
       : null;
     const consentTo = (kind) => {
@@ -1197,6 +1346,9 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         kind,
         scope: policy.guidanceScope,
       };
+      if (reportHash && consent.formHash) {
+        watch.consented.formHash = consent.formHash;
+      }
     };
     const sameOrigin = (url) => {
       try {
@@ -1294,14 +1446,23 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     };
     window.addEventListener("click", activate, options);
     window.addEventListener("keydown", activate, options);
+    // The last submit event, so the form data it sends is not taken for a
+    // script form.submit(), which sends no submit event.
+    let lastSubmit = null;
     window.addEventListener(
       "submit",
       (event) => {
+        lastSubmit = event;
         if (personForms.has(event.target)) return;
         const form = event.target;
         const submitter = event.submitter ?? null;
         const sent =
           form instanceof HTMLFormElement ? requestOf(submitter, form) : null;
+        // The form data this submit sends, as the person saw it or not.
+        const sentHash =
+          consent && form === grantedForm
+            ? formDataHash(form, submitter)
+            : null;
         if (
           consent &&
           !consent.spent &&
@@ -1312,13 +1473,16 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
           sameRequest(sent, grantedRequest) &&
           sent.method !== "dialog" &&
           sameOrigin(sent.action) &&
-          ["", "_self"].includes(sent.target)
+          ["", "_self"].includes(sent.target) &&
+          (grant.formHash === undefined || sentHash === grant.formHash)
         ) {
           consent.submits = 1;
           consent.pending = true;
           consent.action = sent.action;
           consent.method = sent.method;
           consent.implicit = submitter === null;
+          consent.formHash = sentHash;
+          consent.formMatched = grant.formHash !== undefined;
           consentTo("submit");
           // A page handler that cancels this submit sends no page load, so
           // none may follow it later; one own-site request still may.
@@ -1331,11 +1495,42 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
       },
       options,
     );
+    // A script form.submit() sends no submit event. Into this window its page
+    // load is stopped below; into another window or frame (target=_blank) it
+    // is not seen there, so its form data being read is reported here.
+    window.addEventListener(
+      "formdata",
+      (event) => {
+        if (reading) return;
+        const form = event.target;
+        const submitted =
+          lastSubmit?.target === form && !lastSubmit.defaultPrevented;
+        lastSubmit = null;
+        if (
+          submitted ||
+          !(form instanceof HTMLFormElement) ||
+          personForms.has(form) ||
+          byPerson(performance.now()) ||
+          ["", "_self", "_top", "_parent"].includes(
+            form.target.trim().toLowerCase(),
+          )
+        )
+          return;
+        record("submit");
+      },
+      options,
+    );
     globalThis.navigation?.addEventListener(
       "navigate",
       (event) => {
+        // Chromium marks the page load of a script click on a submit button
+        // as user initiated; for a form submission only her own press counts.
+        const formLoad =
+          event.formData != null ||
+          event.sourceElement instanceof HTMLFormElement ||
+          event.sourceElement?.form !== undefined;
         if (
-          event.userInitiated ||
+          (event.userInitiated && (!formLoad || byPerson(performance.now()))) ||
           (anchor &&
             !event.formData &&
             event.destination.url === anchor.href) ||
@@ -1366,13 +1561,40 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
           (consent.method === "post"
             ? event.formData != null
             : event.formData == null) &&
-          (fromGranted || !("sourceElement" in event))
+          (fromGranted || !("sourceElement" in event)) &&
+          // A declared request target binds the page load too.
+          (!declared ||
+            (samePath(event.destination.url, expectedRequest?.url ?? "") &&
+              declared.method === consent.method.toUpperCase()))
         ) {
-          consent.submits = 1;
+          // The form data this page load actually sends: what page handlers
+          // left in it after the submit event, or a GET submit's query.
+          let loaded = null;
+          try {
+            loaded = commitFormHash(
+              event.formData ?? new URL(event.destination.url).searchParams,
+            );
+          } catch {}
+          if (grant.formHash === undefined || loaded === grant.formHash) {
+            consent.submits = 1;
+            consent.pending = false;
+            consent.spent = true;
+            consent.formHash = loaded;
+            consentTo("submit");
+            if (reportHash && loaded) watch.consented.formHash = loaded;
+            return;
+          }
+        }
+        // The granted submit's own page load is not the one she said yes to
+        // (its form data changed after the submit event): no receipt.
+        if (
+          consent?.pending &&
+          !consent.spent &&
+          (fromGranted || (grantedForm !== null && source === grantedForm))
+        ) {
           consent.pending = false;
           consent.spent = true;
-          consentTo("submit");
-          return;
+          watch.consented = null;
         }
         report(event.formData ? "submit" : "navigation", event);
       },
@@ -1409,9 +1631,19 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
             continue;
           }
           if (sameSite(host)) {
-            // One own-site request may carry the granted commit when no
-            // granted page load is under way or done; every other is recorded.
-            if (consent && !consent.spent && !consent.pending) {
+            // The granted request may carry the commit when no granted page
+            // load is under way or done; every other is recorded. Under a
+            // formHash it follows a submit whose form data matched.
+            if (
+              consent &&
+              !consent.spent &&
+              !consent.pending &&
+              expectedRequest !== null &&
+              sameUrl(entry.name, expectedRequest) &&
+              (entry.initiatorType !== "beacon" ||
+                expectedRequest.method === "POST") &&
+              (grant.formHash === undefined || consent.formMatched)
+            ) {
               consent.spent = true;
               consentTo("request");
               continue;

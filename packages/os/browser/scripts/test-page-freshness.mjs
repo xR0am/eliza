@@ -591,6 +591,14 @@ try {
   cases.push(
     "observed document and nested scrolling, viewport guidance, manual-scroll freshness and end-of-region refusal",
   );
+  // The last scroll's own scroll event fires on a later frame; let it pass
+  // before the effect handler is added, or it changes the address early.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   await page.evaluate(() =>
     document
       .querySelector("#region")

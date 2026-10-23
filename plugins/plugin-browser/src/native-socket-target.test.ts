@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,10 +8,12 @@ import { BrowserDispatchFailure } from "./dispatch-types";
 import {
   androidNativeBrowserSocketPath,
   COMMIT_GRANT_MAX_MS,
+  commitFormHash,
   currentPageFromTabs,
   currentPageTitle,
   NativeSocketBrowserTarget,
   validCommitGrant,
+  validCommitRequestTarget,
 } from "./native-socket-target";
 
 it.skipIf(process.platform !== "linux")(
@@ -1246,5 +1249,105 @@ describe("validCommitGrant", () => {
         { ...expected, subaction: "click" },
       ),
     ).toBe(false);
+  });
+  it("binds a commit to an optional request target and form hash", () => {
+    const click = { ...grant, subaction: "click", valueHash: undefined };
+    delete (click as { valueHash?: string }).valueHash;
+    const clickExpected = { ...expected, subaction: "click" };
+    // Both fields are optional, so a grant without them is still valid.
+    expect(validCommitGrant(click, clickExpected)).toBe(true);
+    for (const fields of [
+      { requestTarget: { path: "/api/pay", method: "POST" } },
+      { requestTarget: { path: "/api/pay?id=7", method: "GET" } },
+      {
+        requestTarget: { url: "https://api.example.test/pay", method: "PUT" },
+      },
+      { formHash: "b".repeat(64) },
+    ])
+      expect(validCommitGrant({ ...click, ...fields }, clickExpected)).toBe(
+        true,
+      );
+    for (const requestTarget of [
+      null,
+      "/api/pay",
+      { path: "/api/pay" },
+      { path: "/api/pay", method: "post" },
+      { path: "/api/pay", method: "HEAD" },
+      { path: "api/pay", method: "POST" },
+      { path: "//evil.test/pay", method: "POST" },
+      { path: "/a#b", method: "POST" },
+      { path: "/a b", method: "POST" },
+      { url: "http://example.test/pay", method: "POST" },
+      { url: "https://user:pw@example.test/pay", method: "POST" },
+      { url: "https://example.test/pay#x", method: "POST" },
+      { url: "not a url", method: "POST" },
+      { url: "https://example.test/pay", path: "/pay", method: "POST" },
+      { path: "/pay", method: "POST", extra: 1 },
+    ]) {
+      expect(validCommitRequestTarget(requestTarget)).toBe(false);
+      expect(validCommitGrant({ ...click, requestTarget }, clickExpected)).toBe(
+        false,
+      );
+    }
+    for (const formHash of ["", "B".repeat(64), "b".repeat(63), 1])
+      expect(validCommitGrant({ ...click, formHash }, clickExpected)).toBe(
+        false,
+      );
+  });
+});
+
+describe("commitFormHash", () => {
+  const reference = (pairs: Array<[string, string]>) =>
+    createHash("sha256")
+      .update(`eliza-commit-form-v1\n${JSON.stringify(pairs)}`)
+      .digest("hex");
+  it("is SHA-256 of the versioned, normalized name/value pairs in order", () => {
+    expect(commitFormHash([])).toBe(reference([]));
+    expect(
+      commitFormHash([
+        ["payee", "Zoe\u0301"],
+        ["note", "rent\r\nOctober\rpaid"],
+        ["receipt", new Blob(["x"])],
+        ["go", "yes"],
+      ]),
+    ).toBe(
+      reference([
+        ["payee", "Zo\u00e9"],
+        ["note", "rent\nOctober\npaid"],
+        ["go", "yes"],
+      ]),
+    );
+    // Order, names and values all count.
+    expect(
+      commitFormHash([
+        ["a", "1"],
+        ["b", "2"],
+      ]),
+    ).not.toBe(
+      commitFormHash([
+        ["b", "2"],
+        ["a", "1"],
+      ]),
+    );
+    expect(commitFormHash([["a", "1"]])).not.toBe(
+      commitFormHash([
+        ["a", "1"],
+        ["to", "mallory"],
+      ]),
+    );
+    // Every message length, across SHA-256 block boundaries, and non-ASCII.
+    for (let length = 0; length < 200; length++) {
+      const pairs: Array<[string, string]> = [
+        ["v", `${"x".repeat(length)}é😀`],
+      ];
+      expect(commitFormHash(pairs)).toBe(reference(pairs));
+    }
+    // A FormData or URLSearchParams iterates the same pairs.
+    const data = new FormData();
+    data.append("amount", "12");
+    data.append("go", "yes");
+    expect(commitFormHash(data as unknown as Iterable<[string, string]>)).toBe(
+      commitFormHash(new URLSearchParams("amount=12&go=yes")),
+    );
   });
 });

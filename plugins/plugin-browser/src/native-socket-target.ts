@@ -22,6 +22,8 @@ import type {
   BrowserWorkspaceCommandResult,
 } from "./workspace/browser-workspace-types.js";
 
+export { commitFormHash } from "./commit-form-hash.js";
+
 /** Label tone: the person acts, the assistant acts, an offer, or a host-confirmed success. */
 export type NativeTaskGuideTone =
   | "instruction"
@@ -141,8 +143,77 @@ export interface NativeCommitGrant {
    * Required for fill and select; not allowed on click.
    */
   valueHash?: string;
+  /**
+   * The one request this commit may send that is not the granted form's own
+   * page load: a script ("Pay" posts with fetch), or a form whose page
+   * handler sends it with fetch. `url` is an absolute https URL; `path` is
+   * a path (and optional query) on the page's origin. Without it, the
+   * granted submit button's form action and method are the only request
+   * consented; for any other control no request is, and one is reported as
+   * an effect violation. A page load of the granted form must match it too.
+   * Fetch, XHR and beacon methods are not observable from the page, so the
+   * page enforces the URL (and POST for a beacon); the method is still bound
+   * into the grant the host issued.
+   */
+  requestTarget?: NativeCommitRequestTarget;
+  /**
+   * `commitFormHash` of the form data the host showed the person, in the
+   * order the form sends it. The page consents a submit only when the
+   * actual submission's form data (the submitter's name/value included)
+   * hashes the same, so a field a script changed or added after her yes
+   * stops it. Hosts doing money commits MUST send it. Without it, the
+   * consented commit reports the submitted hash (`consentedCommit.formHash`,
+   * left out for a form with a password, code or card field) to compare
+   * after the fact.
+   */
+  formHash?: string;
   /** Epoch milliseconds, at most COMMIT_GRANT_MAX_MS ahead at use. */
   expiresAt: number;
+}
+/** The request a commit grant expects; exactly one of `url` and `path`. */
+export type NativeCommitRequestTarget =
+  | { url: string; path?: never; method: NativeCommitRequestMethod }
+  | { path: string; url?: never; method: NativeCommitRequestMethod };
+export type NativeCommitRequestMethod =
+  | "GET"
+  | "POST"
+  | "PUT"
+  | "PATCH"
+  | "DELETE";
+/** Shape check for a grant's `requestTarget`; the bridge applies the same. */
+export function validCommitRequestTarget(
+  target: unknown,
+): target is NativeCommitRequestTarget {
+  if (!target || typeof target !== "object" || Array.isArray(target))
+    return false;
+  const value = target as Record<string, unknown>;
+  const keys = Object.keys(value);
+  if (
+    !keys.every((key) => ["url", "path", "method"].includes(key)) ||
+    !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(
+      value.method as string,
+    ) ||
+    "url" in value === "path" in value
+  )
+    return false;
+  if ("path" in value)
+    return (
+      typeof value.path === "string" &&
+      value.path.length <= 2048 &&
+      /^\/(?!\/)[^\s#\\]*$/.test(value.path)
+    );
+  if (typeof value.url !== "string" || value.url.length > 2048) return false;
+  try {
+    const url = new URL(value.url);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !value.url.includes("#")
+    );
+  } catch {
+    return false;
+  }
 }
 /** Shape and scope checks shared by the trusted transports. */
 export function validCommitGrant(
@@ -170,6 +241,8 @@ export function validCommitGrant(
         "selector",
         "subaction",
         "valueHash",
+        "requestTarget",
+        "formHash",
         "expiresAt",
       ].includes(key),
     ) &&
@@ -191,7 +264,12 @@ export function validCommitGrant(
     (value.subaction === "click"
       ? value.valueHash === undefined
       : typeof value.valueHash === "string" &&
-        /^[0-9a-f]{64}$/.test(value.valueHash))
+        /^[0-9a-f]{64}$/.test(value.valueHash)) &&
+    (value.requestTarget === undefined ||
+      validCommitRequestTarget(value.requestTarget)) &&
+    (value.formHash === undefined ||
+      (typeof value.formHash === "string" &&
+        /^[0-9a-f]{64}$/.test(value.formHash)))
   );
 }
 interface NativeReply {

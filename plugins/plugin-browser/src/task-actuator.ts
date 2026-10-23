@@ -695,11 +695,17 @@ export class NativeTaskActuator {
     // A commit the browser let through must be the one this grant named.
     // The page's report then reaches verify and evidence with the snapshot.
     const consented = after.consentedCommit as
-      | { grantId?: unknown; kind?: unknown }
+      | { grantId?: unknown; kind?: unknown; formHash?: unknown }
       | undefined;
     if (
       consented !== undefined &&
-      (!commitGrant || consented.grantId !== commitGrant.grantId)
+      (!commitGrant ||
+        consented.grantId !== commitGrant.grantId ||
+        // The page refuses a submit whose form data differs; a report that
+        // still differs is not the commit the person said yes to.
+        (commitGrant.formHash !== undefined &&
+          consented.formHash !== undefined &&
+          consented.formHash !== commitGrant.formHash))
     )
       return { status: "unknown" };
     // Occupancy alone cannot verify a public fill: page handlers can replace it.
