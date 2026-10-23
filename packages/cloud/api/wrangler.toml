@@ -608,6 +608,26 @@ routes = [
 ]
 
 # Complete staging override: exports is inherited as one map, not merged.
+[env.staging.exports.AuthenticationState]
+type = "durable-object"
+storage = "sqlite"
+
+[env.staging.exports.HfEgressState]
+type = "durable-object"
+storage = "sqlite"
+
+[env.staging.exports.VoiceUsageState]
+type = "durable-object"
+storage = "sqlite"
+
+[env.staging.exports.RateLimitState]
+type = "durable-object"
+storage = "sqlite"
+
+[env.staging.exports.A2ATaskState]
+type = "durable-object"
+storage = "sqlite"
+
 [env.staging.exports.SharedRuntimeConversation]
 type = "durable-object"
 storage = "sqlite"
