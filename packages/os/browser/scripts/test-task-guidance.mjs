@@ -517,7 +517,9 @@ try {
   assert.equal(await pointerVisible(), false);
   const execute = api.scripting.executeScript;
   let delayedValidation = false;
+  let previewPolls = 0;
   api.scripting.executeScript = async (request) => {
+    if (request.args[0]?.kind === "action-status") previewPolls++;
     // Native bridge validation can take seconds on a loaded device. It must
     // not consume the time needed to show the preview and offer Cancel.
     if (
@@ -554,6 +556,11 @@ try {
   const approvedReply = await approvedAction.pending;
   assert.equal(delayedValidation, true);
   assert.equal(approvedReply.ok, true, JSON.stringify(approvedReply));
+  assert.ok(
+    previewPolls <= 25,
+    `One slow preview used ${previewPolls} readiness calls; it must leave room in a 100-call task budget`,
+  );
+  console.log(`Slow preview readiness calls: ${previewPolls}`);
   assert.equal(await page.evaluate(() => window.clicks), 1);
   assert.equal(await pointerVisible(), false);
   const slowCancelledAction = await startAction();
