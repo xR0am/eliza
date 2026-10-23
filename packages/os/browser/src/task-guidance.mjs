@@ -195,8 +195,9 @@ export function createTaskGuidance(
           await track(tabId, true);
           // Native validation and metadata round trips are not preview time.
           // Preserve the original authorization deadline while leaving room
-          // for cursor travel, visible dwell and cancellation after setup.
-          expiresAt = Math.min(Date.now() + 5000, policy.expiresAt);
+          // for slow native painting, cursor travel, visible dwell and Cancel.
+          // This wait never renews the original task authorization.
+          expiresAt = Math.min(Date.now() + 15000, policy.expiresAt);
           const shown = await inject(pageGuidance, [
             {
               kind: "show",
@@ -222,6 +223,7 @@ export function createTaskGuidance(
           ]);
           if (shown.accepted !== true) throw stale();
         });
+        let pollDelay = 50;
         while (Date.now() < expiresAt) {
           const status = await enqueue(tabId, () =>
             inject(pageGuidance, [
@@ -236,7 +238,15 @@ export function createTaskGuidance(
           );
           if (status.ready === true) return { actionId, current: valid };
           if (status.cancelled) throw stale();
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          // Slow painting must not spend the task budget on readiness checks.
+          // Keep Cancel responsive and never extend the authorization deadline.
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              Math.min(pollDelay, Math.max(0, expiresAt - Date.now())),
+            ),
+          );
+          pollDelay = Math.min(pollDelay * 2, 500);
         }
         throw stale();
       } catch (error) {
