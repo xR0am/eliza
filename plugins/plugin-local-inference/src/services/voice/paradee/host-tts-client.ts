@@ -134,8 +134,8 @@ export class HostTtsClient {
 	/** Release native memory after admitted requests finish; the next use reloads. */
 	unload(): Promise<void> {
 		const release = async () => {
-			// A failed startup still needs its process retired.
-			await this.boot?.catch(() => undefined);
+			// A separate warm-up may still be starting. Kill it too; waiting
+			// for readiness would prevent reclaiming a stalled startup.
 			const child = this.child;
 			if (!child) return;
 			await new Promise<void>((resolve, reject) => {
