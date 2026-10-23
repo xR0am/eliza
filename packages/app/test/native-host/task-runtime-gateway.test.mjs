@@ -629,6 +629,33 @@ test("a host commit grant reaches the browser only for its exact action, and its
   assert.equal(committed.operations.at(-1).status, "succeeded");
   assert.equal(f.state.options.commitGrant.grantId, "yes:pay");
   assert.equal(f.state.options.expectedSelector, "#ordinary");
+  // A grant bound to a request and form contents reaches the browser with
+  // them; a consented commit reporting the same form hash is trusted.
+  const formHash = "d".repeat(64);
+  const requestTarget = { path: "/api/pay", method: "POST" };
+  issue = (task, proposal) => {
+    f.state.consented = {
+      grantId: `yes:${proposal.id}`,
+      kind: "submit",
+      formHash,
+    };
+    return grantFor(task, proposal, { requestTarget, formHash });
+  };
+  const bound = await f.click("bound", { expectedSelector: "#ordinary" });
+  assert.equal(bound.operations.at(-1).status, "succeeded");
+  assert.deepEqual(f.state.options.commitGrant.requestTarget, requestTarget);
+  assert.equal(f.state.options.commitGrant.formHash, formHash);
+  // A malformed request target never reaches the browser.
+  const before = f.state.effects;
+  issue = (task, proposal) =>
+    grantFor(task, proposal, { requestTarget: { path: "//evil.example" } });
+  assert.equal(
+    (
+      await f.click("bad-request-target", { expectedSelector: "#ordinary" })
+    ).operations.at(-1).evidenceRef,
+    "not-dispatched",
+  );
+  assert.equal(f.state.effects, before);
   // A consented commit the host did not grant for this action is unknown.
   issue = () => undefined;
   f.state.consented = { grantId: "yes:someone-else", kind: "submit" };
