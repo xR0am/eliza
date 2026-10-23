@@ -199,7 +199,7 @@ try {
     channel.request(
       { command, extra },
       {
-        effect: ["click", "fill", "select", "scroll"].includes(
+        effect: ["click", "fill", "select", "scroll", "follow"].includes(
           command.subaction,
         ),
       },
@@ -880,6 +880,23 @@ try {
     "6",
     "Cleanup failure must not hide the real effect",
   );
+  await page.evaluate(() => {
+    const a = document.createElement("a");
+    a.id = "planned-portal";
+    a.href = "#billing-portal";
+    a.textContent = "Payment portal";
+    a.onclick = () => {
+      throw new Error("Follow must not activate the click handler");
+    };
+    document.body.append(a);
+    window.addEventListener("hashchange", () => {
+      if (location.hash === "#billing-portal") {
+        const status = document.createElement("p");
+        status.textContent = "Portal opened";
+        document.body.append(status);
+      }
+    });
+  });
   // Drive the shared planned-action workflow through the real durable task
   // runtime, HTTP transport and DOM. The deterministic planner is not LLM proof.
   failCleanup = false;
@@ -904,15 +921,19 @@ try {
       return "German";
     },
     verify: async (proposal, before, after) =>
-      proposal.capability === "browser.select"
-        ? after.elements
-            .find((e) => e.targetSelector === "#language")
-            ?.options.find((o) => o.selected)?.label === "German"
+      proposal.capability === "browser.follow"
+        ? after.url === `${origin}/#billing-portal`
           ? "succeeded"
           : "unknown"
-        : before.text.includes("6") && after.text.includes("7")
-          ? "succeeded"
-          : "unknown",
+        : proposal.capability === "browser.select"
+          ? after.elements
+              .find((e) => e.targetSelector === "#language")
+              ?.options.find((o) => o.selected)?.label === "German"
+            ? "succeeded"
+            : "unknown"
+          : before.text.includes("6") && after.text.includes("7")
+            ? "succeeded"
+            : "unknown",
     recordEvidence: async () => "fixture-planned-action-readback",
   });
   runtime = new InteractiveTaskRuntime({
@@ -924,7 +945,7 @@ try {
     id: "planned-native-flow",
     goalRef: "select-and-click",
     allowedOrigins: [origin],
-    allowedCapabilities: ["browser.select", "browser.click"],
+    allowedCapabilities: ["browser.select", "browser.click", "browser.follow"],
     authorization: {
       decisionId: "planned-authority",
       policyRevision: "fixture-v1",
@@ -957,7 +978,15 @@ try {
           ref: view.controls.find((c) => c.label === "Increment").ref,
           message: "Increment once",
         };
-      return { status: "done", message: "Observed both requested changes" };
+      if (!view.text.includes("Portal opened"))
+        return {
+          status: "act",
+          kind: "agent-action",
+          action: "follow",
+          ref: view.controls.find((c) => c.label === "Payment portal").ref,
+          message: "Open the payment portal",
+        };
+      return { status: "done", message: "Observed all requested changes" };
     },
   });
   try {
@@ -1031,11 +1060,18 @@ try {
     );
     assert.equal(decision.kind, "agent-action");
     decision = await workflow.executeAction(decision.offerKey);
-    assert.equal(decision.kind, "done");
+    assert.equal(decision.kind, "agent-action");
     assert.equal(await page.$eval("output", (n) => n.textContent), "7");
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(
+      decision.kind,
+      "done",
+      JSON.stringify({ decision, task: runtime.get(plannedTask.id) }),
+    );
+    assert.equal(page.url(), `${origin}/#billing-portal`);
     assert.deepEqual(
       runtime.get(plannedTask.id).operations.map((o) => o.status),
-      ["succeeded", "succeeded"],
+      ["succeeded", "succeeded", "succeeded"],
     );
   } finally {
     await plannedActuator.quiesce({ owner, taskId: plannedTask.id });
@@ -1347,6 +1383,81 @@ try {
     "PASS: a consented commit is bound to its request and form contents; another path, a changed field, an added hidden input and a form.submit() into a new window are refused or reported, and the host and page form hashes agree",
   );
   await taskHandler.close();
+  // The shipped isolated channel follows the observed URL without running a
+  // payment-labelled anchor's click handler. It takes no caller-provided URL.
+  const linkDispatch = async (command) => {
+    const reply = await nativeDispatch(command);
+    if (reply.result.error)
+      throw Object.assign(new Error(reply.result.error.message), {
+        code: reply.result.error.kind,
+      });
+    return reply;
+  };
+  const linkSnapshot = async () =>
+    (await linkDispatch({ subaction: "snapshot" })).result;
+  await page.evaluate(() => {
+    document.body.innerHTML = `<a id="portal" href="/billing-portal" onclick="fetch('/unexpected-payment', {method:'POST'})">Payment portal</a>`;
+  });
+  const followPolicy = {
+    origin,
+    expiresAt: Date.now() + 60000,
+    targets: [{ selector: "#portal", action: "follow" }],
+  };
+  const follow = (state) =>
+    action(state, "follow", "#portal", { taskPolicy: followPolicy });
+  state = await linkSnapshot();
+  await page.evaluate(
+    () => (document.querySelector("#portal").href = "/different"),
+  );
+  await assert.rejects(linkDispatch(follow(state)), { code: "STALE_REF" });
+  for (const href of [
+    "javascript:alert(1)",
+    "https://other.example/portal",
+    `https://user:password@127.0.0.1:${server.address().port}/portal`,
+  ]) {
+    await page.evaluate(
+      (href) => (document.querySelector("#portal").href = href),
+      href,
+    );
+    state = await linkSnapshot();
+    await assert.rejects(linkDispatch(follow(state)), {
+      code: "POLICY_BLOCKED",
+    });
+  }
+  await page.evaluate(() => {
+    const a = document.querySelector("#portal");
+    a.href = "/billing-portal";
+    a.download = "receipt";
+  });
+  state = await linkSnapshot();
+  await assert.rejects(linkDispatch(follow(state)), { code: "POLICY_BLOCKED" });
+  await page.evaluate(() => {
+    const a = document.querySelector("#portal");
+    a.removeAttribute("download");
+    a.target = "_blank";
+  });
+  state = await linkSnapshot();
+  await assert.rejects(linkDispatch(follow(state)), { code: "POLICY_BLOCKED" });
+  await page.evaluate(() =>
+    document.querySelector("#portal").removeAttribute("target"),
+  );
+  state = await linkSnapshot();
+  const postsBeforeFollow = paymentPosts;
+  const navigation = page.waitForNavigation();
+  const followed = await linkDispatch(follow(state));
+  assert.equal(followed.result.dispatched, true);
+  assert.equal(followed.result.requiresReadback, true);
+  await navigation;
+  assert.equal(page.url(), `${origin}/billing-portal`);
+  assert.equal(
+    paymentPosts,
+    postsBeforeFollow,
+    "Following the link must not execute its payment handler",
+  );
+  console.log(
+    "PASS: observed same-origin link navigation without click handlers, with stale URL, credential, scheme, origin, download and new-window refusal",
+  );
+
   console.log(
     "PASS: NativeTaskActuator readback, cleanup uncertainty, bound embedded task adapter and authenticated host HTTP to isolated command channel, real click/fill/select with visible preview and option-label readback, lost-effect uncertainty without replay, document and replay fences, manual input, policy requirement, fixed operations, credential exclusion",
   );
