@@ -65,9 +65,13 @@ public class ElizaInferencePlugin extends Plugin {
         }
     }
 
-    private interface Operation { JSObject run(InferenceSession session, Request request) throws Exception; }
+    private interface Operation { JSObject run(Request request) throws Exception; }
 
     private void submit(PluginCall call, Operation operation) {
+        submit(call, "INFERENCE_FAILED", operation);
+    }
+
+    private void submit(PluginCall call, String failureCode, Operation operation) {
         if (destroyed) { call.reject("Inference bridge closed", "BRIDGE_CLOSED"); return; }
         String id = call.getString("requestId", "");
         if (id.isEmpty()) { call.reject("Expected requestId", "INVALID_INPUT"); return; }
@@ -81,16 +85,17 @@ public class ElizaInferencePlugin extends Plugin {
                 if (destroyed) throw new CancellationException();
                 request.check();
                 if (models.pressure) throw new IllegalStateException("Inference is releasing memory");
-                InferenceSession session = models.session();
                 models.activeRequest = request;
-                request.begin(session);
-                JSObject result = operation.run(session, request);
+                JSObject result = operation.run(request);
                 request.check();
                 call.resolve(result);
             } catch (CancellationException cancelled) {
                 call.reject("Inference cancelled", "CANCELLED");
             } catch (Exception failure) {
-                call.reject("Inference failed", "INFERENCE_FAILED", failure);
+                call.reject("Inference failed", failureCode, failure);
+            } catch (LinkageError failure) {
+                call.reject("Native inference could not load", failureCode,
+                        new IllegalStateException(failure));
             } finally {
                 request.finish();
                 models.activeRequest = null;
@@ -106,14 +111,19 @@ public class ElizaInferencePlugin extends Plugin {
         models.worker.execute(() -> {
             try {
                 if (destroyed) throw new IllegalStateException("Inference bridge closed");
-                models.session();
+                boolean platform = OnDeviceRecognizer.available(getContext());
+                boolean packaged = packaged("manifest.json");
+                if (packaged) models.session(null);
                 JSObject result = new JSObject();
-                result.put("speech", VoiceNative.nativeParadeeSupported() == 1);
-                result.put("transcription", OnDeviceRecognizer.available(getContext()) ? "android" : VoiceNative.nativeAsrSupported() == 1 ? "asr" : "none");
+                result.put("speech", packaged && VoiceNative.nativeParadeeSupported() == 1);
+                result.put("transcription", platform ? "android" : packaged && packaged("asr/phonon-2-fv5.gguf") && VoiceNative.nativeAsrSupported() == 1 ? "asr" : "none");
                 result.put("provider", "libelizainference");
                 call.resolve(result);
             } catch (Exception failure) {
                 call.reject("Inference unavailable", "INFERENCE_UNAVAILABLE", failure);
+            } catch (LinkageError failure) {
+                call.reject("Native inference could not load", "INFERENCE_UNAVAILABLE",
+                        new IllegalStateException(failure));
             }
         });
     }
@@ -125,9 +135,9 @@ public class ElizaInferencePlugin extends Plugin {
         if (text.trim().isEmpty() || text.length() > 2000 || speed == null || !(speed >= 0.5 && speed <= 2.0)) {
             call.reject("Expected 1 to 2000 text characters and speed 0.5 to 2", "INVALID_INPUT"); return;
         }
-        submit(call, (session, request) -> {
+        submit(call, "SPEECH_FAILED", request -> {
             long start = SystemClock.elapsedRealtime();
-            ParadeeVoice.Audio audio = session.synthesize(text, speed.floatValue());
+            ParadeeVoice.Audio audio = models.session(request).synthesize(text, speed.floatValue());
             JSObject result = new JSObject();
             result.put("audioBase64", Base64.encodeToString(wav(audio), Base64.NO_WRAP));
             result.put("sampleRate", audio.sampleRate);
@@ -150,7 +160,7 @@ public class ElizaInferencePlugin extends Plugin {
         if (bytes.length == 0 || bytes.length % 2 != 0 || bytes.length > 1920000) {
             call.reject("Expected complete PCM16 samples, at most one minute", "INVALID_INPUT"); return;
         }
-        submit(call, (session, request) -> {
+        submit(call, "HEARING_FAILED", request -> {
             ByteBuffer input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             float[] pcm = new float[bytes.length / 2];
             for (int i = 0; i < pcm.length; i++) pcm[i] = input.getShort() / 32768f;
@@ -165,7 +175,7 @@ public class ElizaInferencePlugin extends Plugin {
                     },
                     () -> {
                         request.check();
-                        try { return session.transcribe(pcm); }
+                        try { return models.session(request).transcribe(pcm); }
                         catch (IOException failure) { throw new UncheckedIOException(failure); }
                     }, OnDeviceRecognizer::demote, line -> Log.i("ElizaInference", line));
             if (heard == null) throw new IllegalStateException("Transcription unavailable");
@@ -187,10 +197,10 @@ public class ElizaInferencePlugin extends Plugin {
         if (prompt.isEmpty() || maxTokens == null || maxTokens <= 0) {
             call.reject("Expected prompt and positive maxTokens", "INVALID_INPUT"); return;
         }
-        submit(call, (session, request) -> {
+        submit(call, request -> {
             JSObject result = new JSObject();
             StringBuilder text = new StringBuilder();
-            try (InferenceSession.TextStream stream = session.openTextStream(prompt, maxTokens)) {
+            try (InferenceSession.TextStream stream = models.session(request).openTextStream(prompt, maxTokens)) {
                 while (true) {
                     JSONObject step = new JSONObject(stream.next());
                     text.append(step.getString("text"));
@@ -209,9 +219,9 @@ public class ElizaInferencePlugin extends Plugin {
         if (text.isEmpty() || pooling == null || pooling < 1 || pooling > 3) {
             call.reject("Expected text and pooling 1, 2 or 3", "INVALID_INPUT"); return;
         }
-        submit(call, (session, request) -> {
+        submit(call, request -> {
             JSArray vector = new JSArray();
-            for (float value : session.embed(text, pooling)) vector.put(value);
+            for (float value : models.session(request).embed(text, pooling)) vector.put(value);
             JSObject result = new JSObject(); result.put("embedding", vector); return result;
         });
     }
@@ -221,6 +231,14 @@ public class ElizaInferencePlugin extends Plugin {
         Request request = requests.get(call.getString("requestId", ""));
         if (request != null) request.cancel();
         JSObject result = new JSObject(); result.put("cancelled", request != null); call.resolve(result);
+    }
+
+    private boolean packaged(String path) {
+        try (java.io.InputStream ignored = getContext().getAssets().open(VoiceAssets.ASSET_ROOT + "/" + path)) {
+            return true;
+        } catch (IOException absent) {
+            return false;
+        }
     }
 
     private static byte[] wav(ParadeeVoice.Audio audio) {
@@ -254,8 +272,10 @@ public class ElizaInferencePlugin extends Plugin {
                 if (SystemClock.elapsedRealtime() - lastActivity >= 120000) trim();
             }, 30, 30, TimeUnit.SECONDS);
         }
-        InferenceSession session() throws Exception {
+        InferenceSession session(Request request) throws IOException {
+            if (request != null) request.check();
             if (current == null) current = VoiceAssets.install(context).openInference();
+            if (request != null) request.begin(current);
             lastActivity = SystemClock.elapsedRealtime();
             return current;
         }
