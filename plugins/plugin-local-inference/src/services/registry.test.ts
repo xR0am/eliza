@@ -354,4 +354,75 @@ describe("local inference registry removal", () => {
 			]);
 		},
 	);
+
+	it("refuses to rewrite a registry it cannot read", async () => {
+		const stateDir = useTempStateDir();
+		const modelsDir = path.join(stateDir, "local-inference", "models");
+		for (const id of ["model-a", "model-b"]) {
+			const textDir = path.join(modelsDir, id, "text");
+			fs.mkdirSync(textDir, { recursive: true });
+			fs.writeFileSync(path.join(textDir, "model.gguf"), "fake-model");
+			await upsertElizaModel(
+				installedModel(id, path.join(textDir, "model.gguf"), {
+					bundleRoot: path.join(modelsDir, id),
+				}),
+			);
+		}
+		expect(readRawRegistry().models?.map((model) => model.id)).toEqual([
+			"model-a",
+			"model-b",
+		]);
+
+		// A torn write leaves a valid prefix, not valid JSON: the rows still exist
+		// on disk but cannot be read.
+		const corrupted = '{"version":1,"models":[{"id":"model-a"';
+		fs.writeFileSync(registryPath(), corrupted);
+		const textDir = path.join(modelsDir, "model-c", "text");
+		fs.mkdirSync(textDir, { recursive: true });
+		fs.writeFileSync(path.join(textDir, "model.gguf"), "fake-model");
+
+		await expect(
+			upsertElizaModel(
+				installedModel("model-c", path.join(textDir, "model.gguf"), {
+					bundleRoot: path.join(modelsDir, "model-c"),
+				}),
+			),
+		).rejects.toMatchObject({ code: "REGISTRY_UNREADABLE" });
+		await expect(listInstalledModels()).rejects.toMatchObject({
+			code: "REGISTRY_UNREADABLE",
+		});
+
+		// The unreadable file must be left untouched: rewriting it from the empty
+		// read dropped every other installed model's only row.
+		expect(fs.readFileSync(registryPath(), "utf8")).toBe(corrupted);
+	});
+
+	it("still treats a missing registry file as an empty registry", async () => {
+		const stateDir = useTempStateDir();
+		const textDir = path.join(
+			stateDir,
+			"local-inference",
+			"models",
+			"model-a",
+			"text",
+		);
+		fs.mkdirSync(textDir, { recursive: true });
+		fs.writeFileSync(path.join(textDir, "model.gguf"), "fake-model");
+
+		await expect(
+			upsertElizaModel(
+				installedModel("model-a", path.join(textDir, "model.gguf"), {
+					bundleRoot: path.join(
+						stateDir,
+						"local-inference",
+						"models",
+						"model-a",
+					),
+				}),
+			),
+		).resolves.toBeUndefined();
+		expect(readRawRegistry().models?.map((model) => model.id)).toEqual([
+			"model-a",
+		]);
+	});
 });
