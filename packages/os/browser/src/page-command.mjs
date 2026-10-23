@@ -879,10 +879,8 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         globalThis[watchKey]?.violation?.scope === policy.guidanceScope
           ? (globalThis[watchKey]?.violation ?? null)
           : null,
-      consented:
-        globalThis[watchKey]?.consented?.scope === policy.guidanceScope
-          ? (globalThis[watchKey]?.consented ?? null)
-          : null,
+      // A receipt belongs to this dispatch, not an earlier approved action.
+      consented: null,
       stop: () => controller.abort(),
     };
     // submits: 0 until the one granted form submit; then its page load may

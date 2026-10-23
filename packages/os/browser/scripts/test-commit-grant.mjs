@@ -134,6 +134,23 @@ try {
     "POLICY_BLOCKED",
   );
 
+  // Another explicit approval on this page gets its own effect receipt.
+  assert.equal(
+    (
+      await press(
+        "Send payment",
+        grant("second-grant", { selector: "#send" }),
+        "#send",
+      )
+    ).dispatched,
+    true,
+  );
+  await settle();
+  assert.equal(
+    (await snapshot()).state.consentedCommit.grantId,
+    "second-grant",
+  );
+
   // A grant never crosses origins: the submit is stopped and reported.
   await open("/cross");
   assert.equal((await press("Pay now", grant("cross-grant"))).dispatched, true);
