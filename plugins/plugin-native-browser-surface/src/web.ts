@@ -140,6 +140,16 @@ export class BrowserSurfaceWeb
   ): Promise<SurfaceCapture> {
     throw this.unavailable(UNAVAILABLE);
   }
+  async observeHistory(
+    _options: SurfaceIdOptions,
+  ): ReturnType<ElizaSurfaceManagerPlugin["observeHistory"]> {
+    throw this.unavailable(UNAVAILABLE);
+  }
+  async navigateHistory(
+    _options: Parameters<ElizaSurfaceManagerPlugin["navigateHistory"]>[0],
+  ): ReturnType<ElizaSurfaceManagerPlugin["navigateHistory"]> {
+    throw this.unavailable(UNAVAILABLE);
+  }
   async readPage(
     _options: SurfaceIdOptions & { selector?: string },
   ): Promise<NativePageRead> {

@@ -208,7 +208,10 @@ class ElizaSurfaceManagerPlugin : Plugin() {
     }
 
     override fun handleOnPause() {
-        surfaces.values.forEach { it.control?.interrupt("The browser host was paused") }
+        surfaces.values.forEach {
+            it.historyObservation = null
+            it.control?.interrupt("The browser host was paused")
+        }
         super.handleOnPause()
     }
 
@@ -355,6 +358,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
         var control: SurfaceControlChannel? = null,
         var disposed: Boolean = false,
         var pageRevision: Long = 0,
+        var historyObservation: HistoryObservation? = null,
         var pageError: String? = null,
         var x: Double = 0.0,
         var y: Double = 0.0,
@@ -371,6 +375,26 @@ class ElizaSurfaceManagerPlugin : Plugin() {
         /** Set for a persistent keyed profile, which outlives the surface. */
         val profileKey: String? = null,
     )
+
+    private data class HistoryObservation(
+        val reference: String,
+        val revision: Long,
+        val index: Int,
+        val urls: List<Pair<String?, String?>>,
+        val expiresAt: Long,
+    )
+
+    private fun historyUrls(view: WebView): List<Pair<String?, String?>> {
+        val history = view.copyBackForwardList()
+        return (0 until history.size).map {
+            history.getItemAtIndex(it).let { entry -> entry.url to entry.originalUrl }
+        }
+    }
+
+    private fun historyReady(surface: Surface): Boolean =
+        !surface.disposed && surface.foregrounded && surface.pageError == null &&
+        surface.webView.progress == 100 &&
+        activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
 
     private val surfaces = HashMap<String, Surface>()
     private var keyboardListener: ViewTreeObserver.OnGlobalLayoutListener? = null
@@ -647,6 +671,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
         dismissDialogs(surface)
         surface.pendingExternalLink = null
         if (!surface.disposed) {
+            surface.historyObservation = null
             surface.control?.interrupt("The native page was closed", navigation = true)
             surface.container.visibility = View.GONE
             surface.foregrounded = false
@@ -772,12 +797,18 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                     surfaces.values.firstOrNull { it.webView === view }?.let {
                         it.control?.interrupt("The native page navigated", navigation = true)
+                        it.historyObservation = null
                         it.pageRevision += 1
                         it.pageError = null
                         dismissDialogs(it)
                         it.pendingExternalLink = null
                     }
                     gate.commit(url)
+                }
+
+                // History traversal must never silently resubmit a payment/form POST.
+                override fun onFormResubmission(view: WebView, dontResend: android.os.Message, resend: android.os.Message) {
+                    dontResend.sendToTarget()
                 }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -797,7 +828,10 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                 // without a page load; the host re-reads state as it does after a load.
                 override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                     val surface = surfaces[id] ?: return
-                    if (surface.webView !== view || isReload || !isLive(surface) || view.progress < 100) return
+                    if (surface.webView !== view) return
+                    surface.historyObservation = null
+                    surface.pageRevision += 1
+                    if (isReload || !isLive(surface) || view.progress < 100) return
                     gate.commit(url)
                     notifyListeners("navigationChanged", surfaceEvent(id, surface))
                 }
@@ -1132,6 +1166,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                 ?: return@runOnUiThread
             // A sign-in page that refuses WebViews is reported instead of showing its error page.
             if (BrowserPageHandoffs.identityProvider(url) == null) {
+                surface.historyObservation = null
                 surface.gate.approve(url)
                 surface.webView.loadUrl(url)
             } else {
@@ -1151,6 +1186,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
             val identity = requireActiveIdentity(call, "reloadSurface") ?: return@runOnUiThread
             val surface = ownedSurface(call, id, identity, "reloadSurface")
                 ?: return@runOnUiThread
+            surface.historyObservation = null
             surface.webView.reload()
             call.resolve()
         }
@@ -1166,10 +1202,97 @@ class ElizaSurfaceManagerPlugin : Plugin() {
             val identity = requireActiveIdentity(call, "goBack") ?: return@runOnUiThread
             val surface = ownedSurface(call, id, identity, "goBack") ?: return@runOnUiThread
             if (surface.webView.canGoBack()) {
+                surface.historyObservation = null
                 approveHistoryStep(surface, -1)
                 surface.webView.goBack()
             }
             call.resolve()
+        }
+    }
+
+    /** Trusted host primitive; task authorization and preview belong to the caller. */
+    @PluginMethod
+    fun observeHistory(call: PluginCall) {
+        val id = call.getString("id") ?: run {
+            call.reject("observeHistory requires an id", "INVALID_REQUEST")
+            return
+        }
+        activity.runOnUiThread {
+            val identity = requireActiveIdentity(call, "observeHistory") ?: return@runOnUiThread
+            val surface = ownedSurface(call, id, identity, "observeHistory") ?: return@runOnUiThread
+            surface.historyObservation = null
+            if (!historyReady(surface)) {
+                call.reject("The native page is unavailable for history observation", "UNAVAILABLE")
+                return@runOnUiThread
+            }
+            val history = surface.webView.copyBackForwardList()
+            val observation = HistoryObservation(UUID.randomUUID().toString(), surface.pageRevision,
+                history.currentIndex, historyUrls(surface.webView), android.os.SystemClock.elapsedRealtime() + 30_000)
+            surface.historyObservation = observation
+            val destinations = org.json.JSONArray()
+            for ((direction, offset) in listOf("back" to -1, "forward" to 1)) {
+                val index = history.currentIndex + offset
+                if (index < 0 || index >= history.size) continue
+                val entry = history.getItemAtIndex(index)
+                if (!BrowserWebOrigin.sameOrigin(surface.webView.url, entry.url)) continue
+                destinations.put(JSObject().apply {
+                    put("reference", "${observation.reference}:$direction")
+                    put("direction", direction)
+                    put("url", entry.url)
+                    put("title", entry.title ?: "")
+                })
+            }
+            call.resolve(JSObject().apply { put("destinations", destinations) })
+        }
+    }
+
+    @PluginMethod
+    fun navigateHistory(call: PluginCall) {
+        val id = call.getString("id")
+        val reference = call.getString("reference")
+        if (id == null || reference == null) {
+            call.reject("navigateHistory requires an observed reference", "INVALID_REQUEST")
+            return
+        }
+        activity.runOnUiThread {
+            val identity = requireActiveIdentity(call, "navigateHistory") ?: return@runOnUiThread
+            val surface = ownedSurface(call, id, identity, "navigateHistory") ?: return@runOnUiThread
+            val observed = surface.historyObservation
+            val history = surface.webView.copyBackForwardList()
+            val offset = when (reference) {
+                "${observed?.reference}:back" -> -1
+                "${observed?.reference}:forward" -> 1
+                else -> 0
+            }
+            if (observed == null || offset == 0 || !historyReady(surface) ||
+                observed.expiresAt < android.os.SystemClock.elapsedRealtime() ||
+                observed.revision != surface.pageRevision || observed.index != history.currentIndex ||
+                observed.urls != historyUrls(surface.webView) ||
+                observed.index + offset !in 0 until history.size ||
+                !BrowserWebOrigin.sameOrigin(surface.webView.url, history.getItemAtIndex(observed.index + offset).url)) {
+                surface.historyObservation = null
+                call.reject("Native history changed or is unavailable; observe again", "STALE_REF")
+                return@runOnUiThread
+            }
+            // Consume before dispatch: even a lost reply cannot repeat this effect.
+            surface.historyObservation = null
+            val control = surface.control ?: run {
+                call.reject("Exact history navigation requires isolated page control", "UNSUPPORTED")
+                return@runOnUiThread
+            }
+            val revision = surface.pageRevision
+            val url = surface.webView.url
+            // WebView.goBackOrForward skips entries without activation. The isolated
+            // world's History API traverses the observed adjacent entry exactly.
+            control.execute(call, JSObject().apply {
+                put("subaction", "native-history")
+                put("offset", offset)
+                put("url", url)
+                put("length", history.size)
+            }, null) {
+                activeOwners.isActive(identity) && surfaces[id] === surface && historyReady(surface) &&
+                    surface.pageRevision == revision && surface.webView.url == url
+            }
         }
     }
 
@@ -1282,6 +1405,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
             val identity = requireActiveIdentity(call, "goForward") ?: return@runOnUiThread
             val surface = ownedSurface(call, id, identity, "goForward") ?: return@runOnUiThread
             if (surface.webView.canGoForward()) {
+                surface.historyObservation = null
                 approveHistoryStep(surface, 1)
                 surface.webView.goForward()
             }
@@ -1596,6 +1720,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                     if (surface !== selected) {
                         surface.control?.interrupt("The native page was hidden")
                         dismissDialogs(surface)
+                        surface.historyObservation = null
                     }
                     surface.container.visibility = View.GONE
                     surface.foregrounded = false
@@ -1725,6 +1850,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
             // cannot remain visible or interactive after its realm is retired.
             for (surface in surfaces.values) {
                 if (surface.owner == owner) {
+                    surface.historyObservation = null
                     surface.control?.interrupt("The native owner was reconciled")
                     surface.container.visibility = View.GONE
                     surface.foregrounded = false

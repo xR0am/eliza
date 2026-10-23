@@ -422,6 +422,25 @@ export interface ElizaSurfaceManagerPlugin {
    * `UNSUPPORTED`) rather than return an image it could not mask.
    */
   captureSurface(options: CaptureSurfaceOptions): Promise<SurfaceCapture>;
+  /** Android host-only observation of adjacent same-origin history entries. */
+  observeHistory(options: SurfaceIdOptions): Promise<{
+    destinations: Array<{
+      reference: string;
+      direction: "back" | "forward";
+      url: string;
+      title: string;
+    }>;
+  }>;
+  /**
+   * Android host-only one-shot dispatch using a fresh observed entry reference.
+   * Task authorization and preview are required at the trusted caller. A receipt
+   * does not prove arrival; changed/hidden/paused history refuses before dispatch.
+   */
+  navigateHistory(options: SurfaceIdOptions & { reference: string }): Promise<{
+    documentId: string;
+    frameScope: "main";
+    result: { dispatched: true; requiresReadback: true };
+  }>;
   /**
    * Android isolated-world main-frame observation/input. Host-only: task policy
    * must come from the trusted task authorizer, never page or model output.
