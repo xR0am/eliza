@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import { normalizeWords } from "../voice-quality/wer.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const library = path.resolve(here, "../../../../plugins/plugin-local-inference/native/android");
+const library = path.resolve(
+  here,
+  "../../../../plugins/plugin-local-inference/native/android",
+);
 const voice = (root) => path.join(library, root, "java/ai/eliza/voice");
 let classes;
 

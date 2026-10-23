@@ -20,8 +20,14 @@ test("Paradee stream cancellation retires queued work and callback reentry", () 
           here,
           "../../../../plugins/plugin-local-inference/native/android/src/main/java/ai/eliza/voice/ParadeeVoice.java",
         ),
-        path.resolve(here, "../../../../plugins/plugin-local-inference/native/android/src/main/java/ai/eliza/voice/NativeAsr.java"),
-        path.resolve(here, "../../../../plugins/plugin-local-inference/native/android/src/main/java/ai/eliza/voice/InferenceSession.java"),
+        path.resolve(
+          here,
+          "../../../../plugins/plugin-local-inference/native/android/src/main/java/ai/eliza/voice/NativeAsr.java",
+        ),
+        path.resolve(
+          here,
+          "../../../../plugins/plugin-local-inference/native/android/src/main/java/ai/eliza/voice/InferenceSession.java",
+        ),
         path.join(here, "stream-contract/VoiceNative.java"),
         path.join(here, "stream-contract/StreamContract.java"),
       ],
