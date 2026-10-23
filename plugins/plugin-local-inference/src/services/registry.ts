@@ -92,13 +92,13 @@ async function readElizaOwnedHealed(): Promise<InstalledModel[]> {
 	const present: InstalledModel[] = [];
 	let dropped = false;
 	for (const model of models) {
-		if (await modelArtifactPresent(model.path)) {
-			present.push(model);
-		} else {
+		if (await modelArtifactMissing(model.path)) {
 			dropped = true;
 			logger.warn(
 				`[LocalInferenceRegistry] Dropping registry entry "${model.id}": model file missing at ${model.path}; the model must be downloaded again`,
 			);
+		} else {
+			present.push(model);
 		}
 	}
 	if (needsRewrite || dropped) {
@@ -118,11 +118,19 @@ async function readElizaOwnedHealed(): Promise<InstalledModel[]> {
 	return present;
 }
 
-async function modelArtifactPresent(modelPath: string): Promise<boolean> {
+/**
+ * True only when the artifact provably is not there. A stat that fails any
+ * other way (EACCES/EPERM on a remounted state dir, EIO/ESTALE, EMFILE, ELOOP)
+ * says nothing about whether the download exists, so the error propagates and
+ * the caller keeps the registry row it could not verify.
+ */
+async function modelArtifactMissing(modelPath: string): Promise<boolean> {
 	try {
-		return (await fs.stat(modelPath)).isFile();
-	} catch {
-		return false;
+		return !(await fs.stat(modelPath)).isFile();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return true;
+		throw error;
 	}
 }
 
