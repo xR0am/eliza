@@ -68,13 +68,17 @@ const {
   SqliteInteractiveTaskStore,
 } = await import(pathToFileURL(runtimeModule).href);
 let paymentPosts = 0;
+const posted = [];
 const server = createServer(
   {
     key: await readFile(join(certificates, "key.pem")),
     cert: await readFile(join(certificates, "cert.pem")),
   },
   (req, res) => {
-    if (req.method === "POST") paymentPosts++;
+    if (req.method === "POST") {
+      paymentPosts++;
+      posted.push(req.url);
+    }
     res.setHeader("Content-Type", "text/html");
     res.end(
       `<!doctype html><input id="query" aria-label="Search query"><input type="password" value="private-value"><button type="button" id="increment" onclick="document.querySelector('output').textContent++">Increment</button><output>0</output><label>Language<select id="language"><option value="opaque-en">English</option><option value="opaque-fr">French</option><option value="opaque-de">German</option><option value="opaque-disabled" disabled>Unavailable</option><option value="opaque-a">Ambiguous</option><option value="opaque-b">Ambiguous</option></select></label><form id="payment" action="/paid" method="post"><button id="pay">Pay bill</button></form><p id="receipt"></p><script>payment.addEventListener("submit",(event)=>{event.preventDefault();fetch("/paid",{method:"POST"}).then(()=>{receipt.textContent="Paid"})})</script>`,
@@ -1130,6 +1134,128 @@ try {
   assert.equal(paymentPosts, 1);
   console.log(
     "PASS: embedded commit control blocked without a grant; one host grant commits once, is reported as consented, and cannot be replayed",
+  );
+  // Only the granted control's own submit is consented. A form whose page
+  // script sends it with fetch, so nothing leaves this document.
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<form id="transfer" action="/transfer" method="post"><button id="send">Send transfer</button><button id="alt" formaction="/exfil">Other</button></form>',
+    );
+    const transfer = document.querySelector("#transfer");
+    transfer.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const submitter = event.submitter;
+      fetch(
+        submitter?.hasAttribute("formaction")
+          ? submitter.formAction
+          : transfer.action,
+        { method: "POST" },
+      );
+    });
+  });
+  const sendClick = async (epoch, onclick) => {
+    await page.evaluate((script) => {
+      document.querySelector("#send").setAttribute("onclick", script);
+    }, onclick);
+    const sendContext = { ...context, epoch };
+    assert.equal(
+      (
+        await surfaceTarget.bindTask({
+          ...binding,
+          ...sendContext,
+          bindingRevision: 100 + epoch,
+          expiresAt: Date.now() + 60000,
+          targets: [{ selector: "#send", action: "click" }],
+        })
+      ).bound,
+      true,
+    );
+    const read = async () =>
+      (
+        await surfaceTarget.execute(
+          { subaction: "snapshot", id: pageId },
+          { taskContext: sendContext },
+        )
+      ).value.result.frames[0];
+    const frame = await read();
+    const selector = frame.elements.find(
+      (element) => element.targetSelector === "#send",
+    ).selector;
+    const sendCommand = {
+      subaction: "click",
+      id: pageId,
+      taskContext: sendContext,
+      selector,
+      expectedSelector: "#send",
+    };
+    assert.equal(
+      (
+        await surfaceTarget.execute(sendCommand, {
+          taskContext: sendContext,
+          expectedSelector: "#send",
+          commitGrant: {
+            grantId: `send-${epoch}`,
+            taskId: sendContext.taskId,
+            epoch,
+            origin,
+            targetRef: selector,
+            selector: "#send",
+            subaction: "click",
+            expiresAt: Date.now() + 30000,
+          },
+        })
+      ).value.result.dispatched,
+      true,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return read();
+  };
+  // requestSubmit(alt): the other submitter's formaction is refused.
+  let sent = await sendClick(
+    6,
+    "event.preventDefault();this.form.requestSubmit(alt)",
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  // A script click on the other submitter is refused too.
+  sent = await sendClick(7, "event.preventDefault();alt.click()");
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  // A script form.submit() sends no submit event and is not consented.
+  sent = await sendClick(8, "event.preventDefault();this.form.submit()");
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  assert.ok(!posted.includes("/exfil") && !posted.includes("/transfer"));
+  // A submit with no submitter, when the granted button is the form's
+  // default button and overrides nothing, is consented.
+  sent = await sendClick(9, "event.preventDefault();this.form.requestSubmit()");
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, { grantId: "send-9", kind: "submit" });
+  // The granted submitter itself is consented.
+  sent = await sendClick(10, "");
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-10",
+    kind: "submit",
+  });
+  assert.deepEqual(
+    posted.filter((path) => path !== "/paid"),
+    ["/transfer", "/transfer"],
+  );
+  // A default button that overrides the action: no submitter is refused.
+  await page.evaluate(() =>
+    document.querySelector("#send").setAttribute("formaction", "/transfer"),
+  );
+  sent = await sendClick(
+    11,
+    "event.preventDefault();this.form.requestSubmit()",
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  assert.ok(!posted.includes("/exfil"));
+  console.log(
+    "PASS: a consented commit is only the granted submitter's own submit; another submitter, form.submit() and an overriding implicit submit are refused",
   );
   await taskHandler.close();
   console.log(

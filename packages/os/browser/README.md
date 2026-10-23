@@ -308,7 +308,12 @@ POST or GET form submit reaches its own origin; a script commit's one request
 is consented while its `pushState` is still recorded; a grant does not cross
 origins; another form sent by the same click is stopped, also when the granted
 form is not sent; a cancelled granted submit cannot be sent later from script;
-and a second own-site request is recorded as a violation.
+another submitter of the granted form (`requestSubmit(alt)` or a script click,
+with a `formaction`, `formmethod` or `formenctype` override), a script
+`form.submit()`, an action moved after the click and a swapped-in copy of the
+control are refused; a submit with no submitter is consented only from the
+default button that overrides nothing; and a second own-site request is
+recorded as a violation.
 
 Show-only guides scroll an off-screen target into view and report `placement`.
 Action guides never scroll. A trusted Dismiss sends only the guide ID; the

@@ -19,6 +19,28 @@ const pages = {
   "/get": `<form action="/found" method="get"><input name="q" aria-label="Query" value="12"><button id="pay">Pay now</button></form>`,
   // The page cancels the granted submit, then sends the form from script.
   "/cancel": `<form id="f" action="/later" method="post"><button id="pay">Pay now</button></form><script>f.addEventListener("submit",(e)=>{e.preventDefault();setTimeout(()=>f.submit(),100)})</script>`,
+  // A second submitter of the granted form, clicked by the granted button's
+  // script: its formaction would send the form elsewhere.
+  "/alt-click": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();alt.click()">Pay now</button><button id="alt" formaction="/exfil">Other</button></form>`,
+  // The granted click sends the form with another submitter; the granted
+  // button's own submit still follows it.
+  "/alt-request": `<form id="f" action="/pay" method="post"><button id="pay" onclick="f.requestSubmit(alt)">Pay now</button><button id="alt" formaction="/exfil">Other</button></form>`,
+  // Another submitter that overrides only the method or the encoding.
+  "/alt-method": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.requestSubmit(alt)">Pay now</button><button id="alt" formmethod="get">Other</button></form>`,
+  "/alt-enctype": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.requestSubmit(alt)">Pay now</button><button id="alt" formenctype="text/plain">Other</button></form>`,
+  // A script form.submit() sends no submit event and has no submitter.
+  "/script-submit": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.submit()">Pay now</button></form>`,
+  "/button-submit": `<form id="f" action="/pay" method="post"><button id="pay" type="button" onclick="f.submit()">Pay now</button></form>`,
+  // The granted button's script moves the form's action after the click.
+  "/moved": `<form id="f" action="/pay" method="post"><button id="pay" onclick="f.action='/exfil'">Pay now</button></form>`,
+  // The granted button's script swaps in a copy of itself and clicks it.
+  "/swapped": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();const copy=pay.cloneNode(true);copy.onclick=null;pay.replaceWith(copy);copy.click()">Pay now</button></form>`,
+  // A submit with no submitter: the granted button is the default button.
+  "/implicit": `<form id="f" action="/pay" method="post"><input name="amount" aria-label="Amount" value="12"><button id="pay" onclick="event.preventDefault();f.requestSubmit()">Pay now</button></form>`,
+  // ... is not the default button.
+  "/implicit-second": `<form id="f" action="/pay" method="post"><button id="save" formaction="/exfil">Save</button><button id="pay" onclick="event.preventDefault();f.requestSubmit()">Pay now</button></form>`,
+  // ... overrides the form's action, so a submit without it goes elsewhere.
+  "/implicit-override": `<form id="f" action="/exfil" method="post"><button id="pay" formaction="/pay" onclick="event.preventDefault();f.requestSubmit()">Pay now</button></form>`,
   // A button whose script sends two own-site requests.
   "/requests": `<button id="pay" onclick="fetch('/api/one',{method:'POST'}).then(()=>fetch('/api/two',{method:'POST'}))">Pay now</button>`,
 };
@@ -203,6 +225,62 @@ try {
   assert.ok(!received.includes(`POST ${origin}/later`));
   const cancelled = (await snapshot()).state;
   assert.equal(cancelled.effectViolation, "submit");
+
+  // Only the granted control's own submit is consented. Each of these sends
+  // nothing and is reported, without a consented commit.
+  const refused = async (path, sent) => {
+    await open(path);
+    const grantId = `${path.slice(1)}-grant`;
+    assert.equal(
+      (await press("Pay now", grant(grantId))).dispatched,
+      true,
+      path,
+    );
+    await settle();
+    assert.equal(page.url(), `${origin}${path}`, path);
+    assert.ok(!received.includes(sent), `${path} sent ${sent}`);
+    const state = (await snapshot()).state;
+    assert.equal(state.effectViolation, "submit", path);
+    assert.equal(state.consentedCommit, undefined, path);
+  };
+  // A second submitter with formaction, clicked by script.
+  await refused("/alt-click", `POST ${origin}/exfil`);
+  // A second submitter that overrides the method or the encoding.
+  await refused("/alt-method", `GET ${origin}/pay`);
+  await refused("/alt-enctype", `POST ${origin}/pay`);
+  // A script form.submit(), from a submit button or a plain button.
+  await refused("/script-submit", `POST ${origin}/pay`);
+  await refused("/button-submit", `POST ${origin}/pay`);
+  // The granted button's own submit after its script moved the action.
+  await refused("/moved", `POST ${origin}/exfil`);
+  // A copy of the granted button swapped in and clicked by script.
+  await refused("/swapped", `POST ${origin}/pay`);
+  // No submitter, and the granted button is not the default button or
+  // overrides the action.
+  await refused("/implicit-second", `POST ${origin}/pay`);
+  await refused("/implicit-override", `POST ${origin}/exfil`);
+
+  // requestSubmit(alt) is stopped; the granted button's own submit, which
+  // follows it, is the one consented.
+  await open("/alt-request");
+  assert.equal(
+    (await press("Pay now", grant("alt-request-grant"))).dispatched,
+    true,
+  );
+  await page.waitForURL(`${origin}/pay`);
+  assert.ok(received.includes(`POST ${origin}/pay`));
+  assert.ok(!received.includes(`POST ${origin}/exfil`));
+
+  // No submitter, from the default button that overrides nothing.
+  const before = received.length;
+  await open("/implicit");
+  assert.equal(
+    (await press("Pay now", grant("implicit-grant"))).dispatched,
+    true,
+  );
+  await page.waitForURL(`${origin}/pay`);
+  assert.ok(received.slice(before).includes(`POST ${origin}/pay`));
+  assert.ok(!received.includes(`POST ${origin}/exfil`));
 
   // One grant, one request: the second own-site request is recorded.
   await open("/requests");
