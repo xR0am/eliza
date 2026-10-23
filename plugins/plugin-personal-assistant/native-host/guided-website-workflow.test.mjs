@@ -85,6 +85,11 @@ test("the planner sees page blockers by control ref, never a selector", () => {
       { kind: "modal", covers: "viewport", ref: "snap:0:1" },
       { kind: "login-wall", covers: "viewport", ref: "snap:0:2" },
       { kind: "captcha", covers: "partial", ref: "snap:0:1" },
+      // Unknown kinds or coverage from a browser are not shown at all.
+      { kind: "Captcha", covers: "partial", ref: "snap:0:1" },
+      { kind: "modal", covers: "most", ref: "snap:0:1" },
+      null,
+      { kind: "paywall", covers: "partial", text: "y".repeat(500) },
     ],
   };
   const index = pageControls(snapshot);
@@ -104,6 +109,7 @@ test("the planner sees page blockers by control ref, never a selector", () => {
     { kind: "login-wall", covers: "viewport" },
     // Only the person answers a person check.
     { kind: "captcha", covers: "partial" },
+    { kind: "paywall", covers: "partial", text: "y".repeat(200) },
   ]);
   assert.equal(JSON.stringify(view).includes("snap:0:"), false);
   assert.deepEqual(pageView(page("B"), pageControls(page("B"))).blockers, []);

@@ -157,14 +157,29 @@ const present = (entries) =>
  * refs. A ref to a protected field or to no listed control is left out. A
  * person check never has a ref: only the person can answer it.
  */
+const BLOCKER_KINDS = new Set([
+  "modal",
+  "cookie-consent",
+  "captcha",
+  "login-wall",
+  "paywall",
+]);
+const BLOCKER_COVERAGE = new Set(["viewport", "target", "partial"]);
+
 function pageBlockers(snapshot, controls) {
   const refOf = (selector) =>
     typeof selector === "string"
       ? (controls.find(({ element }) => element.selector === selector)?.ref ??
         null)
       : null;
-  return (Array.isArray(snapshot.blockers) ? snapshot.blockers : []).map(
-    (blocker) =>
+  return (Array.isArray(snapshot.blockers) ? snapshot.blockers : [])
+    .filter(
+      (blocker) =>
+        blocker &&
+        BLOCKER_KINDS.has(blocker.kind) &&
+        BLOCKER_COVERAGE.has(blocker.covers),
+    )
+    .map((blocker) =>
       present([
         ["kind", blocker.kind],
         // A consent banner's close control may count as agreeing: only its
@@ -180,9 +195,12 @@ function pageBlockers(snapshot, controls) {
           blocker.kind === "cookie-consent" ? refOf(blocker.rejectRef) : null,
         ],
         ["covers", blocker.covers],
-        ["text", typeof blocker.text === "string" ? blocker.text : null],
+        [
+          "text",
+          typeof blocker.text === "string" ? blocker.text.slice(0, 200) : null,
+        ],
       ]),
-  );
+    );
 }
 
 /**

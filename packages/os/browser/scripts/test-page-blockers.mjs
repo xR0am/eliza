@@ -30,6 +30,8 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 // Expected report per fixture. A ref is named by its control's label here.
 const expected = {
   "modal.html": [{ kind: "modal", covers: "viewport", ref: "Close" }],
+  // A close control that also agrees to something is not a way out.
+  "agreeing-close.html": [{ kind: "modal", covers: "viewport" }],
   "native-dialog.html": [{ kind: "modal", covers: "viewport", ref: "Not now" }],
   "cookie-banner.html": [
     { kind: "cookie-consent", covers: "partial", rejectRef: "Reject all" },

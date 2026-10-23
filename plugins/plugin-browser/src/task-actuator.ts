@@ -82,7 +82,10 @@ export function validTaskBrowserBlockers(
       (item.kind !== "captcha" ||
         (item.ref === undefined && item.rejectRef === undefined)) &&
       (item.rejectRef === undefined || item.kind === "cookie-consent") &&
-      (item.text === undefined || typeof item.text === "string")
+      // A consent banner's close control may count as agreeing.
+      (item.ref === undefined || item.kind !== "cookie-consent") &&
+      (item.text === undefined ||
+        (typeof item.text === "string" && item.text.length <= 200))
     );
   });
 }

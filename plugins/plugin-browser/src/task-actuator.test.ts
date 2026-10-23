@@ -42,6 +42,14 @@ describe("validTaskBrowserBlockers", () => {
       { kind: "modal", rejectRef: "snap:0:0", covers: "viewport" },
     ],
     ["non-text text", { kind: "paywall", covers: "partial", text: 3 }],
+    [
+      "a close ref on a consent banner",
+      { kind: "cookie-consent", ref: "snap:0:1", covers: "target" },
+    ],
+    [
+      "text longer than 200 characters",
+      { kind: "paywall", covers: "partial", text: "x".repeat(201) },
+    ],
   ])("rejects %s", (_name, blocker) => {
     expect(validTaskBrowserBlockers({ elements, blockers: [blocker] })).toBe(
       false,

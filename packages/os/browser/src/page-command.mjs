@@ -678,6 +678,10 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         /^(?:reject|decline|refuse|deny|disagree)(?: all| optional| non-essential| additional| unnecessary)?(?: cookies)?$|\b(?:strictly )?(?:necessary|essential|required) (?:cookies )?only\b|\bonly (?:allow |accept |use )?(?:strictly )?(?:necessary|essential|required)(?: cookies)?\b|\bcontinue without (?:accepting|agreeing)\b|\breject all\b/i;
       const CLOSE =
         /^(?:close|dismiss|no,? thanks|not now|maybe later|skip|×|✕|✖|x)$|^close\b/i;
+      // A "Close and accept" or "Dismiss and continue" control agrees to
+      // something; it is never offered as the way out.
+      const AGREES =
+        /\b(?:accept|agree|allow|consent|ok(?:ay)?|got it|continue|subscribe|sign|log|buy|pay|confirm)\b/i;
       // An invisible reCAPTCHA or hCaptcha is bound to a page's own button
       // and is not in the way until the site shows a challenge.
       const captchas = [...document.querySelectorAll(CAPTCHA)].filter(
@@ -812,7 +816,9 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
             if (
               root.contains(node) &&
               node !== root &&
-              pattern.test((labelOf.get(id) ?? "").trim())
+              pattern.test((labelOf.get(id) ?? "").trim()) &&
+              (pattern === REJECT ||
+                !AGREES.test((labelOf.get(id) ?? "").trim()))
             )
               return id;
           return undefined;
