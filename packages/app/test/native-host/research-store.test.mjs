@@ -330,7 +330,7 @@ test("configured host captures to the real collector and stops on withdrawal", {
   const gateway = {
     collectPilotEvidence: (factory) =>
       factory({
-        db: { prepare: () => ({ all: () => [{ id: "private-task" }] }) },
+        db: { prepare: () => ({ get: () => ({ ids: '["private-task"]' }) }) },
         tasks: {
           events: (_id, _owner, cursor) => ({
             events:
