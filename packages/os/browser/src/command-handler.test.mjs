@@ -384,3 +384,80 @@ test("native protection account changes bypass work queues and retire on disconn
   );
   assert.equal(f.replies.at(-1).error.kind, "UNSUPPORTED");
 });
+
+test("a host-extended binding scopes each command to the page's own task origin", async () => {
+  const f = fixture();
+  let url = "https://example.test/start";
+  const updates = [];
+  f.api.tabs = {
+    get: async () => ({ url }),
+    update: async (_id, change) => {
+      updates.push(change.url);
+    },
+  };
+  const handler = createCommandHandler(f.api);
+  const extended = {
+    ...binding,
+    origins: [binding.origin, "https://login.example.org"],
+  };
+  for (const [index, origins] of [
+    [binding.origin],
+    ["https://login.example.org", "https://other.example.org"],
+    [binding.origin, "http://login.example.org"],
+    [binding.origin, binding.origin],
+    [binding.origin, "https://login.example.org/path"],
+  ].entries()) {
+    await handler(
+      {
+        type: "task-bind",
+        id: `bad-${index}`,
+        binding: { ...extended, origins },
+      },
+      f.sender,
+      () => true,
+    );
+    assert.equal(f.replies.at(-1).error.kind, "POLICY_BLOCKED");
+  }
+  await handler(
+    { type: "task-bind", id: "bind", binding: extended },
+    f.sender,
+    () => true,
+  );
+  assert.equal(f.replies.at(-1).ok, true);
+  const navigate = async (id, target) => {
+    await handler(
+      {
+        type: "command",
+        id,
+        command: {
+          subaction: "navigate",
+          id: "1",
+          url: target,
+          taskContext: context(extended),
+        },
+      },
+      f.sender,
+      () => true,
+    );
+    return f.replies.at(-1);
+  };
+  assert.equal(
+    (await navigate("to-login", "https://login.example.org/")).ok,
+    true,
+  );
+  url = "https://login.example.org/sign-in";
+  assert.equal((await navigate("back", "https://example.test/after")).ok, true);
+  assert.equal(
+    (await navigate("elsewhere", "https://elsewhere.example.net/")).error.kind,
+    "POLICY_BLOCKED",
+  );
+  url = "https://elsewhere.example.net/";
+  assert.equal(
+    (await navigate("from-outside", "https://example.test/")).error.kind,
+    "POLICY_BLOCKED",
+  );
+  assert.deepEqual(updates, [
+    "https://login.example.org/",
+    "https://example.test/after",
+  ]);
+});

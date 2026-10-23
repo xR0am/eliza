@@ -27,7 +27,15 @@ export interface TaskBrowserSnapshot {
 }
 export interface TaskBrowserPolicy {
   tabId: string;
+  /** The origin of the page the binding starts on. */
   origin: string;
+  /**
+   * Every origin this binding lets the page be observed and acted on, `origin`
+   * included, each one of the task's `allowedOrigins`. Default: all allowed
+   * origins of a task the host extended ("extend-origin"), otherwise `origin`
+   * alone. Each action stays bound to the origin of its observation.
+   */
+  origins?: string[];
   leaseMs: number;
   targets: NativeTaskBinding["targets"];
 }
@@ -112,6 +120,14 @@ export class NativeTaskActuator {
       /** Product display name for the browser overlay; host configuration. */
       assistantName?: string;
       /**
+       * Apply a changed task origin scope to the page's own navigation policy,
+       * for example the native surface's `setTaskOrigins`. Resolve once applied.
+       */
+      applyOrigins?: (
+        task: InteractiveTask,
+        allowedOrigins: readonly string[],
+      ) => Promise<void>;
+      /**
        * Trusted host wording for the action preview, for example "I will
        * choose your saved Visa." Without it the browser uses a generic line.
        */
@@ -148,13 +164,20 @@ export class NativeTaskActuator {
     )
       return cached;
     const policy = structuredClone(this.options.policy(task));
+    const origins =
+      policy.origins ??
+      (task.originGrants ? [...task.allowedOrigins] : [policy.origin]);
     if (
-      !task.allowedOrigins.includes(policy.origin) ||
+      !Array.isArray(origins) ||
+      !origins.includes(policy.origin) ||
+      new Set(origins).size !== origins.length ||
+      origins.some((origin) => !task.allowedOrigins.includes(origin)) ||
       !Number.isSafeInteger(policy.leaseMs) ||
       policy.leaseMs < 1 ||
       policy.leaseMs > 300000
     )
       fail("Invalid task browser policy");
+    policy.origins = origins;
     if (readOnly) policy.targets = [];
     const context = {
       actorId: task.owner.actorId,
@@ -168,6 +191,8 @@ export class NativeTaskActuator {
       tabId: policy.tabId,
       bindingRevision: this.options.nextBindingRevision(policy.tabId),
       origin: policy.origin,
+      // Single-origin bindings keep their original wire form.
+      ...(origins.length > 1 ? { origins } : {}),
       expiresAt: this.now() + policy.leaseMs,
       targets: policy.targets,
       revoked: false,
@@ -212,7 +237,7 @@ export class NativeTaskActuator {
       frame.complete !== true ||
       typeof frame.documentId !== "string" ||
       typeof frame.url !== "string" ||
-      new URL(frame.url).origin !== binding.policy.origin ||
+      !binding.policy.origins?.includes(new URL(frame.url).origin) ||
       !Number.isSafeInteger(frame.inputRevision) ||
       Number(frame.inputRevision) < 0 ||
       !Array.isArray(frame.elements)
@@ -247,7 +272,8 @@ export class NativeTaskActuator {
     const observation = {
       id: snapshot.snapshotId,
       pageId: snapshot.documentId,
-      origin: binding.policy.origin,
+      // The observed page's own origin; actions stay bound to this observation.
+      origin: new URL(snapshot.url).origin,
       version: (task.observation?.version ?? 0) + 1,
       inputRevision: snapshot.inputRevision,
       observedAt: this.now(),
@@ -258,6 +284,27 @@ export class NativeTaskActuator {
       epoch: task.epoch,
     });
     return observation;
+  }
+  /**
+   * The runtime persisted a new origin scope under a new epoch. Remove guidance
+   * and page facts from the old scope; the next observation binds the new one.
+   * Then the host applies the scope to the page's navigation policy.
+   */
+  async scopeChanged(context: {
+    owner: TaskOwner;
+    taskId: string;
+    epoch: number;
+    allowedOrigins: readonly string[];
+  }): Promise<void> {
+    const task = this.options.getTask(context.taskId);
+    if (
+      !sameTaskOwner(task.owner, context.owner) ||
+      task.epoch !== context.epoch
+    )
+      fail("Task scope changed again");
+    this.observations.delete(task.id);
+    await this.quiesce({ owner: context.owner, taskId: task.id });
+    await this.options.applyOrigins?.(task, [...context.allowedOrigins]);
   }
   /** Trusted planner/guide read; this is page data, never authorization. */
   readObservation(taskId: string, owner: TaskOwner) {

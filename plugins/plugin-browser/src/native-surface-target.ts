@@ -35,6 +35,7 @@ export class NativeSurfaceBrowserTarget {
     "task-guide-keep-clear",
     "task-expected-target",
     "task-action-feedback",
+    "task-origins",
   ]);
   private stopped = false;
   private readonly lifetime = new AbortController();

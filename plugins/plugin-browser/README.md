@@ -163,6 +163,22 @@ does after the 30 seconds is not watched. `showGuidance` accepts
 `keepClearRefs` (controls the label must not cover, peer capability
 `task-guide-keep-clear`) and returns `placement` and `dismissed`.
 
+A task is bound to its starting origin. When a site hands the person to another
+one (`https://www.ssa.gov` to `https://secure.login.gov` and back), the trusted
+host checks that exact origin (blocklist, look-alike) and calls
+`InteractiveTaskRuntime.extendOrigin(id, revision, origin, checkOrigin)`; it is
+never automatic. The `extend-origin` transition adds the origin under a new
+epoch, records the grant with the check reference, and from then on records the
+origin chain (`originChain`) and each observed origin in the event journal.
+`retractOrigin` removes a granted origin (the starting ones stay) and fences
+in-flight work like pause. The runtime then calls the actuator's
+`scopeChanged`: `NativeTaskActuator` drops page facts and guidance from the old
+scope and calls the host's `applyOrigins`, for example the native surface's
+`setTaskOrigins`. The next binding of an extended task carries every allowed
+origin as `origins` (peer capability `task-origins`); each observation records
+the page's own origin, and each command stays scoped to the origin of the page
+it reads or acts on.
+
 `NativeSocketBrowserTarget.currentPage()` is a trusted host read of the page the
 person sees in the connected profile. It sends one `list` command and returns the
 single active HTTPS tab as `{ tabId, origin, title }`: the origin without path,

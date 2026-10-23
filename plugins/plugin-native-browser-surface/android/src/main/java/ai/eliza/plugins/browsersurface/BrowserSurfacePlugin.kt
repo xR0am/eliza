@@ -728,7 +728,9 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                     val target = request.url.toString()
                     if (request.isForMainFrame && handOff(id, surface, target, request.hasGesture())) return true
                     if (!surface.interceptNavigation) return false
-                    return when (BrowserNavigationPolicy.decide(view.url, target, request.isForMainFrame)) {
+                    val decision = BrowserNavigationPolicy.decide(
+                        view.url, target, request.isForMainFrame, surface.gate.taskOrigins())
+                    return when (decision) {
                         BrowserNavigationPolicy.Decision.ALLOW -> false
                         BrowserNavigationPolicy.Decision.BLOCK -> true
                         BrowserNavigationPolicy.Decision.REQUEST -> {
@@ -1253,6 +1255,43 @@ class ElizaSurfaceManagerPlugin : Plugin() {
                 // error-policy:J1 Never broaden permissions to reach another app.
                 call.reject("Android prevented opening this link", "EXTERNAL_LINK_DENIED", error)
             }
+        }
+    }
+
+    /**
+     * The host extended (or narrowed) its running task to these exact HTTPS origins after its own
+     * safety check. An intercepting page may then move between them without a held navigation.
+     * An empty list ends the extension; nothing is ever added without this call.
+     */
+    @PluginMethod
+    fun setTaskOrigins(call: PluginCall) {
+        val id = call.getString("id")
+        val list = call.getArray("origins")
+        val origins = ArrayList<String>()
+        for (index in 0 until (list?.length() ?: 0)) {
+            val origin = list?.opt(index) as? String
+            if (origin == null || index >= 16) {
+                call.reject("setTaskOrigins requires at most 16 HTTPS origins", "INVALID_REQUEST")
+                return
+            }
+            origins.add(origin)
+        }
+        if (id == null || list == null) {
+            call.reject("setTaskOrigins requires an id and origins", "INVALID_REQUEST")
+            return
+        }
+        activity.runOnUiThread {
+            val identity = requireActiveIdentity(call, "setTaskOrigins") ?: return@runOnUiThread
+            val surface = ownedSurface(call, id, identity, "setTaskOrigins") ?: return@runOnUiThread
+            if (!surface.interceptNavigation) {
+                call.reject("setTaskOrigins requires a surface created with interceptNavigation", "UNSUPPORTED")
+                return@runOnUiThread
+            }
+            if (!surface.gate.setTaskOrigins(origins)) {
+                call.reject("setTaskOrigins accepts exact HTTPS origins only", "INVALID_REQUEST")
+                return@runOnUiThread
+            }
+            call.resolve()
         }
     }
 

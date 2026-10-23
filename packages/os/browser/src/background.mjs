@@ -69,6 +69,7 @@ const connection = new NativeConnection({
         "task-protected-fill",
         "task-expected-target",
         "task-guide-keep-clear",
+        "task-origins",
       ],
     };
   },
