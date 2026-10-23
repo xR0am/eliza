@@ -28,6 +28,7 @@ const consumers = [
   "BrowserSessionPolicyTest",
   "BrowserLinkAutofillPolicyTest",
   "BrowserPageHandoffsTest",
+  "BrowserMainFrameGateTest",
   "BrowserProfileCaptureTest",
 ];
 const bin = (name) =>

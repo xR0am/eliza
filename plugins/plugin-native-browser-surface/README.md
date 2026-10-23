@@ -42,9 +42,12 @@ Non-web schemes and addresses with credentials are refused when WebView sends th
 this callback. A main-frame request that WebView sends without that callback (a POST
 form submission, a page's own history move) gets a local empty 204 unless its origin is
 the committed page's or one the host approved (`navigate`, `createSurface`, `goBack`,
-`goForward`). It is reported with its `method` and never replayed, so a blocked host
-never receives it. A tapped new window is reported with `newWindow: true`. Subframes are
-not intercepted; this is not a subresource filter.
+`goForward`) for the length of that navigation, the https upgrade of either included.
+It is reported with its `method` and never replayed, so a blocked host never receives it.
+A server redirect of an address the host loaded goes on without asking again only while
+it stays within the approved origin or its https upgrade. A tapped new window is
+reported with `newWindow: true`. Subframes are not intercepted; this is not a
+subresource filter.
 
 A website never acts for the person through a surface. Android reports these as events
 and does nothing by itself:
