@@ -862,11 +862,14 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     // unknown and pauses the task. A request still in flight when a snapshot
     // is read shows up in a later snapshot.
     //
-    // With a commit grant, the one commit the person said yes to goes ahead:
-    // one form submit (and the page load it sends) to the grant's origin,
-    // and the page's own-site requests and same-document address changes.
-    // Snapshots report it as a consented commit. A second submit, a submit
-    // to another origin, or any other page change is still stopped.
+    // With a commit grant, the one commit the person said yes to goes ahead,
+    // once: either the submit of the granted control's own form (and the page
+    // load it sends) to the page's origin, or, when no such page load is under
+    // way, one own-site request (a script form or a button that sends with
+    // fetch). Snapshots report it as a consented commit. A second submit,
+    // another form, another origin, any further own-site request and every
+    // other page change, same-document address changes included, are still
+    // stopped or recorded as above.
     globalThis[watchKey]?.stop();
     const anchor =
       command.subaction === "click" ? node.closest("a[href]") : null;
@@ -883,10 +886,20 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
       consented: null,
       stop: () => controller.abort(),
     };
-    // submits: 0 until the one granted form submit; then its page load may
-    // follow once (pending).
+    // The granted control's own form: the only form the grant can send.
+    const grantedForm = grant
+      ? (node.form ?? node.closest("form") ?? null)
+      : null;
+    // submits: 0 until the granted form's submit event; its page load may then
+    // follow once (pending, to action). spent: the one commit went through.
     const consent = grant
-      ? { grantId: grant.grantId, submits: 0, pending: false }
+      ? {
+          grantId: grant.grantId,
+          submits: 0,
+          pending: false,
+          action: "",
+          spent: false,
+        }
       : null;
     const consentTo = (kind) => {
       watch.consented ??= {
@@ -898,6 +911,16 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     const sameOrigin = (url) => {
       try {
         return new URL(url, location.href).origin === location.origin;
+      } catch {
+        return false;
+      }
+    };
+    // A GET submit replaces the query, so only origin and path identify it.
+    const samePath = (url, other) => {
+      try {
+        const a = new URL(url, location.href);
+        const b = new URL(other, location.href);
+        return a.origin === b.origin && a.pathname === b.pathname;
       } catch {
         return false;
       }
@@ -987,18 +1010,20 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         if (personForms.has(event.target)) return;
         const form = event.target;
         const submitter = event.submitter;
+        const action = submitter?.hasAttribute("formaction")
+          ? submitter.formAction
+          : form.action;
         if (
           consent &&
+          !consent.spent &&
           consent.submits === 0 &&
           form instanceof HTMLFormElement &&
+          (submitter === node ||
+            (grantedForm !== null && form === grantedForm)) &&
           (submitter?.hasAttribute("formmethod")
             ? submitter.formMethod
             : form.method) !== "dialog" &&
-          sameOrigin(
-            submitter?.hasAttribute("formaction")
-              ? submitter.formAction
-              : form.action,
-          ) &&
+          sameOrigin(action) &&
           ["", "_self"].includes(
             submitter?.hasAttribute("formtarget")
               ? submitter.formTarget
@@ -1007,7 +1032,13 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
         ) {
           consent.submits = 1;
           consent.pending = true;
+          consent.action = action;
           consentTo("submit");
+          // A page handler that cancels this submit sends no page load, so
+          // none may follow it later; one own-site request still may.
+          setTimeout(() => {
+            if (event.defaultPrevented) consent.pending = false;
+          }, 0);
           return;
         }
         report("submit", event);
@@ -1027,21 +1058,31 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
           return;
         if (event.destination.sameDocument) {
           // Recorded, not stopped: the page's own state has already moved.
-          if (byPerson(performance.now())) return;
-          if (consent) consentTo("navigation");
-          else record("navigation");
+          if (!byPerson(performance.now())) record("navigation");
           return;
         }
+        const source = event.sourceElement;
+        const sourceForm =
+          source instanceof HTMLFormElement ? source : source?.form;
+        const fromGrantedForm =
+          source === node ||
+          (grantedForm !== null && sourceForm === grantedForm);
         if (
           consent &&
-          event.formData &&
+          !consent.spent &&
           sameOrigin(event.destination.url) &&
-          (consent.pending || consent.submits === 0)
+          // The page load of the granted submit (POST or GET), or a script
+          // form.submit() of the granted form, which sends no submit event.
+          ((consent.pending &&
+            samePath(event.destination.url, consent.action) &&
+            (fromGrantedForm || !("sourceElement" in event))) ||
+            (consent.submits === 0 &&
+              grantedForm !== null &&
+              sourceForm === grantedForm))
         ) {
-          // The page load of the granted submit, or a script form.submit(),
-          // which sends no submit event, as the one granted submit.
           consent.submits = 1;
           consent.pending = false;
+          consent.spent = true;
           consentTo("submit");
           return;
         }
@@ -1060,7 +1101,11 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
       tail(host, 3) === tail(location.hostname, 3);
     if (typeof PerformanceObserver === "function") {
       const requests = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
+        // Oldest first, so the granted action's own request is the one used.
+        const entries = [...list.getEntries()].sort(
+          (a, b) => a.startTime - b.startTime,
+        );
+        for (const entry of entries) {
           if (
             entry.startTime < startedAt ||
             !["fetch", "xmlhttprequest", "beacon"].includes(
@@ -1076,8 +1121,14 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
             continue;
           }
           if (sameSite(host)) {
-            if (consent) consentTo("request");
-            else record("request");
+            // One own-site request may carry the granted commit when no
+            // granted page load is under way or done; every other is recorded.
+            if (consent && !consent.spent && !consent.pending) {
+              consent.spent = true;
+              consentTo("request");
+              continue;
+            }
+            record("request");
             break;
           }
         }
