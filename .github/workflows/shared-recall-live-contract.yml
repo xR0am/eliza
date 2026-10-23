@@ -47,6 +47,7 @@ jobs:
           if bun --conditions=eliza-source test packages/cloud/api/__tests__/shared-recall-cloudflare-live.test.ts > "$private_log" 2>&1; then
             echo "phase=shared-recall status=passed code=SHARED_RECALL_CONTRACT_PASSED"
           else
+            sed -n '/^shared-recall-fixture=[0-9a-f-]*$/p' "$private_log"
             echo "phase=shared-recall status=failed code=SHARED_RECALL_CONTRACT_FAILED" >&2
             exit 1
           fi

@@ -75,6 +75,18 @@ qualify(
     ];
     const vectors = await embedTexts(texts);
     const [query] = await embedTexts([texts[0]]);
+    // Bound each repository operation, including cleanup, before opening its pool.
+    const databaseUrl = new URL(process.env.DATABASE_URL);
+    databaseUrl.searchParams.set(
+      "options",
+      [
+        databaseUrl.searchParams.get("options") ?? "",
+        "-c statement_timeout=10000 -c lock_timeout=3000",
+      ]
+        .join(" ")
+        .trim(),
+    );
+    process.env.DATABASE_URL = databaseUrl.toString();
     const { and, eq, inArray } = await import("drizzle-orm");
     const { dbWrite, closeDatabaseConnectionsForTests } = await import(
       "../../shared/src/db/client"
@@ -90,6 +102,8 @@ qualify(
       "../../shared/src/lib/services/shared-runtime/shared-memory-store"
     );
     const nonce = randomUUID();
+    // Only this random fixture marker is released from the otherwise private log.
+    console.info(`shared-recall-fixture=${nonce}`);
     const fixtures = [0, 1].map((index) => ({
       organizationId: randomUUID(),
       userId: randomUUID(),
