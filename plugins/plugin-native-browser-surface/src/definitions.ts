@@ -81,8 +81,10 @@ export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
    * callback. A main-frame request WebView sends without that callback (a POST form
    * submission, a page's own history move) is answered locally with an empty 204 unless
    * its origin is the committed page's or one the host approved through `navigate`,
-   * `createSurface`, `goBack` or `goForward`; it is reported with its `method` and never
-   * replayed. So a blocked host never receives the request. A tapped new window is
+   * `createSurface`, `goBack` or `goForward` for the length of that navigation (the https
+   * upgrade of either included); it is reported with its `method` and never replayed. So a
+   * blocked host never receives the request. A server redirect of an address the host
+   * loaded goes on without asking again only within the approved origin or its upgrade. A tapped new window is
    * reported with `newWindow: true`. Subframes are not intercepted. Default false: the
    * page navigates by itself, and a tapped new window opens in place. `setTaskOrigins`
    * lets the page move between the origins of a task the host extended.
