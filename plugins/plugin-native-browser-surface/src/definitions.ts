@@ -87,6 +87,14 @@ export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
    * page navigates by itself, and a tapped new window opens in place.
    */
   interceptNavigation?: boolean;
+  /**
+   * Android, isolated storage only: one persistent profile per owner and key (for
+   * example a signed-in account id, 1 to 128 of `A-Z a-z 0-9 . _ : @ -`), so website
+   * sign-ins survive across openings. The profile name is a digest, never the key.
+   * Remove it with `purgeProfiles`. Without a key every surface gets a fresh profile
+   * that is cleared when it closes and deleted once Android releases it.
+   */
+  profileKey?: string;
 }
 
 /** A cross-origin main-frame navigation an intercepting surface held for the host. */
@@ -160,6 +168,43 @@ export interface IdentityProviderRequestedEvent extends SurfaceIdOptions {
  */
 export interface SurfaceCrashedEvent extends SurfaceIdOptions {
   didCrash: boolean;
+  url: string | null;
+}
+
+/** A surface closed by the plugin, for example when its keyed profile was purged. */
+export interface SurfaceClosedEvent extends SurfaceIdOptions {
+  reason: "profile-purged";
+}
+
+/** Options for a masked page screenshot. */
+export interface CaptureSurfaceOptions extends SurfaceIdOptions {
+  /** Long edge in pixels, 256 to 2048. Default 1024. Never scaled up. */
+  maxEdge?: number;
+  /** JPEG quality, 30 to 90. Default 70. */
+  quality?: number;
+  /**
+   * Up to 32 more CSS selectors to cover, for values the host knows are secret.
+   * Password, `cc-*`, `one-time-code`, `current-password` and `new-password`
+   * fields are always covered.
+   */
+  maskSelectors?: string[];
+  /** Cover every frame the page cannot read (payment fields often live there). Default true. */
+  maskFrames?: boolean;
+}
+
+/**
+ * A masked JPEG of the visible page. Covers are placed before the copy and removed
+ * right after; host chrome is painted over. Send it only where the host's retention
+ * rules allow, and never store it in a thread or task journal.
+ */
+export interface SurfaceCapture {
+  mimeType: "image/jpeg";
+  /** Base64 JPEG bytes. */
+  data: string;
+  width: number;
+  height: number;
+  maskedFields: number;
+  maskedFrames: number;
   url: string | null;
 }
 
@@ -354,6 +399,30 @@ export interface ElizaSurfaceManagerPlugin {
   /** Android: page text size in percent, 50 to 300 (100 is the page's own size). */
   setTextZoom(options: SurfaceIdOptions & { percent: number }): Promise<void>;
   /**
+   * Android: sign this isolated surface out of every website (cookies, storage,
+   * cache). Rejects `SHARED_STORAGE` for a surface on the host's own store.
+   */
+  clearSurfaceStorage(options: SurfaceIdOptions): Promise<void>;
+  /**
+   * Android: delete keyed profiles. `profileKey` purges that key now and closes its
+   * surfaces (`surfaceClosed`); use it on account sign-out. `idleMs` (at least one
+   * hour) purges every keyed profile unused for that long that no surface has open.
+   * Data is cleared at once; the profile directory goes once Android releases it.
+   */
+  purgeProfiles(
+    options: SurfaceOwnerOptions &
+      (
+        | { profileKey: string; idleMs?: never }
+        | { idleMs: number; profileKey?: never }
+      ),
+  ): Promise<{ purged: number }>;
+  /**
+   * Android 8+: masked screenshot of the visible foreground page for a vision
+   * fallback. Rejects (`CAPTURE_MASK_FAILED`, `CAPTURE_STALE`, `CAPTURE_UNAVAILABLE`,
+   * `UNSUPPORTED`) rather than return an image it could not mask.
+   */
+  captureSurface(options: CaptureSurfaceOptions): Promise<SurfaceCapture>;
+  /**
    * Android isolated-world main-frame observation/input. Host-only: task policy
    * must come from the trusted task authorizer, never page or model output.
    * Effects require the documentId and snapshot references from a fresh read.
@@ -445,6 +514,10 @@ export interface ElizaSurfaceManagerPlugin {
   addListener(
     eventName: "surfaceCrashed",
     listener: (event: SurfaceCrashedEvent) => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "surfaceClosed",
+    listener: (event: SurfaceClosedEvent) => void,
   ): Promise<PluginListenerHandle>;
   addListener(
     eventName: "keyboardChanged",
