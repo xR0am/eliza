@@ -71,7 +71,7 @@ output "canonical_edge" {
 }
 
 output "railway_tunnel_dns" {
-  description = "DNS-only canonical tunnel records whose exact targets and verification values originate in Railway."
+  description = "Canonical tunnel records retained at their original Terraform addresses through the Worker cutover."
   value = {
     for key, record in cloudflare_dns_record.railway_tunnel : key => {
       id      = record.id

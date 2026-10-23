@@ -130,6 +130,7 @@ jobs:
       TF_VAR_dns_record_import_ids: ${{ vars.DNS_RECORD_IMPORT_IDS_JSON || '{}' }}
       TF_VAR_canonical_edge_wildcard_origins: ${{ vars.CANONICAL_EDGE_WILDCARD_ORIGINS_JSON || '[]' }}
       TF_VAR_canonical_service_origins: ${{ vars.CANONICAL_SERVICE_ORIGINS_JSON || '{}' }}
+      TF_VAR_tunnel_worker_hostname: ${{ vars.TUNNEL_WORKER_HOSTNAME || '' }}
       TF_VAR_railway_tunnel_dns_records: ${{ vars.RAILWAY_TUNNEL_DNS_RECORDS_JSON || '{}' }}
       TF_VAR_canonical_edge_certificate_packs: ${{ vars.CANONICAL_EDGE_CERTIFICATE_PACKS_JSON || '{}' }}
       TF_VAR_staging_agent_wildcard_origins: ${{ vars.STAGING_AGENT_WILDCARD_ORIGINS_JSON || '[]' }}
