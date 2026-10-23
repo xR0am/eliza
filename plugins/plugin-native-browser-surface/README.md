@@ -39,8 +39,33 @@ included, is cancelled before any request and reported as `navigationRequested`
 (`{id, owner, session, epoch, url, redirect, userGesture}`). The host loads the address
 with `navigate()` once its own check (for example `SubmittedNavigation`) allows it.
 Non-web schemes and addresses with credentials are refused when WebView sends them to
-this callback. POST form submissions and subframes are not intercepted. This is a
-navigation handoff, not a network filter. Surfaces created without the option are unchanged.
+this callback. A main-frame request that WebView sends without that callback (a POST
+form submission, a page's own history move) gets a local empty 204 unless its origin is
+the committed page's or one the host approved (`navigate`, `createSurface`, `goBack`,
+`goForward`). It is reported with its `method` and never replayed, so a blocked host
+never receives it. A tapped new window is reported with `newWindow: true`. Subframes are
+not intercepted; this is not a subresource filter.
+
+A website never acts for the person through a surface. Android reports these as events
+and does nothing by itself:
+
+- `dialogRequested`: `alert`, `confirm`, `prompt` and leave-page dialogs wait for
+  `answerDialog`. A dialog of a hidden, closing or navigating surface is cancelled,
+  never accepted.
+- `downloadRequested`: nothing is downloaded. The http(s) address can carry access
+  tokens, so keep it out of models and logs.
+- `externalLinkRequested`: a tapped `tel:`, `mailto:`, `market:` or `intent:` link.
+  `openExternalLink` opens only that link with a fresh Intent; `tel:` opens the dialer
+  and places no call. Script attempts are dropped.
+- `identityProviderRequested`: Google and Facebook sign-in pages refuse embedded
+  WebViews (`disallowed_useragent`). They are not loaded; open them in a full browser.
+- `surfaceCrashed`: the page renderer crashed or was reclaimed. Only that surface
+  closes; the host activity keeps running. Recreate the surface to continue.
+- `keyboardChanged`: the on-screen keyboard opened or closed, with its height.
+
+Script popups never open. `getSurfaceState` also returns `title`, `canGoBack`,
+`canGoForward`, `progress`, `pageError` and `textZoom`; `setTextZoom` sets the page
+text size from 50 to 300 percent.
 
 `parseBrowserAddressInput` (also exported as `./address-input` without bridge
 registration) classifies address-bar text as an HTTP(S) URL, search text, or a
