@@ -17,13 +17,74 @@ import {
   validActionText,
 } from "./native-socket-target.js";
 
+export const TASK_BROWSER_BLOCKER_KINDS = [
+  "modal",
+  "cookie-consent",
+  "captcha",
+  "login-wall",
+  "paywall",
+] as const;
+export const TASK_BROWSER_BLOCKER_COVERAGE = [
+  "viewport",
+  "target",
+  "partial",
+] as const;
+/**
+ * Something in front of the observed page that the person must deal with
+ * first. It is reported, never answered: `ref` is a control of this snapshot
+ * that closes it without agreeing to anything, `rejectRef` a consent banner's
+ * reject or necessary-only control. A person check (captcha) never has a ref.
+ * `covers` is most of the viewport, the centre of a listed control outside
+ * it, or only part of the page. `text` is website data, not instructions.
+ */
+export interface TaskBrowserBlocker {
+  kind: (typeof TASK_BROWSER_BLOCKER_KINDS)[number];
+  ref?: string;
+  rejectRef?: string;
+  covers: (typeof TASK_BROWSER_BLOCKER_COVERAGE)[number];
+  text?: string;
+}
 export interface TaskBrowserSnapshot {
   snapshotId: string;
   documentId: string;
   url: string;
   inputRevision: number;
   elements: Array<{ selector: string; [key: string]: unknown }>;
+  /** Absent from browsers that predate blocker reports. */
+  blockers?: TaskBrowserBlocker[];
   [key: string]: unknown;
+}
+
+/** Whether a snapshot's blocker report is well formed and names only its own elements. */
+export function validTaskBrowserBlockers(
+  snapshot: Pick<TaskBrowserSnapshot, "elements"> & { blockers?: unknown },
+): boolean {
+  if (snapshot.blockers === undefined) return true;
+  if (!Array.isArray(snapshot.blockers)) return false;
+  const selectors = new Set(
+    snapshot.elements.map((element) => element.selector),
+  );
+  const optionalRef = (value: unknown) =>
+    value === undefined || (typeof value === "string" && selectors.has(value));
+  return snapshot.blockers.every((blocker: unknown) => {
+    if (!blocker || typeof blocker !== "object" || Array.isArray(blocker))
+      return false;
+    const item = blocker as Record<string, unknown>;
+    return (
+      TASK_BROWSER_BLOCKER_KINDS.includes(
+        item.kind as TaskBrowserBlocker["kind"],
+      ) &&
+      TASK_BROWSER_BLOCKER_COVERAGE.includes(
+        item.covers as TaskBrowserBlocker["covers"],
+      ) &&
+      optionalRef(item.ref) &&
+      optionalRef(item.rejectRef) &&
+      (item.kind !== "captcha" ||
+        (item.ref === undefined && item.rejectRef === undefined)) &&
+      (item.rejectRef === undefined || item.kind === "cookie-consent") &&
+      (item.text === undefined || typeof item.text === "string")
+    );
+  });
 }
 export interface TaskBrowserPolicy {
   tabId: string;
@@ -231,6 +292,8 @@ export class NativeTaskActuator {
       )
     )
       fail("Invalid browser target references");
+    if (!validTaskBrowserBlockers(snapshot))
+      fail("Invalid browser page blocker report");
     return snapshot;
   }
   async observe(context: {

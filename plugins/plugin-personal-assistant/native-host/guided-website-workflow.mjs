@@ -152,10 +152,45 @@ const present = (entries) =>
   );
 
 /**
+ * What stands in front of the page (modal, cookie or consent banner, person
+ * check, sign-in wall, paywall), with its controls named by their control
+ * refs. A ref to a protected field or to no listed control is left out. A
+ * person check never has a ref: only the person can answer it.
+ */
+function pageBlockers(snapshot, controls) {
+  const refOf = (selector) =>
+    typeof selector === "string"
+      ? (controls.find(({ element }) => element.selector === selector)?.ref ??
+        null)
+      : null;
+  return (Array.isArray(snapshot.blockers) ? snapshot.blockers : []).map(
+    (blocker) =>
+      present([
+        ["kind", blocker.kind],
+        // A consent banner's close control may count as agreeing: only its
+        // reject control is offered.
+        [
+          "ref",
+          blocker.kind === "captcha" || blocker.kind === "cookie-consent"
+            ? null
+            : refOf(blocker.ref),
+        ],
+        [
+          "rejectRef",
+          blocker.kind === "cookie-consent" ? refOf(blocker.rejectRef) : null,
+        ],
+        ["covers", blocker.covers],
+        ["text", typeof blocker.text === "string" ? blocker.text : null],
+      ]),
+  );
+}
+
+/**
  * The page as a model may read it: the address without its query, the title,
- * the visible text and each control's locating facts, state and position.
- * Selectors, field values and the words of protected fields are not in it.
- * Everything in it was written by the website: it is data, not instructions.
+ * the visible text, what blocks the page and each control's locating facts,
+ * state and position. Selectors, field values and the words of protected
+ * fields are not in it. Everything in it was written by the website: it is
+ * data, not instructions.
  */
 export function pageView(snapshot, { controls, protectedFields }) {
   const url = new URL(snapshot.url);
@@ -163,6 +198,7 @@ export function pageView(snapshot, { controls, protectedFields }) {
     url: `${url.origin}${url.pathname}`,
     title: snapshot.title ?? "",
     text: snapshot.text,
+    blockers: pageBlockers(snapshot, controls),
     controls: controls.map(({ ref, kind, element }) =>
       present([
         ["ref", ref],

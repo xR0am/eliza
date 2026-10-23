@@ -50,6 +50,19 @@ A field is secret (`sensitive`) by its type and autocomplete tokens, or by
 words in its name, id, placeholder or label: password and PIN, one-time code,
 card, bank account and government ID numbers. Task fills never reach a secret
 field, even when a host grants it.
+Snapshots also report `blockers`: what stands in front of the page, as
+`{ kind, ref?, rejectRef?, covers, text? }`. `kind` is `modal`, `cookie-consent`,
+`captcha` (reCAPTCHA, hCaptcha, Turnstile or a "verify you are human" check),
+`login-wall` or `paywall`. `covers` is `viewport` (a modal dialog, most of the
+viewport, or an interstitial page), `target` (the centre of a listed control
+outside it) or `partial`. `ref` is a close control that agrees to nothing, and a
+consent banner offers only its reject or necessary-only control as `rejectRef`;
+both are selectors of the same snapshot. A person check never has a ref. The
+snapshot reports blockers and never presses, solves or dismisses one. Detection
+is heuristic (dialog semantics, fixed layers hit-tested on a viewport grid,
+known consent and challenge markers, and page phrases); it is qualified on the
+local fixtures in `scripts/fixtures/page-blockers` with
+`bun run --cwd packages/os test:browser:blockers`, not on arbitrary sites.
 Large native messages use ordered lossless chunks below the Android Binder limit.
 Incomplete or out-of-order messages never execute. Repeated
 request IDs fail closed; interrupted effects are never replayed automatically.

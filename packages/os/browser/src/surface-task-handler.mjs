@@ -1,5 +1,5 @@
 /** Trusted renderer adapter for the embedded native page, not a website API. */
-import { pageCommand } from "./page-command.mjs";
+import { blockerSelectors, pageCommand } from "./page-command.mjs";
 import { pageGuidance } from "./page-guidance.mjs";
 import { BridgeError } from "./protocol.mjs";
 import { createTaskBindings } from "./task-bindings.mjs";
@@ -238,6 +238,10 @@ export function createSurfaceTaskHandler({
               ...element,
               selector: `${result.snapshotId}:0:${id}`,
             })),
+            blockers: blockerSelectors(
+              result.blockers,
+              `${result.snapshotId}:0`,
+            ),
           },
         ],
       };

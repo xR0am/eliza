@@ -56,7 +56,11 @@ name, placeholder, title, field name, image text, nearby text, row text, group
 and form), so controls with no usable name can still be found. Password, code,
 card, bank and ID-number fields are kept apart: `pageView` gives a model only
 their category and whether they are filled, and the workflow points at them
-for the person without asking a model. The host's `planStep` reads `pageView`
+for the person without asking a model. `pageView.blockers` lists what stands in
+front of the page (modal, cookie or consent banner, person check, sign-in wall,
+paywall) with `covers` and, when the browser identified one, the control ref of
+a close control (`ref`) or a consent banner's reject control (`rejectRef`). A
+person check never carries a ref. The host's `planStep` reads `pageView`
 and returns one step with a ref; `checkStep` can stop and ask before a step.
 By default the workflow points at the control; the person presses every control. Its only
 effect is `fill(offerKey)`: one held value into one empty ordinary field after
