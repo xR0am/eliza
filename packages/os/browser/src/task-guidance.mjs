@@ -223,6 +223,7 @@ export function createTaskGuidance(
           ]);
           if (shown.accepted !== true) throw stale();
         });
+        let pollDelay = 50;
         while (Date.now() < expiresAt) {
           const status = await enqueue(tabId, () =>
             inject(pageGuidance, [
@@ -237,7 +238,15 @@ export function createTaskGuidance(
           );
           if (status.ready === true) return { actionId, current: valid };
           if (status.cancelled) throw stale();
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          // Slow painting must not spend the task budget on readiness checks.
+          // Keep Cancel responsive and never extend the authorization deadline.
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              Math.min(pollDelay, Math.max(0, expiresAt - Date.now())),
+            ),
+          );
+          pollDelay = Math.min(pollDelay * 2, 500);
         }
         throw stale();
       } catch (error) {
