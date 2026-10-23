@@ -1,3 +1,4 @@
+import type { CloudflareClefBinding } from "../lib/providers/cloudflare-clef";
 import type { CloudflareSpeechBinding } from "../lib/providers/cloudflare-speech";
 /**
  * Hono + Cloudflare Workers context types for the Cloud API.
@@ -186,7 +187,11 @@ export interface Bindings {
 
   // ---- Cloudflare Registrar/DNS ----
   /** Native Workers AI binding for the canonical BGE CLS embedding representation. */
-  AI?: CloudflareEmbeddingBinding & CloudflareSpeechBinding;
+  AI?: CloudflareEmbeddingBinding & CloudflareSpeechBinding & CloudflareClefBinding;
+  /** "true" turns on POST /api/v1/decisions (Clef through the AI binding). */
+  CLEF_DECISIONS_ENABLED?: string;
+  /** "clef-flash" (default) or "clef". */
+  CLEF_DECISION_MODEL?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   /** Workers AI credential for the canonical BGE embedding model. */
   CLOUDFLARE_EMBEDDING_API_TOKEN?: string;
