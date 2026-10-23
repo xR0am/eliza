@@ -534,7 +534,7 @@ class ElizaSurfaceManagerPlugin : Plugin() {
         return true
     }
 
-    /** Holds a page dialog for the host's answer, or dismisses it when nobody can answer. */
+    /** Holds a page dialog for an intercepting host's answer, or dismisses it when nobody can answer. */
     private fun holdDialog(
         id: String,
         view: WebView,
@@ -544,7 +544,8 @@ class ElizaSurfaceManagerPlugin : Plugin() {
         result: JsResult,
     ): Boolean {
         val surface = surfaces[id]
-        if (surface == null || surface.webView !== view ||
+        // Only an intercepting host answers dialogs; any other surface dismisses them as before.
+        if (surface == null || surface.webView !== view || !surface.interceptNavigation ||
             !BrowserPageHandoffs.dialogMayWait(isLive(surface), surface.foregrounded, surface.dialogs.size())) {
             result.cancel()
             return true
