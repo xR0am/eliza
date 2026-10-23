@@ -12,6 +12,8 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.UncheckedIOException;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
@@ -42,6 +44,7 @@ public class ElizaInferencePlugin extends Plugin {
     private static final class Request {
         private boolean cancelled;
         private InferenceSession active;
+        private Runnable alternative;
         synchronized void begin(InferenceSession session) {
             if (cancelled) throw new CancellationException();
             active = session;
@@ -49,14 +52,20 @@ public class ElizaInferencePlugin extends Plugin {
         synchronized void cancel() {
             cancelled = true;
             if (active != null) active.cancel();
+            if (alternative != null) alternative.run();
         }
-        synchronized void finish() { active = null; }
+        synchronized void alternative(Runnable cancel) {
+            if (cancelled) { cancel.run(); throw new CancellationException(); }
+            alternative = cancel;
+        }
+        synchronized void clearAlternative() { alternative = null; }
+        synchronized void finish() { active = null; alternative = null; }
         synchronized void check() {
             if (cancelled) throw new CancellationException();
         }
     }
 
-    private interface Operation { JSObject run(InferenceSession session) throws Exception; }
+    private interface Operation { JSObject run(InferenceSession session, Request request) throws Exception; }
 
     private void submit(PluginCall call, Operation operation) {
         if (destroyed) { call.reject("Inference bridge closed", "BRIDGE_CLOSED"); return; }
@@ -73,8 +82,9 @@ public class ElizaInferencePlugin extends Plugin {
                 request.check();
                 if (models.pressure) throw new IllegalStateException("Inference is releasing memory");
                 InferenceSession session = models.session();
+                models.activeRequest = request;
                 request.begin(session);
-                JSObject result = operation.run(session);
+                JSObject result = operation.run(session, request);
                 request.check();
                 call.resolve(result);
             } catch (CancellationException cancelled) {
@@ -83,6 +93,7 @@ public class ElizaInferencePlugin extends Plugin {
                 call.reject("Inference failed", "INFERENCE_FAILED", failure);
             } finally {
                 request.finish();
+                models.activeRequest = null;
                 requests.remove(id, request);
                 models.lastActivity = SystemClock.elapsedRealtime();
             }
@@ -98,7 +109,7 @@ public class ElizaInferencePlugin extends Plugin {
                 models.session();
                 JSObject result = new JSObject();
                 result.put("speech", VoiceNative.nativeParadeeSupported() == 1);
-                result.put("transcription", VoiceNative.nativeAsrSupported() == 1 ? "asr" : "none");
+                result.put("transcription", OnDeviceRecognizer.available(getContext()) ? "android" : VoiceNative.nativeAsrSupported() == 1 ? "asr" : "none");
                 result.put("provider", "libelizainference");
                 call.resolve(result);
             } catch (Exception failure) {
@@ -114,7 +125,7 @@ public class ElizaInferencePlugin extends Plugin {
         if (text.trim().isEmpty() || text.length() > 2000 || speed == null || !(speed >= 0.5 && speed <= 2.0)) {
             call.reject("Expected 1 to 2000 text characters and speed 0.5 to 2", "INVALID_INPUT"); return;
         }
-        submit(call, session -> {
+        submit(call, (session, request) -> {
             long start = SystemClock.elapsedRealtime();
             ParadeeVoice.Audio audio = session.synthesize(text, speed.floatValue());
             JSObject result = new JSObject();
@@ -139,17 +150,30 @@ public class ElizaInferencePlugin extends Plugin {
         if (bytes.length == 0 || bytes.length % 2 != 0 || bytes.length > 1920000) {
             call.reject("Expected complete PCM16 samples, at most one minute", "INVALID_INPUT"); return;
         }
-        submit(call, session -> {
+        submit(call, (session, request) -> {
             ByteBuffer input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             float[] pcm = new float[bytes.length / 2];
             for (int i = 0; i < pcm.length; i++) pcm[i] = input.getShort() / 32768f;
             long start = SystemClock.elapsedRealtime();
-            String text = session.transcribe(pcm);
+            TranscriptionRoute.Heard heard = TranscriptionRoute.transcribe(bytes,
+                    OnDeviceRecognizer.available(getContext()),
+                    () -> {
+                        OnDeviceRecognizer recognizer = new OnDeviceRecognizer(getContext());
+                        request.alternative(recognizer::cancel);
+                        try { return recognizer.transcribe(bytes, TranscriptionRoute.limitMillis(bytes.length)); }
+                        finally { request.clearAlternative(); }
+                    },
+                    () -> {
+                        request.check();
+                        try { return session.transcribe(pcm); }
+                        catch (IOException failure) { throw new UncheckedIOException(failure); }
+                    }, OnDeviceRecognizer::demote, line -> Log.i("ElizaInference", line));
+            if (heard == null) throw new IllegalStateException("Transcription unavailable");
             JSObject result = new JSObject();
-            result.put("text", text);
-            result.put("engine", "asr");
-            result.put("fellBack", false);
-            result.put("demoted", false);
+            result.put("text", heard.text == null ? "" : heard.text.trim());
+            result.put("engine", heard.engine);
+            result.put("fellBack", heard.fellBack);
+            result.put("demoted", heard.demoted);
             result.put("ms", SystemClock.elapsedRealtime() - start);
             return result;
         });
@@ -163,7 +187,7 @@ public class ElizaInferencePlugin extends Plugin {
         if (prompt.isEmpty() || maxTokens == null || maxTokens <= 0) {
             call.reject("Expected prompt and positive maxTokens", "INVALID_INPUT"); return;
         }
-        submit(call, session -> {
+        submit(call, (session, request) -> {
             JSObject result = new JSObject();
             StringBuilder text = new StringBuilder();
             try (InferenceSession.TextStream stream = session.openTextStream(prompt, maxTokens)) {
@@ -185,7 +209,7 @@ public class ElizaInferencePlugin extends Plugin {
         if (text.isEmpty() || pooling == null || pooling < 1 || pooling > 3) {
             call.reject("Expected text and pooling 1, 2 or 3", "INVALID_INPUT"); return;
         }
-        submit(call, session -> {
+        submit(call, (session, request) -> {
             JSArray vector = new JSArray();
             for (float value : session.embed(text, pooling)) vector.put(value);
             JSObject result = new JSObject(); result.put("embedding", vector); return result;
@@ -216,6 +240,7 @@ public class ElizaInferencePlugin extends Plugin {
         final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
         final Context context;
         volatile InferenceSession current;
+        volatile Request activeRequest;
         volatile boolean pressure;
         volatile long lastActivity = SystemClock.elapsedRealtime();
         static synchronized Models get(Context context) {
@@ -241,6 +266,8 @@ public class ElizaInferencePlugin extends Plugin {
         }
         void releasePressure() {
             pressure = true;
+            Request request = activeRequest;
+            if (request != null) request.cancel();
             InferenceSession session = current;
             if (session != null) session.cancel();
             worker.execute(this::trim);

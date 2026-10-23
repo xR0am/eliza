@@ -13,7 +13,10 @@ queue, idle unloading and Android memory-pressure handling. Enable it with
 The legacy `elizaParadeeCapacitor` flag and `ParadeeVoicePlugin` name select the
 same owner. Existing `ai.eliza.voice` Java APIs remain source compatible;
 new code should use `InferenceSession` instead of opening independent handles.
-The old app-side Gradle path forwards here.
+The old app-side Gradle path forwards here. The public `Wer` helper and Android
+on-device recognizer API remain available. The Capacitor transcription route
+retains Android-first recognition with native Phonon-2 fallback, using the same
+request queue and cancellation owner.
 
 The Eliza app uses its existing `ElizaBionicInferenceServer` shared context.
 Hosts using that server should route speech through it. The optional Capacitor
