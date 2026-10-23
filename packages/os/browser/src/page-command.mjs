@@ -1111,13 +1111,15 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     // is read shows up in a later snapshot.
     //
     // With a commit grant, the one commit the person said yes to goes ahead,
-    // once: either the submit of the granted control's own form (and the page
+    // once: either the submit the granted control itself sends (and the page
     // load it sends) to the page's origin, or, when no such page load is under
     // way, one own-site request (a script form or a button that sends with
-    // fetch). Snapshots report it as a consented commit. A second submit,
-    // another form, another origin, any further own-site request and every
-    // other page change, same-document address changes included, are still
-    // stopped or recorded as above.
+    // fetch). Snapshots report it as a consented commit. A submit from another
+    // submitter of the same form, a request that differs from the granted
+    // control's (action, method, target or encoding), a script form.submit(),
+    // a second submit, another form, another origin, any further own-site
+    // request and every other page change, same-document address changes
+    // included, are still stopped or recorded as above.
     globalThis[watchKey]?.stop();
     const anchor =
       command.subaction === "click" ? node.closest("a[href]") : null;
@@ -1138,14 +1140,54 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
     const grantedForm = grant
       ? (node.form ?? node.closest("form") ?? null)
       : null;
-    // submits: 0 until the granted form's submit event; its page load may then
-    // follow once (pending, to action). spent: the one commit went through.
+    const submitControl = (element) =>
+      (element instanceof HTMLButtonElement && element.type === "submit") ||
+      (element instanceof HTMLInputElement &&
+        ["submit", "image"].includes(element.type));
+    const overrides = ["formaction", "formmethod", "formtarget", "formenctype"];
+    // The request a submit sends: a submitter's form* attributes override
+    // the form's action, method, target and encoding.
+    const requestOf = (submitter, form) => {
+      const own = (attribute, value, fallback) =>
+        submitter?.hasAttribute(attribute) ? value : fallback;
+      return {
+        action: own("formaction", submitter?.formAction, form.action),
+        method: own("formmethod", submitter?.formMethod, form.method),
+        target: own("formtarget", submitter?.formTarget, form.target),
+        enctype: own("formenctype", submitter?.formEnctype, form.enctype),
+      };
+    };
+    const sameRequest = (a, b) =>
+      a.action === b.action &&
+      a.method === b.method &&
+      a.target === b.target &&
+      a.enctype === b.enctype;
+    // Read before the click, so a script that runs after it cannot move the
+    // granted request. Only a submit button of the granted form has one.
+    const grantedRequest =
+      grantedForm !== null && submitControl(node) && node.form === grantedForm
+        ? requestOf(node, grantedForm)
+        : null;
+    // A submit with no submitter (requestSubmit() with no argument, or an
+    // implicit submission) sends what the granted control would only when that
+    // control is the form's default button and overrides nothing.
+    const implicitAllowed =
+      grantedRequest !== null &&
+      [...document.querySelectorAll("button,input")].find(
+        (element) => element.form === grantedForm && submitControl(element),
+      ) === node &&
+      !overrides.some((attribute) => node.hasAttribute(attribute));
+    // submits: 0 until the granted control's submit event; its page load may
+    // then follow once (pending, to action by method). spent: the one commit
+    // went through.
     const consent = grant
       ? {
           grantId: grant.grantId,
           submits: 0,
           pending: false,
           action: "",
+          method: "",
+          implicit: false,
           spent: false,
         }
       : null;
@@ -1257,30 +1299,26 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
       (event) => {
         if (personForms.has(event.target)) return;
         const form = event.target;
-        const submitter = event.submitter;
-        const action = submitter?.hasAttribute("formaction")
-          ? submitter.formAction
-          : form.action;
+        const submitter = event.submitter ?? null;
+        const sent =
+          form instanceof HTMLFormElement ? requestOf(submitter, form) : null;
         if (
           consent &&
           !consent.spent &&
           consent.submits === 0 &&
-          form instanceof HTMLFormElement &&
-          (submitter === node ||
-            (grantedForm !== null && form === grantedForm)) &&
-          (submitter?.hasAttribute("formmethod")
-            ? submitter.formMethod
-            : form.method) !== "dialog" &&
-          sameOrigin(action) &&
-          ["", "_self"].includes(
-            submitter?.hasAttribute("formtarget")
-              ? submitter.formTarget
-              : form.target,
-          )
+          grantedRequest !== null &&
+          form === grantedForm &&
+          (submitter === node || (submitter === null && implicitAllowed)) &&
+          sameRequest(sent, grantedRequest) &&
+          sent.method !== "dialog" &&
+          sameOrigin(sent.action) &&
+          ["", "_self"].includes(sent.target)
         ) {
           consent.submits = 1;
           consent.pending = true;
-          consent.action = action;
+          consent.action = sent.action;
+          consent.method = sent.method;
+          consent.implicit = submitter === null;
           consentTo("submit");
           // A page handler that cancels this submit sends no page load, so
           // none may follow it later; one own-site request still may.
@@ -1309,24 +1347,26 @@ export function pageCommand(command, snapshotId, validateOnly = false) {
           if (!byPerson(performance.now())) record("navigation");
           return;
         }
+        // A form submission's source is its submitter, or the form itself
+        // when it has none (also a script form.submit()).
         const source = event.sourceElement;
-        const sourceForm =
-          source instanceof HTMLFormElement ? source : source?.form;
-        const fromGrantedForm =
+        const fromGranted =
           source === node ||
-          (grantedForm !== null && sourceForm === grantedForm);
+          (consent?.implicit === true &&
+            grantedForm !== null &&
+            source === grantedForm);
         if (
           consent &&
           !consent.spent &&
           sameOrigin(event.destination.url) &&
-          // The page load of the granted submit (POST or GET), or a script
-          // form.submit() of the granted form, which sends no submit event.
-          ((consent.pending &&
-            samePath(event.destination.url, consent.action) &&
-            (fromGrantedForm || !("sourceElement" in event))) ||
-            (consent.submits === 0 &&
-              grantedForm !== null &&
-              sourceForm === grantedForm))
+          // Only the page load of the granted submit (POST or GET). A script
+          // form.submit() sends no submit event and is never consented.
+          consent.pending &&
+          samePath(event.destination.url, consent.action) &&
+          (consent.method === "post"
+            ? event.formData != null
+            : event.formData == null) &&
+          (fromGranted || !("sourceElement" in event))
         ) {
           consent.submits = 1;
           consent.pending = false;

@@ -193,11 +193,17 @@ grant before dispatch, and only a peer advertising `task-commit-grant` receives
 one. The browser checks every field again, spends the grant once (a spent ID is
 refused, also after a bridge restart; a refusal after admission still spends
 it), and lets the commit control be pressed. The watch then lets exactly one
-commit through: the submit of the granted control's own form to the page's
+commit through: the submit the granted control itself sends to the page's
 origin with its page load (POST or GET), or, when no such page load is under
 way, one own-site request (a script form or button that sends with fetch). A
+submit with no submitter (`requestSubmit()` or an implicit submission) counts
+only when the granted control is the form's default button and overrides
+nothing. A
 snapshot reports it as `consentedCommit` (`{ grantId, kind }`). A submit the
-page cancels cannot be sent later. A second submit, another form, a submit to
+page cancels cannot be sent later. A submit from another submitter of the same
+form, a submit whose action, method, target or encoding differs from the
+granted control's when it was pressed, a script `form.submit()`, a second
+submit, another form, a submit to
 another origin, any further own-site request, a same-document address change
 and any other move to another document are still stopped or recorded as
 `effectViolation`, which the actuator treats as an unknown outcome. The actuator treats
