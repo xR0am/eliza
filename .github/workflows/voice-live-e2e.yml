@@ -600,8 +600,9 @@ jobs:
 
       # bun test, NOT vitest: these suites need bun:ffi, and vitest's node
       # workers make every one of them skip — a green-skip lie this lane bans.
-      # Under `bun test` all 12 tests execute against the staged fused lib; the
-      # ASR rows decode with the staged Phonon-2 GGUF.
+      # Under `bun test` every test executes against the staged fused lib; the
+      # ASR rows decode with the staged Phonon-2 GGUF and the desktop agent
+      # TTS rows speak through the Paradee v1.1 host worker.
       - name: Fused component FFI test lanes (bun:ffi)
         run: |
           set -euo pipefail
@@ -611,7 +612,7 @@ jobs:
             plugins/plugin-local-inference/src/services/voice/speaker/encoder-fused.real.test.ts \
             plugins/plugin-local-inference/src/services/voice/speaker/diarizer-fused.real.test.ts \
             plugins/plugin-local-inference/src/services/voice/asr-timed.real.test.ts \
-            plugins/plugin-local-inference/src/services/voice/kokoro/__tests__/kokoro-engine-bridge.real.test.ts \
+            plugins/plugin-local-inference/src/services/voice/paradee/__tests__/paradee-engine-bridge.real.test.ts \
             > "$PRIVATE_LOG" 2>&1; then
             echo "phase=fused-ffi status=failed code=FUSED_FFI_FAILED" >&2
             exit 1

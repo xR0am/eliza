@@ -4,8 +4,8 @@ description: >-
   libelizainference build (downloaded as a workflow artifact), build Phonon-2
   ASR and Paradee-8M v1.1 TTS from their pinned Hugging Face sources with the
   byte-reproducible converters in the llama.cpp fork, and stage the pinned
-  eliza-1-2b voice bundle regions (VAD, speaker, diarizer, desktop agent TTS)
-  into the canonical $HOME/.eliza/local-inference/models/eliza-1-2b.bundle
+  eliza-1-2b voice bundle regions (VAD, speaker, diarizer, keyless corpus
+  voices) into the canonical $HOME/.eliza/local-inference/models/eliza-1-2b.bundle
   cache. Every file is sha256-pinned. A present-and-matching file is never
   re-downloaded or rebuilt, so the first run per host pays the downloads and
   the Python environment once. Multiple runner slots share one host $HOME, so
@@ -30,9 +30,10 @@ runs:
           echo "::error title=Fused lib artifact missing::$LIB not found — the voice-fused-build job must have uploaded it."
           exit 1
         fi
-        # The acoustic suites need the Paradee TTS, Phonon-2 (batch + streaming
-        # ASR), speaker, diarizer and VAD ABI. Kokoro stays until the desktop
-        # agent TTS moves to Paradee.
+        # The acoustic suites need the Paradee TTS (the desktop agent voice),
+        # Phonon-2 (batch + streaming ASR), speaker, diarizer and VAD ABI.
+        # Kokoro is linked only to synthesize the keyless multi-speaker human
+        # corpus; it is not the agent voice.
         for sym in eliza_inference_paradee_load eliza_inference_asr_transcribe eliza_inference_asr_stream_open eliza_inference_kokoro_load eliza_inference_speaker_open eliza_inference_diariz_open eliza_inference_vad_open; do
           if ! nm -D "$LIB" | grep -q "$sym"; then
             echo "::error title=Fused lib incomplete::$LIB does not export $sym"
@@ -123,8 +124,9 @@ runs:
         # silero-vad-cpp artifact some probes still look for).
         stage vad/silero-vad-v5.gguf        bundles/e2b/vad/silero-vad-v5.gguf        d348cd6d87ea53dcd3e6680698c88be326082e27dae899adef653d090bee4995
         stage vad/silero-vad-v5.1.2.ggml.bin voice/vad/silero-vad-v5.1.2.ggml.bin     29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf
-        # Kokoro TTS: the desktop agent TTS until it moves to Paradee, and the
-        # full voice-pack set the keyless corpus (#9577) draws from.
+        # Kokoro voice packs: only the keyless human corpus (#9577) and the
+        # workbench enrollment speakers, which need several distinct voices.
+        # The desktop agent speaks with Paradee v1.1 (tts/paradee above).
         stage tts/kokoro/kokoro-82m-v1_0.gguf bundles/e2b/tts/kokoro/kokoro-82m-v1_0.gguf 165acd9d2d9b6c2d71fa5bd52b92a2559be08567f58ed496bade076e3d9cb46c
         stage tts/kokoro/voices/af_bella.bin    bundles/e2b/tts/kokoro/voices/af_bella.bin    f69d836209b78eb8c66e75e3cda491e26ea838a3674257e9d4e5703cbaf55c8b
         stage tts/kokoro/voices/af_nicole.bin   bundles/e2b/tts/kokoro/voices/af_nicole.bin   cd2191ab31b914ed7b318416b0e4440fdf392ddad9106a060819aa600a64f59a
@@ -153,6 +155,9 @@ runs:
         {
           echo "ELIZA_ASR_BUNDLE=$BUNDLE"
           echo "ELIZA_ASR_MODEL_DIR=$BUNDLE"
+          # The desktop agent TTS lanes (agent voice bridge, workbench agent
+          # turns, agent self-voice) run Paradee through the host TTS worker,
+          # which verifies this dir and ELIZA_INFERENCE_LIBRARY_SHA256.
           echo "ELIZA_PARADEE_MODEL_DIR=$BUNDLE/tts/paradee"
           echo "ELIZA_KOKORO_MODEL_DIR=$BUNDLE/tts/kokoro"
           echo "ELIZA_KOKORO_DEFAULT_VOICE_ID=af_bella"
