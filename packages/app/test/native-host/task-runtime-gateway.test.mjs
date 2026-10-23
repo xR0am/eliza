@@ -359,7 +359,7 @@ test("concurrent same-account reads and planner access remain authorized", async
   assert.equal((await older).status, 200);
 });
 
-async function actuatorFixture(t, { leaseMs = 60000, commitGrant, now } = {}) {
+async function actuatorFixture(t, { leaseMs = 60000, commitGrant } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "eliza-native-refusal-"));
   const bundlePath = join(directory, "task-runtime.mjs");
   buildTaskRuntime(bundlePath);
@@ -439,7 +439,6 @@ async function actuatorFixture(t, { leaseMs = 60000, commitGrant, now } = {}) {
         ...host,
         target,
         nextBindingRevision: () => ++revision,
-        ...(now ? { now } : {}),
         policy: () => ({
           tabId: "1",
           origin: "https://example.org",
@@ -517,15 +516,16 @@ test("a browser refusal before the effect is a failed operation, not an unknown 
 });
 
 test("observing after the browser lease expires renews it with a new binding revision", async (t) => {
-  let now = Date.now();
-  const f = await actuatorFixture(t, { leaseMs: 300, now: () => now });
+  // The actuator and task runtime must observe the same advancing clock.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const f = await actuatorFixture(t, { leaseMs: 300 });
   let current = f.runtime.current();
   current = await f.runtime.observe(current.id, current.revision);
   // Within the lease, the binding is reused.
   current = await f.runtime.observe(current.id, current.revision);
   assert.equal(f.state.bindings.length, 1);
-  now += 350;
-  const renewedAt = now;
+  t.mock.timers.tick(350);
+  const renewedAt = Date.now();
   current = await f.runtime.observe(current.id, current.revision);
   assert.deepEqual(
     f.state.bindings.map((binding) => binding.bindingRevision),
