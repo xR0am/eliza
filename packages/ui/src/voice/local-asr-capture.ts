@@ -403,7 +403,7 @@ export async function startLocalAsrRecorder(
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
-        // Gemma ASR ingests 16 kHz mono; request it at capture so the
+        // Phonon-2 ASR ingests 16 kHz mono; request it at capture so the
         // browser resamples once instead of us downsampling a 48 kHz buffer.
         sampleRate: 16000,
         echoCancellation: true,

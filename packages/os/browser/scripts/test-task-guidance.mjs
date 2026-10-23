@@ -422,8 +422,8 @@ try {
     evaluate(
       'globalThis.__elizaPageGuidanceV1?.visible && globalThis.__elizaPageGuidanceV1?.host.isConnected && globalThis.__elizaPageGuidanceV1?.shadow.querySelector(".pointer")?.style.display === "block"',
     );
-  const waitPointer = async () => {
-    const deadline = Date.now() + 3000;
+  const waitPointer = async (timeout = 3000) => {
+    const deadline = Date.now() + timeout;
     while (!(await pointerVisible())) {
       assert.ok(Date.now() < deadline, "Pointer did not become visible");
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -465,13 +465,41 @@ try {
   await page.$eval("#target", (node) => (node.style.marginLeft = "130px"));
   assert.equal((await changedAction.pending).ok, false);
   assert.equal(await page.evaluate(() => window.clicks), 0);
+  // A real pointer must reach Cancel above a modal in a short viewport.
+  await page.setViewport({ width: 460, height: 182 });
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.id = "cancel-modal";
+    const target = document.querySelector("#target");
+    target.style.cssText = "margin:0;padding:0;font:16px sans-serif";
+    dialog.innerHTML = "<p>Website notice</p>";
+    dialog.append(target);
+    document.body.append(dialog);
+    dialog.showModal();
+  });
   const dismissedAction = await startAction();
   await waitPointer();
-  await evaluate(
-    'globalThis.__elizaPageGuidanceV1.shadow.querySelector("button").click()',
-  );
+  const cancelPoint = await evaluate(`(() => {
+    const state = globalThis.__elizaPageGuidanceV1;
+    const button = state.shadow.querySelector(".close");
+    globalThis.__trustedCancel = false;
+    button.addEventListener("click", event => {globalThis.__trustedCancel = event.isTrusted;}, {once:true});
+    const rect = button.getBoundingClientRect();
+    return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+  })()`);
+  // Wait for the preview's fade, but act before its 800 ms dwell permits dispatch.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  await page.mouse.click(cancelPoint.x, cancelPoint.y);
+  assert.equal(await evaluate("globalThis.__trustedCancel"), true);
   assert.equal((await dismissedAction.pending).ok, false);
   assert.equal(await page.evaluate(() => window.clicks), 0);
+  await page.evaluate(() => {
+    const target = document.querySelector("#target");
+    target.style.cssText = "margin-left:130px";
+    document.body.prepend(target);
+    document.querySelector("#cancel-modal").remove();
+  });
+  await page.setViewport({ width: 1280, height: 800 });
   const typingAction = await startAction();
   await waitPointer();
   await page.focus("#manual");
@@ -485,7 +513,18 @@ try {
   assert.equal((await forbiddenAction.pending).error.kind, "POLICY_BLOCKED");
   assert.equal(await pointerVisible(), false);
   const execute = api.scripting.executeScript;
+  let delayedValidation = false;
   api.scripting.executeScript = async (request) => {
+    // Native bridge validation can take seconds on a loaded device. It must
+    // not consume the time needed to show the preview and offer Cancel.
+    if (
+      !delayedValidation &&
+      request.args[0].subaction === "click" &&
+      request.args[2] === true
+    ) {
+      delayedValidation = true;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
     const result = await execute(request);
     if (
       request.args[0].subaction === "click" &&
@@ -497,10 +536,23 @@ try {
     return result;
   };
   const approvedAction = await startAction();
-  await waitPointer();
+  await waitPointer(6500);
   const approvedReply = await approvedAction.pending;
+  assert.equal(delayedValidation, true);
   assert.equal(approvedReply.ok, true, JSON.stringify(approvedReply));
   assert.equal(await page.evaluate(() => window.clicks), 1);
+  assert.equal(await pointerVisible(), false);
+  delayedValidation = false;
+  const expiredDuringValidation = await startAction({
+    taskExpiresAt: Date.now() + 1500,
+  });
+  assert.equal((await expiredDuringValidation.pending).ok, false);
+  assert.equal(delayedValidation, true);
+  assert.equal(
+    await page.evaluate(() => window.clicks),
+    1,
+    "Slow setup cannot renew expired authorization",
+  );
   assert.equal(await pointerVisible(), false);
   await page.setViewport({ width: 640, height: 960 });
   const fillAction = await startAction(
