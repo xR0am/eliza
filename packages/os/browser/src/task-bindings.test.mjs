@@ -221,3 +221,70 @@ test("an extended task's grant commits only on the origin it names", async () =>
   assert.equal(scoped.command.taskPolicy.origin, signIn);
   assert.equal(scoped.command.taskPolicy.commitGrant.grantId, "grant-2");
 });
+
+test("a grant's request target and form hash are checked and reach the page", async () => {
+  const f = await fixture();
+  const formHash = "c".repeat(64);
+  const scoped = await f.authority.scope(
+    f.command({
+      commitGrant: f.grant({
+        requestTarget: { path: "/api/pay", method: "POST" },
+        formHash,
+      }),
+    }),
+  );
+  assert.deepEqual(scoped.command.taskPolicy.commitGrant, {
+    grantId: "grant-1",
+    selector: "#pay",
+    requestTarget: { path: "/api/pay", method: "POST" },
+    formHash,
+    expiresAt: f.grant().expiresAt,
+  });
+  // The spent record names what the grant was bound to.
+  assert.deepEqual(f.records.get("commit-grant:grant-1").requestTarget, {
+    path: "/api/pay",
+    method: "POST",
+  });
+  assert.equal(f.records.get("commit-grant:grant-1").formHash, formHash);
+  const url = await f.authority.scope(
+    f.command({
+      commitGrant: f.grant({
+        grantId: "grant-url",
+        requestTarget: { url: "https://api.bank.example/pay", method: "PUT" },
+      }),
+    }),
+  );
+  assert.deepEqual(url.command.taskPolicy.commitGrant.requestTarget, {
+    url: "https://api.bank.example/pay",
+    method: "PUT",
+  });
+  const malformed = [
+    { requestTarget: null },
+    { requestTarget: { path: "/api/pay" } },
+    { requestTarget: { path: "/api/pay", method: "post" } },
+    { requestTarget: { path: "api/pay", method: "POST" } },
+    { requestTarget: { path: "//evil.example/pay", method: "POST" } },
+    { requestTarget: { url: "http://bank.example/pay", method: "POST" } },
+    { requestTarget: { url: "https://u:p@bank.example/pay", method: "POST" } },
+    { requestTarget: { url: "https://bank.example/pay#x", method: "POST" } },
+    {
+      requestTarget: {
+        url: "https://bank.example/pay",
+        path: "/pay",
+        method: "POST",
+      },
+    },
+    { requestTarget: { path: "/pay", method: "POST", body: "x" } },
+    { formHash: "C".repeat(64) },
+    { formHash: "c".repeat(63) },
+    { formHash: 1 },
+  ];
+  for (const [index, overrides] of malformed.entries())
+    await refused(
+      f.authority.scope(
+        f.command({
+          commitGrant: f.grant({ grantId: `bad-${index}`, ...overrides }),
+        }),
+      ),
+    );
+});

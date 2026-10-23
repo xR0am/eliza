@@ -1,0 +1,98 @@
+name: Tunnel Identity Preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Protected tunnel environment
+        required: true
+        type: choice
+        options: [staging, production]
+      proxy_hostname:
+        description: Exact existing proxy hostname in Headscale
+        required: true
+        type: string
+      expected_identity_sha256:
+        description: Baseline receipt to require after the runtime handoff
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+jobs:
+  inspect:
+    name: Read-only tunnel node identity
+    if: ${{ (inputs.environment == 'staging' && github.ref == 'refs/heads/staging') || (inputs.environment == 'production' && github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Verify existing online proxy identity
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          PROXY_HOSTNAME: ${{ inputs.proxy_hostname }}
+          EXPECTED_IDENTITY_SHA256: ${{ inputs.expected_identity_sha256 }}
+          HEADSCALE_API_KEY: ${{ secrets.HEADSCALE_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import ipaddress
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          try:
+              environment = os.environ["TARGET_ENVIRONMENT"]
+              hostname = os.environ["PROXY_HOSTNAME"]
+              expected = os.environ["EXPECTED_IDENTITY_SHA256"]
+              key = os.environ["HEADSCALE_API_KEY"]
+              if environment not in ("staging", "production") or not key:
+                  raise ValueError("missing authority")
+              if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", hostname):
+                  raise ValueError("invalid hostname")
+              if expected and not re.fullmatch(r"[a-f0-9]{64}", expected):
+                  raise ValueError("invalid expected receipt")
+              origin = ("https://headscale-staging.eliza.app" if environment == "staging"
+                        else "https://headscale.eliza.app")
+              request = urllib.request.Request(origin + "/api/v1/node", headers={
+                  "Authorization": "Bearer " + key,
+                  "Accept": "application/json",
+              })
+              # Credentials must never follow a redirect to another origin.
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl):
+                      return None
+              with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+                  if response.status != 200:
+                      raise ValueError("node query failed")
+                  payload = json.load(response)
+              nodes = payload.get("nodes")
+              if not isinstance(nodes, list):
+                  raise ValueError("invalid node inventory")
+              matches = [node for node in nodes if isinstance(node, dict)
+                         and node.get("name") == hostname]
+              if len(matches) != 1 or matches[0].get("online") is not True:
+                  raise ValueError("proxy is absent, duplicated, or offline")
+              node = matches[0]
+              node_id = str(node.get("id", ""))
+              addresses = node.get("ipAddresses")
+              if not re.fullmatch(r"[1-9][0-9]*", node_id) or not isinstance(addresses, list) or not addresses:
+                  raise ValueError("invalid node identity")
+              addresses = sorted(str(ipaddress.ip_address(address)) for address in addresses)
+              identity = {"environment": environment, "id": node_id,
+                          "name": hostname, "addresses": addresses}
+              digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+              if expected and digest != expected:
+                  raise ValueError("node identity changed")
+              print("phase=tunnel-identity status=passed identity_sha256=" + digest)
+              print("mode=" + ("compare" if expected else "baseline"))
+          except Exception:
+              # Provider responses, topology, and credentials stay out of logs.
+              print("phase=tunnel-identity status=failed code=TUNNEL_IDENTITY_UNVERIFIED", file=sys.stderr)
+              sys.exit(1)
+          PY

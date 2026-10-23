@@ -1,6 +1,7 @@
 /** Isolated Chromium consented-commit tests; no real site, account or value. */
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { commitFormHash } from "../../../../plugins/plugin-browser/src/commit-form-hash.ts";
 import { pageCommand } from "../src/commands.mjs";
 
 const origin = "https://pay.example";
@@ -19,8 +20,50 @@ const pages = {
   "/get": `<form action="/found" method="get"><input name="q" aria-label="Query" value="12"><button id="pay">Pay now</button></form>`,
   // The page cancels the granted submit, then sends the form from script.
   "/cancel": `<form id="f" action="/later" method="post"><button id="pay">Pay now</button></form><script>f.addEventListener("submit",(e)=>{e.preventDefault();setTimeout(()=>f.submit(),100)})</script>`,
+  // A second submitter of the granted form, clicked by the granted button's
+  // script: its formaction would send the form elsewhere.
+  "/alt-click": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();alt.click()">Pay now</button><button id="alt" formaction="/exfil">Other</button></form>`,
+  // The granted click sends the form with another submitter; the granted
+  // button's own submit still follows it.
+  "/alt-request": `<form id="f" action="/pay" method="post"><button id="pay" onclick="f.requestSubmit(alt)">Pay now</button><button id="alt" formaction="/exfil">Other</button></form>`,
+  // Another submitter that overrides only the method or the encoding.
+  "/alt-method": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.requestSubmit(alt)">Pay now</button><button id="alt" formmethod="get">Other</button></form>`,
+  "/alt-enctype": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.requestSubmit(alt)">Pay now</button><button id="alt" formenctype="text/plain">Other</button></form>`,
+  // A script form.submit() sends no submit event and has no submitter.
+  "/script-submit": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.submit()">Pay now</button></form>`,
+  "/button-submit": `<form id="f" action="/pay" method="post"><button id="pay" type="button" onclick="f.submit()">Pay now</button></form>`,
+  // The granted button's script moves the form's action after the click.
+  "/moved": `<form id="f" action="/pay" method="post"><button id="pay" onclick="f.action='/exfil'">Pay now</button></form>`,
+  // The granted button's script swaps in a copy of itself and clicks it.
+  "/swapped": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();const copy=pay.cloneNode(true);copy.onclick=null;pay.replaceWith(copy);copy.click()">Pay now</button></form>`,
+  // A submit with no submitter: the granted button is the default button.
+  "/implicit": `<form id="f" action="/pay" method="post"><input name="amount" aria-label="Amount" value="12"><button id="pay" onclick="event.preventDefault();f.requestSubmit()">Pay now</button></form>`,
+  // ... is not the default button.
+  "/implicit-second": `<form id="f" action="/pay" method="post"><button id="save" formaction="/exfil">Save</button><button id="pay" onclick="event.preventDefault();f.requestSubmit()">Pay now</button></form>`,
+  // ... overrides the form's action, so a submit without it goes elsewhere.
+  "/implicit-override": `<form id="f" action="/exfil" method="post"><button id="pay" formaction="/pay" onclick="event.preventDefault();f.requestSubmit()">Pay now</button></form>`,
   // A button whose script sends two own-site requests.
   "/requests": `<button id="pay" onclick="fetch('/api/one',{method:'POST'}).then(()=>fetch('/api/two',{method:'POST'}))">Pay now</button>`,
+  // The granted submit button's script fetches another path of the site.
+  "/exfil-fetch": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();fetch('/exfil',{method:'POST'})">Pay now</button></form>`,
+  // The page sends the granted form itself, with fetch to its action.
+  "/ajax": `<form id="f" action="/api/pay" method="post"><input name="amount" aria-label="Amount" value="12"><button id="pay">Pay now</button></form><script>f.addEventListener("submit",(e)=>{e.preventDefault();fetch(f.action,{method:"POST",body:new FormData(f,e.submitter)})})</script>`,
+  // A plain "Pay" button (no form) that posts with fetch or a beacon.
+  "/js-pay": `<button id="pay" onclick="fetch('/api/pay',{method:'POST'})">Pay now</button>`,
+  "/js-beacon": `<button id="pay" onclick="navigator.sendBeacon('/api/pay')">Pay now</button>`,
+  // Form contents. The fields the person reviewed, with the submitter's own
+  // name/value, a decomposed accent and a multi-line note.
+  "/fields": `<form id="f" action="/pay" method="post"><input name="payee" aria-label="Payee" value="Zoe\u0301"><input name="amount" aria-label="Amount" value="12"><textarea name="note" aria-label="Note">rent\nOctober</textarea><input type="file" name="receipt" aria-label="Receipt"><button id="pay" name="go" value="yes">Pay now</button></form>`,
+  // The same form, sent by the page with fetch, so the hash is reported.
+  "/fields-ajax": `<form id="f" action="/api/pay" method="post"><input name="payee" aria-label="Payee" value="Zoe\u0301"><input name="amount" aria-label="Amount" value="12"><textarea name="note" aria-label="Note">rent\nOctober</textarea><input type="file" name="receipt" aria-label="Receipt"><button id="pay" name="go" value="yes">Pay now</button></form><script>f.addEventListener("submit",(e)=>{e.preventDefault();fetch(f.action,{method:"POST",body:new FormData(f,e.submitter)})})</script>`,
+  // The granted button's script changes a field or adds a hidden input.
+  "/changed": `<form id="f" action="/pay" method="post"><input name="amount" aria-label="Amount" value="12"><button id="pay" name="go" value="yes" onclick="f.amount.value='9999'">Pay now</button></form>`,
+  "/hidden": `<form id="f" action="/pay" method="post"><input name="amount" aria-label="Amount" value="12"><button id="pay" name="go" value="yes" onclick="const extra=document.createElement('input');extra.type='hidden';extra.name='to';extra.value='mallory';f.append(extra)">Pay now</button></form>`,
+  // A formdata handler that changes only the data the page load sends.
+  "/late-change": `<form id="f" action="/pay" method="post"><input name="amount" aria-label="Amount" value="12"><button id="pay" name="go" value="yes">Pay now</button></form><script>let reads=0;f.addEventListener("formdata",(e)=>{if(++reads>1)e.formData.set("amount","9999")})</script>`,
+  // A script form.submit() into a new window, which this window never loads.
+  "/blank": `<form id="f" action="/pay" method="post"><button id="pay" onclick="event.preventDefault();f.target='_blank';f.submit()">Pay now</button></form>`,
+  "/blank-button": `<form id="f" action="/pay" method="post" target="_blank"><button id="pay" type="button" onclick="f.submit()">Pay now</button></form>`,
 };
 const received = [];
 const browser = await chromium.launch({ headless: true });
@@ -33,7 +76,7 @@ try {
     if (url.pathname.startsWith("/api/"))
       return route.fulfill({ contentType: "application/json", body: "{}" });
     return route.fulfill({
-      contentType: "text/html",
+      contentType: "text/html; charset=utf-8",
       body: pages[url.pathname] ?? `<p>Received</p>`,
     });
   });
@@ -118,9 +161,10 @@ try {
   // change after it is still recorded, so the host reads the page back, and
   // the grant cannot be used again in this document.
   await open("/script");
+  const payTarget = { requestTarget: { path: "/api/pay", method: "POST" } };
   const scripted = await press(
     "Send payment",
-    grant("script-grant", { selector: "#send" }),
+    grant("script-grant", { selector: "#send", ...payTarget }),
     "#send",
   );
   assert.equal(scripted.dispatched, true, JSON.stringify(scripted));
@@ -131,6 +175,7 @@ try {
   assert.deepEqual(after.consentedCommit, {
     grantId: "script-grant",
     kind: "submit",
+    formHash: commitFormHash([]),
   });
   assert.equal(
     (
@@ -148,7 +193,7 @@ try {
     (
       await press(
         "Send payment",
-        grant("second-grant", { selector: "#send" }),
+        grant("second-grant", { selector: "#send", ...payTarget }),
         "#send",
       )
     ).dispatched,
@@ -204,10 +249,73 @@ try {
   const cancelled = (await snapshot()).state;
   assert.equal(cancelled.effectViolation, "submit");
 
+  // Only the granted control's own submit is consented. Each of these sends
+  // nothing and is reported, without a consented commit.
+  const refused = async (path, sent, extra = {}) => {
+    await open(path);
+    const grantId = `${path.slice(1)}-grant`;
+    assert.equal(
+      (await press("Pay now", grant(grantId, extra))).dispatched,
+      true,
+      path,
+    );
+    await settle();
+    assert.equal(page.url(), `${origin}${path}`, path);
+    assert.ok(!received.includes(sent), `${path} sent ${sent}`);
+    const state = (await snapshot()).state;
+    assert.equal(state.effectViolation, "submit", path);
+    assert.equal(state.consentedCommit, undefined, path);
+  };
+  // A second submitter with formaction, clicked by script.
+  await refused("/alt-click", `POST ${origin}/exfil`);
+  // A second submitter that overrides the method or the encoding.
+  await refused("/alt-method", `GET ${origin}/pay`);
+  await refused("/alt-enctype", `POST ${origin}/pay`);
+  // A script form.submit(), from a submit button or a plain button.
+  await refused("/script-submit", `POST ${origin}/pay`);
+  await refused("/button-submit", `POST ${origin}/pay`);
+  // The granted button's own submit after its script moved the action.
+  await refused("/moved", `POST ${origin}/exfil`);
+  // A copy of the granted button swapped in and clicked by script.
+  await refused("/swapped", `POST ${origin}/pay`);
+  // No submitter, and the granted button is not the default button or
+  // overrides the action.
+  await refused("/implicit-second", `POST ${origin}/pay`);
+  await refused("/implicit-override", `POST ${origin}/exfil`);
+
+  // requestSubmit(alt) is stopped; the granted button's own submit, which
+  // follows it, is the one consented.
+  await open("/alt-request");
+  assert.equal(
+    (await press("Pay now", grant("alt-request-grant"))).dispatched,
+    true,
+  );
+  await page.waitForURL(`${origin}/pay`);
+  assert.ok(received.includes(`POST ${origin}/pay`));
+  assert.ok(!received.includes(`POST ${origin}/exfil`));
+
+  // No submitter, from the default button that overrides nothing.
+  const before = received.length;
+  await open("/implicit");
+  assert.equal(
+    (await press("Pay now", grant("implicit-grant"))).dispatched,
+    true,
+  );
+  await page.waitForURL(`${origin}/pay`);
+  assert.ok(received.slice(before).includes(`POST ${origin}/pay`));
+  assert.ok(!received.includes(`POST ${origin}/exfil`));
+
   // One grant, one request: the second own-site request is recorded.
   await open("/requests");
   assert.equal(
-    (await press("Pay now", grant("requests-grant"))).dispatched,
+    (
+      await press(
+        "Pay now",
+        grant("requests-grant", {
+          requestTarget: { path: "/api/one", method: "POST" },
+        }),
+      )
+    ).dispatched,
     true,
   );
   await settle();
@@ -218,6 +326,154 @@ try {
     grantId: "requests-grant",
     kind: "request",
   });
+
+  // A request is consented only when it is the granted one. Each of these
+  // reaches the site (a request cannot be stopped from the page) and is
+  // reported, without a consented commit.
+  const unconsented = async (path, sent, extra = {}) => {
+    await open(path);
+    const grantId = `${path.slice(1)}-grant`;
+    assert.equal(
+      (await press("Pay now", grant(grantId, extra))).dispatched,
+      true,
+      path,
+    );
+    await settle();
+    assert.ok(received.includes(sent), `${path} did not send ${sent}`);
+    const state = (await snapshot()).state;
+    assert.equal(state.effectViolation, "request", path);
+    assert.equal(state.consentedCommit, undefined, path);
+  };
+  // A same-site fetch to another path than the granted form's action.
+  await unconsented("/exfil-fetch", `POST ${origin}/exfil`);
+  // A non-form control with no declared request target.
+  await unconsented("/js-pay", `POST ${origin}/api/pay`);
+  // A declared target for another path, or another method (a beacon POSTs).
+  await unconsented("/js-pay", `POST ${origin}/api/pay`, {
+    requestTarget: { path: "/api/other", method: "POST" },
+  });
+  await unconsented("/js-beacon", `POST ${origin}/api/pay`, {
+    requestTarget: { path: "/api/pay", method: "GET" },
+  });
+  // The declared request target is consented, by path or by URL.
+  const consentedRequest = async (path, extra) => {
+    await open(path);
+    const grantId = `${path.slice(1)}-ok-grant`;
+    assert.equal(
+      (await press("Pay now", grant(grantId, extra))).dispatched,
+      true,
+      path,
+    );
+    await settle();
+    const state = (await snapshot()).state;
+    assert.equal(state.effectViolation, undefined, path);
+    assert.equal(state.consentedCommit?.grantId, grantId, path);
+    assert.equal(state.consentedCommit.kind, "request", path);
+    return state;
+  };
+  await consentedRequest("/js-pay", {
+    requestTarget: { path: "/api/pay", method: "POST" },
+  });
+  await consentedRequest("/js-pay", {
+    requestTarget: { url: `${origin}/api/pay`, method: "POST" },
+  });
+  await consentedRequest("/js-beacon", {
+    requestTarget: { path: "/api/pay", method: "POST" },
+  });
+  // Without a declared target, the form's own action, sent by the page.
+  await open("/ajax");
+  assert.equal((await press("Pay now", grant("ajax-grant"))).dispatched, true);
+  await settle();
+  const ajax = (await snapshot()).state;
+  assert.equal(ajax.effectViolation, undefined);
+  assert.equal(ajax.consentedCommit.grantId, "ajax-grant");
+
+  // Form contents. What the host showed: tree order, the submitter's own
+  // name/value, the file input left out, the accent composed and the note's
+  // line break as the page holds it.
+  const reviewed = [
+    ["payee", "Zoé"],
+    ["amount", "12"],
+    ["note", "rent\r\nOctober"],
+    ["go", "yes"],
+  ];
+  // The host helper and the page agree: a grant with no formHash reports the
+  // hash of what the page sent, and it equals the host's.
+  await open("/fields-ajax");
+  assert.equal(
+    (await press("Pay now", grant("fields-report-grant"))).dispatched,
+    true,
+  );
+  await settle();
+  const reported = (await snapshot()).state.consentedCommit;
+  assert.equal(reported.grantId, "fields-report-grant");
+  assert.equal(reported.formHash, commitFormHash(reviewed));
+  // ... and a grant carrying that hash is consented (and its fetch too).
+  await open("/fields-ajax");
+  assert.equal(
+    (
+      await press(
+        "Pay now",
+        grant("fields-ajax-grant", { formHash: commitFormHash(reviewed) }),
+      )
+    ).dispatched,
+    true,
+  );
+  await settle();
+  const matched = (await snapshot()).state;
+  assert.equal(matched.effectViolation, undefined);
+  assert.equal(matched.consentedCommit.formHash, commitFormHash(reviewed));
+  // A matching formHash sends the page load.
+  await open("/fields");
+  assert.equal(
+    (
+      await press(
+        "Pay now",
+        grant("fields-grant", { formHash: commitFormHash(reviewed) }),
+      )
+    ).dispatched,
+    true,
+  );
+  await page.waitForURL(`${origin}/pay`);
+  assert.ok(received.includes(`POST ${origin}/pay`));
+  // Form data that differs from what she saw is stopped and reported.
+  const bound = {
+    formHash: commitFormHash([
+      ["amount", "12"],
+      ["go", "yes"],
+    ]),
+  };
+  const sentBefore = received.length;
+  const notSent = async (path) => {
+    await refused(path, "nothing", bound);
+    assert.ok(
+      !received.slice(sentBefore).includes(`POST ${origin}/pay`),
+      `${path} sent the form`,
+    );
+  };
+  // A field value the granted button's script changed after her yes.
+  await notSent("/changed");
+  // A hidden input it added.
+  await notSent("/hidden");
+  // Data a formdata handler changed in the page load only.
+  await notSent("/late-change");
+  // A formHash for the reviewed fields but another form's data.
+  await notSent("/fields");
+
+  // A script form.submit() into another window is not seen by this window's
+  // page load; reading its form data reports it.
+  for (const path of ["/blank", "/blank-button"]) {
+    await open(path);
+    assert.equal(
+      (await press("Pay now", grant(`${path.slice(1)}-grant`))).dispatched,
+      true,
+      path,
+    );
+    await settle();
+    const state = (await snapshot()).state;
+    assert.equal(state.effectViolation, "submit", path);
+    assert.equal(state.consentedCommit, undefined, path);
+  }
   console.log("consented commit grant: ok");
 } catch (error) {
   failed = true;

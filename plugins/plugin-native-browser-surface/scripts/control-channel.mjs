@@ -87,7 +87,7 @@ export function installControlChannel(pageCommand, pageGuidance) {
     }
     if (
       !command ||
-      !["snapshot", "click", "fill", "select", "scroll"].includes(
+      !["snapshot", "click", "fill", "select", "scroll", "follow"].includes(
         command.subaction,
       )
     ) {
@@ -114,7 +114,9 @@ export function installControlChannel(pageCommand, pageGuidance) {
             (target) =>
               target &&
               typeof target.selector === "string" &&
-              ["click", "fill", "select", "scroll"].includes(target.action),
+              ["click", "fill", "select", "scroll", "follow"].includes(
+                target.action,
+              ),
           ) ||
           // The host spent this grant for one commit of the reviewed control.
           (policy.commitGrant !== undefined &&
@@ -124,6 +126,18 @@ export function installControlChannel(pageCommand, pageGuidance) {
               !Number.isSafeInteger(policy.commitGrant.expiresAt) ||
               typeof policy.expectedSelector !== "string" ||
               policy.commitGrant.selector !== policy.expectedSelector ||
+              // The bridge checked these; a malformed one is never ignored.
+              (policy.commitGrant.requestTarget !== undefined &&
+                (!policy.commitGrant.requestTarget ||
+                  typeof policy.commitGrant.requestTarget !== "object" ||
+                  typeof (
+                    policy.commitGrant.requestTarget.url ??
+                    policy.commitGrant.requestTarget.path
+                  ) !== "string" ||
+                  typeof policy.commitGrant.requestTarget.method !==
+                    "string")) ||
+              (policy.commitGrant.formHash !== undefined &&
+                !/^[0-9a-f]{64}$/.test(policy.commitGrant.formHash)) ||
               !["click", "fill", "select"].includes(command.subaction)))))
     ) {
       reject(

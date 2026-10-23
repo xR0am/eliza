@@ -121,6 +121,7 @@ const PRE_EFFECT_REFUSALS = new Set(["STALE_REF", "POLICY_BLOCKED"]);
 export class NativeTaskActuator {
   readonly capabilities = [
     "browser.click",
+    "browser.follow",
     "browser.fill",
     "browser.select",
     "browser.scroll.up",
@@ -695,11 +696,17 @@ export class NativeTaskActuator {
     // A commit the browser let through must be the one this grant named.
     // The page's report then reaches verify and evidence with the snapshot.
     const consented = after.consentedCommit as
-      | { grantId?: unknown; kind?: unknown }
+      | { grantId?: unknown; kind?: unknown; formHash?: unknown }
       | undefined;
     if (
       consented !== undefined &&
-      (!commitGrant || consented.grantId !== commitGrant.grantId)
+      (!commitGrant ||
+        consented.grantId !== commitGrant.grantId ||
+        // The page refuses a submit whose form data differs; a report that
+        // still differs is not the commit the person said yes to.
+        (commitGrant.formHash !== undefined &&
+          consented.formHash !== undefined &&
+          consented.formHash !== commitGrant.formHash))
     )
       return { status: "unknown" };
     // Occupancy alone cannot verify a public fill: page handlers can replace it.
@@ -795,7 +802,8 @@ export class NativeTaskActuator {
       | "click"
       | "fill"
       | "select"
-      | "scroll";
+      | "scroll"
+      | "follow";
     const resolved = ["fill", "select"].includes(subaction)
       ? await this.options.resolveValue(
           proposal.valueRef ||
@@ -838,7 +846,7 @@ export class NativeTaskActuator {
       : undefined;
     if (
       commitGrant !== undefined &&
-      (subaction === "scroll" ||
+      (["scroll", "follow"].includes(subaction) ||
         !validCommitGrant(commitGrant, {
           taskContext: binding.context,
           subaction,

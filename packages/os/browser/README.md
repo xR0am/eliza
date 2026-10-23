@@ -299,8 +299,9 @@ the person said yes to (see the plugin-browser README). `task-bindings.mjs`
 checks the grant against the live binding (task, epoch, origin, reviewed
 control, observed `targetRef`, the value hash a fill or select must carry, at
 most 60 seconds left),
-records it as spent under `commit-grant:<id>`, and hands the page only its ID,
-selector and expiry. The page refuses a grant it has used in this document and
+checks the optional `requestTarget` (`{ path | url, method }`) and `formHash`
+(64 lowercase hex), records it as spent under `commit-grant:<id>`, and hands
+the page only its ID, selector, expiry, request target and form hash. The page refuses a grant it has used in this document and
 reports the commit as `consentedCommit`. Run `node --conditions=eliza-source
 packages/os/browser/scripts/test-commit-grant.mjs` for the Chromium checks:
 no grant, an expired grant or one for another control is refused; a granted
@@ -308,7 +309,20 @@ POST or GET form submit reaches its own origin; a script commit's one request
 is consented while its `pushState` is still recorded; a grant does not cross
 origins; another form sent by the same click is stopped, also when the granted
 form is not sent; a cancelled granted submit cannot be sent later from script;
-and a second own-site request is recorded as a violation.
+another submitter of the granted form (`requestSubmit(alt)` or a script click,
+with a `formaction`, `formmethod` or `formenctype` override), a script
+`form.submit()`, an action moved after the click and a swapped-in copy of the
+control are refused; a submit with no submitter is consented only from the
+default button that overrides nothing; and a second own-site request is
+recorded as a violation; a same-site fetch to another path than the form's
+action, a non-form control's request with no or another declared
+`requestTarget`, and a beacon for a declared GET are reported, while the
+declared target (by path or URL) and the form's own action sent by the page
+are consented; a field changed or a hidden input added after the click, and
+form data changed by a `formdata` handler for the page load only, are refused
+under a `formHash`, a matching one is consented, and the page's reported hash
+equals `commitFormHash` from plugin-browser; a script `form.submit()` into a
+new window is reported. The fixtures need `text/html; charset=utf-8`.
 
 Show-only guides scroll an off-screen target into view and report `placement`.
 Action guides never scroll. A trusted Dismiss sends only the guide ID; the

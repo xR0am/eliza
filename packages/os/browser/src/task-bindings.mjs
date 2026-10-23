@@ -46,8 +46,45 @@ export function createTaskBindings({
     "selector",
     "subaction",
     "valueHash",
+    "requestTarget",
+    "formHash",
     "expiresAt",
   ];
+  // The one request a commit may send besides its form's own page load:
+  // exactly one of an absolute https `url` or a `path` on the page's origin,
+  // and its method. Same shape as validCommitRequestTarget in plugin-browser.
+  const validRequestTarget = (target) => {
+    if (
+      !target ||
+      typeof target !== "object" ||
+      Array.isArray(target) ||
+      Object.keys(target).some(
+        (key) => !["url", "path", "method"].includes(key),
+      ) ||
+      !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(target.method) ||
+      "url" in target === "path" in target
+    )
+      return false;
+    if ("path" in target)
+      return (
+        typeof target.path === "string" &&
+        target.path.length <= 2048 &&
+        /^\/(?!\/)[^\s#\\]*$/.test(target.path)
+      );
+    if (typeof target.url !== "string" || target.url.length > 2048)
+      return false;
+    try {
+      const url = new URL(target.url);
+      return (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        !target.url.includes("#")
+      );
+    } catch {
+      return false;
+    }
+  };
   const sha256 = async (text) =>
     [
       ...new Uint8Array(
@@ -106,9 +143,14 @@ export function createTaskBindings({
           typeof target.selector !== "string" ||
           !target.selector ||
           target.selector.length > 256 ||
-          !["click", "fill", "fill-code", "select", "scroll"].includes(
-            target.action,
-          ),
+          ![
+            "click",
+            "fill",
+            "fill-code",
+            "select",
+            "scroll",
+            "follow",
+          ].includes(target.action),
       )
     )
       throw blocked();
@@ -176,7 +218,9 @@ export function createTaskBindings({
     if (
       command.expectedSelector !== undefined &&
       (!command.taskContext ||
-        !["click", "fill", "select", "scroll"].includes(command.subaction))
+        !["click", "fill", "select", "scroll", "follow"].includes(
+          command.subaction,
+        ))
     )
       throw blocked();
     // A consented commit names the one reviewed control it is for.
@@ -225,9 +269,15 @@ export function createTaskBindings({
     )
       throw blocked();
     if (
-      !["snapshot", "click", "fill", "select", "scroll", "navigate"].includes(
-        command.subaction,
-      )
+      ![
+        "snapshot",
+        "click",
+        "fill",
+        "select",
+        "scroll",
+        "follow",
+        "navigate",
+      ].includes(command.subaction)
     )
       throw blocked();
     // Removal has no page-read/action authority. It still belongs to exactly
@@ -274,7 +324,8 @@ export function createTaskBindings({
   /**
    * A host-issued grant for one commit the person said yes to: this task and
    * epoch, this origin, this control in this observation and, for a fill or
-   * select, this exact value. It is spent here, once, before the page sees it; a refusal
+   * select, this exact value; optionally the one request it may send
+   * (requestTarget) and the form data she saw (formHash). It is spent here, once, before the page sees it; a refusal
    * after this point still spends it. Without a grant, commits stay blocked.
    */
   async function spendCommitGrant(command, binding, current, pageOrigin) {
@@ -309,7 +360,12 @@ export function createTaskBindings({
         ? grant.valueHash !== undefined
         : typeof grant.valueHash !== "string" ||
           !/^[0-9a-f]{64}$/.test(grant.valueHash) ||
-          typeof command.text !== "string")
+          typeof command.text !== "string") ||
+      (grant.requestTarget !== undefined &&
+        !validRequestTarget(grant.requestTarget)) ||
+      (grant.formHash !== undefined &&
+        (typeof grant.formHash !== "string" ||
+          !/^[0-9a-f]{64}$/.test(grant.formHash)))
     )
       throw blocked();
     if (
@@ -317,6 +373,15 @@ export function createTaskBindings({
       (await sha256(command.text)) !== grant.valueHash
     )
       throw blocked();
+    const requestTarget =
+      grant.requestTarget === undefined
+        ? undefined
+        : "url" in grant.requestTarget
+          ? { url: grant.requestTarget.url, method: grant.requestTarget.method }
+          : {
+              path: grant.requestTarget.path,
+              method: grant.requestTarget.method,
+            };
     const key = grantKey(grant.grantId);
     if (spentGrants.has(grant.grantId) || (await read(key)) || !current())
       throw blocked();
@@ -330,13 +395,19 @@ export function createTaskBindings({
       targetRef: grant.targetRef,
       selector: grant.selector,
       subaction: grant.subaction,
+      ...(requestTarget === undefined ? {} : { requestTarget }),
+      ...(grant.formHash === undefined ? {} : { formHash: grant.formHash }),
       expiresAt: grant.expiresAt,
       spentAt: now(),
     });
     if (!current() || grant.expiresAt <= now()) throw blocked();
+    // The request and form contents the person said yes to travel with the
+    // grant, so the page consents only that request with that form data.
     return {
       grantId: grant.grantId,
       selector: grant.selector,
+      ...(requestTarget === undefined ? {} : { requestTarget }),
+      ...(grant.formHash === undefined ? {} : { formHash: grant.formHash }),
       expiresAt: grant.expiresAt,
     };
   }
