@@ -136,7 +136,10 @@ export interface NativeCommitGrant {
   /** The reviewed binding selector of the same control. */
   selector: string;
   subaction: "click" | "fill" | "select";
-  /** Lowercase hex SHA-256 of the exact fill/select text she approved. */
+  /**
+   * Lowercase hex SHA-256 of the exact fill/select text she approved.
+   * Required for fill and select; not allowed on click.
+   */
   valueHash?: string;
   /** Epoch milliseconds, at most COMMIT_GRANT_MAX_MS ahead at use. */
   expiresAt: number;
@@ -184,10 +187,11 @@ export function validCommitGrant(
     Number.isSafeInteger(value.expiresAt) &&
     Number(value.expiresAt) > expected.now &&
     Number(value.expiresAt) <= expected.now + COMMIT_GRANT_MAX_MS &&
-    (value.valueHash === undefined ||
-      (value.subaction !== "click" &&
-        typeof value.valueHash === "string" &&
-        /^[0-9a-f]{64}$/.test(value.valueHash)))
+    // A click carries no value; a fill or select must name its exact value.
+    (value.subaction === "click"
+      ? value.valueHash === undefined
+      : typeof value.valueHash === "string" &&
+        /^[0-9a-f]{64}$/.test(value.valueHash))
   );
 }
 interface NativeReply {

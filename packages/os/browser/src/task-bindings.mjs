@@ -273,8 +273,8 @@ export function createTaskBindings({
   }
   /**
    * A host-issued grant for one commit the person said yes to: this task and
-   * epoch, this origin, this control in this observation and, when given, this
-   * exact value. It is spent here, once, before the page sees it; a refusal
+   * epoch, this origin, this control in this observation and, for a fill or
+   * select, this exact value. It is spent here, once, before the page sees it; a refusal
    * after this point still spends it. Without a grant, commits stay blocked.
    */
   async function spendCommitGrant(command, binding, current, pageOrigin) {
@@ -303,15 +303,17 @@ export function createTaskBindings({
       !Number.isSafeInteger(grant.expiresAt) ||
       grant.expiresAt <= now() ||
       grant.expiresAt > now() + COMMIT_GRANT_MAX_MS ||
-      (grant.valueHash !== undefined &&
-        (command.subaction === "click" ||
-          typeof grant.valueHash !== "string" ||
+      // A click carries no value; a fill or select commits only the exact
+      // text the person approved, so it must name that text's hash.
+      (command.subaction === "click"
+        ? grant.valueHash !== undefined
+        : typeof grant.valueHash !== "string" ||
           !/^[0-9a-f]{64}$/.test(grant.valueHash) ||
-          typeof command.text !== "string"))
+          typeof command.text !== "string")
     )
       throw blocked();
     if (
-      grant.valueHash !== undefined &&
+      command.subaction !== "click" &&
       (await sha256(command.text)) !== grant.valueHash
     )
       throw blocked();

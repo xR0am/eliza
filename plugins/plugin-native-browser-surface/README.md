@@ -83,6 +83,16 @@ sign-in fields, host-supplied selectors and every frame the page cannot read; it
 the covers right after and paints over host chrome. It rejects rather than return an
 image it could not mask.
 
+Android `observeHistory` exposes adjacent same-origin destinations with opaque,
+short-lived references. `navigateHistory` consumes a reference once and dispatches
+through the native-owned isolated world: Android's ordinary Back/Forward API can
+skip history entries. Hidden, paused, replaced or changed history refuses the
+reference. Navigation can retire the reply; `UNCERTAIN_OUTCOME` requires page
+readback, never replay. A dispatch receipt does not prove arrival or task success.
+These are host primitives, not agent authorization: the caller must compose task
+scope, origin approval, preview and durable effect recording. Cross-origin history
+and iOS are not supported by these methods. Form POST resubmission is refused.
+
 Script popups never open. `getSurfaceState` also returns `title`, `canGoBack`,
 `canGoForward`, `progress`, `pageError` and `textZoom`; `setTextZoom` sets the page
 text size from 50 to 300 percent.

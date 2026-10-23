@@ -185,18 +185,22 @@ returns a `NativeCommitGrant` only after the host has recorded her explicit yes
 to this exact step, control and (for a fill or select) value, and `undefined`
 for every other action. A grant names the task, epoch, binding origin, the
 observed control (`targetRef`, so one page observation), its reviewed
-`selector` (the proposal's `expectedSelector`), the subaction, an optional
-lowercase SHA-256 `valueHash` of the exact text, and `expiresAt` at most
+`selector` (the proposal's `expectedSelector`), the subaction, for a fill or
+select the required lowercase SHA-256 `valueHash` of the exact text (a click
+carries none), and `expiresAt` at most
 `COMMIT_GRANT_MAX_MS` (60 seconds) ahead. The actuator refuses a mismatched
 grant before dispatch, and only a peer advertising `task-commit-grant` receives
 one. The browser checks every field again, spends the grant once (a spent ID is
 refused, also after a bridge restart; a refusal after admission still spends
 it), and lets the commit control be pressed. The watch then lets exactly one
-form submit to the binding's origin through, with its page load, and treats
-the page's own-site requests and same-document address changes as part of it;
-a snapshot reports `consentedCommit` (`{ grantId, kind }`) instead of
-`effectViolation`. A second submit, a submit to another origin and any other
-move to another document are still stopped and reported. The actuator treats
+commit through: the submit of the granted control's own form to the page's
+origin with its page load (POST or GET), or, when no such page load is under
+way, one own-site request (a script form or button that sends with fetch). A
+snapshot reports it as `consentedCommit` (`{ grantId, kind }`). A submit the
+page cancels cannot be sent later. A second submit, another form, a submit to
+another origin, any further own-site request, a same-document address change
+and any other move to another document are still stopped or recorded as
+`effectViolation`, which the actuator treats as an unknown outcome. The actuator treats
 a `consentedCommit` for any other grant as an unknown outcome. Without a grant
 nothing changes: commit controls stay blocked.
 

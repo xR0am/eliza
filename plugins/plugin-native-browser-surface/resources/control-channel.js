@@ -43,6 +43,29 @@
     // Consume before execution. A lost reply must never replay an effect.
     sequence = request.sequence;
     const command = request.command;
+    // Only the native observed-history entrypoint can send this command. The
+    // public controlPage whitelist excludes it; no page/model offset is accepted.
+    if (command?.subaction === "native-history") {
+      if (
+        ![-1, 1].includes(command.offset) ||
+        command.url !== location.href ||
+        command.length !== history.length
+      ) {
+        reject("STALE_REF", "The observed history changed before dispatch.");
+        return;
+      }
+      try {
+        pageGuidance({ kind: "hide" });
+        History.prototype.go.call(history, command.offset);
+        reply({ dispatched: true, requiresReadback: true });
+      } catch {
+        reject(
+          "UNCERTAIN_OUTCOME",
+          "Read the page before continuing after history navigation.",
+        );
+      }
+      return;
+    }
     if (command?.subaction === "guide") {
       const guidance = command.guidance;
       if (
@@ -760,6 +783,257 @@
               : null,
         });
       }
+      const pageText = readVisibleText(
+        document.body ?? document.documentElement,
+      );
+      // What stands between the person and the page: a modal, a cookie or
+      // consent banner, a person check (CAPTCHA), a sign-in wall or a paywall.
+      // These are reported, never answered. Nothing here presses a control, and
+      // a person check has no ref at all: only the person can do it. `ref` is a
+      // control that closes the blocker without agreeing to anything; for a
+      // consent banner only the reject or necessary-only control is offered, as
+      // `rejectRef`. `covers` says what it takes: most of the viewport, the
+      // centre of a listed control outside it, or only part of the page.
+      const blockers = (() => {
+        const idOf = new Map([...nodes].map(([id, entry]) => [entry.node, id]));
+        const labelOf = new Map(
+          elements.map((element) => [element.id, element.label ?? ""]),
+        );
+        const owned = (node) => {
+          for (let item = node; item; item = item.parentElement)
+            if (monitor.ownedHosts.has(item)) return true;
+          return false;
+        };
+        const visible = (node) =>
+          node.checkVisibility({ checkVisibilityCSS: true }) &&
+          node.getBoundingClientRect().width > 0 &&
+          node.getBoundingClientRect().height > 0;
+        const textOf = (node) =>
+          withoutSecrets(readVisibleText(node).replace(/\s+/g, " ").trim());
+        // A fixed layer that holds almost all of the page is the site's own
+        // frame, not something in front of the page.
+        const shells = new Map();
+        const shell = (node) => {
+          if (!shells.has(node))
+            shells.set(
+              node,
+              pageText.length - readVisibleText(node).length < 40 &&
+                !elements.some(
+                  (element) =>
+                    !element.scrollOnly &&
+                    !node.contains(nodes.get(element.id).node),
+                ),
+            );
+          return shells.get(node);
+        };
+        // The outermost fixed layer a node sits in, below any site frame.
+        const layerOf = (node) => {
+          let layer = null;
+          for (
+            let item = node;
+            item && item !== document.body && item !== document.documentElement;
+            item = item.parentElement
+          )
+            if (getComputedStyle(item).position === "fixed" && !shell(item))
+              layer = item;
+          return layer;
+        };
+        const GRID = 9;
+        const hits = [];
+        for (let row = 0; row < GRID; row++)
+          for (let column = 0; column < GRID; column++) {
+            const hit = document.elementFromPoint(
+              ((column + 0.5) * innerWidth) / GRID,
+              ((row + 0.5) * innerHeight) / GRID,
+            );
+            if (hit && !owned(hit)) hits.push(hit);
+          }
+        const share = (root) =>
+          hits.filter((hit) => root.contains(hit)).length / (GRID * GRID);
+        const DIALOG =
+          "dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true]";
+        const CONSENT =
+          "#onetrust-banner-sdk,#onetrust-consent-sdk,#CybotCookiebotDialog,#usercentrics-root,#truste-consent-track,#didomi-host,#qc-cmp2-container,.qc-cmp2-container,#cookie-law-info-bar,.cc-window,.cky-consent-container,#cmpbox,[id^=sp_message_container],[aria-label*=cookie i],[id*=cookie-banner i],[class*=cookie-banner i],[id*=cookie-consent i],[class*=cookie-consent i],[id*=cookieconsent i],[class*=cookieconsent i],[id*=consent-banner i],[class*=consent-banner i]";
+        const CAPTCHA =
+          'iframe[src*="recaptcha" i],iframe[src*="hcaptcha" i],iframe[src*="challenges.cloudflare.com" i],iframe[title*="captcha" i],iframe[title*="security challenge" i],.g-recaptcha,.h-captcha,.cf-turnstile,#cf-turnstile,#challenge-form,#challenge-stage,[data-hcaptcha-widget-id]';
+        const PAYWALL = "[id*=paywall i],[class*=paywall i]";
+        const CAPTCHA_TEXT =
+          /\b(?:verify(?:ing)? (?:that )?you(?:'re| are) (?:a )?human|i'?m not a robot|are you a robot|human verification|confirm you(?:'re| are) (?:a )?human|press (?:and|&) hold|complete the security check|checking (?:if the site connection is secure|your browser))/i;
+        const LOGIN_TEXT =
+          /\b(?:(?:sign|log) ?in (?:to|now to) (?:continue|view|see|read|access|keep reading|proceed)|(?:sign|log) ?in (?:is )?required|you (?:must|need to) (?:be )?(?:signed|logged) ?in|please (?:sign|log) ?in\b|create (?:a |an )?(?:free )?account to (?:continue|view|see|read|keep reading))/i;
+        const PAYWALL_TEXT =
+          /\b(?:subscribe (?:now |today )?to (?:continue|keep reading|read|unlock)|(?:reached|used) (?:your|all(?: of)? your) (?:\w+ )?(?:free )?(?:articles?|stories|story)|free (?:articles?|stories) (?:remaining|left)|(?:this|the rest of this) (?:article|story|content) is (?:only )?(?:for|available to|exclusive to|reserved for) (?:paid )?(?:subscribers|members)|unlock (?:this|the full) (?:article|story)|become a (?:member|subscriber) to (?:continue|read))/i;
+        const CONSENT_TEXT =
+          /\b(?:cookies?|consent|privacy (?:choices|preferences|settings)|tracking technologies)\b/i;
+        const REJECT =
+          /^(?:reject|decline|refuse|deny|disagree)(?: all| optional| non-essential| additional| unnecessary)?(?: cookies)?$|\b(?:strictly )?(?:necessary|essential|required) (?:cookies )?only\b|\bonly (?:allow |accept |use )?(?:strictly )?(?:necessary|essential|required)(?: cookies)?\b|\bcontinue without (?:accepting|agreeing)\b|\breject all\b/i;
+        const CLOSE =
+          /^(?:close|dismiss|no,? thanks|not now|maybe later|skip|×|✕|✖|x)$|^close\b/i;
+        // A "Close and accept" or "Dismiss and continue" control agrees to
+        // something; it is never offered as the way out.
+        const AGREES =
+          /\b(?:accept|agree|allow|consent|ok(?:ay)?|got it|continue|subscribe|sign|log|buy|pay|confirm)\b/i;
+        // An invisible reCAPTCHA or hCaptcha is bound to a page's own button
+        // and is not in the way until the site shows a challenge.
+        const captchas = [...document.querySelectorAll(CAPTCHA)].filter(
+          (node) =>
+            !node.matches("button,input,a,[data-size=invisible]") &&
+            !node.closest(".grecaptcha-badge") &&
+            !owned(node) &&
+            visible(node),
+        );
+        const roots = new Map();
+        const add = (root, found) => {
+          if (root && !roots.has(root) && !owned(root)) roots.set(root, found);
+        };
+        for (const hit of hits) add(layerOf(hit), { overlay: true });
+        // A "Cookie settings" link in the footer is not a banner.
+        for (const node of [
+          ...document.querySelectorAll(`${DIALOG},${CONSENT}`),
+          ...captchas,
+        ])
+          if (
+            visible(node) &&
+            !node.matches(
+              "a,button,input,select,textarea,[role=button],[role=link]",
+            )
+          ) {
+            const layer = layerOf(node);
+            add(layer ?? node, { overlay: !!layer || node.matches(DIALOG) });
+          }
+        // A sign-in wall, paywall or person check written into the page itself.
+        const walker = document.createTreeWalker(
+          document.body ?? document.documentElement,
+          NodeFilter.SHOW_TEXT,
+        );
+        const inline = new Set();
+        for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+          const parent = text.parentElement;
+          const words = text.textContent.replace(/\s+/g, " ");
+          const kind = CAPTCHA_TEXT.test(words)
+            ? "captcha"
+            : LOGIN_TEXT.test(words)
+              ? "login-wall"
+              : PAYWALL_TEXT.test(words)
+                ? "paywall"
+                : null;
+          if (
+            !kind ||
+            inline.has(kind) ||
+            !parent ||
+            parent.closest("script,style,noscript,template") ||
+            owned(parent) ||
+            !visible(parent)
+          )
+            continue;
+          inline.add(kind);
+          const root =
+            parent.closest(
+              `${DIALOG},form,section,article,aside,main,[role=main]`,
+            ) ?? parent;
+          add(layerOf(root) ?? root, {
+            overlay: !!layerOf(root),
+            kind,
+            text: words.trim(),
+          });
+        }
+        const result = [];
+        for (const [root, found] of roots) {
+          // One report per blocker: an inner element of another is part of it.
+          if (
+            [...roots.keys()].some(
+              (other) => other !== root && other.contains(root),
+            )
+          )
+            continue;
+          const has = (selector) =>
+            root.matches(selector) || !!root.querySelector(selector);
+          const text = textOf(root);
+          const dialog = has(DIALOG);
+          const kind =
+            found.kind === "captcha" ||
+            captchas.some((node) => root.contains(node)) ||
+            CAPTCHA_TEXT.test(text)
+              ? "captcha"
+              : has(CONSENT)
+                ? "cookie-consent"
+                : found.kind === "login-wall" ||
+                    [...root.querySelectorAll("input[type=password]")].some(
+                      visible,
+                    ) ||
+                    LOGIN_TEXT.test(text)
+                  ? "login-wall"
+                  : found.kind === "paywall" ||
+                      has(PAYWALL) ||
+                      PAYWALL_TEXT.test(text)
+                    ? "paywall"
+                    : found.overlay && CONSENT_TEXT.test(text)
+                      ? "cookie-consent"
+                      : dialog || (found.overlay && share(root) >= 0.25)
+                        ? "modal"
+                        : null;
+          if (!kind) continue;
+          let covers = "partial";
+          let modal = false;
+          try {
+            modal =
+              root.matches("dialog:modal") ||
+              !!root.querySelector("dialog:modal");
+          } catch {}
+          if (modal || share(root) >= 0.5) covers = "viewport";
+          else if (
+            !found.overlay &&
+            kind !== "modal" &&
+            kind !== "cookie-consent" &&
+            pageText.length - readVisibleText(root).length < 300
+          )
+            // The page is little more than this wall: an interstitial.
+            covers = "viewport";
+          else if (
+            [...nodes.values()].some(({ node, bounds: box, scrollOnly }) => {
+              if (scrollOnly || root.contains(node) || node.contains(root))
+                return false;
+              const x = box.x + box.width / 2;
+              const y = box.y + box.height / 2;
+              if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight)
+                return false;
+              const hit = document.elementFromPoint(x, y);
+              return !!hit && root.contains(hit);
+            })
+          )
+            covers = "target";
+          const control = (pattern) => {
+            for (const [node, id] of idOf)
+              if (
+                root.contains(node) &&
+                node !== root &&
+                pattern.test((labelOf.get(id) ?? "").trim()) &&
+                (pattern === REJECT ||
+                  !AGREES.test((labelOf.get(id) ?? "").trim()))
+              )
+                return id;
+            return undefined;
+          };
+          const ref =
+            kind === "captcha" || kind === "cookie-consent"
+              ? undefined
+              : control(CLOSE);
+          const rejectRef =
+            kind === "cookie-consent" ? control(REJECT) : undefined;
+          const summary = (found.text ?? text).slice(0, 200);
+          result.push({
+            kind,
+            ...(ref !== undefined ? { ref } : {}),
+            ...(rejectRef !== undefined ? { rejectRef } : {}),
+            covers,
+            ...(summary ? { text: withoutSecrets(summary) } : {}),
+          });
+        }
+        const rank = { viewport: 0, target: 1, partial: 2 };
+        return result.sort(
+          (left, right) => rank[left.covers] - rank[right.covers],
+        );
+      })();
       globalThis[key] = {
         snapshotId,
         nodes,
@@ -809,9 +1083,8 @@
         domRevision: monitor.domRevision,
         inputRevision: monitor.inputRevision,
         viewport: viewport(),
-        text: withoutSecrets(
-          readVisibleText(document.body ?? document.documentElement),
-        ),
+        text: withoutSecrets(pageText),
+        blockers,
         complete: true,
         omitted: [
           "form control values and editable region contents (credential boundary)",
@@ -1019,11 +1292,14 @@
       // unknown and pauses the task. A request still in flight when a snapshot
       // is read shows up in a later snapshot.
       //
-      // With a commit grant, the one commit the person said yes to goes ahead:
-      // one form submit (and the page load it sends) to the grant's origin,
-      // and the page's own-site requests and same-document address changes.
-      // Snapshots report it as a consented commit. A second submit, a submit
-      // to another origin, or any other page change is still stopped.
+      // With a commit grant, the one commit the person said yes to goes ahead,
+      // once: either the submit of the granted control's own form (and the page
+      // load it sends) to the page's origin, or, when no such page load is under
+      // way, one own-site request (a script form or a button that sends with
+      // fetch). Snapshots report it as a consented commit. A second submit,
+      // another form, another origin, any further own-site request and every
+      // other page change, same-document address changes included, are still
+      // stopped or recorded as above.
       globalThis[watchKey]?.stop();
       const anchor =
         command.subaction === "click" ? node.closest("a[href]") : null;
@@ -1040,10 +1316,20 @@
         consented: null,
         stop: () => controller.abort(),
       };
-      // submits: 0 until the one granted form submit; then its page load may
-      // follow once (pending).
+      // The granted control's own form: the only form the grant can send.
+      const grantedForm = grant
+        ? (node.form ?? node.closest("form") ?? null)
+        : null;
+      // submits: 0 until the granted form's submit event; its page load may then
+      // follow once (pending, to action). spent: the one commit went through.
       const consent = grant
-        ? { grantId: grant.grantId, submits: 0, pending: false }
+        ? {
+            grantId: grant.grantId,
+            submits: 0,
+            pending: false,
+            action: "",
+            spent: false,
+          }
         : null;
       const consentTo = (kind) => {
         watch.consented ??= {
@@ -1055,6 +1341,16 @@
       const sameOrigin = (url) => {
         try {
           return new URL(url, location.href).origin === location.origin;
+        } catch {
+          return false;
+        }
+      };
+      // A GET submit replaces the query, so only origin and path identify it.
+      const samePath = (url, other) => {
+        try {
+          const a = new URL(url, location.href);
+          const b = new URL(other, location.href);
+          return a.origin === b.origin && a.pathname === b.pathname;
         } catch {
           return false;
         }
@@ -1146,18 +1442,20 @@
           if (personForms.has(event.target)) return;
           const form = event.target;
           const submitter = event.submitter;
+          const action = submitter?.hasAttribute("formaction")
+            ? submitter.formAction
+            : form.action;
           if (
             consent &&
+            !consent.spent &&
             consent.submits === 0 &&
             form instanceof HTMLFormElement &&
+            (submitter === node ||
+              (grantedForm !== null && form === grantedForm)) &&
             (submitter?.hasAttribute("formmethod")
               ? submitter.formMethod
               : form.method) !== "dialog" &&
-            sameOrigin(
-              submitter?.hasAttribute("formaction")
-                ? submitter.formAction
-                : form.action,
-            ) &&
+            sameOrigin(action) &&
             ["", "_self"].includes(
               submitter?.hasAttribute("formtarget")
                 ? submitter.formTarget
@@ -1166,7 +1464,13 @@
           ) {
             consent.submits = 1;
             consent.pending = true;
+            consent.action = action;
             consentTo("submit");
+            // A page handler that cancels this submit sends no page load, so
+            // none may follow it later; one own-site request still may.
+            setTimeout(() => {
+              if (event.defaultPrevented) consent.pending = false;
+            }, 0);
             return;
           }
           report("submit", event);
@@ -1186,21 +1490,31 @@
             return;
           if (event.destination.sameDocument) {
             // Recorded, not stopped: the page's own state has already moved.
-            if (byPerson(performance.now())) return;
-            if (consent) consentTo("navigation");
-            else record("navigation");
+            if (!byPerson(performance.now())) record("navigation");
             return;
           }
+          const source = event.sourceElement;
+          const sourceForm =
+            source instanceof HTMLFormElement ? source : source?.form;
+          const fromGrantedForm =
+            source === node ||
+            (grantedForm !== null && sourceForm === grantedForm);
           if (
             consent &&
-            event.formData &&
+            !consent.spent &&
             sameOrigin(event.destination.url) &&
-            (consent.pending || consent.submits === 0)
+            // The page load of the granted submit (POST or GET), or a script
+            // form.submit() of the granted form, which sends no submit event.
+            ((consent.pending &&
+              samePath(event.destination.url, consent.action) &&
+              (fromGrantedForm || !("sourceElement" in event))) ||
+              (consent.submits === 0 &&
+                grantedForm !== null &&
+                sourceForm === grantedForm))
           ) {
-            // The page load of the granted submit, or a script form.submit(),
-            // which sends no submit event, as the one granted submit.
             consent.submits = 1;
             consent.pending = false;
+            consent.spent = true;
             consentTo("submit");
             return;
           }
@@ -1219,7 +1533,11 @@
         tail(host, 3) === tail(location.hostname, 3);
       if (typeof PerformanceObserver === "function") {
         const requests = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) {
+          // Oldest first, so the granted action's own request is the one used.
+          const entries = [...list.getEntries()].sort(
+            (a, b) => a.startTime - b.startTime,
+          );
+          for (const entry of entries) {
             if (
               entry.startTime < startedAt ||
               !["fetch", "xmlhttprequest", "beacon"].includes(
@@ -1235,8 +1553,14 @@
               continue;
             }
             if (sameSite(host)) {
-              if (consent) consentTo("request");
-              else record("request");
+              // One own-site request may carry the granted commit when no
+              // granted page load is under way or done; every other is recorded.
+              if (consent && !consent.spent && !consent.pending) {
+                consent.spent = true;
+                consentTo("request");
+                continue;
+              }
+              record("request");
               break;
             }
           }

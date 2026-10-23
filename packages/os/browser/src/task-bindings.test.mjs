@@ -41,6 +41,7 @@ async function fixture(records = new Map(), scope = {}) {
         targets: [
           { selector: "#pay", action: "click" },
           { selector: "#amount", action: "fill" },
+          { selector: "#plan", action: "select" },
         ],
       },
     },
@@ -172,6 +173,27 @@ test("a value-bound grant commits only the exact approved text", async () => {
       }),
     });
   await refused(f.authority.scope(fill("1200.00", "value-1")));
+  // A fill or select grant without a value hash would commit any text.
+  const unhashed = fill("120.00", "value-3");
+  delete unhashed.commitGrant.valueHash;
+  await refused(f.authority.scope(unhashed));
+  const select = (grantId, hash) =>
+    f.command({
+      subaction: "select",
+      text: "120.00",
+      expectedSelector: "#plan",
+      commitGrant: f.grant({
+        grantId,
+        subaction: "select",
+        selector: "#plan",
+        ...(hash ? { valueHash } : {}),
+      }),
+    });
+  await refused(f.authority.scope(select("value-4", false)));
+  assert.ok(
+    (await f.authority.scope(select("value-5", true))).command.taskPolicy
+      .commitGrant,
+  );
   const scoped = await f.authority.scope(fill("120.00", "value-2"));
   assert.equal(scoped.command.taskPolicy.commitGrant.grantId, "value-2");
 });

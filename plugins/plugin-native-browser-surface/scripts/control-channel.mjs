@@ -43,6 +43,29 @@ export function installControlChannel(pageCommand, pageGuidance) {
     // Consume before execution. A lost reply must never replay an effect.
     sequence = request.sequence;
     const command = request.command;
+    // Only the native observed-history entrypoint can send this command. The
+    // public controlPage whitelist excludes it; no page/model offset is accepted.
+    if (command?.subaction === "native-history") {
+      if (
+        ![-1, 1].includes(command.offset) ||
+        command.url !== location.href ||
+        command.length !== history.length
+      ) {
+        reject("STALE_REF", "The observed history changed before dispatch.");
+        return;
+      }
+      try {
+        pageGuidance({ kind: "hide" });
+        History.prototype.go.call(history, command.offset);
+        reply({ dispatched: true, requiresReadback: true });
+      } catch {
+        reject(
+          "UNCERTAIN_OUTCOME",
+          "Read the page before continuing after history navigation.",
+        );
+      }
+      return;
+    }
     if (command?.subaction === "guide") {
       const guidance = command.guidance;
       if (
