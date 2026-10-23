@@ -100,6 +100,8 @@ public final class BrowserPageHandoffsTest {
     BrowserMainFrameGate task = new BrowserMainFrameGate();
     task.approve("https://www.ssa.gov/");
     task.commit("https://www.ssa.gov/");
+    // The initial host-approved navigation has finished before the task moves between origins.
+    task.settle("https://www.ssa.gov/");
     check(!task.admit("https://secure.login.gov/"), "the sign-in origin waits until the host extends the task");
     check(!task.setTaskOrigins(java.util.List.of("https://www.ssa.gov", "https://secure.login.gov/path")),
         "a path is not an origin");
