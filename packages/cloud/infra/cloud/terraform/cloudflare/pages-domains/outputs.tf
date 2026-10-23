@@ -102,3 +102,17 @@ output "legacy_certificate_packs" {
     }
   }
 }
+
+output "tunnel_worker" {
+  description = "Selected tunnel Worker and its canonical ingress routes. Empty until cutover."
+  value = {
+    hostname = var.tunnel_worker_hostname
+    routes = {
+      for key, route in cloudflare_workers_route.tunnel : key => {
+        id      = route.id
+        pattern = route.pattern
+        script  = route.script
+      }
+    }
+  }
+}

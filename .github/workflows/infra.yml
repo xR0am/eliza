@@ -557,6 +557,7 @@ jobs:
           terraform output -json pages_domains > "$RUNNER_TEMP/pages-domains.json"
           terraform output -json canonical_edge > "$RUNNER_TEMP/canonical-edge.json"
           terraform output -json railway_tunnel_dns > "$RUNNER_TEMP/railway-tunnel-dns.json"
+          terraform output -json tunnel_worker > "$RUNNER_TEMP/tunnel-worker.json"
           terraform output -json redirect_dns > "$RUNNER_TEMP/redirect-dns.json"
           terraform output -json legacy_certificate_packs > "$RUNNER_TEMP/legacy-certificate-packs.json"
           node "$GITHUB_WORKSPACE/packages/scripts/validate-terraform-pages-domain-state.ts" \
@@ -565,7 +566,8 @@ jobs:
             "$RUNNER_TEMP/railway-tunnel-dns.json" \
             "$RUNNER_TEMP/redirect-dns.json" \
             "$RUNNER_TEMP/legacy-certificate-packs.json" \
-            "$TF_VAR_environment"
+            "$TF_VAR_environment" \
+            "$RUNNER_TEMP/tunnel-worker.json"
 
       - name: Verify additive canonical edge state
         if: inputs.component == 'pages-domains' && inputs.operation == 'apply' && inputs.plan_scope == 'canonical-edge-additive'
