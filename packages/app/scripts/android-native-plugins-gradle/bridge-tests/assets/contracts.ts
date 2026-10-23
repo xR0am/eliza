@@ -2183,6 +2183,15 @@
                 return { uncertain: true, result: { requiresReadback: true } };
               }
             };
+            await rejects("controlPage", {
+              ...identity,
+              id,
+              command: {
+                subaction: "native-history",
+                offset: -1,
+                url: `${taskPolicy.origin}/same`,
+              },
+            });
             const initialHistory = await history();
             const backEntry = initialHistory.destinations.find(
               (entry) => entry.direction === "back",
