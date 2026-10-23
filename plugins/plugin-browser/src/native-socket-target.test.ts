@@ -1189,6 +1189,15 @@ describe("validCommitGrant", () => {
       { extra: 1 },
     ])
       expect(validCommitGrant({ ...grant, ...change }, expected)).toBe(false);
+    // A fill or select must name the exact value she approved.
+    const { valueHash: _hash, ...unbound } = grant;
+    expect(validCommitGrant(unbound, expected)).toBe(false);
+    expect(
+      validCommitGrant(
+        { ...unbound, subaction: "select" },
+        { ...expected, subaction: "select" },
+      ),
+    ).toBe(false);
     // A click commits no typed value, so it cannot carry a value hash.
     expect(
       validCommitGrant(

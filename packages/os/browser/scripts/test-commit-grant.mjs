@@ -11,8 +11,16 @@ const pages = {
   "/script": `<form id="f" action="/never" method="post"><button id="send">Send payment</button></form><script>f.addEventListener("submit",(e)=>{e.preventDefault();fetch("/api/pay",{method:"POST"}).then(()=>history.pushState({},"","/sent"))})</script>`,
   // A form that posts to another origin.
   "/cross": `<form action="https://other.example/take" method="post"><button id="pay">Pay now</button></form>`,
-  // A button whose script sends two forms: only one is granted.
-  "/twice": `<form id="a" action="/first" method="post"></form><form id="b" action="/second" method="post"></form><button id="pay" onclick="a.requestSubmit();b.requestSubmit()">Pay now</button>`,
+  // A button whose script also sends another form: only its own is granted.
+  "/twice": `<form id="a" action="/first" method="post"><button id="pay" onclick="b.requestSubmit()">Pay now</button></form><form id="b" action="/second" method="post"></form>`,
+  // A button whose script sends only another form: nothing is granted.
+  "/elsewhere": `<form id="a" action="/mine" method="post"><button id="pay" onclick="event.preventDefault();b.requestSubmit()">Pay now</button></form><form id="b" action="/theirs" method="post"></form>`,
+  // A GET form: its page load carries no form data.
+  "/get": `<form action="/found" method="get"><input name="q" aria-label="Query" value="12"><button id="pay">Pay now</button></form>`,
+  // The page cancels the granted submit, then sends the form from script.
+  "/cancel": `<form id="f" action="/later" method="post"><button id="pay">Pay now</button></form><script>f.addEventListener("submit",(e)=>{e.preventDefault();setTimeout(()=>f.submit(),100)})</script>`,
+  // A button whose script sends two own-site requests.
+  "/requests": `<button id="pay" onclick="fetch('/api/one',{method:'POST'}).then(()=>fetch('/api/two',{method:'POST'}))">Pay now</button>`,
 };
 const received = [];
 const browser = await chromium.launch({ headless: true });
@@ -106,8 +114,9 @@ try {
   await page.waitForURL(`${origin}/done`);
   assert.ok(received.includes(`POST ${origin}/done`));
 
-  // A script commit: its own-site request and address change are consented,
-  // not violations, and the grant cannot be used again in this document.
+  // A script commit: its one own-site request is consented. The address
+  // change after it is still recorded, so the host reads the page back, and
+  // the grant cannot be used again in this document.
   await open("/script");
   const scripted = await press(
     "Send payment",
@@ -118,7 +127,7 @@ try {
   await settle();
   assert.ok(received.includes(`POST ${origin}/api/pay`));
   const after = (await snapshot()).state;
-  assert.equal(after.effectViolation, undefined);
+  assert.equal(after.effectViolation, "navigation");
   assert.deepEqual(after.consentedCommit, {
     grantId: "script-grant",
     kind: "submit",
@@ -166,6 +175,49 @@ try {
   await page.waitForURL(`${origin}/first`);
   assert.ok(received.includes(`POST ${origin}/first`));
   assert.ok(!received.includes(`POST ${origin}/second`));
+
+  // A grant sends only the granted control's own form.
+  await open("/elsewhere");
+  assert.equal(
+    (await press("Pay now", grant("elsewhere-grant"))).dispatched,
+    true,
+  );
+  await settle();
+  assert.ok(!received.includes(`POST ${origin}/theirs`));
+  const elsewhere = (await snapshot()).state;
+  assert.equal(elsewhere.effectViolation, "submit");
+
+  // A GET form's page load is the granted submit too.
+  await open("/get");
+  assert.equal((await press("Pay now", grant("get-grant"))).dispatched, true);
+  await page.waitForURL(`${origin}/found?q=12`);
+  assert.ok(received.includes(`GET ${origin}/found`));
+
+  // A cancelled granted submit cannot be sent later from script.
+  await open("/cancel");
+  assert.equal(
+    (await press("Pay now", grant("cancel-grant"))).dispatched,
+    true,
+  );
+  await page.waitForTimeout(500);
+  assert.ok(!received.includes(`POST ${origin}/later`));
+  const cancelled = (await snapshot()).state;
+  assert.equal(cancelled.effectViolation, "submit");
+
+  // One grant, one request: the second own-site request is recorded.
+  await open("/requests");
+  assert.equal(
+    (await press("Pay now", grant("requests-grant"))).dispatched,
+    true,
+  );
+  await settle();
+  assert.ok(received.includes(`POST ${origin}/api/two`));
+  const requests = (await snapshot()).state;
+  assert.equal(requests.effectViolation, "request");
+  assert.deepEqual(requests.consentedCommit, {
+    grantId: "requests-grant",
+    kind: "request",
+  });
   console.log("consented commit grant: ok");
 } catch (error) {
   failed = true;
