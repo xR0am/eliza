@@ -212,4 +212,23 @@ describe("NativeTaskActuator origin scope", () => {
       }),
     ).rejects.toThrow(/changed again/);
   });
+
+  it("does not write an origin list replaced while guidance was being removed", async () => {
+    const { actuator, applied, apply } = setup();
+    const extended = apply({
+      type: "extend-origin",
+      origin: LOGIN,
+      checkRef: "check-1",
+    });
+    const applying = actuator.scopeChanged({
+      owner,
+      taskId: extended.id,
+      epoch: extended.epoch,
+      allowedOrigins: extended.allowedOrigins,
+    });
+    // The retraction commits while this apply awaits guidance removal.
+    apply({ type: "retract-origin", origin: LOGIN });
+    await expect(applying).rejects.toThrow(/changed again/);
+    expect(applied).toEqual([]);
+  });
 });

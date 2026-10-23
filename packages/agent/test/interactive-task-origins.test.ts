@@ -37,7 +37,13 @@ const goal = {
   allowedOrigins: [SSA],
 };
 
-function setup(options: { scopeFails?: boolean; slowQuiesce?: boolean } = {}) {
+function setup(
+  options: {
+    scopeFails?: boolean;
+    slowQuiesce?: boolean;
+    holdScope?: Promise<void>;
+  } = {},
+) {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA synchronous = FULL");
   const store = new SqliteInteractiveTaskStore(db);
@@ -48,6 +54,7 @@ function setup(options: { scopeFails?: boolean; slowQuiesce?: boolean } = {}) {
   const quiesced: string[] = [];
   let release: (() => void) | undefined;
   let quiescing = 0;
+  let scopeCalls = 0;
   const actuator: InteractiveTaskActuator = {
     capabilities: ["browser.click"],
     async quiesce({ taskId }) {
@@ -76,6 +83,8 @@ function setup(options: { scopeFails?: boolean; slowQuiesce?: boolean } = {}) {
       if (options.slowQuiesce)
         await new Promise((resolve) => setTimeout(resolve, 1));
       if (quiescing > 0) throw new Error("guidance hide raced");
+      // The page acknowledges this apply late; the list is written on return.
+      if (options.holdScope && scopeCalls++ === 0) await options.holdScope;
       scopes.push({ epoch, allowedOrigins: [...allowedOrigins] });
     },
     async execute() {
@@ -353,6 +362,32 @@ describe("host-authorized task origin extension", () => {
     goTo(LOGIN);
     task = await runtime.observe(task.id, task.revision);
     task = await runtime.retractOrigin(task.id, task.revision, LOGIN);
+    expect(task.allowedOrigins).toEqual([SSA]);
+    expect(scopes.at(-1)).toEqual({ epoch: task.epoch, allowedOrigins: [SSA] });
+  });
+
+  it("never writes an older origin list after a newer scope change", async () => {
+    let releaseScope: () => void = () => undefined;
+    const holdScope = new Promise<void>((resolve) => {
+      releaseScope = resolve;
+    });
+    const { runtime, scopes } = setup({ holdScope });
+    let task = runtime.create(goal);
+    const extending = runtime.extendOrigin(
+      task.id,
+      task.revision,
+      LOGIN,
+      async () => "check-login-1",
+    );
+    // Wait until the extension committed and its page apply is in flight.
+    while (runtime.get(task.id).allowedOrigins.length < 2)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    task = runtime.get(task.id);
+    const retracting = runtime.retractOrigin(task.id, task.revision, LOGIN);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    releaseScope();
+    await extending;
+    task = await retracting;
     expect(task.allowedOrigins).toEqual([SSA]);
     expect(scopes.at(-1)).toEqual({ epoch: task.epoch, allowedOrigins: [SSA] });
   });

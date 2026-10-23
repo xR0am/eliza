@@ -82,6 +82,8 @@ export type AuthorizedTaskGoal = Pick<
 
 export class InteractiveTaskRuntime {
   private readonly pending = new Map<string, AbortController>();
+  /** One scope apply per task at a time; each applies the latest persisted scope. */
+  private readonly scopeApplies = new Map<string, Promise<void>>();
   private poisoned = false;
   private cleanup = new Map<
     string,
@@ -241,22 +243,37 @@ export class InteractiveTaskRuntime {
       }
     }
   }
-  private async applyScope(task: InteractiveTask): Promise<void> {
+  private applyScope(id: string): Promise<void> {
     const scopeChanged = this.options.actuator.scopeChanged;
-    if (!scopeChanged) return;
-    try {
-      await scopeChanged.call(this.options.actuator, {
-        owner: this.owner,
-        taskId: task.id,
-        epoch: task.epoch,
-        allowedOrigins: Object.freeze([...task.allowedOrigins]),
+    if (!scopeChanged) return Promise.resolve();
+    // Scope changes can commit while an earlier apply is still awaiting the
+    // page. Applies run one at a time and each reads the persisted scope when
+    // it starts, so an older origin list can never be written last.
+    const run = (this.scopeApplies.get(id) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        const task = this.get(id);
+        try {
+          await scopeChanged.call(this.options.actuator, {
+            owner: this.owner,
+            taskId: task.id,
+            epoch: task.epoch,
+            allowedOrigins: Object.freeze([...task.allowedOrigins]),
+          });
+        } catch (cause) {
+          throw new ElizaError(
+            "Task scope changed, but the page policy was not confirmed",
+            { code: "TASK_SCOPE_UNCONFIRMED", cause },
+          );
+        }
       });
-    } catch (cause) {
-      throw new ElizaError(
-        "Task scope changed, but the page policy was not confirmed",
-        { code: "TASK_SCOPE_UNCONFIRMED", cause },
-      );
-    }
+    this.scopeApplies.set(id, run);
+    run
+      .finally(() => {
+        if (this.scopeApplies.get(id) === run) this.scopeApplies.delete(id);
+      })
+      .catch(() => undefined);
+    return run;
   }
   /**
    * Trusted host only, never a renderer route: extend a running task to one
@@ -300,7 +317,7 @@ export class InteractiveTaskRuntime {
     } finally {
       this.pending.delete(id);
     }
-    await this.applyScope(task);
+    await this.applyScope(id);
     return task;
   }
   /**
@@ -326,15 +343,14 @@ export class InteractiveTaskRuntime {
     } catch (error) {
       cleanupError = error;
     }
-    await this.applyScope(task);
+    await this.applyScope(id);
     if (cleanupError !== undefined) throw cleanupError;
     return task;
   }
   /** Re-apply the persisted origin scope, for example after a host restart. */
   async syncScope(id: string): Promise<InteractiveTask> {
-    const task = this.get(id);
-    await this.applyScope(task);
-    return task;
+    await this.applyScope(id);
+    return this.get(id);
   }
   /** Trusted host only: verify and save the requested result before calling this.
    * Completion records task state, not proof that the goal was achieved. The

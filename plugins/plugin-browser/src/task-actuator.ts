@@ -304,6 +304,9 @@ export class NativeTaskActuator {
       fail("Task scope changed again");
     this.observations.delete(task.id);
     await this.quiesce({ owner: context.owner, taskId: task.id });
+    // Never write an origin list a newer scope change already replaced.
+    if (this.options.getTask(task.id).epoch !== context.epoch)
+      fail("Task scope changed again");
     await this.options.applyOrigins?.(task, [...context.allowedOrigins]);
   }
   /** Trusted planner/guide read; this is page data, never authorization. */
