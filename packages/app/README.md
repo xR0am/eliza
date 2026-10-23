@@ -266,8 +266,8 @@ assets, and have no cloud fallback.
   accepts only `{ "text": "..." }` (1–500 characters) and returns mono PCM16
   WAV at 24 kHz (voice `af_heart`, provider `libelizainference-paradee`).
 - Speech input: `ELIZA_ASR_ENABLED=1` and an absolute `ELIZA_ASR_MODEL_DIR`
-  with the pinned Qwen3-ASR-0.6B pair at `asr/eliza-1-asr.gguf` and
-  `asr/eliza-1-asr-mmproj.gguf`, plus pinned `vad/silero-vad-v5.gguf` as the
+  with the pinned Phonon-2 GGUF at `asr/phonon-2-fv5.gguf` (build it with
+  `bun packages/app/scripts/voice/build-phonon2-gguf.ts`), plus pinned `vad/silero-vad-v5.gguf` as the
   only GGUF in `vad/`. Native Silero VAD rejects non-speech before ASR; speech
   retains the complete input audio. No text model is loaded.
   `GET /api/asr/libelizainference/status` reports readiness.

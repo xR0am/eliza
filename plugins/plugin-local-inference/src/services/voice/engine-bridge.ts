@@ -630,7 +630,7 @@ export interface EngineVoiceBridgeOptions {
 	/**
 	 * Override only the TTS backend while keeping the fused bundle lifecycle
 	 * and ASR FFI loaded. Used when a bundle falls back from OmniVoice speech
-	 * to Kokoro speech but still needs bundled Gemma ASR for mic input.
+	 * to Kokoro speech but still needs the bundled Phonon-2 ASR for mic input.
 	 */
 	ttsBackendOverride?: TtsBackend;
 	/** Optional speaker preset paired with `ttsBackendOverride`. */

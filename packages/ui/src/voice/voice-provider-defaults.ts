@@ -4,30 +4,28 @@
  * Captures the device+mode matrix the product team specified in the
  * settings "advanced mode" picker design:
  *
- *   - Desktop running a local agent → on-device models
- *     (TTS: `local-inference` / OmniVoice, ASR: `local-inference` / Gemma ASR).
- *   - Mobile running a local agent → on-device Kokoro TTS
- *     (TTS: `local-inference`; Kokoro is ~82M params and runs comfortably on
- *     phones — see `selectVoiceBackend({ mobile: true })`). The ASR *provider*
- *     is Eliza Cloud (`eliza-cloud`) because on-device speech recognition is
- *     heavier than TTS — but see the layering note below: on native mobile the
- *     live capture engine is the OS recognizer, not this provider.
- *   - Cloud agents (any device) → free cloud Kokoro TTS
- *     (`eliza-cloud`) for speech, Eliza Cloud (`eliza-cloud`) for ASR.
- *     ElevenLabs is not a default (slow and key-gated); users can still opt
- *     into it from the advanced voice picker.
- *   - Remote-controller surfaces (UI hitting a remote API base) → same as
- *     cloud agents (`eliza-cloud` TTS, Eliza Cloud ASR).
+ *   - A device running a local agent (desktop, Android, AOSP) → on-device
+ *     speech (TTS: `local-inference`, ASR: `local-inference`). Device ASR is
+ *     Phonon-2 (Parakeet-TDT 0.6B, five-value weights) on libelizainference,
+ *     the elizaOS llama.cpp fork; it is the only local ASR. Phones run
+ *     Paradee-8M v1.1 for TTS on the same library.
+ *   - Cloud agents (any device) → Eliza Cloud (`eliza-cloud`) for speech and
+ *     for ASR (Cloud STT: Whisper / Cloudflare / ElevenLabs). ElevenLabs TTS is
+ *     not a default (slow and key-gated); users can still opt into it from the
+ *     advanced voice picker.
+ *   - Web shells and remote-controller surfaces (UI hitting a remote API base)
+ *     → same as cloud agents. ASR never runs locally in a browser or thin
+ *     client; Eliza Cloud STT is their transcriber.
  *
  * The picker is intentionally a pure function so it can be unit-tested
  * exhaustively. The React hook wrapper lives in
  * `hooks/useDefaultProviderPresets.ts`.
  *
- * The ASR side of this matrix is not just a platform guess — it is backed by
- * the measured WER/latency/RTF decision record in `STT_SELECTION.md` (next to
- * this file; #11337): fused eliza-1-asr measured at WER 0.008 / 3.8× realtime
- * on desktop CPU (hence `local-inference` on desktop), while mobile/web stay
- * on `eliza-cloud` until on-device Stage-B numbers justify a flip.
+ * The ASR side of this matrix follows the device voice stack: ASR runs
+ * locally only where the agent and libelizainference are on the device, and
+ * everything else uses Eliza Cloud STT. When the local ASR is not staged yet,
+ * {@link resolveWavAsrRoute} degrades a `local-inference` choice to the cloud
+ * WAV route, so a device default never strands capture.
  *
  * Layering caveat (this function is only one of two ASR layers): the `asr`
  * value it returns is the *provider* — the server-side transcription route the
@@ -37,8 +35,8 @@
  * TalkMode plugin present unconditionally uses the OS speech recognizer (the
  * only backend that streams interim transcripts, and the one whose assets are
  * actually staged on phones) ahead of any provider preference. So on native
- * mobile the `eliza-cloud` value below governs server-side transcription, not
- * the live on-device capture path — the two layers are chosen independently.
+ * mobile the `asr` value below governs server-side transcription, not the
+ * live capture path — the two layers are chosen independently.
  *
  * On web/desktop the two layers now agree for `eliza-cloud`: the capture
  * factory records a WAV and POSTs it to the cloud STT proxy (`/api/asr/cloud`),
@@ -91,16 +89,12 @@ export function pickDefaultVoiceProvider(
     return { tts: "eliza-cloud", asr: "eliza-cloud" };
   }
 
-  // Local / local-only: split by platform. Desktop has the CPU/GPU budget
-  // for OmniVoice + Gemma ASR. Mobile runs on-device Kokoro for TTS (small +
-  // fast) but offloads the heavier ASR pipeline to Eliza Cloud. A web shell
-  // hosting a local agent can't run on-device audio, so it stays on Cloud.
-  if (platform === "desktop") {
+  // Local / local-only on a device (desktop, Android, AOSP): the agent and
+  // libelizainference run here, so speech and Phonon-2 ASR stay on-device.
+  // A web shell hosting a local agent has no on-device audio runtime, so it
+  // stays on Eliza Cloud below.
+  if (platform === "desktop" || platform === "mobile") {
     return { tts: "local-inference", asr: "local-inference" };
-  }
-
-  if (platform === "mobile") {
-    return { tts: "local-inference", asr: "eliza-cloud" };
   }
 
   // Web shell hosting a local agent: no on-device audio runtime, so use the

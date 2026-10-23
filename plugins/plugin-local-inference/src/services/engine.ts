@@ -1178,7 +1178,7 @@ export class LocalInferenceEngine {
 			: "blocked-asr-provenance";
 		throw new VoiceStartupError(
 			code,
-			`[voice] Cannot start local Gemma ASR for ${bundle.tierId}: ${blockers.join("; ")}`,
+			`[voice] Cannot start local Phonon-2 ASR for ${bundle.tierId}: ${blockers.join("; ")}`,
 		);
 	}
 
@@ -1229,7 +1229,7 @@ export class LocalInferenceEngine {
 		if (!bundle) {
 			throw new VoiceStartupError(
 				"missing-bundle-root",
-				"[voice] Cannot start local ASR: no active Eliza-1 bundle is loaded. Install and activate a Gemma ASR-capable Eliza-1 bundle.",
+				"[voice] Cannot start local ASR: no active Eliza-1 bundle is loaded. Install and activate an Eliza-1 bundle that stages the Phonon-2 ASR (asr/phonon-2-fv5.gguf).",
 			);
 		}
 		this.assertLocalAsrEligible(bundle);
