@@ -1,3 +1,4 @@
+import type { CloudflareClefBinding } from "../lib/providers/cloudflare-clef";
 import type { CloudflareSpeechBinding } from "../lib/providers/cloudflare-speech";
 /**
  * Hono + Cloudflare Workers context types for the Cloud API.
@@ -25,6 +26,16 @@ export interface RuntimeDurableObjectNamespace {
 }
 
 export interface Bindings {
+  CLOUD_HF_EGRESS_BACKEND?: string;
+  HF_EGRESS_STATE?: RuntimeDurableObjectNamespace;
+  CLOUD_VOICE_USAGE_BACKEND?: string;
+  VOICE_USAGE_STATE?: RuntimeDurableObjectNamespace;
+  CLOUD_RATE_STATE_BACKEND?: string;
+  RATE_LIMIT_STATE?: RuntimeDurableObjectNamespace;
+  CLOUD_A2A_STATE_BACKEND?: string;
+  A2A_TASK_STATE?: RuntimeDurableObjectNamespace;
+  CLOUD_AUTH_STATE_BACKEND?: string;
+  AUTHENTICATION_STATE?: RuntimeDurableObjectNamespace;
   /** Explicit per-turn Network context; absent disables the integration. */
   NETWORK_SHARED_ENABLED?: string;
   /** Private server-owned Network HTTP service binding; no public fetch fallback. */
@@ -176,7 +187,11 @@ export interface Bindings {
 
   // ---- Cloudflare Registrar/DNS ----
   /** Native Workers AI binding for the canonical BGE CLS embedding representation. */
-  AI?: CloudflareEmbeddingBinding & CloudflareSpeechBinding;
+  AI?: CloudflareEmbeddingBinding & CloudflareSpeechBinding & CloudflareClefBinding;
+  /** "true" turns on POST /api/v1/decisions (Clef through the AI binding). */
+  CLEF_DECISIONS_ENABLED?: string;
+  /** "clef-flash" (default) or "clef". */
+  CLEF_DECISION_MODEL?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   /** Workers AI credential for the canonical BGE embedding model. */
   CLOUDFLARE_EMBEDDING_API_TOKEN?: string;

@@ -44,6 +44,34 @@ bun --no-install --conditions=eliza-source test packages/cloud/shared/src/lib/se
 The suite creates and removes a unique schema and loads migrations 0544–0545.
 It must not point to a production database.
 
+Authentication nonces, token revocations, voice session mappings and connection claims can use the
+private `AUTHENTICATION_STATE` Durable Object binding with
+protected deployment variable `CLOUD_AUTH_STATE_BACKEND=cloudflare`. The
+canonical release validates this selection. The default remains `redis` until a
+quiesced transfer preserves each live key's original expiration. A missing
+selected binding fails closed; the host never falls back to Redis after activation.
+The operator-only private-binding import preserves absolute expirations, rejects
+conflicts, and closes permanently for a shard once it serves an auth operation.
+Finish and verify imports before sending normal reads or writes to the target.
+This does not replace rate limits, gateway queues, or other Redis state.
+
+These additional private stores also default to `redis`:
+
+| State | Protected release variable |
+| --- | --- |
+| Monthly download quotas | `CLOUD_HF_EGRESS_BACKEND` |
+| Daily voice quotas | `CLOUD_VOICE_USAGE_BACKEND` |
+| Fixed and sliding rate limits | `CLOUD_RATE_STATE_BACKEND` |
+| A2A tasks and organization index | `CLOUD_A2A_STATE_BACKEND` |
+
+Stop source writers and transfer complete state with original expiry before
+selecting `cloudflare`. Imports reject conflicts and close permanently once
+their owner serves normal operations. Rate counters retain carried requests;
+voice and download quotas retain refunds and limits. A2A retains complete tasks
+and index scores. Its update callbacks must be pure because version conflicts
+retry them. Missing selected bindings fail closed. Other Redis domains remain
+separate migration work.
+
 ## Development
 
 Install dependencies with `bun install` at the repository root. Run from that root:

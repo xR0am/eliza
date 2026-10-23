@@ -168,6 +168,12 @@
       "import": "./dist/native-speech-stream.js",
       "default": "./dist/native-speech-stream.js"
     },
+    "./clef-decisions": {
+      "eliza-source": "./src/clef-decisions.ts",
+      "types": "./dist/clef-decisions.d.ts",
+      "import": "./dist/clef-decisions.js",
+      "default": "./dist/clef-decisions.js"
+    },
     "./website-reputation": {
       "eliza-source": "./src/website-reputation.ts",
       "types": "./dist/website-reputation.d.ts",
