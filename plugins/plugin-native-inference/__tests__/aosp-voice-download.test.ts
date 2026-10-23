@@ -248,10 +248,10 @@ describe("pinned mobile voice bundle", () => {
     const files = aospVoiceFiles();
     const tts = files.find((f) => f.role === "tts");
     const lexicon = files.find((f) => f.role === "g2p-lexicon");
-    // packages/app/platforms/android/paradee-voice/inputs.json is what the
+    // plugins/plugin-local-inference/native/android/inputs.json is what the
     // paradee-voice build stages; the catalog must name the same files.
     const inputs = JSON.parse(
-      read("packages/app/platforms/android/paradee-voice/inputs.json"),
+      read("plugins/plugin-local-inference/native/android/inputs.json"),
     );
     expect(tts?.path).toBe("tts/paradee/paradee-8m-v1_1.gguf");
     expect(tts?.path).toBe(inputs.paradee.path);

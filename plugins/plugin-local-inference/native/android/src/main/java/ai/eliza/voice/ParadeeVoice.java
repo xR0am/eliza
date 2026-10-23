@@ -43,6 +43,7 @@ public final class ParadeeVoice implements AutoCloseable {
     /** Guards the context pointer so cancel never signals a freed context. */
     private final Object handleLock = new Object();
     private long handle;
+    private final boolean ownsContext;
     private final AtomicLong generation = new AtomicLong();
     private boolean streaming;
     private volatile boolean closing;
@@ -59,6 +60,11 @@ public final class ParadeeVoice implements AutoCloseable {
      *     null to keep G2P to the lexicon and its rules
      */
     public ParadeeVoice(File model, File lexicon, File espeakDir) throws IOException {
+        this(model, lexicon, espeakDir, 0L);
+    }
+
+    ParadeeVoice(File model, File lexicon, File espeakDir, long sharedContext) throws IOException {
+        ownsContext = sharedContext == 0L;
         for (File file : new File[] {model, lexicon}) {
             if (!file.isFile()) throw new IOException("Missing Paradee file " + file);
         }
@@ -68,14 +74,14 @@ public final class ParadeeVoice implements AutoCloseable {
         if (VoiceNative.nativeParadeeSupported() != 1) {
             throw new IllegalStateException("libelizainference was built without Paradee (LLAMA_BUILD_PARADEE=OFF)");
         }
-        long ctx = VoiceNative.nativeContextCreate(model.getParentFile().getAbsolutePath());
+        long ctx = ownsContext ? VoiceNative.nativeContextCreate(model.getParentFile().getAbsolutePath()) : sharedContext;
         try {
             VoiceNative.nativeParadeeLoad(ctx, model.getAbsolutePath(), lexicon.getAbsolutePath(),
                     espeakDir == null ? null : espeakDir.getAbsolutePath());
             sampleRate = VoiceNative.nativeParadeeSampleRate(ctx);
             g2pKind = VoiceNative.nativeParadeeG2pKind(ctx);
         } catch (RuntimeException error) {
-            VoiceNative.nativeContextDestroy(ctx);
+            if (ownsContext) VoiceNative.nativeContextDestroy(ctx);
             throw new IOException("Paradee model load failed", error);
         }
         handle = ctx;
@@ -176,7 +182,7 @@ public final class ParadeeVoice implements AutoCloseable {
             if (streaming) throw new IllegalStateException("Cannot close voice from PCM callback");
             synchronized (handleLock) {
                 if (handle != 0) {
-                    VoiceNative.nativeContextDestroy(handle);
+                    if (ownsContext) VoiceNative.nativeContextDestroy(handle);
                     handle = 0;
                 }
             }

@@ -43,6 +43,11 @@ public final class VoiceAssets {
             this.espeakDir = espeakDir;
         }
 
+        /** One lifecycle owner for all modalities in this bundle. */
+        public InferenceSession openInference() throws IOException {
+            return new InferenceSession(root, model, lexicon, espeakDir);
+        }
+
         public ParadeeVoice openVoice() throws IOException {
             return new ParadeeVoice(model, lexicon, espeakDir);
         }
