@@ -22,20 +22,26 @@ public final class NativeAsr implements AutoCloseable {
     private final Object handleLock = new Object();
     private final List<Stream> streams = new ArrayList<>();
     private long handle;
+    private final boolean ownsContext;
 
     /** Loads the ASR weights from {@code bundleDir/asr}. */
     public NativeAsr(File bundleDir) throws IOException {
+        this(bundleDir, 0L);
+    }
+
+    NativeAsr(File bundleDir, long sharedContext) throws IOException {
+        ownsContext = sharedContext == 0L;
         if (!new File(bundleDir, "asr").isDirectory()) {
             throw new IOException("Missing ASR model directory " + new File(bundleDir, "asr"));
         }
         if (VoiceNative.nativeAsrSupported() != 1) {
             throw new IllegalStateException("libelizainference was built without ASR");
         }
-        long ctx = VoiceNative.nativeContextCreate(bundleDir.getAbsolutePath());
+        long ctx = ownsContext ? VoiceNative.nativeContextCreate(bundleDir.getAbsolutePath()) : sharedContext;
         try {
             VoiceNative.nativeMmapAcquire(ctx, "asr");
         } catch (RuntimeException error) {
-            VoiceNative.nativeContextDestroy(ctx);
+            if (ownsContext) VoiceNative.nativeContextDestroy(ctx);
             throw new IOException("ASR model load failed", error);
         }
         handle = ctx;
@@ -90,7 +96,7 @@ public final class NativeAsr implements AutoCloseable {
             for (Stream stream : open) stream.close();
             synchronized (handleLock) {
                 if (handle != 0) {
-                    VoiceNative.nativeContextDestroy(handle);
+                    if (ownsContext) VoiceNative.nativeContextDestroy(handle);
                     handle = 0;
                 }
             }

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 project(paradeevoicejni CXX)
 
 # libparadeevoicejni.so: the shared app bridge (elizavoice-jni.cpp) bound to
-# ai.eliza.voice.VoiceNative with only the voice natives. Inputs from
+# ai.eliza.voice.VoiceNative with the full inference ABI. Inputs from
 # consumer.gradle:
 #   ELIZAVOICE_FFI_INCLUDE_DIR     llama.cpp fork tools/omnivoice/include
 #   ELIZAVOICE_INFERENCE_LIB_DIR   <abi>/libelizainference.so built with Paradee
@@ -15,6 +15,6 @@ foreach(var ELIZAVOICE_FFI_INCLUDE_DIR ELIZAVOICE_INFERENCE_LIB_DIR ELIZA_VOICE_
 endforeach()
 
 set(ELIZA_VOICE_JNI_CLASS "ai/eliza/voice/VoiceNative")
-set(ELIZA_VOICE_JNI_SUBSET "voice")
+set(ELIZA_VOICE_JNI_SUBSET "full")
 set(ELIZA_VOICE_JNI_LIBRARY "paradeevoicejni")
 add_subdirectory("${ELIZA_VOICE_JNI_SOURCE_DIR}" elizavoice-jni)

@@ -215,7 +215,7 @@ test-clean utterances and `speech-fixture/0.wav`; and an empty transcript for
 silence. RTF is reported. The host report goes to `test-results/voice-quality/`.
 
 ASR is Phonon-2 (`asr/phonon-2-fv5.gguf`, Parakeet-TDT 0.6B with five-value
-weights, 330,632,256 bytes, sha256 `dc552eb7…`) on the library's parakeet
+weights, 208,932,352 bytes, sha256 `c0f6ad42…`) on the library's parakeet
 backend, which also streams (`ElizaVoiceNative.nativeAsrStream*`,
 `NativeAsr.openStream`). The GGUF is not published yet, so stage it by
 converting the pinned source and pass it through `ELIZA_VOICE_BUNDLE_FROM`

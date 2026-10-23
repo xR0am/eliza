@@ -80,7 +80,7 @@ async function readElizaOwnedDetailed(): Promise<{
 		const raw = await fs.readFile(registryPath(), "utf8");
 		const parsed = JSON.parse(raw) as RegistryFile;
 		if (parsed?.version !== 1 || !Array.isArray(parsed.models)) {
-			return { models: [], needsRewrite: false };
+			throw new Error("Model registry is not a version 1 model list");
 		}
 		let needsRewrite = false;
 		const models: InstalledModel[] = [];

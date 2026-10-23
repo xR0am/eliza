@@ -33,8 +33,8 @@
   "asr": {
     "path": "asr/phonon-2-fv5.gguf",
     "source": "llama.cpp tools/parakeet/convert_phonon2_to_gguf.py from the pinned FermionResearch/Phonon-2 archive",
-    "bytes": 330632256,
-    "sha256": "dc552eb786486167dde3ac80bbe49a6088c8ef39c03c257d5a090fc57b2c47b3",
+    "bytes": 208932352,
+    "sha256": "c0f6ad42f0a5b481904416077dde0a1a78e5b8642295fdf2356ace822588c3df",
     "license": "CC-BY-4.0"
   },
   "vad": {
