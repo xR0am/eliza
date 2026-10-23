@@ -1,14 +1,19 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BrowserDispatchFailure } from "./dispatch-types";
 import {
   androidNativeBrowserSocketPath,
+  COMMIT_GRANT_MAX_MS,
+  commitFormHash,
   currentPageFromTabs,
   currentPageTitle,
   NativeSocketBrowserTarget,
+  validCommitGrant,
+  validCommitRequestTarget,
 } from "./native-socket-target";
 
 it.skipIf(process.platform !== "linux")(
@@ -614,6 +619,51 @@ it("sends a deadline-bound effect only to a feedback-capable peer", async () => 
       result: { dispatched: true },
     });
     await raw;
+    // A commit grant comes only from trusted options, and only a peer that
+    // verifies and spends it may receive one; page data cannot carry one.
+    const grant = {
+      grantId: "yes-1",
+      taskId: taskContext.taskId,
+      epoch: taskContext.epoch,
+      origin: "https://example.test",
+      targetRef: "00000000-0000-0000-0000-000000000000:0:0",
+      selector: "#method",
+      subaction: "click" as const,
+      expiresAt: Date.now() + 30000,
+    };
+    await expect(
+      target.execute(
+        {
+          subaction: "click",
+          id: "1",
+          selector: "00000000-0000-0000-0000-000000000000:0:0",
+        },
+        {
+          taskContext,
+          taskExpiresAt,
+          expectedSelector: "#method",
+          commitGrant: grant,
+        },
+      ),
+    ).rejects.toMatchObject({ kind: "POLICY_BLOCKED" });
+    const smuggled = target.execute(
+      {
+        subaction: "click",
+        id: "1",
+        selector: "00000000-0000-0000-0000-000000000000:0:0",
+        commitGrant: grant,
+      } as never,
+      { taskContext, taskExpiresAt },
+    );
+    await vi.waitFor(() => expect(frames.messages).toHaveLength(5));
+    expect(frames.messages[4].command.commitGrant).toBeUndefined();
+    frames.send({
+      type: "result",
+      id: frames.messages[4].id,
+      ok: true,
+      result: { dispatched: true },
+    });
+    await smuggled;
   } finally {
     socket?.destroy();
     await target.stop();
@@ -931,6 +981,47 @@ it("requires the guide-label capability for labels, offers, pause and a configur
   }
 });
 
+it("sends a binding for more than one website only to a task-origins peer", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "native-task-origins-"));
+  const socketPath = join(directory, "browser.sock");
+  const target = new NativeSocketBrowserTarget(() => {});
+  let socket: Socket | undefined;
+  try {
+    await target.start({ ELIZA_BROWSER_NATIVE_SOCKET: socketPath });
+    socket = createConnection(socketPath);
+    const frames = socketFrames(socket);
+    frames.send({
+      type: "hello",
+      protocol: 2,
+      extensionId: "pmldpcoefklbdbgmggcejkfoinmjfeio",
+      profileId: "older-profile",
+      capabilities: ["task-bind", "task-guide"],
+    });
+    await vi.waitFor(async () => expect(await target.available()).toBe(true));
+    await expect(
+      target.bindTask({
+        actorId: "actor",
+        accountId: "account",
+        agentId: "agent",
+        taskId: "task",
+        epoch: 1,
+        tabId: "1",
+        bindingRevision: 1,
+        origin: "https://www.ssa.gov",
+        origins: ["https://www.ssa.gov", "https://secure.login.gov"],
+        expiresAt: Date.now() + 60000,
+        revoked: false,
+        targets: [],
+      }),
+    ).rejects.toMatchObject({ kind: "UNSUPPORTED" });
+    expect(frames.messages).toHaveLength(0);
+  } finally {
+    socket?.destroy();
+    await target.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("reduces the one active HTTPS page to its origin and the complete title", () => {
   const tab = {
     id: "7",
@@ -1098,4 +1189,165 @@ it("refuses the current page when the peer cannot list tabs", async () => {
     await target.stop();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+describe("validCommitGrant", () => {
+  const taskContext = {
+    actorId: "actor",
+    accountId: "account",
+    agentId: "agent",
+    taskId: "task",
+    epoch: 2,
+  };
+  const now = Date.now();
+  const grant = {
+    grantId: "yes-1",
+    taskId: "task",
+    epoch: 2,
+    origin: "https://example.test",
+    targetRef: "00000000-0000-0000-0000-000000000000:0:4",
+    selector: "#pay",
+    subaction: "fill",
+    valueHash: "a".repeat(64),
+    expiresAt: now + 30000,
+  };
+  const expected = {
+    taskContext,
+    subaction: "fill",
+    targetRef: grant.targetRef,
+    selector: "#pay",
+    now,
+  };
+  it("accepts only the exact task, control, action and a short life", () => {
+    expect(validCommitGrant(grant, expected)).toBe(true);
+    for (const change of [
+      { taskId: "other" },
+      { epoch: 3 },
+      { targetRef: "00000000-0000-0000-0000-000000000000:0:5" },
+      { selector: "#other" },
+      { subaction: "click" },
+      { valueHash: "not-a-hash" },
+      { expiresAt: now },
+      { expiresAt: now + COMMIT_GRANT_MAX_MS + 1 },
+      { grantId: "" },
+      { extra: 1 },
+    ])
+      expect(validCommitGrant({ ...grant, ...change }, expected)).toBe(false);
+    // A fill or select must name the exact value she approved.
+    const { valueHash: _hash, ...unbound } = grant;
+    expect(validCommitGrant(unbound, expected)).toBe(false);
+    expect(
+      validCommitGrant(
+        { ...unbound, subaction: "select" },
+        { ...expected, subaction: "select" },
+      ),
+    ).toBe(false);
+    // A click commits no typed value, so it cannot carry a value hash.
+    expect(
+      validCommitGrant(
+        { ...grant, subaction: "click" },
+        { ...expected, subaction: "click" },
+      ),
+    ).toBe(false);
+  });
+  it("binds a commit to an optional request target and form hash", () => {
+    const click = { ...grant, subaction: "click", valueHash: undefined };
+    delete (click as { valueHash?: string }).valueHash;
+    const clickExpected = { ...expected, subaction: "click" };
+    // Both fields are optional, so a grant without them is still valid.
+    expect(validCommitGrant(click, clickExpected)).toBe(true);
+    for (const fields of [
+      { requestTarget: { path: "/api/pay", method: "POST" } },
+      { requestTarget: { path: "/api/pay?id=7", method: "GET" } },
+      {
+        requestTarget: { url: "https://api.example.test/pay", method: "PUT" },
+      },
+      { formHash: "b".repeat(64) },
+    ])
+      expect(validCommitGrant({ ...click, ...fields }, clickExpected)).toBe(
+        true,
+      );
+    for (const requestTarget of [
+      null,
+      "/api/pay",
+      { path: "/api/pay" },
+      { path: "/api/pay", method: "post" },
+      { path: "/api/pay", method: "HEAD" },
+      { path: "api/pay", method: "POST" },
+      { path: "//evil.test/pay", method: "POST" },
+      { path: "/a#b", method: "POST" },
+      { path: "/a b", method: "POST" },
+      { url: "http://example.test/pay", method: "POST" },
+      { url: "https://user:pw@example.test/pay", method: "POST" },
+      { url: "https://example.test/pay#x", method: "POST" },
+      { url: "not a url", method: "POST" },
+      { url: "https://example.test/pay", path: "/pay", method: "POST" },
+      { path: "/pay", method: "POST", extra: 1 },
+    ]) {
+      expect(validCommitRequestTarget(requestTarget)).toBe(false);
+      expect(validCommitGrant({ ...click, requestTarget }, clickExpected)).toBe(
+        false,
+      );
+    }
+    for (const formHash of ["", "B".repeat(64), "b".repeat(63), 1])
+      expect(validCommitGrant({ ...click, formHash }, clickExpected)).toBe(
+        false,
+      );
+  });
+});
+
+describe("commitFormHash", () => {
+  const reference = (pairs: Array<[string, string]>) =>
+    createHash("sha256")
+      .update(`eliza-commit-form-v1\n${JSON.stringify(pairs)}`)
+      .digest("hex");
+  it("is SHA-256 of the versioned, normalized name/value pairs in order", () => {
+    expect(commitFormHash([])).toBe(reference([]));
+    expect(
+      commitFormHash([
+        ["payee", "Zoe\u0301"],
+        ["note", "rent\r\nOctober\rpaid"],
+        ["receipt", new Blob(["x"])],
+        ["go", "yes"],
+      ]),
+    ).toBe(
+      reference([
+        ["payee", "Zo\u00e9"],
+        ["note", "rent\nOctober\npaid"],
+        ["go", "yes"],
+      ]),
+    );
+    // Order, names and values all count.
+    expect(
+      commitFormHash([
+        ["a", "1"],
+        ["b", "2"],
+      ]),
+    ).not.toBe(
+      commitFormHash([
+        ["b", "2"],
+        ["a", "1"],
+      ]),
+    );
+    expect(commitFormHash([["a", "1"]])).not.toBe(
+      commitFormHash([
+        ["a", "1"],
+        ["to", "mallory"],
+      ]),
+    );
+    // Every message length, across SHA-256 block boundaries, and non-ASCII.
+    for (let length = 0; length < 200; length++) {
+      const pairs: Array<[string, string]> = [
+        ["v", `${"x".repeat(length)}é😀`],
+      ];
+      expect(commitFormHash(pairs)).toBe(reference(pairs));
+    }
+    // A FormData or URLSearchParams iterates the same pairs.
+    const data = new FormData();
+    data.append("amount", "12");
+    data.append("go", "yes");
+    expect(commitFormHash(data as unknown as Iterable<[string, string]>)).toBe(
+      commitFormHash(new URLSearchParams("amount=12&go=yes")),
+    );
+  });
 });

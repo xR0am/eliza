@@ -321,7 +321,7 @@ describe("Cloud CF workflow staging certification gate", () => {
     expect(block).toContain("staging-release-certification.ts create");
     expect(block).toContain('--event "$GITHUB_EVENT_NAME"');
     expect(block).toContain(
-      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
     );
     expect(block).toContain("retention-days: 14");
     expect(block).toContain("steps.upload.outputs.artifact-id");

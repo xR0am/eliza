@@ -918,6 +918,21 @@
         "typescript": "^6.0.3",
       },
     },
+    "packages/cloud/services/agent-server-container": {
+      "name": "@elizaos/agent-server-container",
+      "version": "1.0.0",
+      "dependencies": {
+        "@cloudflare/containers": "^0.3.7",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "2.5.15",
+        "@cloudflare/workers-types": "^4.20260429.1",
+        "@types/node": "22.19.17",
+        "@typescript/native": "npm:typescript@^7.0.2",
+        "bun-types": "1.4.2",
+        "typescript": "^6.0.3",
+      },
+    },
     "packages/cloud/services/coding-remote-runner": {
       "name": "@elizaos/coding-remote-runner",
       "version": "0.1.0",
@@ -947,6 +962,7 @@
       "version": "1.0.0",
       "dependencies": {
         "@cloudflare/containers": "^0.3.7",
+        "@elizaos/cloud-services-common": "workspace:*",
       },
       "devDependencies": {
         "@biomejs/biome": "2.5.15",
@@ -954,6 +970,7 @@
         "@types/node": "22.19.17",
         "@typescript/native": "npm:typescript@^7.0.2",
         "bun-types": "1.4.2",
+        "miniflare": "4.20260730.0",
         "typescript": "^6.0.3",
       },
     },
@@ -1047,6 +1064,21 @@
         "@cloudflare/containers": "^0.3.7",
       },
       "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260429.1",
+        "@types/node": "22.19.17",
+        "@typescript/native": "npm:typescript@^7.0.2",
+        "bun-types": "1.4.2",
+        "typescript": "^6.0.3",
+      },
+    },
+    "packages/cloud/services/tunnel-proxy": {
+      "name": "@elizaos/tunnel-proxy",
+      "version": "1.0.0",
+      "dependencies": {
+        "@cloudflare/containers": "^0.3.7",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "2.5.15",
         "@cloudflare/workers-types": "^4.20260429.1",
         "@types/node": "22.19.17",
         "@typescript/native": "npm:typescript@^7.0.2",
@@ -3892,6 +3924,8 @@
 
     "@elizaos/agent-server": ["@elizaos/agent-server@workspace:packages/cloud/services/agent-server"],
 
+    "@elizaos/agent-server-container": ["@elizaos/agent-server-container@workspace:packages/cloud/services/agent-server-container"],
+
     "@elizaos/app": ["@elizaos/app@workspace:packages/app"],
 
     "@elizaos/auth": ["@elizaos/auth@workspace:packages/auth"],
@@ -4141,6 +4175,8 @@
     "@elizaos/testing": ["@elizaos/testing@workspace:packages/testing"],
 
     "@elizaos/three-agent-dialogue": ["@elizaos/three-agent-dialogue@workspace:packages/benchmarks/suites/three-agent-dialogue"],
+
+    "@elizaos/tunnel-proxy": ["@elizaos/tunnel-proxy@workspace:packages/cloud/services/tunnel-proxy"],
 
     "@elizaos/ui": ["@elizaos/ui@workspace:packages/ui"],
 
@@ -7138,7 +7174,7 @@
 
     "domhandler": ["domhandler@4.3.1", "", { "dependencies": { "domelementtype": "^2.2.0" } }, "sha512-GrwoxYN+uWlzO8uhUXRl0P+kHE4GtVPfYzVLcUxPL7KNdHKj66vvlhiweIHqYYXWlw+T8iLMp42Lm67ghw4WMQ=="],
 
-    "dompurify": ["dompurify@3.4.16", "", { "optionalDependencies": { "@types/trusted-types": "^2.0.7" } }, "sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ=="],
+    "dompurify": ["dompurify@3.4.17", "", { "dependencies": { "@types/trusted-types": "^2.0.7" }, "optionalDependencies": { "@types/trusted-types": "^2.0.7" } }, "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w=="],
 
     "domutils": ["domutils@2.8.0", "", { "dependencies": { "dom-serializer": "^1.0.1", "domelementtype": "^2.2.0", "domhandler": "^4.2.0" } }, "sha512-w96Cjofp72M5IIhpjgobBimYEfoPjx1Vx0BSX9P30WBdZW2WIKU0T1Bd0kz2eNZ9ikjKgHbEyKx8BB6H1L3h3A=="],
 
@@ -7736,7 +7772,7 @@
 
     "ioredis-mock": ["ioredis-mock@8.13.1", "", { "dependencies": { "@ioredis/as-callback": "^3.0.0", "@ioredis/commands": "^1.4.0", "fengari": "^0.1.4", "fengari-interop": "^0.1.3", "semver": "^7.7.2" }, "peerDependencies": { "@types/ioredis-mock": "^8", "ioredis": "^5" } }, "sha512-Wsi50AU+cMiI32nAgfwpUaJVBtb4iQdVsOHl9M6R3tePCO/8vGsToCVIG82XWAxN4Se55TZoOzVseu+QngFLyw=="],
 
-    "ip-address": ["ip-address@10.7.2", "", {}, "sha512-7H/2gFSIitxc0hG3nOI1glS8QLo/EHBFFLk8vEUjXY/xu0AdL8jZ9U1IzO2PUm0d2D/ofQcAifb0g6OBkt8U7w=="],
+    "ip-address": ["ip-address@10.7.4", "", {}, "sha512-DWBMKyeM25D70nrIiTkgQth59/G+naKOTep6huF9j+GmeK3DMD60Zvxg5d5qQnz+38AHgou6ean2LECX+lrKDg=="],
 
     "ipaddr.js": ["ipaddr.js@1.9.1", "", {}, "sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g=="],
 

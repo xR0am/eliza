@@ -55,6 +55,11 @@ A new APK must be built from the changed native sources and tested on the device
 
 ## Development
 
+Set `ELIZA_PGLITE_AUTO_RESET=0` for hosts that must preserve an existing database
+on startup failure. The host then reports the original terminal PGlite error
+without resetting the database singleton or quarantining the data directory.
+Omitting this setting retains the existing automatic recovery behavior.
+
 Install dependencies with `bun install` at the repository root. Run from that root:
 
 ```bash
@@ -78,6 +83,12 @@ for native builds and physical-device tests.
 Web subscription settings select a registered product with `VITE_ELIZA_APPLICATION_SLOT`;
 agent-backed settings use `ELIZAOS_CLOUD_APPLICATION_SLOT` from the runtime.
 These select a product, not a merchant credential or paid entitlement.
+
+Independent Android consumer profiles may use `main`, `androidTest`, `debug`,
+`release`, and their declared flavor names in `sourceSets`. Keep test trust and
+other debug-only resources in `debug`; they must not enter release artifacts.
+Run `node packages/app/scripts/mobile/android/qualify-consumer-host.mjs` from the
+repository root with the Android SDK and JDK configured to check real APK isolation.
 
 ## Disposable hosted Android fixtures
 

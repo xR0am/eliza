@@ -1,8 +1,32 @@
+import { handleDiscordCoordination } from "./discord-coordination-state";
+
+export { DiscordCoordinationState } from "./discord-coordination-state";
+
 /** Hosts the existing gateway processes; their configured stores retain authority. */
 import { Container, getContainer } from "@cloudflare/containers";
+import { handleWebhookIngress } from "./webhook-ingress-state";
+
+export { WebhookIngressState } from "./webhook-ingress-state";
+
+import { handleDiscordWelcome } from "./discord-welcome-state";
+
+export { DiscordWelcomeState } from "./discord-welcome-state";
+
 import { configurationProof } from "./configuration-proof";
+import { handleDeliveryReceipts } from "./delivery-receipt-state";
+
+export { DeliveryReceiptState } from "./delivery-receipt-state";
+
+import { handleNetworkConsent } from "./network-consent-state";
+
+export { NetworkConsentState } from "./network-consent-state";
 
 interface Env {
+  DISCORD_COORDINATION_STATE?: DurableObjectNamespace;
+  DISCORD_WELCOME_STATE?: DurableObjectNamespace;
+  WEBHOOK_INGRESS_STATE?: DurableObjectNamespace;
+  DELIVERY_RECEIPT_STATE?: DurableObjectNamespace;
+  NETWORK_CONSENT_STATE?: DurableObjectNamespace;
   GATEWAY: DurableObjectNamespace<GatewayContainer>;
   GATEWAY_ENABLED: string;
   GATEWAY_KIND: string;
@@ -75,6 +99,16 @@ async function stopInactiveGateway(env: Env): Promise<void> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/internal/discord-coordination")
+      return handleDiscordCoordination(request, env);
+    if (new URL(request.url).pathname === "/internal/discord-welcome")
+      return handleDiscordWelcome(request, env);
+    if (new URL(request.url).pathname === "/internal/webhook-ingress")
+      return handleWebhookIngress(request, env);
+    if (new URL(request.url).pathname === "/internal/delivery-receipts")
+      return handleDeliveryReceipts(request, env);
+    if (new URL(request.url).pathname === "/internal/network-consent")
+      return handleNetworkConsent(request, env);
     if (new URL(request.url).pathname === "/internal/configuration-proof") {
       return configurationProof(request, env);
     }
@@ -83,7 +117,13 @@ export default {
       return new Response("Gateway deployment inactive", { status: 503 });
     }
     // Keep the raw body and signed headers for the existing gateway to verify.
-    return getContainer(env.GATEWAY, "gateway").fetch(request);
+    const upstream = await getContainer(env.GATEWAY, "gateway").fetch(request);
+    if (upstream.webSocket) return upstream;
+    const response = new Response(upstream.body, upstream);
+    response.headers.set("x-eliza-gateway-host", "cloudflare");
+    response.headers.set("x-eliza-gateway-environment", env.DEPLOYMENT_ENV);
+    response.headers.set("x-eliza-gateway-source", env.BUILD_ID);
+    return response;
   },
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     if (env.GATEWAY_ENABLED !== "true") {

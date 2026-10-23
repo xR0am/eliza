@@ -1,7 +1,7 @@
 /** Real Chromium DOM and isolated realm; Android reply-proxy coverage is separate. */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import { createSurfaceCommandChannel } from "../../../packages/agent/native-host
 import { connectSurfaceCommandClient } from "../../../packages/agent/native-host/surface-client.mjs";
 import { buildTaskRuntime } from "../../../packages/app/scripts/build-consumer-task-runtime.mjs";
 import { createSurfaceTaskHandler } from "../../../packages/os/browser/src/surface-task-handler.mjs";
+import { testOutputPath } from "../../../packages/scripts/lib/test-output.ts";
 import {
   GuidedWebsiteWorkflow,
   pageControls,
@@ -61,20 +62,27 @@ const sourceCommit = execFileSync(
 const runtimeModule = join(certificates, "task-runtime.mjs");
 buildTaskRuntime(runtimeModule, { sourceRoot, sourceCommit });
 const {
+  commitFormHash,
   NativeSurfaceBrowserTarget,
   NativeTaskActuator,
   InteractiveTaskRuntime,
   SqliteInteractiveTaskStore,
 } = await import(pathToFileURL(runtimeModule).href);
+let paymentPosts = 0;
+const posted = [];
 const server = createServer(
   {
     key: await readFile(join(certificates, "key.pem")),
     cert: await readFile(join(certificates, "cert.pem")),
   },
-  (_req, res) => {
+  (req, res) => {
+    if (req.method === "POST") {
+      paymentPosts++;
+      posted.push(req.url);
+    }
     res.setHeader("Content-Type", "text/html");
     res.end(
-      `<!doctype html><input id="query" aria-label="Search query"><input type="password" value="private-value"><button type="button" id="increment" onclick="document.querySelector('output').textContent++">Increment</button><output>0</output><label>Language<select id="language"><option value="opaque-en">English</option><option value="opaque-fr">French</option><option value="opaque-de">German</option><option value="opaque-disabled" disabled>Unavailable</option><option value="opaque-a">Ambiguous</option><option value="opaque-b">Ambiguous</option></select></label>`,
+      `<!doctype html><input id="query" aria-label="Search query"><input type="password" value="private-value"><button type="button" id="increment" onclick="document.querySelector('output').textContent++">Increment</button><output>0</output><label>Language<select id="language"><option value="opaque-en">English</option><option value="opaque-fr">French</option><option value="opaque-de">German</option><option value="opaque-disabled" disabled>Unavailable</option><option value="opaque-a">Ambiguous</option><option value="opaque-b">Ambiguous</option></select></label><form id="payment" action="/paid" method="post"><button id="pay">Pay bill</button></form><p id="receipt"></p><script>payment.addEventListener("submit",(event)=>{event.preventDefault();fetch("/paid",{method:"POST"}).then(()=>{receipt.textContent="Paid"})})</script>`,
     );
   },
 );
@@ -191,7 +199,7 @@ try {
     channel.request(
       { command, extra },
       {
-        effect: ["click", "fill", "select", "scroll"].includes(
+        effect: ["click", "fill", "select", "scroll", "follow"].includes(
           command.subaction,
         ),
       },
@@ -225,6 +233,106 @@ try {
     taskPolicy: policy,
     ...extra,
   });
+  // Read the shipped native asset, not only the imported Chromium source.
+  // A stale generated asset used to omit the document scroll target entirely.
+  await page.evaluate(() => {
+    document.body.style.minHeight = "2200px";
+  });
+  state = await snapshot();
+  const scrollTarget = state.elements.find(
+    (item) => item.targetSelector === "html",
+  );
+  assert.equal(scrollTarget?.scrollOnly, true);
+  assert.ok(scrollTarget.scroll.maxY > 0);
+  // Native panes can have a fractional visual viewport below rounded innerHeight.
+  // Guidance must not center the tall document before the authorized scroll.
+  await mkdir(testOutputPath("native-scroll-guidance"), { recursive: true });
+  for (const [width, height, scale] of [
+    [800, 600, 1.001],
+    [400, 191, 1.001],
+    [400, 191, 1.25],
+  ]) {
+    await page.setViewport({ width, height });
+    await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: scale });
+    const viewport = await page.evaluate(() => ({
+      layout: innerHeight,
+      visual: visualViewport.height,
+    }));
+    assert.ok(viewport.visual < viewport.layout);
+    state = await snapshot();
+    const rootGuide = {
+      kind: "show",
+      id: "root-scroll-guidance",
+      snapshotId: state.snapshotId,
+      nodeId: state.elements.find((item) => item.targetSelector === "html").id,
+      origin,
+      expiresAt: Date.now() + 15000,
+      text: "Scroll down to continue.",
+      tone: "instruction",
+    };
+    assert.equal(
+      (await dispatch({ subaction: "guide", guidance: rootGuide })).result
+        .accepted,
+      true,
+    );
+    assert.equal(
+      await page.evaluate(() => scrollY),
+      0,
+      "Showing root guidance must not perform unjournaled scrolling",
+    );
+    const preview = {
+      ...rootGuide,
+      id: "root-scroll-preview",
+      action: "scroll",
+    };
+    assert.equal(
+      (await dispatch({ subaction: "guide", guidance: preview })).result
+        .accepted,
+      true,
+    );
+    const deadline = Date.now() + 5000;
+    while (
+      !(
+        await dispatch({
+          subaction: "guide",
+          guidance: { ...preview, kind: "action-status" },
+        })
+      ).result.ready
+    ) {
+      assert.ok(Date.now() < deadline, "Root scroll preview must become ready");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(
+      await page.evaluate(() => scrollY),
+      0,
+      "Preview must not move the page either",
+    );
+    await page.screenshot({
+      path: testOutputPath(
+        "native-scroll-guidance",
+        `${width}-${height}-${scale}.png`,
+      ),
+    });
+    await dispatch({ subaction: "guide", guidance: { kind: "hide" } });
+  }
+  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+  await page.setViewport({ width: 800, height: 600 });
+  state = await snapshot();
+  const scroll = action(state, "scroll", "html", {
+    direction: "down",
+    taskPolicy: {
+      ...policy,
+      targets: [{ selector: "html", action: "scroll" }],
+    },
+  });
+  assert.equal((await dispatch(scroll)).result.dispatched, true);
+  assert.ok(await page.evaluate(() => scrollY > 0));
+  await assert.rejects(dispatch(scroll), { code: "STALE_REF" });
+  await page.evaluate(() => {
+    document.body.style.minHeight = "";
+    scrollTo(0, 0);
+  });
+  state = await snapshot();
   const click = action(state, "click", "#increment");
   const guide = (guidance) => dispatch({ subaction: "guide", guidance });
   const shown = {
@@ -772,6 +880,23 @@ try {
     "6",
     "Cleanup failure must not hide the real effect",
   );
+  await page.evaluate(() => {
+    const a = document.createElement("a");
+    a.id = "planned-portal";
+    a.href = "#billing-portal";
+    a.textContent = "Payment portal";
+    a.onclick = () => {
+      throw new Error("Follow must not activate the click handler");
+    };
+    document.body.append(a);
+    window.addEventListener("hashchange", () => {
+      if (location.hash === "#billing-portal") {
+        const status = document.createElement("p");
+        status.textContent = "Portal opened";
+        document.body.append(status);
+      }
+    });
+  });
   // Drive the shared planned-action workflow through the real durable task
   // runtime, HTTP transport and DOM. The deterministic planner is not LLM proof.
   failCleanup = false;
@@ -796,15 +921,19 @@ try {
       return "German";
     },
     verify: async (proposal, before, after) =>
-      proposal.capability === "browser.select"
-        ? after.elements
-            .find((e) => e.targetSelector === "#language")
-            ?.options.find((o) => o.selected)?.label === "German"
+      proposal.capability === "browser.follow"
+        ? after.url === `${origin}/#billing-portal`
           ? "succeeded"
           : "unknown"
-        : before.text.includes("6") && after.text.includes("7")
-          ? "succeeded"
-          : "unknown",
+        : proposal.capability === "browser.select"
+          ? after.elements
+              .find((e) => e.targetSelector === "#language")
+              ?.options.find((o) => o.selected)?.label === "German"
+            ? "succeeded"
+            : "unknown"
+          : before.text.includes("6") && after.text.includes("7")
+            ? "succeeded"
+            : "unknown",
     recordEvidence: async () => "fixture-planned-action-readback",
   });
   runtime = new InteractiveTaskRuntime({
@@ -816,7 +945,7 @@ try {
     id: "planned-native-flow",
     goalRef: "select-and-click",
     allowedOrigins: [origin],
-    allowedCapabilities: ["browser.select", "browser.click"],
+    allowedCapabilities: ["browser.select", "browser.click", "browser.follow"],
     authorization: {
       decisionId: "planned-authority",
       policyRevision: "fixture-v1",
@@ -849,7 +978,15 @@ try {
           ref: view.controls.find((c) => c.label === "Increment").ref,
           message: "Increment once",
         };
-      return { status: "done", message: "Observed both requested changes" };
+      if (!view.text.includes("Portal opened"))
+        return {
+          status: "act",
+          kind: "agent-action",
+          action: "follow",
+          ref: view.controls.find((c) => c.label === "Payment portal").ref,
+          message: "Open the payment portal",
+        };
+      return { status: "done", message: "Observed all requested changes" };
     },
   });
   try {
@@ -923,11 +1060,18 @@ try {
     );
     assert.equal(decision.kind, "agent-action");
     decision = await workflow.executeAction(decision.offerKey);
-    assert.equal(decision.kind, "done");
+    assert.equal(decision.kind, "agent-action");
     assert.equal(await page.$eval("output", (n) => n.textContent), "7");
+    decision = await workflow.executeAction(decision.offerKey);
+    assert.equal(
+      decision.kind,
+      "done",
+      JSON.stringify({ decision, task: runtime.get(plannedTask.id) }),
+    );
+    assert.equal(page.url(), `${origin}/#billing-portal`);
     assert.deepEqual(
       runtime.get(plannedTask.id).operations.map((o) => o.status),
-      ["succeeded", "succeeded"],
+      ["succeeded", "succeeded", "succeeded"],
     );
   } finally {
     await plannedActuator.quiesce({ owner, taskId: plannedTask.id });
@@ -936,7 +1080,384 @@ try {
   console.log(
     "PASS: planned select and click through durable SQLite task runtime, host permission withdrawal and stale-page replan without dispatch",
   );
+  // A commit control stays with the person unless the host spends a grant
+  // for her yes to that one control in this observation; the grant is
+  // single use and the page reports the commit as consented.
+  const payContext = { ...context, epoch: 5 };
+  assert.equal(
+    (
+      await surfaceTarget.bindTask({
+        ...binding,
+        ...payContext,
+        bindingRevision: 100,
+        expiresAt: Date.now() + 60000,
+        targets: [{ selector: "#pay", action: "click" }],
+      })
+    ).bound,
+    true,
+  );
+  const payObservation = async () => {
+    observed = (
+      await surfaceTarget.execute(
+        { subaction: "snapshot", id: pageId },
+        { taskContext: payContext },
+      )
+    ).value.result;
+    return taskAction("click", "#pay").command;
+  };
+  const payGrant = (command, grantId) => ({
+    grantId,
+    taskId: payContext.taskId,
+    epoch: payContext.epoch,
+    origin,
+    targetRef: command.selector,
+    selector: "#pay",
+    subaction: "click",
+    expiresAt: Date.now() + 30000,
+  });
+  let payCommand = await payObservation();
+  await assert.rejects(
+    surfaceTarget.execute(payCommand, {
+      taskContext: payContext,
+      expectedSelector: "#pay",
+    }),
+    { kind: "POLICY_BLOCKED" },
+  );
+  assert.equal(paymentPosts, 0);
+  payCommand = await payObservation();
+  // A grant for another observation of the same control is refused.
+  await assert.rejects(
+    surfaceTarget.execute(payCommand, {
+      taskContext: payContext,
+      expectedSelector: "#pay",
+      commitGrant: {
+        ...payGrant(payCommand, "pay-stale"),
+        targetRef: "00000000-0000-4000-8000-000000000000:0:1",
+      },
+    }),
+    { kind: "POLICY_BLOCKED" },
+  );
+  payCommand = await payObservation();
+  const paid = payGrant(payCommand, "pay-yes");
+  assert.equal(
+    (
+      await surfaceTarget.execute(payCommand, {
+        taskContext: payContext,
+        expectedSelector: "#pay",
+        commitGrant: paid,
+      })
+    ).value.result.dispatched,
+    true,
+  );
+  await page.waitForFunction(
+    () => document.querySelector("#receipt").textContent === "Paid",
+  );
+  assert.equal(paymentPosts, 1);
+  payCommand = await payObservation();
+  assert.deepEqual(observed.frames[0].consentedCommit, {
+    grantId: "pay-yes",
+    kind: "submit",
+    formHash: commitFormHash([]),
+  });
+  assert.equal(observed.frames[0].effectViolation, undefined);
+  // The spent grant cannot commit again, even for a fresh observation.
+  await assert.rejects(
+    surfaceTarget.execute(payCommand, {
+      taskContext: payContext,
+      expectedSelector: "#pay",
+      commitGrant: { ...paid, targetRef: payCommand.selector },
+    }),
+    { kind: "POLICY_BLOCKED" },
+  );
+  assert.equal(paymentPosts, 1);
+  console.log(
+    "PASS: embedded commit control blocked without a grant; one host grant commits once, is reported as consented, and cannot be replayed",
+  );
+  // Only the granted control's own submit is consented. A form whose page
+  // script sends it with fetch, so nothing leaves this document.
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<form id="transfer" action="/transfer" method="post"><button id="send">Send transfer</button><button id="alt" formaction="/exfil">Other</button></form>',
+    );
+    const transfer = document.querySelector("#transfer");
+    transfer.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const submitter = event.submitter;
+      fetch(
+        submitter?.hasAttribute("formaction")
+          ? submitter.formAction
+          : transfer.action,
+        { method: "POST" },
+      );
+    });
+  });
+  const sendClick = async (epoch, onclick, grantFields = {}) => {
+    await page.evaluate((script) => {
+      document.querySelector("#send").setAttribute("onclick", script);
+    }, onclick);
+    const sendContext = { ...context, epoch };
+    assert.equal(
+      (
+        await surfaceTarget.bindTask({
+          ...binding,
+          ...sendContext,
+          bindingRevision: 100 + epoch,
+          expiresAt: Date.now() + 60000,
+          targets: [{ selector: "#send", action: "click" }],
+        })
+      ).bound,
+      true,
+    );
+    const read = async () =>
+      (
+        await surfaceTarget.execute(
+          { subaction: "snapshot", id: pageId },
+          { taskContext: sendContext },
+        )
+      ).value.result.frames[0];
+    const frame = await read();
+    const selector = frame.elements.find(
+      (element) => element.targetSelector === "#send",
+    ).selector;
+    const sendCommand = {
+      subaction: "click",
+      id: pageId,
+      taskContext: sendContext,
+      selector,
+      expectedSelector: "#send",
+    };
+    assert.equal(
+      (
+        await surfaceTarget.execute(sendCommand, {
+          taskContext: sendContext,
+          expectedSelector: "#send",
+          commitGrant: {
+            grantId: `send-${epoch}`,
+            taskId: sendContext.taskId,
+            epoch,
+            origin,
+            targetRef: selector,
+            selector: "#send",
+            subaction: "click",
+            expiresAt: Date.now() + 30000,
+            ...grantFields,
+          },
+        })
+      ).value.result.dispatched,
+      true,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return read();
+  };
+  // requestSubmit(alt): the other submitter's formaction is refused.
+  let sent = await sendClick(
+    6,
+    "event.preventDefault();this.form.requestSubmit(alt)",
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  // A script click on the other submitter is refused too.
+  sent = await sendClick(7, "event.preventDefault();alt.click()");
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  // A script form.submit() sends no submit event and is not consented.
+  sent = await sendClick(8, "event.preventDefault();this.form.submit()");
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  assert.ok(!posted.includes("/exfil") && !posted.includes("/transfer"));
+  // A submit with no submitter, when the granted button is the form's
+  // default button and overrides nothing, is consented.
+  sent = await sendClick(9, "event.preventDefault();this.form.requestSubmit()");
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-9",
+    kind: "submit",
+    formHash: commitFormHash([]),
+  });
+  // The granted submitter itself is consented.
+  sent = await sendClick(10, "");
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-10",
+    kind: "submit",
+    formHash: commitFormHash([]),
+  });
+  assert.deepEqual(
+    posted.filter((path) => path !== "/paid"),
+    ["/transfer", "/transfer"],
+  );
+  // A default button that overrides the action: no submitter is refused.
+  await page.evaluate(() =>
+    document.querySelector("#send").setAttribute("formaction", "/transfer"),
+  );
+  sent = await sendClick(
+    11,
+    "event.preventDefault();this.form.requestSubmit()",
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  assert.ok(!posted.includes("/exfil"));
+  console.log(
+    "PASS: a consented commit is only the granted submitter's own submit; another submitter, form.submit() and an overriding implicit submit are refused",
+  );
+  // A consented commit is bound to its exact request and form contents.
+  await page.evaluate(() => {
+    const send = document.querySelector("#send");
+    send.removeAttribute("formaction");
+    send.insertAdjacentHTML(
+      "beforebegin",
+      '<input name="amount" aria-label="Amount" value="12">',
+    );
+  });
+  const reviewed = commitFormHash([["amount", "12"]]);
+  // A same-site fetch to another path than the form's action is not the
+  // granted request: it is reported, with no consented commit.
+  sent = await sendClick(
+    12,
+    "event.preventDefault();fetch('/exfil-fetch',{method:'POST'})",
+  );
+  assert.equal(sent.effectViolation, "request");
+  assert.equal(sent.consentedCommit, undefined);
+  // ... nor is a request the grant declares a target for, to another path.
+  sent = await sendClick(
+    13,
+    "event.preventDefault();fetch('/exfil-fetch',{method:'POST'})",
+    { requestTarget: { path: "/charge", method: "POST" } },
+  );
+  assert.equal(sent.effectViolation, "request");
+  assert.equal(sent.consentedCommit, undefined);
+  // The declared request target is consented.
+  sent = await sendClick(
+    14,
+    "event.preventDefault();fetch('/charge',{method:'POST'})",
+    { requestTarget: { path: "/charge", method: "POST" } },
+  );
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-14",
+    kind: "request",
+  });
+  // Without a formHash the page reports the hash of the form data sent, and
+  // it equals the host helper's for the same fields.
+  sent = await sendClick(15, "");
+  assert.equal(sent.effectViolation, undefined);
+  assert.equal(sent.consentedCommit.formHash, reviewed);
+  // A matching formHash is consented.
+  sent = await sendClick(16, "", { formHash: reviewed });
+  assert.equal(sent.effectViolation, undefined);
+  assert.deepEqual(sent.consentedCommit, {
+    grantId: "send-16",
+    kind: "submit",
+    formHash: reviewed,
+  });
+  const transfers = posted.filter((path) => path === "/transfer").length;
+  // A field value changed after her yes, or an added hidden input, is refused.
+  sent = await sendClick(17, "this.form.amount.value='9999'", {
+    formHash: reviewed,
+  });
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  await page.evaluate(() => {
+    document.querySelector("#transfer").amount.value = "12";
+  });
+  sent = await sendClick(
+    18,
+    "const extra=document.createElement('input');extra.type='hidden';extra.name='to';extra.value='mallory';this.form.append(extra)",
+    { formHash: reviewed },
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  assert.equal(posted.filter((path) => path === "/transfer").length, transfers);
+  await page.evaluate(() =>
+    document.querySelector('#transfer input[name="to"]').remove(),
+  );
+  // A script form.submit() into a new window is reported.
+  sent = await sendClick(
+    19,
+    "event.preventDefault();this.form.target='_blank';this.form.submit();this.form.target=''",
+  );
+  assert.equal(sent.effectViolation, "submit");
+  assert.equal(sent.consentedCommit, undefined);
+  console.log(
+    "PASS: a consented commit is bound to its request and form contents; another path, a changed field, an added hidden input and a form.submit() into a new window are refused or reported, and the host and page form hashes agree",
+  );
   await taskHandler.close();
+  // The shipped isolated channel follows the observed URL without running a
+  // payment-labelled anchor's click handler. It takes no caller-provided URL.
+  const linkDispatch = async (command) => {
+    const reply = await nativeDispatch(command);
+    if (reply.result.error)
+      throw Object.assign(new Error(reply.result.error.message), {
+        code: reply.result.error.kind,
+      });
+    return reply;
+  };
+  const linkSnapshot = async () =>
+    (await linkDispatch({ subaction: "snapshot" })).result;
+  await page.evaluate(() => {
+    document.body.innerHTML = `<a id="portal" href="/billing-portal" onclick="fetch('/unexpected-payment', {method:'POST'})">Payment portal</a>`;
+  });
+  const followPolicy = {
+    origin,
+    expiresAt: Date.now() + 60000,
+    targets: [{ selector: "#portal", action: "follow" }],
+  };
+  const follow = (state) =>
+    action(state, "follow", "#portal", { taskPolicy: followPolicy });
+  state = await linkSnapshot();
+  await page.evaluate(
+    () => (document.querySelector("#portal").href = "/different"),
+  );
+  await assert.rejects(linkDispatch(follow(state)), { code: "STALE_REF" });
+  for (const href of [
+    "javascript:alert(1)",
+    "https://other.example/portal",
+    `https://user:password@127.0.0.1:${server.address().port}/portal`,
+  ]) {
+    await page.evaluate(
+      (href) => (document.querySelector("#portal").href = href),
+      href,
+    );
+    state = await linkSnapshot();
+    await assert.rejects(linkDispatch(follow(state)), {
+      code: "POLICY_BLOCKED",
+    });
+  }
+  await page.evaluate(() => {
+    const a = document.querySelector("#portal");
+    a.href = "/billing-portal";
+    a.download = "receipt";
+  });
+  state = await linkSnapshot();
+  await assert.rejects(linkDispatch(follow(state)), { code: "POLICY_BLOCKED" });
+  await page.evaluate(() => {
+    const a = document.querySelector("#portal");
+    a.removeAttribute("download");
+    a.target = "_blank";
+  });
+  state = await linkSnapshot();
+  await assert.rejects(linkDispatch(follow(state)), { code: "POLICY_BLOCKED" });
+  await page.evaluate(() =>
+    document.querySelector("#portal").removeAttribute("target"),
+  );
+  state = await linkSnapshot();
+  const postsBeforeFollow = paymentPosts;
+  const navigation = page.waitForNavigation();
+  const followed = await linkDispatch(follow(state));
+  assert.equal(followed.result.dispatched, true);
+  assert.equal(followed.result.requiresReadback, true);
+  await navigation;
+  assert.equal(page.url(), `${origin}/billing-portal`);
+  assert.equal(
+    paymentPosts,
+    postsBeforeFollow,
+    "Following the link must not execute its payment handler",
+  );
+  console.log(
+    "PASS: observed same-origin link navigation without click handlers, with stale URL, credential, scheme, origin, download and new-window refusal",
+  );
+
   console.log(
     "PASS: NativeTaskActuator readback, cleanup uncertainty, bound embedded task adapter and authenticated host HTTP to isolated command channel, real click/fill/select with visible preview and option-label readback, lost-effect uncertainty without replay, document and replay fences, manual input, policy requirement, fixed operations, credential exclusion",
   );

@@ -1,6 +1,6 @@
 /** Executes fixed browser operations against explicit tabs and isolated-world snapshot references. */
 
-import { pageCommand } from "./page-command.mjs";
+import { blockerSelectors, pageCommand } from "./page-command.mjs";
 import { BridgeError } from "./protocol.mjs";
 
 export { pageCommand } from "./page-command.mjs";
@@ -196,6 +196,10 @@ export async function executeCommand(
             ...element,
             selector: `${snapshotId}:${frameId}:${id}`,
           })),
+          blockers: blockerSelectors(
+            result.blockers,
+            `${snapshotId}:${frameId}`,
+          ),
         };
       }),
     };
