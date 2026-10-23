@@ -36,6 +36,7 @@ export class NativeSurfaceBrowserTarget {
     "task-guide-keep-clear",
     "task-expected-target",
     "task-action-feedback",
+    "task-origins",
     "task-commit-grant",
   ]);
   private stopped = false;

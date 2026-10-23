@@ -23,6 +23,17 @@ export function createTaskBindings({
       "The command does not match this tab's active task binding.",
     );
   const bindingKey = (id) => `task-binding:${id}`;
+  const exactOrigin = (value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && url.origin === value;
+    } catch {
+      return false;
+    }
+  };
+  // A task the host extended to more websites binds all of them at once; each
+  // command is still scoped to the origin of the page it reads or acts on.
+  const originsOf = (binding) => binding.origins ?? [binding.origin];
   const grantKey = (id) => `commit-grant:${id}`;
   // Grants spent in this lifetime. Storage keeps them across a worker restart.
   const spentGrants = new Set();
@@ -61,6 +72,7 @@ export function createTaskBindings({
             "bindingRevision",
             ...contextKeys,
             "origin",
+            "origins",
             "expiresAt",
             "targets",
             "revoked",
@@ -100,13 +112,16 @@ export function createTaskBindings({
       )
     )
       throw blocked();
-    let origin;
-    try {
-      origin = new URL(binding.origin);
-    } catch {
-      throw blocked();
-    }
-    if (origin.protocol !== "https:" || origin.origin !== binding.origin)
+    if (
+      !exactOrigin(binding.origin) ||
+      (binding.origins !== undefined &&
+        (!Array.isArray(binding.origins) ||
+          binding.origins.length < 2 ||
+          binding.origins.length > 16 ||
+          !binding.origins.every(exactOrigin) ||
+          new Set(binding.origins).size !== binding.origins.length ||
+          !binding.origins.includes(binding.origin)))
+    )
       throw blocked();
     if (!current()) throw blocked();
     const key = bindingKey(binding.tabId);
@@ -121,6 +136,7 @@ export function createTaskBindings({
       previous.expiresAt <= now() &&
       contextKeys.every((key) => binding[key] === previous[key]) &&
       binding.origin === previous.origin &&
+      JSON.stringify(binding.origins) === JSON.stringify(previous.origins) &&
       binding.assistantName === previous.assistantName &&
       JSON.stringify(binding.targets) === JSON.stringify(previous.targets);
     if (
@@ -216,13 +232,14 @@ export function createTaskBindings({
       throw blocked();
     // Removal has no page-read/action authority. It still belongs to exactly
     // this in-memory binding, but may clean up after expiry or navigation.
+    let origin = binding.origin;
     if (!cleanup) {
-      const url = await getUrl(command.id);
-      if (!current() || new URL(url).origin !== binding.origin) throw blocked();
+      origin = new URL(await getUrl(command.id)).origin;
+      if (!current() || !originsOf(binding).includes(origin)) throw blocked();
     }
     if (
       command.subaction === "navigate" &&
-      new URL(command.url).origin !== binding.origin
+      !originsOf(binding).includes(new URL(command.url).origin)
     )
       throw blocked();
     if (command.selector && !/^[0-9a-f-]{36}:0:\d+$/.test(command.selector))
@@ -239,9 +256,9 @@ export function createTaskBindings({
     const commitGrant =
       command.commitGrant === undefined
         ? undefined
-        : await spendCommitGrant(command, binding, current);
+        : await spendCommitGrant(command, binding, current, origin);
     copy.taskPolicy = {
-      origin: binding.origin,
+      origin,
       targets: binding.targets,
       ...(command.expectedSelector === undefined
         ? {}
@@ -260,7 +277,7 @@ export function createTaskBindings({
    * select, this exact value. It is spent here, once, before the page sees it; a refusal
    * after this point still spends it. Without a grant, commits stay blocked.
    */
-  async function spendCommitGrant(command, binding, current) {
+  async function spendCommitGrant(command, binding, current, pageOrigin) {
     const grant = command.commitGrant;
     if (
       !grant ||
@@ -270,7 +287,9 @@ export function createTaskBindings({
       !validId(grant.grantId) ||
       grant.taskId !== binding.taskId ||
       grant.epoch !== binding.epoch ||
-      grant.origin !== binding.origin ||
+      // The origin of the page this command acts on, which an extended task
+      // may have moved to; a grant for one origin never commits on another.
+      grant.origin !== pageOrigin ||
       grant.subaction !== command.subaction ||
       grant.targetRef !== command.selector ||
       typeof grant.targetRef !== "string" ||

@@ -49,6 +49,13 @@ it stays within the approved origin or its https upgrade. A tapped new window is
 reported with `newWindow: true`. Subframes are not intercepted; this is not a
 subresource filter.
 
+When the host extends a running task to another website after its own check (for
+example `https://www.ssa.gov` hands the person to `https://secure.login.gov`), it calls
+`setTaskOrigins({ id, owner, session, epoch, origins })` with the task's exact HTTPS
+origins. A page on one of them may then move to another, a POST included, without a
+hold; every other origin is still held. `origins: []` ends the extension. Nothing is
+added without this call, and the list ends with the surface.
+
 A website never acts for the person through a surface. Android reports these as events
 and does nothing by itself:
 

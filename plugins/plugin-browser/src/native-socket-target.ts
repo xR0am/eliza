@@ -98,7 +98,14 @@ export interface NativeTaskContext {
 export interface NativeTaskBinding extends NativeTaskContext {
   tabId: string;
   bindingRevision: number;
+  /** The origin of the page the binding starts on. */
   origin: string;
+  /**
+   * Every origin the bound page may be observed and acted on (2 to 16, `origin`
+   * included), for a task the host extended. Requires the `task-origins` peer
+   * capability. Absent: `origin` alone.
+   */
+  origins?: string[];
   expiresAt: number;
   revoked: boolean;
   /** Overlay display name (cursor tag and label mark). Defaults to "Eliza". */
@@ -897,6 +904,12 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
       throw new BrowserDispatchFailure(
         "UNSUPPORTED",
         "This browser does not enforce task bindings.",
+        { targetId: this.id },
+      );
+    if (binding.origins !== undefined && !this.advertised.has("task-origins"))
+      throw new BrowserDispatchFailure(
+        "UNSUPPORTED",
+        "This browser does not support a task with more than one website.",
         { targetId: this.id },
       );
     if (

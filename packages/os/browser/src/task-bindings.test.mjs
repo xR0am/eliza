@@ -13,7 +13,7 @@ const context = {
 };
 const targetRef = "00000000-0000-4000-8000-000000000001:0:7";
 
-async function fixture(records = new Map()) {
+async function fixture(records = new Map(), scope = {}) {
   let clock = Date.now();
   const authority = createTaskBindings({
     bindings: new Map(),
@@ -22,7 +22,7 @@ async function fixture(records = new Map()) {
       records.set(key, structuredClone(value));
     },
     clearGuidance: async () => {},
-    getUrl: async () => `${origin}/pay`,
+    getUrl: async () => scope.page ?? `${origin}/pay`,
     validTabId: (id) => id === "1",
     now: () => clock,
   });
@@ -35,6 +35,7 @@ async function fixture(records = new Map()) {
         tabId: "1",
         bindingRevision: 1,
         origin,
+        ...(scope.origins ? { origins: scope.origins } : {}),
         expiresAt: clock + 300000,
         revoked: false,
         targets: [
@@ -202,4 +203,21 @@ test("a grant that expires while it is being spent is refused", async () => {
   const grant = f.grant({ expiresAt: Date.now() + 10 });
   f.advance(20);
   await refused(f.authority.scope(f.command({ commitGrant: grant })));
+});
+
+test("an extended task's grant commits only on the origin it names", async () => {
+  const signIn = "https://login.bank.example";
+  const f = await fixture(new Map(), {
+    origins: [origin, signIn],
+    page: `${signIn}/confirm`,
+  });
+  // A grant for the starting origin never commits on the sign-in page.
+  await refused(f.authority.scope(f.command({ commitGrant: f.grant() })));
+  const scoped = await f.authority.scope(
+    f.command({
+      commitGrant: f.grant({ grantId: "grant-2", origin: signIn }),
+    }),
+  );
+  assert.equal(scoped.command.taskPolicy.origin, signIn);
+  assert.equal(scoped.command.taskPolicy.commitGrant.grantId, "grant-2");
 });

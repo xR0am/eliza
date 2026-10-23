@@ -86,7 +86,8 @@ export interface CreateSurfaceOptions extends SurfaceOwnerOptions {
    * blocked host never receives the request. A server redirect of an address the host
    * loaded goes on without asking again only within the approved origin or its upgrade. A tapped new window is
    * reported with `newWindow: true`. Subframes are not intercepted. Default false: the
-   * page navigates by itself, and a tapped new window opens in place.
+   * page navigates by itself, and a tapped new window opens in place. `setTaskOrigins`
+   * lets the page move between the origins of a task the host extended.
    */
   interceptNavigation?: boolean;
   /**
@@ -398,6 +399,17 @@ export interface ElizaSurfaceManagerPlugin {
   openExternalLink(
     options: SurfaceIdOptions & { url: string },
   ): Promise<{ status: "dispatched" }>;
+  /**
+   * Android, intercepting surfaces only: the exact HTTPS origins of the host's running
+   * task after it extended the task (for example `https://www.ssa.gov` and
+   * `https://secure.login.gov`) once its own safety check passed. A page on one of them
+   * may then move to another, a POST included, without a `navigationRequested` hold;
+   * any other origin is still held. At most 16. `[]` ends the extension. Nothing is
+   * ever added without this call, and it does not survive the surface.
+   */
+  setTaskOrigins(
+    options: SurfaceIdOptions & { origins: string[] },
+  ): Promise<void>;
   /** Android: page text size in percent, 50 to 300 (100 is the page's own size). */
   setTextZoom(options: SurfaceIdOptions & { percent: number }): Promise<void>;
   /**

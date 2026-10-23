@@ -70,6 +70,7 @@ const connection = new NativeConnection({
         "task-expected-target",
         "task-commit-grant",
         "task-guide-keep-clear",
+        "task-origins",
       ],
     };
   },

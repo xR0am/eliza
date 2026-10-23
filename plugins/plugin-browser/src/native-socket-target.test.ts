@@ -978,6 +978,47 @@ it("requires the guide-label capability for labels, offers, pause and a configur
   }
 });
 
+it("sends a binding for more than one website only to a task-origins peer", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "native-task-origins-"));
+  const socketPath = join(directory, "browser.sock");
+  const target = new NativeSocketBrowserTarget(() => {});
+  let socket: Socket | undefined;
+  try {
+    await target.start({ ELIZA_BROWSER_NATIVE_SOCKET: socketPath });
+    socket = createConnection(socketPath);
+    const frames = socketFrames(socket);
+    frames.send({
+      type: "hello",
+      protocol: 2,
+      extensionId: "pmldpcoefklbdbgmggcejkfoinmjfeio",
+      profileId: "older-profile",
+      capabilities: ["task-bind", "task-guide"],
+    });
+    await vi.waitFor(async () => expect(await target.available()).toBe(true));
+    await expect(
+      target.bindTask({
+        actorId: "actor",
+        accountId: "account",
+        agentId: "agent",
+        taskId: "task",
+        epoch: 1,
+        tabId: "1",
+        bindingRevision: 1,
+        origin: "https://www.ssa.gov",
+        origins: ["https://www.ssa.gov", "https://secure.login.gov"],
+        expiresAt: Date.now() + 60000,
+        revoked: false,
+        targets: [],
+      }),
+    ).rejects.toMatchObject({ kind: "UNSUPPORTED" });
+    expect(frames.messages).toHaveLength(0);
+  } finally {
+    socket?.destroy();
+    await target.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("reduces the one active HTTPS page to its origin and the complete title", () => {
   const tab = {
     id: "7",

@@ -122,6 +122,11 @@ export class BrowserSurfaceWeb
   ): Promise<{ status: "dispatched" }> {
     throw this.unavailable(UNAVAILABLE);
   }
+  async setTaskOrigins(
+    _options: SurfaceIdOptions & { origins: string[] },
+  ): Promise<void> {
+    throw this.unavailable(UNAVAILABLE);
+  }
   async setTextZoom(
     _options: SurfaceIdOptions & { percent: number },
   ): Promise<void> {
