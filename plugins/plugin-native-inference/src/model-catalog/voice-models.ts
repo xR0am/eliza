@@ -35,7 +35,12 @@ export type VoiceModelId =
   | "vad"
   | "wakeword"
   | "embedding"
-  | "asr"
+  /**
+   * The Android/AOSP/desktop device voice stack: Paradee-8M v1.1 TTS and
+   * Phonon-2 ASR on libelizainference. Device ASR lives only here; the old
+   * standalone `asr` id (the retired eliza-1-asr / Qwen3-ASR line and its
+   * Gemma ASR placeholder) is gone.
+   */
   | "mobile-voice";
 
 /**
