@@ -309,8 +309,6 @@ ELIZA_FRONTEND_HOST_SUFFIX = "sites.eliza.app"
 # Internal Worker-to-agent calls must target the control-plane origin directly;
 # same-zone fetches to a UUID host bypass its Worker route and hit wildcard DNS.
 AGENT_ROUTER_ORIGIN_HOST = "eliza-production-1.eliza.app"
-WAIFU_SERVICE_ORG_ID = "d96d3fc8-cc07-40be-b81c-ba7a7b4e8028"
-WAIFU_SERVICE_USER_ID = "90101225-836f-4fa7-a69c-f70691dcf256"
 ELIZA_APP_URL = "https://cloud.eliza.app"
 ELIZA_ONBOARDING_APP_URL = "https://cloud.eliza.app"
 ELIZA_ONBOARDING_LOGIN_APP_URL = "https://eliza.app"
@@ -561,8 +559,7 @@ TUNNEL_AUTH_KEY_COST_USD = "0.01"
 #   ELIZA_APNS_TEAM_ID                 Apple Developer team id
 #   ELIZA_APNS_TOPIC                   Signed iOS bundle id (ai.elizaos.app)
 #   ELIZA_APNS_PRODUCTION              Explicit host selector: 0 sandbox, 1 production
-#   AGENT_SERVER_SHARED_SECRET / WAIFU_SERVICE_KEY
-#   WAIFU_BRIDGE_ORG_ID                Required owner org for waifu bridge user provisioning
+#   AGENT_SERVER_SHARED_SECRET
 # -----------------------------------------------------------------------------
 
 # =============================================================================
@@ -677,6 +674,12 @@ binding = "BROWSER"
 [env.staging.vars]
 APP_OAUTH_RETURN_URLS = "https://alphacompute.ai/alphaphone/gmail/staging/callback"
 NODE_ENV = "production"
+# Pre-cutover default only. The canonical upstream is the Cloudflare login
+# Worker, https://login-staging.eliza.app (CANONICAL_LOGIN_UPSTREAM_URLS in
+# packages/cloud/scripts/verify-steward-upstream-binding.ts). The canonical
+# release publishes it by setting the protected ELIZA_LOGIN_API_URL variable,
+# which overrides this value; leaving it unset keeps this Railway default so
+# merging routing changes cannot move live login before the owner's cutover.
 LOGIN_API_URL = "https://steward-api-staging.up.railway.app"
 # Signed Twilio callbacks and media-stream URLs must use the externally routed
 # HTTPS origin, never a request-derived host. Keep this committed so any
@@ -750,8 +753,6 @@ ELIZA_CLOUD_AGENT_BASE_DOMAIN = "cloud-staging.eliza.app"
 # packages/cloud/api/src/index.ts (= eliza-production-1.elizacloud.ai) so
 # staging agent requests would silently hit the prod CP.
 AGENT_ROUTER_ORIGIN_HOST = "eliza-staging-1.eliza.app"
-WAIFU_SERVICE_ORG_ID = "d96d3fc8-cc07-40be-b81c-ba7a7b4e8028"
-WAIFU_SERVICE_USER_ID = "90101225-836f-4fa7-a69c-f70691dcf256"
 ELIZA_APP_URL = "https://cloud-staging.eliza.app"
 # Shared reminder cron dispatches Discord occurrences to the stateful gateway;
 # keep the public destination committed so a Worker redeploy cannot remove it.
@@ -1028,6 +1029,8 @@ binding = "BROWSER"
 
 [env.production.vars]
 APP_OAUTH_RETURN_URLS = "https://alphacompute.ai/alphaphone/gmail/callback"
+# Pre-cutover default only; canonical is https://login.eliza.app, published
+# through ELIZA_LOGIN_API_URL (see the staging block above).
 LOGIN_API_URL = "https://steward-api-production-115d.up.railway.app"
 NODE_ENV = "production"
 # Signed Twilio callbacks and media-stream URLs must use the externally routed
@@ -1090,8 +1093,6 @@ OIDC_REDIRECT_URI_ALIASES = '{"elizahub":["https://git.slop.cash/user/oauth2/eli
 STEWARD_TENANT_ID = "elizacloud"
 NEXT_PUBLIC_STEWARD_TENANT_ID = "elizacloud"
 AGENT_ROUTER_ORIGIN_HOST = "eliza-production-1.eliza.app"
-WAIFU_SERVICE_ORG_ID = "d96d3fc8-cc07-40be-b81c-ba7a7b4e8028"
-WAIFU_SERVICE_USER_ID = "90101225-836f-4fa7-a69c-f70691dcf256"
 ELIZA_APP_URL = "https://cloud.eliza.app"
 ELIZA_APP_DISCORD_WEBHOOK_HANDLER_URL = "https://gateway-discord-production.up.railway.app"
 ELIZA_ONBOARDING_APP_URL = "https://cloud.eliza.app"

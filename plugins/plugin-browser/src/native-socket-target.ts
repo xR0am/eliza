@@ -85,6 +85,7 @@ const capabilities = new Set([
   "fill",
   "select",
   "scroll",
+  "follow",
   "back",
   "forward",
   "reload",
@@ -417,6 +418,10 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     capabilities.has(command.subaction) &&
     this.advertised.has(command.subaction) &&
     (!command.id || /^\d+$/.test(command.id));
+  /** Whether the registered profile advertised `capability`. False while no profile is registered. */
+  hasCapability(capability: string): boolean {
+    return this.advertised.has(capability);
+  }
   getProfileId(): string | null {
     return !this.stopped && this.socket && !this.socket.destroyed
       ? this.profileId
@@ -1080,7 +1085,9 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     if (
       options.expectedSelector !== undefined &&
       (!options.taskContext ||
-        !["click", "fill", "select", "scroll"].includes(command.subaction) ||
+        !["click", "fill", "select", "scroll", "follow"].includes(
+          command.subaction,
+        ) ||
         typeof options.expectedSelector !== "string" ||
         !options.expectedSelector ||
         options.expectedSelector.length > 256 ||
@@ -1094,7 +1101,9 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     if (
       options.actionText !== undefined &&
       (!options.taskContext ||
-        !["click", "fill", "select", "scroll"].includes(command.subaction) ||
+        !["click", "fill", "select", "scroll", "follow"].includes(
+          command.subaction,
+        ) ||
         !validActionText(options.actionText))
     )
       throw new BrowserDispatchFailure(
@@ -1129,7 +1138,9 @@ export class NativeSocketBrowserTarget implements BrowserTarget {
     command = safeCommand as BrowserWorkspaceCommand;
     if (
       options.taskContext &&
-      ["click", "fill", "select", "scroll"].includes(command.subaction) &&
+      ["click", "fill", "select", "scroll", "follow"].includes(
+        command.subaction,
+      ) &&
       !this.advertised.has("task-action-feedback")
     )
       throw new BrowserDispatchFailure(
