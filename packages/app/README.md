@@ -215,7 +215,7 @@ test-clean utterances and `speech-fixture/0.wav`; and an empty transcript for
 silence. RTF is reported. The host report goes to `test-results/voice-quality/`.
 
 ASR is Phonon-2 (`asr/phonon-2-fv5.gguf`, Parakeet-TDT 0.6B with five-value
-weights, 330,632,256 bytes, sha256 `dc552eb7…`) on the library's parakeet
+weights, 208,932,352 bytes, sha256 `c0f6ad42…`) on the library's parakeet
 backend, which also streams (`ElizaVoiceNative.nativeAsrStream*`,
 `NativeAsr.openStream`). The GGUF is not published yet, so stage it by
 converting the pinned source and pass it through `ELIZA_VOICE_BUNDLE_FROM`
@@ -458,6 +458,15 @@ letters/digits/underscores/hyphens starting with a letter. Results are recorded 
 `variants[].phases` and output in `<variant>-phase-<name>.log`. Runner extras
 cannot override test selection. Cleanup hooks may run a final fixture phase even
 after cancellation; failed or partial installs do not expose this function.
+
+Set `wake: true` to send `KEYCODE_WAKEUP` and `wm dismiss-keyguard` after the
+APKs install and before `prepareVariant`. Set `appEvidence: {directory, json,
+png}` to copy named files from an app-relative sandbox directory with `run-as`
+after the last instrumentation. Each file is saved as `<variant>-<name>` in the
+report directory, JSON must parse and PNG must have a PNG signature. Its hash is
+recorded in `variants[].appEvidence`, and `collectVariant` receives
+`context.appEvidence.{files,json}`. A missing or invalid file fails the variant.
+The free-form `evidence` field is unchanged.
 
 Consumer APK audits can import `parseXmlTree` and `manifestFacts` from
 `scripts/lib/android-manifest-facts.mjs`. These pure helpers decode aapt xmltree
