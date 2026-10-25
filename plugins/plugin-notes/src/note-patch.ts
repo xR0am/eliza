@@ -62,4 +62,3 @@ export function applyNotePatch(
   if (patch.color !== undefined) updated.color = patch.color;
   return updated;
 }
-

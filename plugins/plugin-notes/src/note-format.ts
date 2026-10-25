@@ -24,4 +24,3 @@ export function parseNoteFormat(value: unknown): NoteFormat {
  if(JSON.stringify(data).length>262144)throw formatError("Note metadata exceeds size bound.","format.data");
  return {kind:record.kind as NoteFormat["kind"],data:data as NoteFormat["data"]};
 }
-

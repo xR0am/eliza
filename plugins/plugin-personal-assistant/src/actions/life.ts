@@ -1831,8 +1831,8 @@ async function renderLifeActionReply(args: {
   context?: Record<string, unknown>;
 }): Promise<string|GroundedActionReply> {
   const { runtime, message, state, intent, scenario, fallback, context } = args;
-  
-  
+
+
   const naturalFallback = buildRuleBasedLifeReply({
     scenario,
     intent,
@@ -5668,7 +5668,7 @@ async function runLifeOperationHandlerInner(
         scenario: "saved_definition",
         fallback,
         context: {
-          
+
           created: {
             title: created.definition.title,
             description: created.definition.description,
@@ -6285,7 +6285,7 @@ async function runLifeOperationHandlerInner(
         scenario: "updated_definition",
         fallback,
         context: {
-          
+
           previousTitle: target.definition.title,
           updated: {
             title: updated.definition.title,
@@ -6889,7 +6889,7 @@ async function runLifeOperationHandlerInner(
           scenario: "snoozed_occurrence",
           fallback,
           context: {
-          
+
             snoozed: {
               title: snoozed.title,
             },
