@@ -1,4 +1,4 @@
-import type { CalendarFields } from "../../../plugin-assistant/src/services/device-actions/calendar-contract.ts";
+import type { CalendarFields } from "@elizaos/plugin-assistant/device-calendar-contract";
 import {
   normalizeCalendarDateTimeInTimeZone,
   resolveCalendarEventRange,

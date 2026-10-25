@@ -8,11 +8,11 @@ import {
   calendarTarget,
   validateCalendarOperation,
   validateCalendarResult,
-} from "../../../plugin-assistant/src/services/device-actions/calendar-contract.ts";
+} from "@elizaos/plugin-assistant/device-calendar-contract";
 import {
   validateForegroundReviewOperation,
   validateForegroundReviewResult,
-} from "../../../plugin-assistant/src/services/device-actions/foreground-review-contract.ts";
+} from "@elizaos/plugin-assistant/device-foreground-review";
 export interface NamedCalendarReadProvider {
   executeAgent(input: {
     operation: Extract<CalendarOperation, { type: "calendar_read_selected" }>;
