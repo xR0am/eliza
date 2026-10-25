@@ -22,6 +22,10 @@ Pass the host's `branding` to `CloudRouterShell` as well as its app provider.
 Public sign-in uses `appName`, optional `cloudName` (defaults to the app name
 followed by Cloud), and optional `logoUrl` (omitted logos show the app name).
 These presentation values do not change authentication tenants or API endpoints.
+Public Terms and Privacy read `/api/public/service` from that deployment. Configure
+`CLOUD_PUBLIC_SERVICE_JSON` before deploying these pages; missing or invalid metadata
+shows an unavailable state with Retry, never another provider's legal policy.
+Document titles, revisions and paragraphs render as plain text.
 
 ## Development
 
