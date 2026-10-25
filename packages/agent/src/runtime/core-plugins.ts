@@ -23,6 +23,7 @@ export const CORE_PLUGIN_PROFILE_METADATA: readonly CorePluginProfile[] = [
   { plugin: "@elizaos/plugin-browser", mobileCore: true },
   { plugin: "@elizaos/plugin-vision", mobileCore: true },
   { plugin: "@elizaos/plugin-scheduling", mobileCore: true },
+  { plugin: "@elizaos/plugin-personal-assistant", mobileCore: true },
   {
     plugin: "@elizaos/plugin-personal-assistant/reminders-plugin",
     mobileCore: true,

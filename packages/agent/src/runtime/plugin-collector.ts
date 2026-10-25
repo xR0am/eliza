@@ -857,7 +857,7 @@ export function collectPluginNames(
   if (
     personalAssistantDisabledByEnv() ||
     leanChat ||
-    storeBuild ||
+    (!onMobile && storeBuild) ||
     isCloudContainer
   ) {
     pluginsToLoad.delete("@elizaos/plugin-personal-assistant");
