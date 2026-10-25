@@ -501,6 +501,11 @@ const stubAliases = {
   ...nativeStubs,
   ...optionalPluginStubs,
   ...pluginBrowserRemoteControlSources,
+  // LifeOps registers the browser tables without loading a desktop browser.
+  "@elizaos/plugin-browser/schema": path.join(
+    repoRoot,
+    "plugins/plugin-browser/src/schema.ts",
+  ),
 };
 const stubResolverPlugin = {
   name: "eliza-mobile-stubs",
