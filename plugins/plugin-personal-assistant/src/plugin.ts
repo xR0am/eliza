@@ -20,6 +20,7 @@ import {
   registerCandidateActionBackstopRule,
   registerDirectActionRoutingRule,
   registerLocalizedExamplesProvider,
+  ServiceType,
 } from "@elizaos/core";
 import type {
   IPermissionsRegistry,
@@ -31,7 +32,7 @@ import {
   MEETING_TRANSCRIPT_FINALIZED_EVENT,
   type MeetingTranscriptFinalizedPayload,
 } from "@elizaos/core/protocol";
-import type { HttpPlugin as Plugin } from "@elizaos/host/protocol";
+import { isMobilePlatform, type HttpPlugin as Plugin } from "@elizaos/host/protocol";
 import {
   getDefaultTriageService,
   messagingTriageActions,
@@ -474,7 +475,7 @@ async function importGoogleConnectorPluginModule(): Promise<
   Record<string, unknown>
 > {
   try {
-    return (await import(GOOGLE_CONNECTOR_PLUGIN_PACKAGE)) as Record<
+    return (await import("@elizaos/plugin-google-workspace")) as Record<
       string,
       unknown
     >;
@@ -558,6 +559,16 @@ export async function ensureLifeOpsCalendarPluginRegistered(
 export async function ensureLifeOpsPdfPluginRegistered(
   runtime: IAgentRuntime,
 ): Promise<void> {
+  // Desktop PDF rendering depends on native canvas. Preserve any native host
+  // PDF adapter, but do not register the absent desktop module on mobile.
+  if (isMobilePlatform()) {
+    if (!runtime.getService(ServiceType.PDF)) {
+      runtime.logger.info(
+        "[lifeops] PDF processing is unavailable on this host; PDF operations require a native PDF service",
+      );
+    }
+    return;
+  }
   if (runtime.plugins.some((plugin) => plugin.name === pdfPlugin.name)) {
     return;
   }

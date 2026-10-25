@@ -561,11 +561,20 @@ export function preparedViewReply(args: {
   steps: readonly unknown[];
   allow: (text: string) => boolean;
 }): string | undefined {
+  // Terminal synthesis records carry no action/effect. Keep every malformed
+  // or action-bearing step so multiple real outcomes still fail closed.
+  const actionSteps = args.steps.filter(
+    (step) =>
+      !isObjectRecord(step) ||
+      step.terminalOnly !== true ||
+      step.toolCall != null ||
+      step.result != null,
+  );
   if (
     args.effectStatus !== "pending" ||
     typeof args.reply !== "string" ||
     !args.reply.trim() ||
-    args.steps.length !== 1 ||
+    actionSteps.length !== 1 ||
     !isObjectRecord(args.stageOne)
   )
     return;
@@ -581,7 +590,7 @@ export function preparedViewReply(args: {
     !intents[0].trim()
   )
     return;
-  const step = args.steps[0];
+  const step = actionSteps[0];
   if (
     !isObjectRecord(step) ||
     !isObjectRecord(step.toolCall) ||
