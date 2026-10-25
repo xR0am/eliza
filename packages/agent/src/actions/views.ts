@@ -269,6 +269,7 @@ export const viewsAction: Action = {
             : {}),
         },
         data: {
+          ...(completedAction ? { awaitingDeviceExecution: true } : {}),
           view,
           navigation: receipt,
         },
