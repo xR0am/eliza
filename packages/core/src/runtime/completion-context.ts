@@ -273,7 +273,7 @@ function isHistoricalRequestEvidenceEvent(
 export function selectHistoricalNavigation(
 	context: ContextObject,
 	includedEventIds: ReadonlySet<string>,
-	options: { historicalEffects?: boolean } = {},
+	options: { historicalEffects?: boolean | "settled" } = {},
 ): ContextObject {
 	const sources = collectCompletionContextSources(context);
 	if (sources.length === 0) return context;
@@ -291,9 +291,9 @@ export function selectHistoricalNavigation(
 		events: context.events.filter((event) => {
 			if (!isHistoricalRequestEvidenceEvent(event)) return true;
 			const effects = event.segment.label === "runtime:historical_effects";
-			// Planning retains historical mutation evidence. Only completion's
-			// reviewed model projection may defer it with omitted originals.
-			if (effects && options.historicalEffects !== true) return true;
+			// Historical mutation evidence stays inline unless a reviewed model
+			// or source-bound background projection explicitly permits deferral.
+			if (effects && !options.historicalEffects) return true;
 			try {
 				const receipt: unknown = JSON.parse(event.segment.content);
 				if (
@@ -305,7 +305,10 @@ export function selectHistoricalNavigation(
 					!known.has(receipt.requestSourceEventId)
 				)
 					return true;
-				if (effects || event.segment.label === "runtime:historical_observations") {
+				if (
+					effects ||
+					event.segment.label === "runtime:historical_observations"
+				) {
 					const field = effects ? "outcomes" : "observations";
 					const entries = (receipt as Record<string, unknown>)[field];
 					// The message-service collector owns exact operation admission. This
@@ -330,12 +333,24 @@ export function selectHistoricalNavigation(
 									"actionName,receipt,success" ||
 								typeof observation.actionName !== "string" ||
 								!observation.actionName.trim() ||
-								(typeof observation.success !== "boolean" || (!effects && observation.success !== true))
+								typeof observation.success !== "boolean" ||
+								(!effects && observation.success !== true)
 							)
 								return false;
 							const normalized = normalizeEffectReceipt(observation.receipt);
 							return (
-								(effects || (normalized.outcome === "noop" && !normalized.idempotency.replayed)) &&
+								(effects ||
+									(normalized.outcome === "noop" &&
+										!normalized.idempotency.replayed)) &&
+								// Background review may defer settled outcomes only. Preview,
+								// failures and uncertain acceptance remain visible regardless
+								// of whether their historical request was deferred.
+								(!effects ||
+									options.historicalEffects !== "settled" ||
+									(observation.success === true &&
+										(normalized.outcome === "applied" ||
+											(normalized.outcome === "noop" &&
+												normalized.idempotency.replayed)))) &&
 								hashStableJson(normalized) ===
 									hashStableJson(observation.receipt)
 							);
@@ -365,7 +380,7 @@ export function completionContextSources(context: ContextObject): {
 			messageId: context.metadata?.messageId,
 			sources: sources.map(({ id, event }) => ({ id, event })),
 			// Include exact historical outcomes in the source-set identity as well:
-		// changed historical evidence cannot reuse an earlier relevance review.
+			// changed historical evidence cannot reuse an earlier relevance review.
 			navigationEvidence: context.events.filter(
 				isHistoricalRequestEvidenceEvent,
 			),
@@ -377,7 +392,7 @@ export function completionContextSources(context: ContextObject): {
 /** Relevance is applied only after source binding and complete category checks. */
 export function selectCompletionContext(
 	context: ContextObject,
-	options: { historicalEffects?: boolean } = {},
+	options: { historicalEffects?: boolean | "settled" } = {},
 ): {
 	context: ContextObject;
 	applied: boolean;
