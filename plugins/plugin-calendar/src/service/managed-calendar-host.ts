@@ -1,7 +1,6 @@
 /** Existing managed Cloud Calendar write/readback adapter, composed with host-owned API admission.
  * No credential reads, auth/billing implementation, provider retry, transport or repository. */
-import type {LinkedCalendarSemanticEvent} from "../../../../packages/contracts/src/calendar-linked-sync.ts";
-import type {LifeOpsCalendarEvent} from "../../../../packages/contracts/src/calendar.ts";
+import type {LinkedCalendarSemanticEvent, LifeOpsCalendarEvent} from "@elizaos/contracts";
 export type CalendarSyncSelection = {
 	grantId: string;
 	calendarId: string;
