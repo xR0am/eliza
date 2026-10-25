@@ -743,6 +743,11 @@ public class ElizaAgentService extends Service {
         if (token != null && !token.trim().isEmpty()) {
             headers.put("Authorization", "Bearer " + token.trim());
         }
+        if (unique.contains("view-interact")) {
+            String clientId=request.optString("clientId","");
+            if(unique.size()!=1||!clientId.matches("[A-Za-z0-9._-]{1,128}"))throw new IllegalArgumentException("Targeted renderer identity is required");
+            headers.put("X-ElizaOS-Client-Id",clientId);
+        } else if(request.has("clientId"))throw new IllegalArgumentException("Unexpected renderer identity");
         return new JSONObject().put("streams", streams).put("headers", headers);
     }
 

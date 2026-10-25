@@ -119,6 +119,7 @@ export class BrowserService extends Service {
   ): Promise<BrowserWorkspaceCommandResult> {
     if (
       (!targetId || targetId === "chromium-device") &&
+      (!clientId || targetId === "chromium-device") &&
       this.nativeTarget &&
       (await this.nativeTarget.available())
     ) {
@@ -325,6 +326,7 @@ export const browserPlugin: HttpPlugin = {
   name: "@elizaos/plugin-browser",
   description: "Authenticated native device browser control",
   services: [BrowserService],
+  views: [{id:"browser",label:"Browser",path:"/browser",modalities:["gui"],roleGate:{minRole:"OWNER"},capabilities:[{id:"browser-command",description:"Control the authenticated mounted native Browser",authority:"agent"}]}],
   routes: [
     nativeDeviceBrowserRoute,
     nativeDeviceBrowserStatusRoute,
@@ -352,3 +354,5 @@ export const showBrowserWorkspaceTab = desktopConnectorUnavailable;
 export function isBrowserWorkspaceBridgeConfigured(): boolean {
   return false;
 }
+
+export {parseNativeHistoryCommand} from "./native-client-command.ts";

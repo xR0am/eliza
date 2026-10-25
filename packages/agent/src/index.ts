@@ -801,3 +801,5 @@ export * from "./triggers/runtime.ts";
 export * from "./triggers/scheduling.ts";
 export * from "./triggers/types.ts";
 export * from "./version-resolver.ts";
+
+export { registerNativeViewRenderer } from "./api/native-view-renderer.ts";

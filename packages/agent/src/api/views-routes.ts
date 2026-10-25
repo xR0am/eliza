@@ -1420,6 +1420,7 @@ interface ViewInteractTransport {
   clientId?: string | null;
   runtime: IAgentRuntime;
   userRoles?: readonly RoleGateRole[];
+  ownerId?: string;
 }
 /**
  * Dispatch a capability to a view, reusing the established interact semantics.
@@ -1480,6 +1481,7 @@ export async function dispatchViewInteract(
       transport.clientId,
       entry,
       timeoutMs,
+      {ownerId:transport.ownerId},
     );
     const frame = {
       type: "view:interact",
