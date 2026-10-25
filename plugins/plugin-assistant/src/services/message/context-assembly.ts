@@ -1,4 +1,3 @@
-import { reconcileHistoricalProposalTerminals } from "./historical-proposal-terminals.ts";
 import type {
   Action,
   AgentContext,
@@ -46,6 +45,7 @@ import {
   replyReferenceEventForContext,
 } from "./dialogue-context.js";
 import { normalizeActionIdentifier } from "./direct-action-heuristics";
+import { reconcileHistoricalProposalTerminals } from "./historical-proposal-terminals.ts";
 import {
   MODEL_CONTEXT_PROVIDER_EXCLUSIONS,
   stage1ResponseStateProviderNames,
@@ -330,16 +330,22 @@ export async function createV5MessageContextObject(args: {
   appendPriorDialogueEvents(events, args.runtime, args.state, args.message, {
     includeOwnReplies: true,
   });
-  const recent = (args.state.data?.providers?.RECENT_MESSAGES as {
-    data?: { recentMessages?: unknown };
-  } | undefined)?.data?.recentMessages;
+  const recent = (
+    args.state.data?.providers?.RECENT_MESSAGES as
+      | {
+          data?: { recentMessages?: unknown };
+        }
+      | undefined
+  )?.data?.recentMessages;
   if (Array.isArray(recent)) {
     const reconciled = await reconcileHistoricalProposalTerminals(
-      args.runtime, args.message, events, recent,
+      args.runtime,
+      args.message,
+      events,
+      recent,
     );
     events.splice(0, events.length, ...reconciled);
   }
-
 
   // Advertise recall only for an authorized search child or search-capable umbrella.
   const hasMemoryRecallSurface =
