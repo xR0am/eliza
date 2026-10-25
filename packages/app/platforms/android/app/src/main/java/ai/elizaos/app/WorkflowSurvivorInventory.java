@@ -79,10 +79,25 @@ final class WorkflowSurvivorInventory {
  static boolean residentArguments(byte[] bytes,String bun,String loader,String bundle)throws Exception {
   check(bytes.length>0&&bytes.length<=65536&&bytes[bytes.length-1]==0,"incomplete resident argv");
   String[] args=new String(bytes,StandardCharsets.UTF_8).split(String.valueOf((char)0),-1);
-  if(args.length!=5&&args.length!=6)return false;
-  return args[args.length-1].isEmpty()&&args[0].equals(loader)&&args[1].equals(bun)
-   &&args[2].equals("--no-install")&&args[3].equals(bundle)
-   &&(args.length==5||args[4].equals("android-bridge"));
+  // Native Android Bun is itself the kernel executable; musl has one loader prefix.
+  int prefix=loader.equals(bun)?0:1;
+  if(args.length!=4+prefix&&args.length!=5+prefix)return false;
+  return args[args.length-1].isEmpty()&&args[0].equals(loader)&&args[prefix].equals(bun)
+   &&args[1+prefix].equals("--no-install")&&args[2+prefix].equals(bundle)
+   &&(args.length==4+prefix||args[3+prefix].equals("android-bridge"));
+ }
+ /** Authenticate the socket peer before adoption, without signaling or changing ownership. */
+ static void verifyResidentPeer(int pid,int uid,File suppliedBun,File suppliedExecutable,File suppliedBundle,long deadline)throws Exception {
+  check(uid==Process.myUid()&&pid>0,"resident peer UID differs");
+  String bun=suppliedBun.getCanonicalPath(),executable=suppliedExecutable.getCanonicalPath(),bundle=suppliedBundle.getCanonicalPath();
+  check(bun.equals(suppliedBun.getPath())&&executable.equals(suppliedExecutable.getPath())&&bundle.equals(suppliedBundle.getPath()),"resident deployment alias");
+  byte[] args=bounded(new File("/proc/"+pid+"/cmdline"),65536);
+  check(residentArguments(args,bun,executable,bundle),"resident peer arguments differ");
+  Identity before=processIdentity(pid,deadline);StructStat expected=Os.stat(executable);
+  check(before.uid==uid&&before.executable.equals(executable)&&before.sha256.equals(hash(suppliedExecutable,deadline))
+   &&before.device.equals(String.valueOf(expected.st_dev))&&before.inode.equals(String.valueOf(expected.st_ino)),"resident peer deployment differs");
+  mappedBunIdentity(pid,bun,deadline);
+  check(before.key().equals(processIdentity(pid,deadline).key())&&Arrays.equals(args,bounded(new File("/proc/"+pid+"/cmdline"),65536)),"resident peer changed during adoption");
  }
  static void stopResident(File suppliedBun,File suppliedLoader,File suppliedBundle,long deadline)throws Exception {
   check(SystemClock.elapsedRealtime()<deadline,"resident stop inventory deadline");
@@ -167,8 +182,8 @@ final class WorkflowSurvivorInventory {
   check(owner.getString("executable").equals(expectedLoader)&&observed.executable.equals(expectedLoader)&&observed.sha256.equals(expectedLoaderHash),"worker deployment differs");
   check(nativeIdentity.getString("executable").equals(observed.executable)&&nativeIdentity.getString("device").equals(observed.device)&&nativeIdentity.getString("inode").equals(observed.inode)&&nativeIdentity.getString("sha256").equals(observed.sha256),"worker executable identity differs");
  }
- // The Android wrapper execs musl; process.execPath identifies musl, not its mapped Bun image.
- // Bind the packaged Bun independently using kernel maps plus the immutable packaged file.
+ // The musl wrapper identifies its loader as process.execPath; native Android identifies Bun.
+ // Both targets bind packaged Bun independently using kernel maps plus the immutable file.
  static String verifyMappedBunText(String maps,String bun,long device,long inode)throws Exception {
   check(maps.length()<=4*1024*1024&&maps.endsWith("\n"),"incomplete or oversized worker maps");
   StringBuilder matched=new StringBuilder();boolean executable=false;int lines=0;

@@ -358,8 +358,20 @@ public class ElizaAgentService extends Service {
             ? Math.max(0L, System.currentTimeMillis() - launchStartedAtMs)
             : -1L;
 
+        return projectLocalAgentBootState(status, socketListening,
+            instance != null || !serviceLifecycleCompletion.isDone(),
+            hasStartWorker, detached, ageMs, attempts);
+    }
+
+    /** Pure boot admission: an identity refusal cannot be hidden by a live old socket. */
+    static JSONObject projectLocalAgentBootState(String status, boolean socketListening,
+        boolean serviceActive, boolean hasStartWorker, boolean detached,
+        long ageMs, int attempts) throws JSONException {
         JSONObject result = new JSONObject();
-        if (socketListening) {
+        if ("runtime-identity-unavailable".equals(status)) {
+            result.put("state", "dead");
+            result.put("reason", status);
+        } else if (socketListening) {
             result.put("state", "listening");
             result.put("reason", "request socket is accepting connections");
         } else if ("restarting".equals(status)) {
@@ -385,7 +397,7 @@ public class ElizaAgentService extends Service {
             result.put("ageMs", ageMs);
         }
         result.put("socketListening", socketListening);
-        result.put("serviceActive", instance != null || !serviceLifecycleCompletion.isDone());
+        result.put("serviceActive", serviceActive);
         return result;
     }
 
@@ -1579,7 +1591,7 @@ public class ElizaAgentService extends Service {
 
     /**
      * Whether an on-disk extraction can actually boot: bundle + launch.sh +
-     * bun + a musl loader all present and non-empty. Mirrors the guards in
+     * bun + its target-specific loader (musl only) all present and non-empty. Mirrors the guards in
      * {@link #startAgentProcess(boolean)}, so a "valid extraction" is exactly one that
      * would pass them.
      */
@@ -1597,7 +1609,9 @@ public class ElizaAgentService extends Service {
         if (!bun.isFile() || bun.length() <= 0) {
             return false;
         }
-        return findMuslLoader(abiDir) != null;
+        try {
+            return AndroidBunTarget.ANDROID.equals(runtimeBunTarget(abi)) || findMuslLoader(abiDir) != null;
+        } catch (IOException invalidTarget) { return false; }
     }
 
     /**
@@ -1916,6 +1930,61 @@ public class ElizaAgentService extends Service {
         } catch (SecurityException error) {
             return false;
         }
+    }
+
+    private String runtimeBunTarget(String abi) throws IOException {
+        try (InputStream in = getAssets().open("agent/android-agent-runtime-provenance.json")) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = in.read(buffer)) != -1) {
+                if (out.size() + count > 1024 * 1024) throw new IOException("Runtime provenance exceeds bound");
+                out.write(buffer, 0, count);
+            }
+            return AndroidBunTarget.fromManifest(new JSONObject(out.toString("UTF-8")), abi);
+        } catch (java.io.FileNotFoundException legacyApk) {
+            return AndroidBunTarget.MUSL;
+        } catch (JSONException invalid) { throw new IOException("Invalid runtime provenance", invalid); }
+    }
+
+    private static final class RuntimeLaunchPaths {
+        final String target, loaderName;
+        final File bun, launchExecutable, processExecutable;
+        RuntimeLaunchPaths(String target, String loaderName, File bun, File launchExecutable, File processExecutable) {
+            this.target=target; this.loaderName=loaderName; this.bun=bun;
+            this.launchExecutable=launchExecutable; this.processExecutable=processExecutable;
+        }
+    }
+
+    /** One selection contract for startup, recovery, adoption and stop. */
+    private RuntimeLaunchPaths runtimeLaunchPaths(String abi) throws IOException {
+        String target=runtimeBunTarget(abi);
+        File dir=agentAbiDir(abi);
+        File bun=preferPackagedExecutable(new File(dir,BUN_BINARY),"libeliza_bun.so").getCanonicalFile();
+        if (AndroidBunTarget.ANDROID.equals(target))
+            return new RuntimeLaunchPaths(target,"",bun,bun,bun);
+        String name=findMuslLoader(dir);
+        if (name==null) throw new IOException("Resident musl loader unavailable");
+        File loader=new File(dir,name), executable=loader;
+        String packaged=packagedMuslLoaderName(abi);
+        if(packaged!=null) {
+            loader=preferPackagedExecutable(loader,packaged);
+            File real=new File(nativeLibraryDir(),packaged.replace(".so","_real.so"));
+            executable=real.isFile()?real:loader;
+        }
+        return new RuntimeLaunchPaths(target,name,bun,loader.getCanonicalFile(),executable.getCanonicalFile());
+    }
+
+    private void verifyAdoptedRuntimeDeployment() throws Exception {
+        String abi=resolveRuntimeAbi();RuntimeLaunchPaths paths=runtimeLaunchPaths(abi);
+        LocalSocket socket=new LocalSocket();
+        try {
+            socket.connect(new LocalSocketAddress(localSocketPath(),LocalSocketAddress.Namespace.FILESYSTEM));
+            requireTrustedLocalAgentPeer(socket);
+            android.net.Credentials peer=socket.getPeerCredentials();
+            WorkflowSurvivorInventory.verifyResidentPeer(peer.getPid(),peer.getUid(),paths.bun,paths.processExecutable,
+                new File(agentRoot(),AGENT_BUNDLE_NAME).getCanonicalFile(),
+                android.os.SystemClock.elapsedRealtime()+PROCESS_TERMINATE_GRACE_MS);
+        } finally { closeQuietly(socket); }
     }
 
     /** Walk agent/{abi}/ for the musl loader; name varies by ABI. */
@@ -2241,6 +2310,13 @@ public class ElizaAgentService extends Service {
             // comment above describes). Mark the instance detached on adopt so
             // an explicit ACTION_STOP still tears the adopted agent down.
             if (allowAdoption && isLocalAgentSocketListening()) {
+                try { verifyAdoptedRuntimeDeployment(); }
+                catch (Exception unproven) {
+                    currentStatus="runtime-identity-unavailable";
+                    appendDiagnosticEvent("runtime-adoption-refused", null);
+                    updateNotification();
+                    return; // Preserve the prior owner; never launch a second resident.
+                }
                 detachedAgentMode = true;
                 restoreAdoptedRuntimeOwnership();
                 if (!"running".equals(currentStatus)) {
@@ -2334,8 +2410,13 @@ public class ElizaAgentService extends Service {
             File abiDir = agentAbiDir(abi);
             File bundle = new File(root, AGENT_BUNDLE_NAME);
             File launchScript = new File(root, AGENT_LAUNCH_SCRIPT);
-            File bun = new File(abiDir, BUN_BINARY);
-            String loaderName = findMuslLoader(abiDir);
+            final RuntimeLaunchPaths launchPaths;
+            try { launchPaths=runtimeLaunchPaths(abi); }
+            catch (IOException invalidTarget) {
+                currentStatus="runtime-identity-unavailable"; updateNotification(); return;
+            }
+            File bun = launchPaths.bun;
+            String loaderName = launchPaths.loaderName;
 
             if (!bundle.exists()) {
                 Log.e(TAG, "Agent bundle missing at " + bundle);
@@ -2355,25 +2436,14 @@ public class ElizaAgentService extends Service {
                 updateNotification();
                 return;
             }
-            if (loaderName == null) {
-                Log.e(TAG, "musl loader missing under " + abiDir);
-                currentStatus = "missing-loader";
-                updateNotification();
-                return;
-            }
-            File loader = new File(abiDir, loaderName);
-            String packagedLoaderName = packagedMuslLoaderName(abi);
-            if (packagedLoaderName != null) {
-                loader = preferPackagedExecutable(loader, packagedLoaderName);
-            }
-            bun = preferPackagedExecutable(bun, "libeliza_bun.so");
+            File loader = launchPaths.launchExecutable;
 
             // Re-validate the soname symlinks against THIS install's
             // nativeLibraryDir on every spawn: a package update mints a new
             // /data/app/~~<random>/ dir and dangles absolute links staged by
             // the previous install, which kills bun ~1s into exec with no
             // visible error (stdio is on /dev/null).
-            ensureRuntimeLibraryLinks(abiDir);
+            if (AndroidBunTarget.MUSL.equals(launchPaths.target)) ensureRuntimeLibraryLinks(abiDir);
 
             final String canonicalRoot, canonicalAbiDir, canonicalNativeDir, canonicalLoader, canonicalBun;
             try {
@@ -2392,10 +2462,7 @@ public class ElizaAgentService extends Service {
             // Serialize recovery across native supervisors, preserving every unproven owner.
             try {
                 if (ipcRecovery == null) ipcRecovery = IpcStartupRecovery.acquire(getFilesDir());
-                File workerExecutable = packagedLoaderName == null ? loader :
-                    new File(getApplicationInfo().nativeLibraryDir, packagedLoaderName.replace(".so", "_real.so"));
-                if (!workerExecutable.isFile()) workerExecutable = loader;
-                ipcRecovery.recover(bun, workerExecutable);
+                ipcRecovery.recover(bun, launchPaths.processExecutable);
             } catch (IOException recoveryError) {
                 currentStatus = recoveryError.getMessage() != null && recoveryError.getMessage().contains(IpcStartupRecovery.RETENTION_LIMIT)
                         ? IpcStartupRecovery.RETENTION_LIMIT : "ipc-recovery-required";
@@ -2479,6 +2546,7 @@ public class ElizaAgentService extends Service {
             agentEnv.put("AGENT_ROOT", canonicalRoot);
             agentEnv.put("RUNTIME_DIR", canonicalAbiDir);
             agentEnv.put("DEVICE_DIR", canonicalAbiDir);
+            agentEnv.put("ELIZA_ANDROID_BUN_TARGET", launchPaths.target);
             agentEnv.put("LD_NAME", loaderName);
             agentEnv.put("LD_PATH", canonicalLoader);
             agentEnv.put("BUN_PATH", canonicalBun);
@@ -3324,18 +3392,8 @@ public class ElizaAgentService extends Service {
         File bun = preferPackagedExecutable(new File(abiDir, BUN_BINARY), "libeliza_bun.so");
         File bundle = new File(agentRoot(), AGENT_BUNDLE_NAME);
         try {
-            // Mirror startup's executable selection, including unwrapped and
-            // extracted loaders and all supported ABIs.
-            String loaderName = findMuslLoader(abiDir);
-            if (loaderName == null) throw new IOException("Resident loader unavailable");
-            File loader = new File(abiDir, loaderName);
-            String packagedLoaderName = packagedMuslLoaderName(abi);
-            if (packagedLoaderName != null) {
-                loader = preferPackagedExecutable(loader, packagedLoaderName);
-                File realLoader = new File(nativeLibraryDir(),
-                    packagedLoaderName.replace(".so", "_real.so"));
-                if (realLoader.isFile()) loader = realLoader;
-            }
+            RuntimeLaunchPaths paths=runtimeLaunchPaths(abi);
+            File loader=paths.processExecutable;
             // Startup launches with canonical paths, and getFilesDir() is usually
             // the /data/user/0 alias of /data/data, so match canonically.
             while (true) {

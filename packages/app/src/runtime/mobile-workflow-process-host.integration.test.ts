@@ -163,3 +163,26 @@ test("opted-in mobile refuses missing, modified, unindexed, or aliased resources
     expect(result.status, result.stderr).not.toBe(0);
   }
 });
+
+test("native Android workflow child has no musl prefix and still pins executable/state/flags", () => {
+  const result = fixture(
+    `boot(env);const c=command('runtime',"process.stdout.write('native-direct-ok')");if(c.executable!==env.BUN_PATH||c.args.includes(env.BUN_PATH))throw Error('unexpected native prefix');const r=spawnSync(c.executable,c.args,{cwd:c.cwd,env:c.env,encoding:'utf8'});if(r.status!==0)throw Error(r.stderr);process.stdout.write(r.stdout);`,
+    (_root, env) => {
+      env.ELIZA_ANDROID_BUN_TARGET = "android";
+      env.LD_PATH = env.BUN_PATH;
+    },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toBe("native-direct-ok");
+  for (const change of [
+    (_root, env) => {
+      env.ELIZA_ANDROID_BUN_TARGET = "unknown";
+    },
+    (_root, env) => {
+      env.ELIZA_ANDROID_BUN_TARGET = "android";
+    },
+  ]) {
+    const rejected = fixture("boot(env);", change);
+    expect(rejected.status, rejected.stderr).not.toBe(0);
+  }
+});
