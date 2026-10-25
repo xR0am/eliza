@@ -638,7 +638,8 @@ async function runEvaluatorWithSelectedModel(
     providerOptions.eliza = {
       ...(providerOptions.eliza ?? {}),
       thinking: "off",
-      ...(evaluatorEvidenceSteps(params.trajectory).some(
+      ...(params.trajectory.codingMode === true &&
+      evaluatorEvidenceSteps(params.trajectory).some(
         ({ step }) => step.toolCall && !step.terminalOnly,
       )
         ? { preferToolReasoning: true }

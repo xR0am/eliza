@@ -153,6 +153,7 @@ export function createPlannerToolDiscoveryAction(
   };
   const catalog = catalogFor(authorizedActions);
   const discoveryDescription =
+    "Find authorized operations that are not already exposed, or inspect definitions when explicitly requested. Exposed tools already have complete schemas: call a fitting one directly instead of discovering or loading it again. " +
     "Find authorized operations by query and/or contexts, or load exact names (parents load their families). Exact names plus query must match both; names cannot be combined with contexts. " +
     "mode=load enables complete schemas in the next tool surface; use loaded tools to perform work. " +
     "Empty load selectors search the current task. mode=describe reads complete descriptions and schemas for exact names or matching queries without enabling tools. With no selectors, mode=describe,names=[] returns only the complete authorized name index. " +
