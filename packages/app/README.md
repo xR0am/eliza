@@ -14,6 +14,15 @@ Concurrent worktrees should use `bun run --cwd packages/app dev:shared`. UI chan
 require `bun run --cwd packages/app audit:app` and inspection of affected desktop/mobile
 captures.
 
+## Startup branding
+
+The static startup view uses `appName` and optional `web.startupLogoPath` from
+`app.config.ts`. The mark must be a path in the host public assets; omit it for
+text-only startup. Android Cloud embeds the host's local `branding.logoUrl`
+(SVG, PNG, JPEG or WebP) because that package omits the public asset tree.
+Missing or remote logos use the app name instead. The canonical Eliza host
+sets its own marks explicitly.
+
 ## Eliza alarms
 
 `/clock` lists this owner's alarms from native Android storage. It provides local
