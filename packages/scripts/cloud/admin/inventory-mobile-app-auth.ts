@@ -1,22 +1,22 @@
 /** Read-only registered-client recovery tooling. Never emit row IDs, credentials or provider output. */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import pg from "pg";
+import { readDatabaseIdentityReceipt } from "../../../cloud/scripts/admin/database-identity-receipt.ts";
 import {
   parseRegisteredMobileClients,
   planRegisteredMobileClientAppIdUpdate,
 } from "../../../cloud/shared/src/lib/services/mobile-client-registry.ts";
-import pg from "pg";
-import { readDatabaseIdentityReceipt } from "../../../cloud/scripts/admin/database-identity-receipt.ts";
 import {
-  mobileAppAuthDatabaseConnection,
   MOBILE_APP_AUTH_CLIENT_ID,
   MOBILE_APP_AUTH_REDIRECT_URI,
+  mobileAppAuthDatabaseConnection,
   PRIMARY_MOBILE_APP_AUTH_TARGET,
   queryMobileAppAuthRegistration,
   requireMobileAppAuthAppId,
-  validateMobileAppAuthRegistrationRow,
   resolveMobileAppAuthRegistrationSelection,
   resolveMobileAppAuthRegistrationTarget,
+  validateMobileAppAuthRegistrationRow,
 } from "./verify-mobile-app-auth-registration.ts";
 
 const bindings = [
