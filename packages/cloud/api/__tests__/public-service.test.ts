@@ -23,7 +23,7 @@ test("public service HTTP returns exact deployment text without a session and re
       const response = await fetch(server.url);
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(await response.json()).toEqual({
+      expect<unknown>(await response.json()).toEqual({
         success: true,
         version: 1,
         service,
@@ -39,7 +39,7 @@ test("public service HTTP returns exact deployment text without a session and re
       configured = invalid;
       const response = await fetch(server.url);
       expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({
+      expect<unknown>(await response.json()).toEqual({
         success: false,
         error: "service_metadata_unavailable",
       });
