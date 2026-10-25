@@ -14,8 +14,25 @@ export function calendarReadParameters(parent:Action,operation:'feed'|'next_even
  // branches only; canonical/legacy handler normalization and day guards stay intact.
  const windowKeys=['date','endDate','timeMin','timeMax','windowDays','windowPreset'];
  const common=Object.fromEntries(Object.entries(details.properties).filter(([key])=>!windowKeys.includes(key)));
- const branch=(keys:string[],required:string[]):ActionParameterSchema=>({type:'object',properties:{...common,...Object.fromEntries(keys.map(key=>[key,details.properties[key]]))},required,additionalProperties:false});
- const readDetails:ActionParameterSchema=operation==='next_event'?details:{oneOf:[branch(['date','endDate'],['date']),branch(['timeMin','timeMax'],['timeMin','timeMax']),branch(['windowDays'],['windowDays']),branch(['windowPreset'],['windowPreset']),branch([],[])]};
+ const branch=(keys:string[],required:string[]):ActionParameterSchema=>({
+  type:'object',
+  properties:{...common,...Object.fromEntries(keys.filter(key=>Object.hasOwn(details.properties,key)).map(key=>[key,details.properties[key]]))},
+  required,
+  additionalProperties:false,
+ });
+ const windows=[
+  {keys:['date','endDate'],required:['date']},
+  {keys:['timeMin','timeMax'],required:['timeMin','timeMax']},
+  {keys:['windowDays'],required:['windowDays']},
+  {keys:['windowPreset'],required:['windowPreset']},
+  {keys:[],required:[]},
+ ];
+ // Each operation's canonical schema owns its supported window forms.
+ // Never materialize an absent optional field or a branch requiring one.
+ const readDetails:ActionParameterSchema=operation==='next_event'?details:{
+  oneOf:windows.filter(({required})=>required.every(key=>Object.hasOwn(details.properties,key)))
+   .map(({keys,required})=>branch(keys,required)),
+ };
  return (parent.parameters??[]).filter(parameter=>names.has(parameter.name)).map(parameter=>{
   if(parameter.name==='details')return {...parameter,description:operation==='next_event'?'Next-event source and timezone.':'Read window/source: date/endDate OR timeMin/timeMax with timeZone.',schema:readDetails};
   if(parameter.name==='intent')return {...parameter,description:'User’s calendar read request.'};
