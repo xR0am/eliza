@@ -522,3 +522,15 @@ Set `VOICE_BATCH_STT_PROVIDER=cloudflare` to move a pinned Whisper deployment to
 Workers AI Nova-3, including word timestamps and Telegram Ogg voice notes; verify authenticated TTS/STT before retiring the old services.
 
 Workers AI TTS accepts up to 2,000 characters per request. Longer text is rejected explicitly before synthesis; it is never truncated.
+
+## Public service identity and legal documents
+
+`GET /api/public/service` supplies plain-text documents for app-owned sign-in
+views. Set the public Worker binding `CLOUD_PUBLIC_SERVICE_JSON` to an object
+with `name`, `terms`, and `privacy`. Each document has `title`, `revision`, and
+`sections`; each section has `title` and a nonempty `paragraphs` string array.
+Provide the service operator's approved text. The endpoint does not fetch URLs,
+accept caller-defined branding, infer consent, or require a login session.
+Missing, malformed, or over-256-KiB configuration returns HTTP 503. Responses use
+`Cache-Control: no-store`; consumers must render strings as text, never HTML.
+No product identity or default legal agreement is inserted by this endpoint.
