@@ -910,6 +910,7 @@ export async function runV5MessageRuntimeStage1(
         },
         providers: args.state.data.providers,
         request: getUserMessageText(args.message),
+        contexts: messageHandler.plan.contexts,
         reply: protectedReply
           ? sourceReplyAssertionText(protectedReply)
           : reply,
@@ -921,6 +922,7 @@ export async function runV5MessageRuntimeStage1(
         reply = (
           await resolvePlannedReplyEgress({
             providers: args.state.data.providers,
+            contexts: messageHandler.plan.contexts,
             runtime: args.runtime,
             message: args.message,
             reply,
@@ -1037,6 +1039,7 @@ export async function runV5MessageRuntimeStage1(
         pendingWork: prePatchStageOneReplyEffectStatus === "pending",
         providers: args.state.data.providers,
         request: getUserMessageText(args.message),
+        contexts: selectedContexts,
         reply: earlyReplyText,
         actionResults: [],
         actions: args.runtime.actions,
@@ -2093,6 +2096,7 @@ export async function runV5MessageRuntimeStage1(
                 },
                 providers: plannerState.data.providers,
                 request: getUserMessageText(args.message),
+                contexts: selectedContexts,
                 reply: groundedModelReply,
                 actionResults: callbackActionResults,
                 actions: args.runtime.actions,
@@ -2622,6 +2626,7 @@ export async function runV5MessageRuntimeStage1(
             },
             providers: plannerState.data.providers,
             request: getUserMessageText(args.message),
+            contexts: selectedContexts,
             reply: String(plannerResult.finalMessage ?? ""),
             actionResults: egressActionResults,
             actions: args.runtime.actions,
@@ -2655,6 +2660,7 @@ export async function runV5MessageRuntimeStage1(
       );
       recoveredReply = await resolvePlannedReplyEgress({
         providers: plannerState.data.providers,
+        contexts: selectedContexts,
         runtime: args.runtime,
         message: args.message,
         reply: plannerResult.finalMessage ?? "",
@@ -2706,6 +2712,7 @@ export async function runV5MessageRuntimeStage1(
       ambientTurn,
       earlyReplySent,
       messageHandler,
+      selectedContexts,
       prePatchStageOneReplyIsUngroundedAppliedClaim,
       prePatchStageOneReply,
       earlyReplyText,

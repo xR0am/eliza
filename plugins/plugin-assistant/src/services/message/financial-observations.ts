@@ -3,7 +3,7 @@
  * Portfolio valuation, prices, raw token units, and absent assets do not prove
  * a token quantity. Provider state remains distinct from action success.
  */
-import type { ActionResult, StateData } from "@elizaos/core";
+import type { ActionResult, AgentContext, StateData } from "@elizaos/core";
 import { isObjectRecord } from "@elizaos/core";
 
 interface Holding {
@@ -130,13 +130,9 @@ const NON_ASSET_UNITS =
 
 function holdingClaims(
   reply: string,
-  request: string | undefined,
+  walletTurn: boolean,
 ): Array<Holding & { personal: boolean }> {
   const claims: Array<Holding & { personal: boolean }> = [];
-  const walletRequest =
-    /\b(?:wallet|crypto|token|holdings|portfolio|SOL|ETH|BTC|USDC|USDT)\b/i.test(
-      request ?? "",
-    );
   const sentences = reply.split(/(?<=[.!?])\s+/u);
   for (const sentence of sentences) {
     if (sentence.includes("?")) continue;
@@ -162,11 +158,11 @@ function holdingClaims(
         /\b(?:wallet|holdings|portfolio|(?:token|SOL|ETH|BTC|USDC|USDT)\s+balance)\b/i.test(
           clause,
         ) ||
-        (walletRequest &&
+        (walletTurn &&
           /\b(?:balance|holds|contains|(?:you|I)\s+(?:(?:currently|now|still)\s+)?(?:have|hold|own))\b/i.test(
             clause,
           )) ||
-        (walletRequest &&
+        (walletTurn &&
           /^\s*(?:[-*]\s+)?\d[\d,.]*\s+[A-Za-z][A-Za-z0-9]*[.!]?\s*$/.test(
             clause,
           ));
@@ -209,7 +205,7 @@ function holdingClaims(
 /** Missing holdings stay unknown; only an explicit observed zero can prove zero. */
 export function financialHoldingIsUngrounded(args: {
   reply: string;
-  request?: string;
+  contexts?: readonly AgentContext[];
   actionResults: readonly ActionResult[];
   providers?: StateData["providers"];
 }): boolean {
@@ -217,7 +213,15 @@ export function financialHoldingIsUngrounded(args: {
   // Address lookups can target arbitrary third parties. Only configured wallet
   // providers supply personal-wallet context; a public lookup cannot establish ownership.
   const personalObservations = observedHoldings([], args.providers);
-  return holdingClaims(args.reply, args.request).some(
+  // Only a turn routed to a wallet domain or holding wallet observations reads
+  // bare counts and "you have" clauses as holdings; elsewhere "8 commits" is a
+  // count. "finance" alone is not a wallet domain: cloud credits share it.
+  const walletTurn =
+    observations.length > 0 ||
+    args.contexts?.some(
+      (context) => context === "wallet" || context === "crypto",
+    ) === true;
+  return holdingClaims(args.reply, walletTurn).some(
     (claim) =>
       !(claim.personal ? personalObservations : observations).some(
         (observed) =>
