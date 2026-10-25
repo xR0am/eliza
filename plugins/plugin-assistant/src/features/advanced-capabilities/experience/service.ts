@@ -76,7 +76,7 @@ export class ExperienceService extends Service {
   static async start(runtime: IAgentRuntime): Promise<ExperienceService> {
     const service = new ExperienceService(runtime);
     await service.loadExperiences();
-    service.startBackgroundTasks();
+    if (runtime.deferBackgroundTasks !== true) service.startBackgroundTasks();
     return service;
   }
 

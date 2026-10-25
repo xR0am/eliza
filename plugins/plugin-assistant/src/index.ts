@@ -292,6 +292,14 @@ export {
   type DeviceCredential,
   deviceProposalDigest,
   getDeviceActionTurn,
+  currentRequestedActionOrigin,
+  requestLocalCalendarAgenda,
+  requestLocalCalendarAvailability,
+  requestLocalCalendarUpdate,
+  requestLocalCalendarCreate,
+  registerLocalCalendarCreatePlanner,
+  requestLocalNotesUpdate,
+  registerLocalCalendarTimeUpdateRouting,
   setDeviceReadReplyConversation,
   withDeviceActionTurn,
 } from "./services/device-actions/service.ts";
@@ -326,3 +334,12 @@ export * from "./services/relationships-graph-builder.ts";
 export * from "./services/trajectories.ts";
 export { serializeTrajectoryExport } from "./services/trajectory-export.ts";
 export * from "./utils/prompt-batcher.ts";
+
+export { plannerDiscoveryInvocationScope } from "./services/message/tool-discovery.ts";
+export { proposeDeviceAction } from "./services/device-actions/action.ts";
+
+// Canonical device tools are shared by all app hosts; native capabilities select availability.
+export {deviceActionTools} from './services/device-actions/tools.ts';
+export {readableReminderOperationSchema,resolveReadableReminderOperation} from './services/device-actions/reminder-local-time.ts';
+
+export {registerLocalCalendarUpdatePlanner} from "./services/device-actions/calendar-update-continuation.ts";

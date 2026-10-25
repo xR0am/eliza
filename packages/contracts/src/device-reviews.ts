@@ -153,6 +153,14 @@ function civilMidnight(utcMidnight: number, timeZone: string): number {
   }
   return guess;
 }
+/** Shared Calendar overlap: all-day bounds are civil dates, not timed UTC events. */
+export function calendarEventOverlapsRange(range:{start:string;end:string;timeZone:string},event:{start:string;end:string;allDay:boolean}):boolean {
+ let a=Date.parse(instant(event.start)),b=Date.parse(instant(event.end));
+ const begin=Date.parse(instant(range.start)),finish=Date.parse(instant(range.end));
+ if(finish<=begin||b<a)throw Error('Invalid Calendar range');
+ if(event.allDay){if(a%86400000!==0||b%86400000!==0||b<=a)throw Error('Invalid all-day civil interval');a=civilMidnight(a,zone(range.timeZone));b=civilMidnight(b,range.timeZone);}
+ return b===a?a>=begin&&a<finish:a<finish&&b>begin;
+}
 /**
  * Computes the shared free/busy answer from provider rows the phone read locally.
  * Transparent (free) events never make the owner busy; tentative events do and are
@@ -461,6 +469,7 @@ export function validateNotesSearchResult<Target, Selected>(
 }
 
 // ---- Name-targeted edits from Home ----
+export const CALENDAR_NAMED_READ_CAPABILITY = "calendar.named-read.v1";
 export const NAMED_TARGET_CAPABILITY = "device.named-target.v1";
 /** Selected-record capability each named domain also requires. */
 export const NAMED_TARGET_DOMAIN_CAPABILITY = {
@@ -500,7 +509,7 @@ export type NamedTargetOperation =
       name: string;
       fields: NamedCalendarFields;
     }
-  | { type: "calendar_named"; action: "delete"; name: string }
+  | { type: "calendar_named"; action: "delete"|"read"; name: string }
   | {
       type: "reminder_named";
       action: "update";
@@ -547,7 +556,7 @@ export interface NamedTargetValidators<
 }
 const NAMED_ACTIONS: Record<NamedTargetType, readonly string[]> = {
   notes_named: ["update", "delete"],
-  calendar_named: ["update", "delete"],
+  calendar_named: ["update", "delete", "read"],
   reminder_named: ["update", "cancel"],
 };
 function namedObject(value: unknown): Record<string, unknown> {
@@ -590,6 +599,7 @@ export function namedTargetCapabilityAvailable(
   capabilities?: readonly string[],
 ): boolean {
   const domain = NAMED_TARGET_DOMAIN_CAPABILITY[type as NamedTargetType];
+  if(type==="calendar_named"&&capabilities?.includes(CALENDAR_NAMED_READ_CAPABILITY)&&capabilities.includes(NAMED_TARGET_DOMAIN_CAPABILITY.calendar_named))return true;
   return (
     !!domain &&
     capabilities?.includes(NAMED_TARGET_CAPABILITY) === true &&
@@ -603,7 +613,7 @@ export function namedTargetExactType(operation: NamedTargetOperation): string {
   if (operation.type === "notes_named")
     return operation.action === "update" ? "notes_update" : "notes_delete";
   if (operation.type === "calendar_named")
-    return operation.action === "update"
+    return operation.action === "read"?"calendar_read_selected":operation.action === "update"
       ? "calendar_update"
       : "calendar_delete";
   return operation.action === "update" ? "reminder_update" : "reminder_cancel";
@@ -646,7 +656,7 @@ export function validateNamedTargetOperation(
   namedKeys(v, ["type", "action", "name"]);
   if (v.type === "notes_named") return { type: v.type, action: "delete", name };
   if (v.type === "calendar_named")
-    return { type: v.type, action: "delete", name };
+    return { type: v.type, action: v.action==='read'?'read':'delete', name };
   return { type: "reminder_named", action: "cancel", name };
 }
 /**

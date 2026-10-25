@@ -255,7 +255,8 @@ function isHistoricalRequestEvidenceEvent(
 		!Array.isArray(segment) &&
 		"label" in segment &&
 		(segment.label === "runtime:historical_navigation" ||
-			segment.label === "runtime:historical_observations") &&
+			segment.label === "runtime:historical_observations" ||
+			segment.label === "runtime:historical_effects") &&
 		"content" in segment &&
 		typeof segment.content === "string" &&
 		"id" in segment &&
@@ -264,12 +265,15 @@ function isHistoricalRequestEvidenceEvent(
 }
 
 /** Historical navigation and owner-declared read observations follow their
- * original requests, never current state or mutation authority.
+ * original requests, never current state or mutation authority. Completion may
+ * also defer validated historical outcomes for reviewed omitted requests;
+ * canonical history and planning evidence remain complete by default.
  * Only known, unambiguous request bindings may follow a history projection.
  * Unknown or malformed records stay inline; originals are never modified. */
 export function selectHistoricalNavigation(
 	context: ContextObject,
 	includedEventIds: ReadonlySet<string>,
+	options: { historicalEffects?: boolean } = {},
 ): ContextObject {
 	const sources = collectCompletionContextSources(context);
 	if (sources.length === 0) return context;
@@ -286,6 +290,10 @@ export function selectHistoricalNavigation(
 		...context,
 		events: context.events.filter((event) => {
 			if (!isHistoricalRequestEvidenceEvent(event)) return true;
+			const effects = event.segment.label === "runtime:historical_effects";
+			// Planning retains historical mutation evidence. Only completion's
+			// reviewed model projection may defer it with omitted originals.
+			if (effects && options.historicalEffects !== true) return true;
 			try {
 				const receipt: unknown = JSON.parse(event.segment.content);
 				if (
@@ -297,21 +305,23 @@ export function selectHistoricalNavigation(
 					!known.has(receipt.requestSourceEventId)
 				)
 					return true;
-				if (event.segment.label === "runtime:historical_observations") {
+				if (effects || event.segment.label === "runtime:historical_observations") {
+					const field = effects ? "outcomes" : "observations";
+					const entries = (receipt as Record<string, unknown>)[field];
 					// The message-service collector owns exact operation admission. This
 					// boundary independently rejects unsafe or unfamiliar receipt shapes.
 					if (
 						eventIdCounts.get(event.id) !== 1 ||
 						!requests.has(receipt.requestSourceEventId) ||
 						Object.keys(receipt).sort().join(",") !==
-							"observations,requestSourceEventId,scope" ||
+							`${field},requestSourceEventId,scope` ||
 						!("scope" in receipt) ||
 						typeof receipt.scope !== "string" ||
 						!receipt.scope.trim() ||
-						!("observations" in receipt) ||
-						!Array.isArray(receipt.observations) ||
-						!receipt.observations.length ||
-						!receipt.observations.every((observation) => {
+						!(field in receipt) ||
+						!Array.isArray(entries) ||
+						!entries.length ||
+						!entries.every((observation) => {
 							if (
 								!observation ||
 								typeof observation !== "object" ||
@@ -320,13 +330,12 @@ export function selectHistoricalNavigation(
 									"actionName,receipt,success" ||
 								typeof observation.actionName !== "string" ||
 								!observation.actionName.trim() ||
-								observation.success !== true
+								(typeof observation.success !== "boolean" || (!effects && observation.success !== true))
 							)
 								return false;
 							const normalized = normalizeEffectReceipt(observation.receipt);
 							return (
-								normalized.outcome === "noop" &&
-								!normalized.idempotency.replayed &&
+								(effects || (normalized.outcome === "noop" && !normalized.idempotency.replayed)) &&
 								hashStableJson(normalized) ===
 									hashStableJson(observation.receipt)
 							);
@@ -355,6 +364,8 @@ export function completionContextSources(context: ContextObject): {
 			roomId: context.metadata?.roomId,
 			messageId: context.metadata?.messageId,
 			sources: sources.map(({ id, event }) => ({ id, event })),
+			// Include exact historical outcomes in the source-set identity as well:
+		// changed historical evidence cannot reuse an earlier relevance review.
 			navigationEvidence: context.events.filter(
 				isHistoricalRequestEvidenceEvent,
 			),
@@ -364,7 +375,10 @@ export function completionContextSources(context: ContextObject): {
 }
 
 /** Relevance is applied only after source binding and complete category checks. */
-export function selectCompletionContext(context: ContextObject): {
+export function selectCompletionContext(
+	context: ContextObject,
+	options: { historicalEffects?: boolean } = {},
+): {
 	context: ContextObject;
 	applied: boolean;
 	omittedSourceCount: number;
@@ -397,6 +411,7 @@ export function selectCompletionContext(context: ContextObject): {
 						.filter(({ id }) => selectedIds.has(id))
 						.map(({ event }) => event.id),
 				),
+				options,
 			).events.filter((event) => !omittedEvents.has(event)),
 		},
 		applied: true,

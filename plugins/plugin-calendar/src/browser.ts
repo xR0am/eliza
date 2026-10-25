@@ -2,6 +2,7 @@
 export {
   type CalendarClientMethods,
   installCalendarClient,
+  createCalendarApi,
 } from "./api/client-calendar.js";
 export {
   CalendarSection,

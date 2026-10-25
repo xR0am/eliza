@@ -7,3 +7,5 @@ export * from "./notes-store.ts";
 export * from "./notes-trash-maintenance.ts";
 export * from "./notes-trash-policy.ts";
 export * from "./notes-trash-schedule.ts";
+
+export {createNotesClient,type NotesInteractResult} from "./notes-api.js";

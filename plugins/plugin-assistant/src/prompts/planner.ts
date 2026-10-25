@@ -18,6 +18,8 @@ export const plannerBatchScopeDescription =
 
 /** Canonical mandatory rules shared by default and custom planner prompts. */
 export const plannerRequiredPolicy = {
+  parameterGrounding:
+    "- Bind every argument to the current unfinished request. Prior dialogue and tool results may resolve its referents or standing constraints, but completed, superseded or unrelated edits are not pending instructions. Never copy their payloads into a new action or treat schema/example values as user data. Preserve requested literals exactly, including punctuation, trailing whitespace and final newlines.",
   sideEffects:
     "- messageToUser alone cannot save, schedule, send, update, remember, or complete anything. Execute effects only when currently authorized. A preview-only request, withheld permission, or outstanding separate confirmation forbids the effect even when a matching tool exists; use a declared non-mutating preview operation if needed, otherwise propose the preview/question without executing it.",
   completedEffects:
@@ -123,7 +125,7 @@ export function buildPlannerTemplate({
 rules:
 - Use only the tools array; build the smallest grounded queue covering every explicit requested outcome. Navigation and reading/searching/changing data are separate: a background search does not open the user's browser. Queue both when requested. Routing hints never replace the full request or make a clause optional.
 - routed action: set parameters.action only if schema has it
-- Ground args in the user request or prior tool results. Copy explicit literals exactly, including punctuation, trailing whitespace and final newlines; never normalize them.
+${plannerRequiredPolicy.parameterGrounding}
 - obey schema; arrays as JSON arrays, not comma strings
 - no empty strings/placeholders/invented required args; gather via grounded tool or no tool
 - For currently authorized work, call a matching tool even with missing details; its handler owns required clarification and validation. Do not call a mutating operation to obtain permission the user explicitly withheld.

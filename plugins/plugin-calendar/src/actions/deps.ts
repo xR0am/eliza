@@ -14,6 +14,7 @@ import type {
 } from "@elizaos/contracts";
 import type {
   GenerateTextParams,
+  ActionResult,
   GroundedActionReply,
   IAgentRuntime,
   Memory,
@@ -211,6 +212,11 @@ export interface CalendarMutationGatewayDep {
  * trusts it has been called for an authorized owner.
  */
 export interface CalendarActionDeps {
+  /** Current selected-device time edit: approved read then ordinary pending update review. */
+  requestLocalCreate?(args:{runtime:IAgentRuntime;message:Memory}):Promise<ActionResult|undefined>;
+  requestLocalUpdate?(args:{runtime:IAgentRuntime;message:Memory;name?:string}):Promise<ActionResult|undefined>;
+  /** Optional current-request port; absent hosts retain their existing backend path. */
+  requestLocalAgenda?(args:{runtime:IAgentRuntime;message:Memory;window:{start:string;end:string;timeZone:string;maximumEvents:number}}):Promise<ActionResult>;
   /** Run a text-model call; returns the raw string or `null` on failure. */
   runTextModel(args: CalendarModelCallArgs): Promise<string | null>;
   /** Run a model call and parse the response as a JSON record. */

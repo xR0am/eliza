@@ -1,3 +1,4 @@
+import {deviceActionTools} from '../../services/device-actions/tools.ts';
 import { proposeDeviceAction } from "../../services/device-actions/action.ts";
 import { WorkflowDeviceBridgeService } from "../../services/device-actions/workflow-service.ts";
 /**
@@ -13,6 +14,7 @@ import { WorkflowDeviceBridgeService } from "../../services/device-actions/workf
  */
 
 import {
+  type Action,
   type ActionEventPayload,
   type ActionLogBody,
   type BaseLogBody,
@@ -1272,8 +1274,9 @@ export const basicProviders = [
 /**
  * Basic actions - fundamental response actions
  */
-export const basicActions = [
+export const basicActions: Action[] = [
   proposeDeviceAction,
+  ...deviceActionTools,
   choiceAction,
   generateMediaAction,
   readAttachmentAction,

@@ -75,6 +75,7 @@ import {
 import {
   calendarAction,
   calendarActionPromotionOptions,
+  registerPersonalAssistantCalendarHost,
 } from "./actions/calendar.js";
 import { registerPersonalAssistantCalendarSourcesHost } from "./actions/calendar-sources.js";
 import {
@@ -220,8 +221,7 @@ import {
   registerWorkflowStepRegistry,
 } from "./lifeops/registries/index.js";
 import {
-  createOwnerReminderDirectRoutingRule,
-  ownerReminderChoiceDirectRoutingRules,
+  registerOwnerReminderDirectRouting,
   ownerReminderChoiceRoutingEvaluator,
 } from "./lifeops/reminders/direct-routing.js";
 import { LifeOpsRepository } from "./lifeops/repository.js";
@@ -532,6 +532,7 @@ export async function ensureLifeOpsCalendarPluginRegistered(
   // composed here, so PA's hasLifeOpsAccess gate reaches it through the
   // runtime-keyed host adapter — bound before the already-registered early
   // return so the substitution holds either way.
+  registerPersonalAssistantCalendarHost(runtime);
   registerPersonalAssistantCalendarSourcesHost(runtime);
   if (runtime.plugins.some((plugin) => plugin.name === calendarPlugin.name)) {
     return;
@@ -930,13 +931,7 @@ const rawPersonalAssistantPlugin: Plugin = {
       runtime,
       createTrackedWorkRecapDirectRoutingRule(),
     );
-    registerDirectActionRoutingRule(
-      runtime,
-      createOwnerReminderDirectRoutingRule(),
-    );
-    for (const rule of ownerReminderChoiceDirectRoutingRules) {
-      registerDirectActionRoutingRule(runtime, rule);
-    }
+    registerOwnerReminderDirectRouting(runtime);
     registerDirectActionRoutingRule(
       runtime,
       createUndatedOwnerTodoDirectRoutingRule(),

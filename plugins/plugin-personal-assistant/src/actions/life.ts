@@ -1,3 +1,5 @@
+import {ownerReminderQuotedSpans} from "../lifeops/reminders/direct-routing.ts";
+
 /**
  * Shared create/update/query engine for owner "life" items — reminder/todo/
  * routine definitions and goals — that backs the OWNER_* surfaces built in
@@ -103,7 +105,7 @@ import {
 } from "../lifeops/google/format-helpers.js";
 import { resolveOwnerTimeZone } from "../lifeops/owner/fact-store.js";
 import { LifeOpsService, LifeOpsServiceError } from "../lifeops/service.js";
-import { normalizeExplicitTimeZoneToken } from "../lifeops/time/timezone.js";
+import { normalizeExplicitTimeZoneToken, extractExplicitTimeZoneFromText } from "../lifeops/time/timezone.js";
 import {
   addDaysToLocalDate,
   buildUtcDateFromLocalParts,
@@ -1827,8 +1829,10 @@ async function renderLifeActionReply(args: {
   scenario: LifeReplyScenario;
   fallback: string;
   context?: Record<string, unknown>;
-}): Promise<GroundedActionReply> {
+}): Promise<string|GroundedActionReply> {
   const { runtime, message, state, intent, scenario, fallback, context } = args;
+  
+  
   const naturalFallback = buildRuleBasedLifeReply({
     scenario,
     intent,
@@ -2276,6 +2280,20 @@ function parseTimeOfDayToken(token: string): number | null {
   return parseClockToken(normalized);
 }
 
+/** Keep original record literals inert; only an explicitly introduced exact clock/zone
+ * literal contributes to scheduling. Clock and zone recognition stay canonical. */
+function reminderSchedulingText(intent: string): string {
+  let result=intent;
+  for(const span of ownerReminderQuotedSpans(intent)) {
+    const prefix=intent.slice(0,span.start);
+    const directed=/\b(?:at|by|before|after|around|timezone|time\s+zone|time(?:\s+is)?|in)\s*$/iu.test(prefix);
+    const recognized=parseTimeOfDayToken(span.content)!==null||normalizeLifeTimeZoneToken(span.content)!==null;
+    if(directed&&recognized)continue;
+    result=result.slice(0,span.start)+" ".repeat(span.end-span.start)+result.slice(span.end);
+  }
+  return result;
+}
+
 function buildOneOffDueAtFromMinuteOfDay(args: {
   minuteOfDay: number;
   now?: Date;
@@ -2492,10 +2510,11 @@ const PHRASE_SLOT_MINUTES: ReadonlyArray<[RegExp, number]> = [
   [/\bbefore\s+bed(?:time)?\b/gi, 21 * 60 + 30],
 ];
 
-function extractExplicitDailySlots(intent: string): LifeOpsDailySlot[] {
+function extractExplicitDailySlots(intent: string, includeDeadlines = false): LifeOpsDailySlot[] {
+  intent=reminderSchedulingText(intent);
   const tokens: Array<{ label: string; minuteOfDay: number }> = [];
   for (const match of intent.matchAll(
-    /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)|noon|midnight)\b/gi,
+    /\b(\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm)|noon|midnight)\b/gi,
   )) {
     const token = match[1];
     if (typeof token !== "string" || token.length === 0) {
@@ -2503,11 +2522,11 @@ function extractExplicitDailySlots(intent: string): LifeOpsDailySlot[] {
     }
     if (
       clockTokenIsNegated(intent, match.index) ||
-      clockTokenIsDeadline(intent, match.index)
+      (!includeDeadlines && clockTokenIsDeadline(intent, match.index))
     ) {
       continue;
     }
-    const minuteOfDay = parseClockToken(token);
+    const minuteOfDay = parseTimeOfDayToken(token);
     if (minuteOfDay !== null) {
       tokens.push({ label: token.trim(), minuteOfDay });
     }
@@ -2516,7 +2535,7 @@ function extractExplicitDailySlots(intent: string): LifeOpsDailySlot[] {
     for (const match of intent.matchAll(phraseRe)) {
       if (
         clockTokenIsNegated(intent, match.index) ||
-        clockTokenIsDeadline(intent, match.index)
+        (!includeDeadlines && clockTokenIsDeadline(intent, match.index))
       ) {
         continue;
       }
@@ -2802,14 +2821,15 @@ export function buildCadenceFromLlmParams(
       ? { cadence: { kind: "unscheduled" } }
       : null;
   }
-  const effectiveTimeZone = context?.timeZone;
+  const effectiveTimeZone = context?.timeZone ?? params.timeZone ??
+    extractExplicitTimeZoneFromText(context?.intent?reminderSchedulingText(context.intent):undefined) ?? undefined;
   const timeOfDayMinute =
     typeof params.timeOfDay === "string"
       ? parseTimeOfDayToken(params.timeOfDay)
       : null;
   const explicitSlots =
     typeof context?.intent === "string"
-      ? extractExplicitDailySlots(context.intent)
+      ? extractExplicitDailySlots(context.intent, kind === "once")
       : [];
   const slotDuration =
     typeof params.durationMinutes === "number" && params.durationMinutes > 0
@@ -2828,12 +2848,17 @@ export function buildCadenceFromLlmParams(
         : ["morning" as const];
 
   if (kind === "once") {
+    // Reuse the canonical readable-clock parser before the date-only 9am default.
+    // More than one requested clock cannot certify one missing-clock occurrence.
+    if (timeOfDayMinute === null && explicitSlots.length > 1) return null;
+    const onceTimeOfDayMinute = timeOfDayMinute ??
+      (explicitSlots.length === 1 ? explicitSlots[0].minuteOfDay : null);
     const dueAt = resolveOnceDueAt({
       dueDate: params.dueDate,
       dueInDays: params.dueInDays,
       dueWeekday: params.dueWeekday,
       dueInMinutes: params.dueInMinutes,
-      timeOfDayMinute,
+      timeOfDayMinute: onceTimeOfDayMinute,
       now: context?.now,
       timeZone: effectiveTimeZone,
     });
@@ -5064,12 +5089,13 @@ async function runLifeOperationHandlerInner(
               normalizeLifeTimeZoneToken(
                 detailString(details, "timeZone") ??
                   llmPlan.timeZone ??
+                  extractExplicitTimeZoneFromText(reminderSchedulingText(currentText)) ??
                   deferredDefinitionDraft?.request.timezone ??
                   windowPolicy?.timezone,
               ) ?? ownerFactTimeZone;
             const llmCadence = buildCadenceFromLlmParams(llmPlan, {
               allowUnscheduled: ownerSurfaceActionName === "OWNER_TODOS",
-              intent,
+              intent: currentText,
               timeZone: llmCadenceTimeZone ?? undefined,
             });
             if (
@@ -5095,6 +5121,7 @@ async function runLifeOperationHandlerInner(
         normalizeLifeTimeZoneToken(
           detailString(details, "timeZone") ??
             llmPlan?.timeZone ??
+            extractExplicitTimeZoneFromText(reminderSchedulingText(currentText)) ??
             deferredDefinitionDraft?.request.timezone ??
             windowPolicy?.timezone,
         ) ?? ownerFactTimeZone;
@@ -5641,6 +5668,7 @@ async function runLifeOperationHandlerInner(
         scenario: "saved_definition",
         fallback,
         context: {
+          
           created: {
             title: created.definition.title,
             description: created.definition.description,
@@ -6257,6 +6285,7 @@ async function runLifeOperationHandlerInner(
         scenario: "updated_definition",
         fallback,
         context: {
+          
           previousTitle: target.definition.title,
           updated: {
             title: updated.definition.title,
@@ -6860,6 +6889,7 @@ async function runLifeOperationHandlerInner(
           scenario: "snoozed_occurrence",
           fallback,
           context: {
+          
             snoozed: {
               title: snoozed.title,
             },
@@ -6887,10 +6917,6 @@ async function runLifeOperationHandlerInner(
       const reviewDomain = domain ?? "user_lifeops";
       const scoped = (await listCallerDefinitions(service)).filter(
         (record) =>
-          (record.definition.status === "active" ||
-            (surface === "OWNER_TODOS" &&
-              record.definition.status === "completed" &&
-              record.definition.id === targetName)) &&
           record.definition.domain === reviewDomain &&
           resolveOwnerDefinitionSurface(record.definition) === surface,
       );
@@ -6920,9 +6946,16 @@ async function runLifeOperationHandlerInner(
                   record.definition.status === "completed",
               )
             : undefined;
+        // Cancellation retains the saved reminder. An explicit id or exact
+        // title may read that history; lists and fuzzy matches stay active-only.
+        const exactArchivedReminders = surface === "OWNER_REMINDERS"
+          ? scoped.filter(record => record.definition.status === "archived" &&
+              (record.definition.id === targetName ||
+                normalizeTitle(record.definition.title) === normalizeTitle(targetName)))
+          : [];
         const resolved = completedTodo
           ? { match: completedTodo, ambiguousCandidates: [] }
-          : resolveDefinitionInRecords(active, targetName);
+          : resolveDefinitionInRecords([...active, ...exactArchivedReminders], targetName);
         if (resolved.ambiguousCandidates.length > 0) {
           const fallback = `Multiple ${definitionReviewSurfaceLabel(surface)} match "${targetName}": ${resolved.ambiguousCandidates.join(", ")}. Which one did you mean?`;
           return {
@@ -6940,7 +6973,7 @@ async function runLifeOperationHandlerInner(
           // A genuine miss stays a pure not-found: disclosing other items
           // here is a deliberate no-leak contract (see
           // life.review-definitions.test.ts isolation coverage).
-          const fallback = `I couldn't find an active ${definitionReviewSurfaceLabel(surface)} item matching "${targetName}".`;
+          const fallback = `I couldn't find ${surface === "OWNER_REMINDERS" ? "a saved" : "an active"} ${definitionReviewSurfaceLabel(surface)} item matching "${targetName}".`;
           return {
             success: false,
             text: fallback,
@@ -6982,9 +7015,13 @@ async function runLifeOperationHandlerInner(
           record.definition.timezone,
         ),
         kind: record.definition.kind,
+        ...(targetName && !isListVerbiageTarget ? {
+          description: record.definition.description,
+          timezone: record.definition.timezone,
+        } : {}),
       }));
       const fallback = [
-        `You're tracking ${selected.length} ${definitionReviewSurfaceLabel(surface)} item${selected.length === 1 ? "" : "s"}:`,
+        `${selected.some(record => record.definition.status === "archived") ? "Saved history:" : "You're tracking"} ${selected.length} ${definitionReviewSurfaceLabel(surface)} item${selected.length === 1 ? "" : "s"}:`,
         ...listed.map(
           (item) =>
             `- ${item.title} (${item.status}; ${item.cadence}; ID: ${item.id})`,

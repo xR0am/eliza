@@ -1,16 +1,18 @@
 import type http from "node:http";
 import {
+  CALENDAR_NAMED_READ_CAPABILITY,
   CALENDAR_AVAILABILITY_CAPABILITY,
   NAMED_TARGET_CAPABILITY,
   NOTES_SEARCH_CAPABILITY,
 } from "@elizaos/contracts";
-import { validateNativeNotesReadReplyHint } from "@elizaos/contracts/native-notes-query";
+import { isOriginalDeviceReadOperationType, validateNativeNotesReadReplyHint } from "@elizaos/contracts/native-notes-query";
 import {
   AgentRuntime,
   ChannelType,
   ElizaError,
   type IAgentRuntime,
   runWithStreamingContext,
+  getStreamingContext,
   type UUID,
 } from "@elizaos/core";
 import {
@@ -87,8 +89,10 @@ export function deviceRequestCredential(
     "calendar.local-event.v1",
     "calendar.create.v1",
     "calendar.next-read.v1",
+    "calendar.agenda-read.v1",
     "notes.local-record.v1",
     "notes.query.v1",
+    CALENDAR_NAMED_READ_CAPABILITY,
     CALENDAR_AVAILABILITY_CAPABILITY,
     NAMED_TARGET_CAPABILITY,
     NOTES_SEARCH_CAPABILITY,
@@ -96,6 +100,7 @@ export function deviceRequestCredential(
     "reminders.local-record.v2",
     "reminders.create.v1",
     "maps.selected-read.v1",
+    "camera.capture-photo.v1",
     "clock.handoff.v1",
     "clock.handoff.v2",
     "clock.alarms.v1",
@@ -168,6 +173,7 @@ export async function handleDeviceActionRoutes(
             "calendar.local-event.v1",
             "calendar.create.v1",
             "calendar.next-read.v1",
+    "calendar.agenda-read.v1",
             "notes.local-record.v1",
             "notes.query.v1",
             CALENDAR_AVAILABILITY_CAPABILITY,
@@ -177,6 +183,7 @@ export async function handleDeviceActionRoutes(
             "reminders.local-record.v2",
             "reminders.create.v1",
             "maps.selected-read.v1",
+    "camera.capture-photo.v1",
             "clock.handoff.v1",
             "clock.handoff.v2",
             "clock.alarms.v1",
@@ -290,9 +297,7 @@ export async function handleDeviceActionRoutes(
               proposal.state === "pending" &&
               proposal.expiresAt.getTime() > Date.now() &&
               proposal.payload.action === "device_action" &&
-              ["notes_query", "notes_read_selected"].includes(
-                proposal.payload.operation.type,
-              );
+              isOriginalDeviceReadOperationType(proposal.payload.operation.type);
             const readReplyOrigin = pendingRead
               ? await service.readReplyOrigin(credential, proposal.id, digest)
               : undefined;
@@ -400,14 +405,14 @@ export async function handleDeviceActionRoutes(
       try {
         if (!(await tracker.authorityReady))
           throw new DeviceActionError("Read completion authority retired");
-        const reply = await runtime.turnControllers.runWith(
+        const complete=()=>runtime.turnControllers.runWith(
           roomId,
           (turnSignal) => {
             const signal = AbortSignal.any([tracker.signal, turnSignal]);
             return runtime.roomHandlerQueue.withLease(
               roomId,
               (lease) =>
-                runWithStreamingContext({ abortSignal: signal }, () =>
+                runWithStreamingContext({ ...getStreamingContext(), abortSignal: signal }, () =>
                   service.completeReadReply(
                     credential,
                     retained,
@@ -447,6 +452,7 @@ export async function handleDeviceActionRoutes(
             );
           },
         );
+        const reply=await complete();
         tracker.signal.throwIfAborted();
         tracker.markCompleted();
         json(res, { reply });

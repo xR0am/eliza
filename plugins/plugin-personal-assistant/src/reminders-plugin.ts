@@ -9,6 +9,7 @@ import {
   type Plugin,
   promoteSubactionsToActions,
 } from "@elizaos/core";
+import { registerOwnerReminderDirectRouting, ownerReminderChoiceRoutingEvaluator } from "./lifeops/reminders/direct-routing.ts";
 import { ownerRemindersAction } from "./actions/owner-surfaces.ts";
 import { ownerPrivateAction } from "./lifeops/access.ts";
 import {
@@ -36,7 +37,9 @@ export const personalAssistantRemindersPlugin: Plugin = {
   schema: lifeOpsSchema,
   actions:
     promoteSubactionsToActions(ownerRemindersAction).map(ownerPrivateAction),
+  responseHandlerEvaluators: [ownerReminderChoiceRoutingEvaluator],
   init: async (_config: Record<string, string>, runtime: IAgentRuntime) => {
+    registerOwnerReminderDirectRouting(runtime);
     if (!getChannelRegistry(runtime)) {
       const channels = createChannelRegistry();
       registerDefaultChannelPack(channels, runtime);

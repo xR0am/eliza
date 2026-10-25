@@ -50,6 +50,7 @@ export { createCalendarMutationApprovalGateway } from "./actions/mutation-approv
 export {
   type CalendarClientMethods,
   installCalendarClient,
+  createCalendarApi,
 } from "./api/client-calendar.js";
 export {
   APPLE_CALENDAR_ACCOUNT_LABEL,
