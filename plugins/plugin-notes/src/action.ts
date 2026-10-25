@@ -180,7 +180,10 @@ function committed(data: NonNullable<ActionResult["data"]>): ActionResult {
         }),
       ]
     : undefined;
-  const modelData: NonNullable<ActionResult["data"]> = { actionName: "NOTES", ...data };
+  const modelData: NonNullable<ActionResult["data"]> = {
+    actionName: "NOTES",
+    ...data,
+  };
   const project = (value: NonNullable<ActionResult["data"]>[string]) =>
     isObjectRecord(value) &&
     typeof value.title === "string" &&
@@ -269,7 +272,11 @@ async function updateNoteResult(
           awaitingUserInput: true,
           requiresInput: true,
           ...(typeof target === "string"
-            ? { candidates: service.findNotesByQuery(target).map(projectNoteForModel) }
+            ? {
+                candidates: service
+                  .findNotesByQuery(target)
+                  .map(projectNoteForModel),
+              }
             : {}),
         },
       };
@@ -691,24 +698,31 @@ export const notesAction: Action = {
     const replacement = replacements.value;
     const hasTextEdit =
       params.textEdit !== undefined && params.textEdit !== null;
-    const hasAuthoredEdit=params.authoredEdit!==undefined&&params.authoredEdit!==null;
-    if(hasAuthoredEdit&&(hasTextEdit||replacement))return failure("Pass authoredEdit alone with the current revision.","NOTES_CONFLICTING_PATCH");
+    const hasAuthoredEdit =
+      params.authoredEdit !== undefined && params.authoredEdit !== null;
+    if (hasAuthoredEdit && (hasTextEdit || replacement))
+      return failure(
+        "Pass authoredEdit alone with the current revision.",
+        "NOTES_CONFLICTING_PATCH",
+      );
     if (hasTextEdit && replacement) {
       return failure(
         "Pass either textEdit or replacementContent, not both. Nothing changed.",
         "NOTES_CONFLICTING_PATCH",
       );
     }
-    if (!hasAuthoredEdit&&!hasTextEdit && !replacement) {
+    if (!hasAuthoredEdit && !hasTextEdit && !replacement) {
       return failure(
         "Pass textEdit for an exact substitution, or replacementContent for the complete updated note.",
         "NOTES_MISSING_PATCH",
         "replacementContent",
       );
     }
-    const patch = hasAuthoredEdit?{authoredEdit:params.authoredEdit}:hasTextEdit
-      ? { textEdit: params.textEdit }
-      : { content: replacement };
+    const patch = hasAuthoredEdit
+      ? { authoredEdit: params.authoredEdit }
+      : hasTextEdit
+        ? { textEdit: params.textEdit }
+        : { content: replacement };
     return updateNoteResult(
       () =>
         noteId
@@ -729,10 +743,49 @@ export const notesAction: Action = {
     );
   },
   parameters: [
-    {name:"authoredEdit",description:"Append a NEW checklist item with {field:checklist,action:append,text:exact new item}; it starts unchecked and needs current expectedRevision. Indexed field/index/expectedText edits REPLACE existing text or done state only; never use an out-of-range index, empty expectedText or newline merge to append. Identify existing note with noteId OR content, never both. New item text belongs only in authoredEdit.text.",subactions:["update"],required:false,schema:{oneOf:[
-      {type:"object",properties:{field:{type:"string",enum:["checklist"]},action:{type:"string",enum:["append"]},text:{type:"string",minLength:1,maxLength:20001}},required:["field","action","text"],additionalProperties:false},
-      {type:"object",properties:{field:{type:"string",enum:["checklist","voice-line","voice-summary","voice-action","link-clip"]},action:{type:"string",enum:["replace"]},index:{type:"integer",minimum:0},expectedText:{type:"string"},text:{type:"string"},done:{type:"boolean"}},required:["field","index","expectedText"],additionalProperties:false}
-    ]}},
+    {
+      name: "authoredEdit",
+      description:
+        "Append a NEW checklist item with {field:checklist,action:append,text:exact new item}; it starts unchecked and needs current expectedRevision. Indexed field/index/expectedText edits REPLACE existing text or done state only; never use an out-of-range index, empty expectedText or newline merge to append. Identify existing note with noteId OR content, never both. New item text belongs only in authoredEdit.text.",
+      subactions: ["update"],
+      required: false,
+      schema: {
+        oneOf: [
+          {
+            type: "object",
+            properties: {
+              field: { type: "string", enum: ["checklist"] },
+              action: { type: "string", enum: ["append"] },
+              text: { type: "string", minLength: 1, maxLength: 20001 },
+            },
+            required: ["field", "action", "text"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            properties: {
+              field: {
+                type: "string",
+                enum: [
+                  "checklist",
+                  "voice-line",
+                  "voice-summary",
+                  "voice-action",
+                  "link-clip",
+                ],
+              },
+              action: { type: "string", enum: ["replace"] },
+              index: { type: "integer", minimum: 0 },
+              expectedText: { type: "string" },
+              text: { type: "string" },
+              done: { type: "boolean" },
+            },
+            required: ["field", "index", "expectedText"],
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
     {
       name: "expectedRevision",
       description:

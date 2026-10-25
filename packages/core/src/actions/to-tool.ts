@@ -81,7 +81,8 @@ export const HANDLE_RESPONSE_SCHEMA: JSONSchema = {
 		intents: {
 			type: "array",
 			items: { type: "string" },
-			description: "Verb-led intents. Lowercase. No punctuation. ~6 words max. Empty for a completed answer or non_applied clarification/preview; those do not execute work this turn.",
+			description:
+				"Verb-led intents. Lowercase. No punctuation. ~6 words max. Empty for a completed answer or non_applied clarification/preview; those do not execute work this turn.",
 		},
 		completionContext: COMPLETION_CONTEXT_SCHEMA,
 		replyText: {

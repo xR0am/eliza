@@ -1,6 +1,9 @@
-import {authoredNoteText} from "./note-authored.js";
-import {NOTE_ID_REGEXP} from "./note-id.js";
-import {parseNoteFormat as parseRichNoteFormat,NoteFormatError} from "./note-format.js";
+import { authoredNoteText } from "./note-authored.js";
+import {
+  NoteFormatError,
+  parseNoteFormat as parseRichNoteFormat,
+} from "./note-format.js";
+import { NOTE_ID_REGEXP } from "./note-id.js";
 /**
  * Runtime validation for every untrusted Notes boundary. Persisted JSON,
  * HTTP bodies, and agent capability params are normalized here before domain
@@ -15,9 +18,9 @@ import {
 } from "@elizaos/core";
 import {
   type CreateNoteInput,
+  NOTES_SCHEMA_VERSION,
   type NoteFormat,
   type NoteJson,
-  NOTES_SCHEMA_VERSION,
   type NotesDocument,
   type StickyColor,
   type StickyNote,
@@ -122,7 +125,7 @@ export function parseNoteContent(
   allowBlankPlain = false,
 ): Pick<CreateNoteInput, "title" | "body"> {
   const content = parseText(value, field, MAX_NOTE_CONTENT_LENGTH);
-  if (!content.trim()&&!allowBlankPlain)
+  if (!content.trim() && !allowBlankPlain)
     throw validationError(`${field} must not be empty.`, field);
   const firstCharacter = content.search(/\S/u);
   const newline = content.indexOf("\n", firstCharacter);
@@ -232,30 +235,47 @@ function parseRevision(value: unknown): number {
   return value;
 }
 
-function parseContentInput(record: Record<string, unknown>,allowBlankPlain=false) {
+function parseContentInput(
+  record: Record<string, unknown>,
+  allowBlankPlain = false,
+) {
   if (hasOwn(record, "title") || hasOwn(record, "body")) {
     throw validationError(
       "Pass content or structured title/body, not both.",
       "content",
     );
   }
-  return parseNoteContent(record.content,"content",allowBlankPlain);
+  return parseNoteContent(record.content, "content", allowBlankPlain);
 }
 
 /** Server boundary retains canonical typed rejection; parser is browser-safe and shared. */
-export function parseNoteFormat(value:unknown):NoteFormat {
- try{return parseRichNoteFormat(value);}catch(error){if(error instanceof NoteFormatError)throw validationError(error.message,error.field);throw error;}
+export function parseNoteFormat(value: unknown): NoteFormat {
+  try {
+    return parseRichNoteFormat(value);
+  } catch (error) {
+    if (error instanceof NoteFormatError)
+      throw validationError(error.message, error.field);
+    throw error;
+  }
 }
 
 export function parseCreateNoteInput(value: unknown): CreateNoteInput {
   const record = requireRecord(value, "note");
-  assertOnlyKeys(record, ["content", "title", "body", "color", "format"], "note");
-  const format=hasOwn(record,"format")?parseNoteFormat(record.format):undefined;
-  const hasRichText=!!authoredNoteText(format).trim();
+  assertOnlyKeys(
+    record,
+    ["content", "title", "body", "color", "format"],
+    "note",
+  );
+  const format = hasOwn(record, "format")
+    ? parseNoteFormat(record.format)
+    : undefined;
+  const hasRichText = !!authoredNoteText(format).trim();
   const parts = hasOwn(record, "content")
-    ? parseContentInput(record,hasRichText)
+    ? parseContentInput(record, hasRichText)
     : {
-        title: hasRichText?parseText(record.title,"note.title",MAX_TITLE_LENGTH):parseRequiredTitle(record.title, "note.title"),
+        title: hasRichText
+          ? parseText(record.title, "note.title", MAX_TITLE_LENGTH)
+          : parseRequiredTitle(record.title, "note.title"),
         body: hasOwn(record, "body")
           ? parseText(record.body, "note.body", MAX_STRUCTURED_BODY_LENGTH)
           : "",
@@ -263,7 +283,7 @@ export function parseCreateNoteInput(value: unknown): CreateNoteInput {
   if (!hasOwn(record, "content") && parts.body) parts.body = `\n${parts.body}`;
   return {
     ...parts,
-    ...(format?{format}:{}),
+    ...(format ? { format } : {}),
     color: hasOwn(record, "color")
       ? parseStickyColor(record.color, "note.color")
       : "yellow",
@@ -278,20 +298,70 @@ export function parseUpdateNoteInput(value: unknown): UpdateNoteInput {
     "note patch",
   );
   const patch: UpdateNoteInput = {};
-  if(hasOwn(record,"authoredEdit")){
-    if(Object.keys(record).length!==1)throw validationError("Pass authoredEdit alone.","authoredEdit");
-    const edit=requireRecord(record.authoredEdit,"authoredEdit");assertOnlyKeys(edit,["field","action","index","expectedText","text","done"],"authoredEdit");
-    if(edit.action==="append"){
-     assertOnlyKeys(edit,["field","action","text"],"authoredEdit.append");
-     if(edit.field!=="checklist"||typeof edit.text!=="string"||!edit.text.trim()||edit.text.length>20001)throw validationError("Append requires checklist field and nonblank exact text.","authoredEdit");
-     return {authoredEdit:{field:"checklist",action:"append",text:edit.text}};
+  if (hasOwn(record, "authoredEdit")) {
+    if (Object.keys(record).length !== 1)
+      throw validationError("Pass authoredEdit alone.", "authoredEdit");
+    const edit = requireRecord(record.authoredEdit, "authoredEdit");
+    assertOnlyKeys(
+      edit,
+      ["field", "action", "index", "expectedText", "text", "done"],
+      "authoredEdit",
+    );
+    if (edit.action === "append") {
+      assertOnlyKeys(edit, ["field", "action", "text"], "authoredEdit.append");
+      if (
+        edit.field !== "checklist" ||
+        typeof edit.text !== "string" ||
+        !edit.text.trim() ||
+        edit.text.length > 20001
+      )
+        throw validationError(
+          "Append requires checklist field and nonblank exact text.",
+          "authoredEdit",
+        );
+      return {
+        authoredEdit: { field: "checklist", action: "append", text: edit.text },
+      };
     }
-    if(edit.action!==undefined&&edit.action!=="replace")throw validationError("Unknown authored edit action.","authoredEdit.action");
-    if(!["checklist","voice-line","voice-summary","voice-action","link-clip"].includes(edit.field as string)||!Number.isSafeInteger(edit.index)||(edit.index as number)<0||typeof edit.expectedText!=="string"||edit.expectedText.length>20001)throw validationError("Invalid authored note target.","authoredEdit");
-    if((edit.text===undefined&&edit.done===undefined)||(edit.text!==undefined&&(typeof edit.text!=="string"||edit.text.length>20001))||(edit.done!==undefined&&typeof edit.done!=="boolean"))throw validationError("Invalid authored note change.","authoredEdit");
-    return {authoredEdit:{field:edit.field as NonNullable<UpdateNoteInput["authoredEdit"]>["field"],index:edit.index as number,expectedText:edit.expectedText,...(typeof edit.text==="string"?{text:edit.text}:{}),...(typeof edit.done==="boolean"?{done:edit.done}:{})}};
+    if (edit.action !== undefined && edit.action !== "replace")
+      throw validationError(
+        "Unknown authored edit action.",
+        "authoredEdit.action",
+      );
+    if (
+      ![
+        "checklist",
+        "voice-line",
+        "voice-summary",
+        "voice-action",
+        "link-clip",
+      ].includes(edit.field as string) ||
+      !Number.isSafeInteger(edit.index) ||
+      (edit.index as number) < 0 ||
+      typeof edit.expectedText !== "string" ||
+      edit.expectedText.length > 20001
+    )
+      throw validationError("Invalid authored note target.", "authoredEdit");
+    if (
+      (edit.text === undefined && edit.done === undefined) ||
+      (edit.text !== undefined &&
+        (typeof edit.text !== "string" || edit.text.length > 20001)) ||
+      (edit.done !== undefined && typeof edit.done !== "boolean")
+    )
+      throw validationError("Invalid authored note change.", "authoredEdit");
+    return {
+      authoredEdit: {
+        field: edit.field as NonNullable<
+          UpdateNoteInput["authoredEdit"]
+        >["field"],
+        index: edit.index as number,
+        expectedText: edit.expectedText,
+        ...(typeof edit.text === "string" ? { text: edit.text } : {}),
+        ...(typeof edit.done === "boolean" ? { done: edit.done } : {}),
+      },
+    };
   }
-  if(hasOwn(record,"format"))patch.format=parseNoteFormat(record.format);
+  if (hasOwn(record, "format")) patch.format = parseNoteFormat(record.format);
   if (hasOwn(record, "textEdit")) {
     if (Object.keys(record).length !== 1) {
       throw validationError(
@@ -330,11 +400,13 @@ export function parseUpdateNoteInput(value: unknown): UpdateNoteInput {
     };
   }
   if (hasOwn(record, "content")) {
-    const parts = parseContentInput(record,true);
+    const parts = parseContentInput(record, true);
     patch.content = parts.title + parts.body;
   }
   if (hasOwn(record, "title")) {
-    patch.title = authoredNoteText(patch.format).trim()?parseText(record.title,"note.title",MAX_TITLE_LENGTH):parseRequiredTitle(record.title, "note.title");
+    patch.title = authoredNoteText(patch.format).trim()
+      ? parseText(record.title, "note.title", MAX_TITLE_LENGTH)
+      : parseRequiredTitle(record.title, "note.title");
   }
   if (hasOwn(record, "body")) {
     patch.body = parseText(
@@ -368,7 +440,9 @@ export function parseStickyNote(
     field,
   );
   const note = {
-    ...(hasOwn(record,"format")?{format:parseNoteFormat(record.format)}:{}),
+    ...(hasOwn(record, "format")
+      ? { format: parseNoteFormat(record.format) }
+      : {}),
     id: parseEntityId(record.id, `${field}.id`),
     title: parseText(record.title, `${field}.title`, MAX_TITLE_LENGTH),
     body: parseText(
@@ -380,7 +454,10 @@ export function parseStickyNote(
     createdAt: parseTimestamp(record.createdAt, `${field}.createdAt`),
     updatedAt: parseTimestamp(record.updatedAt, `${field}.updatedAt`),
   };
-  if (!(note.title + note.body).trim()&&!authoredNoteText(note.format).trim()) {
+  if (
+    !(note.title + note.body).trim() &&
+    !authoredNoteText(note.format).trim()
+  ) {
     throw validationError("Stored note content must not be empty.", field);
   }
   return note;
@@ -416,14 +493,25 @@ export function parseNotesDocument(value: unknown): NotesDocument {
   if (noteIds.size !== notes.length) {
     throw validationError("notes contain duplicate ids.", "notes");
   }
-  const rawTrash=record.trash??[];
-  if(!Array.isArray(rawTrash)||rawTrash.length>10000)throw validationError("Invalid Notes Trash.","trash");
-  const allIds=new Set(noteIds);
-  const trash=rawTrash.map((entry,index)=>{
-   const item=requireRecord(entry,`trash[${index}]`);assertOnlyKeys(item,["note","deletedAt"],"trash");
-   const note=parseStickyNote(item.note,index,record.schemaVersion as number);
-   if(allIds.has(note.id))throw validationError("Duplicate active/Trash note id.","trash.note.id");allIds.add(note.id);
-   return {note,deletedAt:parseTimestamp(item.deletedAt,"trash.deletedAt")};
+  const rawTrash = record.trash ?? [];
+  if (!Array.isArray(rawTrash) || rawTrash.length > 10000)
+    throw validationError("Invalid Notes Trash.", "trash");
+  const allIds = new Set(noteIds);
+  const trash = rawTrash.map((entry, index) => {
+    const item = requireRecord(entry, `trash[${index}]`);
+    assertOnlyKeys(item, ["note", "deletedAt"], "trash");
+    const note = parseStickyNote(
+      item.note,
+      index,
+      record.schemaVersion as number,
+    );
+    if (allIds.has(note.id))
+      throw validationError("Duplicate active/Trash note id.", "trash.note.id");
+    allIds.add(note.id);
+    return {
+      note,
+      deletedAt: parseTimestamp(item.deletedAt, "trash.deletedAt"),
+    };
   });
   return {
     schemaVersion: NOTES_SCHEMA_VERSION,

@@ -221,8 +221,8 @@ import {
   registerWorkflowStepRegistry,
 } from "./lifeops/registries/index.js";
 import {
-  registerOwnerReminderDirectRouting,
   ownerReminderChoiceRoutingEvaluator,
+  registerOwnerReminderDirectRouting,
 } from "./lifeops/reminders/direct-routing.js";
 import { LifeOpsRepository } from "./lifeops/repository.js";
 import {

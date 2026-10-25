@@ -216,11 +216,30 @@ export function formatNextEventContextForUser(
         start < end
       ) {
         const zone = context.timeReference?.timeZone ?? "UTC";
-        const midnight=(value:Date)=>{const parts=getZonedDateParts(value,zone);return parts.hour===0&&parts.minute===0&&parts.second===0&&value.getUTCMilliseconds()===0;};
-        const timed=!midnight(start)||!midnight(end);
-        const date:Intl.DateTimeFormatOptions = {weekday:"long",year:"numeric",month:"short",day:"numeric"};
-        if(timed){date.hour="numeric";date.minute="2-digit";date.second="2-digit";date.timeZoneName="short";}
-        if(timed&&(start.getUTCMilliseconds()||end.getUTCMilliseconds()))date.fractionalSecondDigits=3;
+        const midnight = (value: Date) => {
+          const parts = getZonedDateParts(value, zone);
+          return (
+            parts.hour === 0 &&
+            parts.minute === 0 &&
+            parts.second === 0 &&
+            value.getUTCMilliseconds() === 0
+          );
+        };
+        const timed = !midnight(start) || !midnight(end);
+        const date: Intl.DateTimeFormatOptions = {
+          weekday: "long",
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        };
+        if (timed) {
+          date.hour = "numeric";
+          date.minute = "2-digit";
+          date.second = "2-digit";
+          date.timeZoneName = "short";
+        }
+        if (timed && (start.getUTCMilliseconds() || end.getUTCMilliseconds()))
+          date.fractionalSecondDigits = 3;
         return `No upcoming event was found in ${sources} from ${formatCalendarDatePart(start, zone, date)} to before ${formatCalendarDatePart(end, zone, date)}. This read covers only those sources and dates; it does not establish that the whole calendar is clear.`;
       }
       return `No upcoming event was found in ${sources} within the checked dates.`;

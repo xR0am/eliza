@@ -33,7 +33,6 @@ import {
   isDiscoveryActionName,
   isProviderContextOverflowFailure,
   isRateLimitError,
-  readProviderRateLimit,
   isObjectRecord as isRecord,
   isTrajectoryRecordingEnabled,
   looksLikeRawFieldTranscript,
@@ -41,6 +40,7 @@ import {
   promotedSubactionParent,
   type RecordedStage,
   readEnv,
+  readProviderRateLimit,
   runResponseHandlerEvaluators,
   sanitizeUserVisibleModelOutput,
   type TrajectoryRecorder,
@@ -85,8 +85,8 @@ import { deviceActionForCapabilities } from "../device-actions/action.ts";
 import { deviceOperationSupportedByCapabilities } from "../device-actions/contract.ts";
 import {
   getDeviceActionTurn,
-  setDeviceReadReplyContext,
   setDeviceActionRequestMessage,
+  setDeviceReadReplyContext,
 } from "../device-actions/service.ts";
 import type { EvaluatorService } from "../evaluator";
 import {
@@ -152,8 +152,8 @@ import {
   createV5ReplyStrategyResult,
   deliveredTextsCoverReply,
   normalizeVisibleTextForDuplicateCheck,
-  preservedSettledToolResult,
   preparedViewReply,
+  preservedSettledToolResult,
   replyNamesStructuredEffectDestination,
   restorePiiInUserReplyText,
   structuredEffectFromToolResult,
@@ -257,7 +257,8 @@ export async function runV5MessageRuntimeStage1(
     (await timeInferenceSpan("message:stage1:sender-role", () =>
       resolveStage1SenderRole(args.runtime, args.message),
     ));
-  if(senderRole === "OWNER")setDeviceActionRequestMessage(args.runtime,args.message);
+  if (senderRole === "OWNER")
+    setDeviceActionRequestMessage(args.runtime, args.message);
   const availableContexts = await listAvailableContextsForTurn(
     args.runtime,
     args.message,
@@ -1152,7 +1153,8 @@ export async function runV5MessageRuntimeStage1(
             deviceActionForCapabilities(
               action,
               getDeviceActionTurn()?.runtime === args.runtime
-                ? getDeviceActionTurn()?.credential.capabilities : undefined,
+                ? getDeviceActionTurn()?.credential.capabilities
+                : undefined,
               args.message.content.metadata,
               { runtime: args.runtime, message: args.message },
             ),
@@ -1327,9 +1329,12 @@ export async function runV5MessageRuntimeStage1(
               actions: plannerCandidateActions,
               deferUnscopedBootstrap: true,
               query: getUserMessageText(args.message),
-              message:args.message,
+              message: args.message,
               intents: messageHandler.plan.intents,
-              contexts: plannerDiscoveryContexts(args.message,selectedContexts),
+              contexts: plannerDiscoveryContexts(
+                args.message,
+                selectedContexts,
+              ),
               contextAliases: (context) =>
                 args.runtime.contexts?.get(context)?.aliases,
             }).actions
@@ -1485,9 +1490,16 @@ export async function runV5MessageRuntimeStage1(
             catalogIndex: providerDiscoveryEnabled,
             deferNameIndex: true,
             taskIntents: messageHandler.plan.intents,
-            ...(args.message.id && args.message.roomId && args.message.entityId ? {
-              admissionScope: { runtime: args.runtime, messageId: String(args.message.id), roomId: String(args.message.roomId), actorId: String(args.message.entityId) },
-            } : {}),
+            ...(args.message.id && args.message.roomId && args.message.entityId
+              ? {
+                  admissionScope: {
+                    runtime: args.runtime,
+                    messageId: String(args.message.id),
+                    roomId: String(args.message.roomId),
+                    actorId: String(args.message.entityId),
+                  },
+                }
+              : {}),
           },
         ),
       );
@@ -2414,7 +2426,9 @@ export async function runV5MessageRuntimeStage1(
       // so makes CLI/ACP report partial work as success.
       if (args.codingMode === true) throw error;
       const rateLimited = isRateLimitError(error);
-      const providerRateLimit = rateLimited ? readProviderRateLimit(error) : undefined;
+      const providerRateLimit = rateLimited
+        ? readProviderRateLimit(error)
+        : undefined;
       if (error instanceof PostEffectEvaluationError) {
         // error-policy:J1 Preserve a distinct internal failure, not a provider
         // outage or successful reply. The common terminal path below captures
@@ -2428,7 +2442,7 @@ export async function runV5MessageRuntimeStage1(
             kind: rateLimited ? "rate_limited" : "reply_generation_error",
             code: error.code,
           }).failure,
-          ...(providerRateLimit ? {rateLimit: providerRateLimit} : {}),
+          ...(providerRateLimit ? { rateLimit: providerRateLimit } : {}),
         };
         const effectResult = [
           ...error.trajectory.archivedSteps,
@@ -2511,10 +2525,14 @@ export async function runV5MessageRuntimeStage1(
                 thought: messageHandler.thought,
                 terminalFailure: {
                   kind: rateLimited ? "rate_limited" : "handler_error",
-                  code: rateLimited ? "MODEL_PROVIDER_RATE_LIMIT" : "PLANNER_INTERRUPTED_AFTER_ACTION",
+                  code: rateLimited
+                    ? "MODEL_PROVIDER_RATE_LIMIT"
+                    : "PLANNER_INTERRUPTED_AFTER_ACTION",
                   transient: false,
                   message: notice,
-                  ...(providerRateLimit ? {rateLimit: providerRateLimit} : {}),
+                  ...(providerRateLimit
+                    ? { rateLimit: providerRateLimit }
+                    : {}),
                 },
                 ...(safePartial && preserved?.userFacingEffectReceiptIds?.length
                   ? { effectReceiptIds: preserved.userFacingEffectReceiptIds }

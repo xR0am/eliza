@@ -9,7 +9,6 @@ import {
   type Plugin,
   promoteSubactionsToActions,
 } from "@elizaos/core";
-import { registerOwnerReminderDirectRouting, ownerReminderChoiceRoutingEvaluator } from "./lifeops/reminders/direct-routing.ts";
 import { ownerRemindersAction } from "./actions/owner-surfaces.ts";
 import { ownerPrivateAction } from "./lifeops/access.ts";
 import {
@@ -22,6 +21,10 @@ import {
   registerChannelRegistry,
   registerDefaultChannelPack,
 } from "./lifeops/channels/index.ts";
+import {
+  ownerReminderChoiceRoutingEvaluator,
+  registerOwnerReminderDirectRouting,
+} from "./lifeops/reminders/direct-routing.ts";
 import { registerLifeOpsScheduledTaskRunnerDeps } from "./lifeops/scheduled-task/runtime-wiring.ts";
 import { lifeOpsSchema } from "./lifeops/schema.ts";
 

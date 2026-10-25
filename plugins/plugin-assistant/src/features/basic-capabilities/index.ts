@@ -1,5 +1,5 @@
-import {deviceActionTools} from '../../services/device-actions/tools.ts';
 import { proposeDeviceAction } from "../../services/device-actions/action.ts";
+import { deviceActionTools } from "../../services/device-actions/tools.ts";
 import { WorkflowDeviceBridgeService } from "../../services/device-actions/workflow-service.ts";
 /**
  * Basic Capabilities

@@ -1,4 +1,8 @@
-import {projectAuthoredNoteContent,type AuthoredNoteContent,type AuthoredNoteEdit} from "./note-authored.js";
+import {
+  type AuthoredNoteContent,
+  type AuthoredNoteEdit,
+  projectAuthoredNoteContent,
+} from "./note-authored.js";
 /**
  * Shared domain contracts for the managed Cloud Notes view. The backend store,
  * authenticated routes, capability broker, and view bundle all consume these
@@ -12,10 +16,22 @@ export const STICKY_COLORS = ["yellow", "green", "rose", "slate"] as const;
 
 export type StickyColor = (typeof STICKY_COLORS)[number];
 
-export type NoteJson = null | boolean | number | string | NoteJson[] | { [key: string]: NoteJson };
+export type NoteJson =
+  | null
+  | boolean
+  | number
+  | string
+  | NoteJson[]
+  | { [key: string]: NoteJson };
 /** Opaque authored rich fields remain lossless; the owning renderer validates its subtype. */
-export interface NoteFormat { kind: "text" | "list" | "voice" | "link"; data: { [key: string]: NoteJson }; }
-export interface TrashedNote { note: StickyNote; deletedAt: string; }
+export interface NoteFormat {
+  kind: "text" | "list" | "voice" | "link";
+  data: { [key: string]: NoteJson };
+}
+export interface TrashedNote {
+  note: StickyNote;
+  deletedAt: string;
+}
 export interface StickyNote {
   id: string;
   title: string;
@@ -84,17 +100,37 @@ export function reconstructNoteContent(
 
 /** Lossless model parts: remove only the codec's one framing LF, never authored whitespace. */
 export function projectNoteForModel<
-  T extends Pick<StickyNote,"title"|"body">,
->(note:T):Pick<StickyNote,"title"|"body"> & {bodySeparator:""|"\n";id?:string;color?:StickyColor;createdAt?:string;updatedAt?:string;kind?:NoteFormat["kind"];authored?:AuthoredNoteContent} {
- const bodySeparator=note.body.startsWith("\n")?"\n":"";
- const record=note as T & Partial<StickyNote>;
- // Model-visible whitelist: authored text + canonical identity/time/color only.
- // Persisted rich metadata may contain local audio/source/attachment handles.
- return {title:note.title,body:bodySeparator?note.body.slice(1):note.body,bodySeparator,
-  ...(typeof record.id==="string"?{id:record.id}:{}),
-  ...(record.color===undefined?{}:{color:record.color}),
-  ...(typeof record.createdAt==="string"?{createdAt:record.createdAt}:{}),
-  ...(typeof record.updatedAt==="string"?{updatedAt:record.updatedAt}:{}),
-  ...(record.format?{kind:record.format.kind}:{}),
-  ...(projectAuthoredNoteContent(record.format)?{authored:projectAuthoredNoteContent(record.format)}:{})};
+  T extends Pick<StickyNote, "title" | "body">,
+>(
+  note: T,
+): Pick<StickyNote, "title" | "body"> & {
+  bodySeparator: "" | "\n";
+  id?: string;
+  color?: StickyColor;
+  createdAt?: string;
+  updatedAt?: string;
+  kind?: NoteFormat["kind"];
+  authored?: AuthoredNoteContent;
+} {
+  const bodySeparator = note.body.startsWith("\n") ? "\n" : "";
+  const record = note as T & Partial<StickyNote>;
+  // Model-visible whitelist: authored text + canonical identity/time/color only.
+  // Persisted rich metadata may contain local audio/source/attachment handles.
+  return {
+    title: note.title,
+    body: bodySeparator ? note.body.slice(1) : note.body,
+    bodySeparator,
+    ...(typeof record.id === "string" ? { id: record.id } : {}),
+    ...(record.color === undefined ? {} : { color: record.color }),
+    ...(typeof record.createdAt === "string"
+      ? { createdAt: record.createdAt }
+      : {}),
+    ...(typeof record.updatedAt === "string"
+      ? { updatedAt: record.updatedAt }
+      : {}),
+    ...(record.format ? { kind: record.format.kind } : {}),
+    ...(projectAuthoredNoteContent(record.format)
+      ? { authored: projectAuthoredNoteContent(record.format) }
+      : {}),
+  };
 }

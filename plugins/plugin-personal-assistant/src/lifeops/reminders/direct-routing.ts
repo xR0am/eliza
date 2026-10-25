@@ -7,12 +7,12 @@
 
 import {
   type DirectActionRoutingRule,
-  type IAgentRuntime,
-  registerDirectActionRoutingRule,
   extractUserText,
   getUserMessageText,
+  type IAgentRuntime,
   isObjectRecord,
   type ResponseHandlerEvaluator,
+  registerDirectActionRoutingRule,
   validateUuid,
 } from "@elizaos/core";
 
@@ -41,12 +41,14 @@ const MIXED_RECIPIENT_REMINDER =
   /\bremind\s+(?:me|myself)(?:\s*,?\s*(?:(?:and|&|plus|as\s+well\s+as)\s+|(?:along|together)\s+with\s+)(?!me\b|myself\b)(?:@|<@|\d|[\p{L}])|\s*,\s*[\p{Lu}][\p{L}'’-]*(?:\s*,|\s+(?:and|&|to)\b))/iu;
 // Match complete quoted spans first. Searching for a command inside the same
 // regex can otherwise treat a title's closing quote as the next opening quote.
-const QUOTED_SPANS = /"((?:\\.|[^"\\])*)"|“([^”]*)”|‘((?:(?<=[\p{L}\p{N}])’(?=[\p{L}\p{N}])|[^’])*)’|`((?:\\.|[^`\\])*)`|(?<![\p{L}\p{N}])'((?:\\.|(?<=[\p{L}\p{N}])'(?=[\p{L}\p{N}])|[^'\\])*)'(?![\p{L}\p{N}])/gu;
+const QUOTED_SPANS =
+  /"((?:\\.|[^"\\])*)"|“([^”]*)”|‘((?:(?<=[\p{L}\p{N}])’(?=[\p{L}\p{N}])|[^’])*)’|`((?:\\.|[^`\\])*)`|(?<![\p{L}\p{N}])'((?:\\.|(?<=[\p{L}\p{N}])'(?=[\p{L}\p{N}])|[^'\\])*)'(?![\p{L}\p{N}])/gu;
 /** Shared complete-span quote boundaries; quoted record fields are data, not request grammar. */
 export function ownerReminderQuotedSpans(text: string) {
-  return [...text.matchAll(QUOTED_SPANS)].map(match => ({
-    start: match.index!, end: match.index! + match[0].length,
-    content: match.slice(1).find(value => value !== undefined) ?? "",
+  return [...text.matchAll(QUOTED_SPANS)].map((match) => ({
+    start: match.index!,
+    end: match.index! + match[0].length,
+    content: match.slice(1).find((value) => value !== undefined) ?? "",
   }));
 }
 const QUOTED_REMINDER_COMMAND =
@@ -180,8 +182,13 @@ export const ownerReminderChoiceRoutingEvaluator: ResponseHandlerEvaluator = {
 };
 
 /** Both plugin assemblies enroll the same canonical request and typed-choice routes. */
-export function registerOwnerReminderDirectRouting(runtime: IAgentRuntime): void {
-  registerDirectActionRoutingRule(runtime, createOwnerReminderDirectRoutingRule());
+export function registerOwnerReminderDirectRouting(
+  runtime: IAgentRuntime,
+): void {
+  registerDirectActionRoutingRule(
+    runtime,
+    createOwnerReminderDirectRoutingRule(),
+  );
   for (const rule of ownerReminderChoiceDirectRoutingRules) {
     registerDirectActionRoutingRule(runtime, rule);
   }

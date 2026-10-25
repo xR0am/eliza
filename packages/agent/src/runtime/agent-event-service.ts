@@ -81,15 +81,30 @@ export function getAgentEventService(
 
 /** Publish only after a canonical client-visible message was committed. Metadata is
  * invalidation, not content or delivery permission; clients fetch owned history. */
-export function publishConversationUpdate(runtime:Pick<IAgentRuntime,'agentId'|'getService'|'reportError'>,conversationId:string,roomId:UUID,messageId:UUID):void {
+export function publishConversationUpdate(
+  runtime: Pick<IAgentRuntime, "agentId" | "getService" | "reportError">,
+  conversationId: string,
+  roomId: UUID,
+  messageId: UUID,
+): void {
   try {
     getAgentEventService(runtime)?.emit?.({
-      runId:`conversation-delivery:${runtime.agentId}`,stream:'message',agentId:runtime.agentId,roomId,
-      data:{type:'sent',channel:'client_chat',conversationId,messageId},
+      runId: `conversation-delivery:${runtime.agentId}`,
+      stream: "message",
+      agentId: runtime.agentId,
+      roomId,
+      data: { type: "sent", channel: "client_chat", conversationId, messageId },
     });
-  }catch(error){
+  } catch (error) {
     // Neither an event observer nor its error reporter can undo a committed row
     // or prevent the independent WebSocket/notification delivery paths.
-    try{runtime.reportError('conversation-event-publication',error,{conversationId,messageId});}catch{/* Best-effort diagnostics only. */}
+    try {
+      runtime.reportError("conversation-event-publication", error, {
+        conversationId,
+        messageId,
+      });
+    } catch {
+      /* Best-effort diagnostics only. */
+    }
   }
 }

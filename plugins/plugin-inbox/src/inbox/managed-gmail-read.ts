@@ -59,7 +59,8 @@ export function managedGmailReadFetcher(
         (row.threadTopic !== undefined &&
           typeof row.threadTopic !== "string") ||
         (row.unread !== undefined && typeof row.unread !== "boolean") ||
-        (row.senderIdentifier !== undefined && typeof row.senderIdentifier !== "string")
+        (row.senderIdentifier !== undefined &&
+          typeof row.senderIdentifier !== "string")
       )
         throw failure("Invalid Gmail message identity.");
       ids.add(row.id);
@@ -68,7 +69,9 @@ export function managedGmailReadFetcher(
         platform: "gmail",
         channel: row.channel as string,
         senderName: row.senderName as string,
-        ...(row.senderIdentifier===undefined?{}:{senderIdentifier:row.senderIdentifier as string}),
+        ...(row.senderIdentifier === undefined
+          ? {}
+          : { senderIdentifier: row.senderIdentifier as string }),
         snippet: row.snippet as string,
         receivedAt: row.receivedAt as string,
         ...(row.threadTopic === undefined

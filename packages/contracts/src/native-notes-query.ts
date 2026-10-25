@@ -67,7 +67,14 @@ export interface NativeNotesReadReply extends NativeNotesReadReplyOrigin {
   messageId: string;
   text: string;
   /** A new pending review, never approval or proof that deletion happened. */
-  continuation?: {kind:"notes_delete_review"|"notes_update_review"|"calendar_update_review";proposalId:string;digest:string};
+  continuation?: {
+    kind:
+      | "notes_delete_review"
+      | "notes_update_review"
+      | "calendar_update_review";
+    proposalId: string;
+    digest: string;
+  };
 }
 function readReplyObject(
   value: unknown,
@@ -159,13 +166,39 @@ export function validateNativeNotesReadReply(
     "inReplyTo",
     "messageId",
     "text",
-    ...(value&&typeof value==="object"&&!Array.isArray(value)&&Object.hasOwn(value,"continuation")?["continuation"]:[]),
+    ...(value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.hasOwn(value, "continuation")
+      ? ["continuation"]
+      : []),
   ]);
-  let continuation:NativeNotesReadReply["continuation"];
-  if(result.continuation!==undefined){
-    const v=readReplyObject(result.continuation,["kind","proposalId","digest"]);
-    if(typeof v.kind!=="string"||!["notes_delete_review","notes_update_review","calendar_update_review"].includes(v.kind)||typeof v.digest!=="string"||!/^[a-f0-9]{64}$/.test(v.digest))throw Error("Invalid Notes mutation continuation");
-    continuation={kind:v.kind as "notes_delete_review"|"notes_update_review"|"calendar_update_review",proposalId:readReplyId(v.proposalId),digest:v.digest};
+  let continuation: NativeNotesReadReply["continuation"];
+  if (result.continuation !== undefined) {
+    const v = readReplyObject(result.continuation, [
+      "kind",
+      "proposalId",
+      "digest",
+    ]);
+    if (
+      typeof v.kind !== "string" ||
+      ![
+        "notes_delete_review",
+        "notes_update_review",
+        "calendar_update_review",
+      ].includes(v.kind) ||
+      typeof v.digest !== "string" ||
+      !/^[a-f0-9]{64}$/.test(v.digest)
+    )
+      throw Error("Invalid Notes mutation continuation");
+    continuation = {
+      kind: v.kind as
+        | "notes_delete_review"
+        | "notes_update_review"
+        | "calendar_update_review",
+      proposalId: readReplyId(v.proposalId),
+      digest: v.digest,
+    };
   }
   if (
     typeof result.text !== "string" ||
@@ -178,23 +211,35 @@ export function validateNativeNotesReadReply(
     ...readReplyOrigin(result),
     messageId: readReplyId(result.messageId),
     text: result.text,
-    ...(continuation?{continuation}:{}),
+    ...(continuation ? { continuation } : {}),
   };
 }
 
 /** Host-only retention metadata for an already committed original Notes read. */
 export interface NativeNotesDeferredRead extends NativeNotesReadReplyOrigin {
-  proposalId:string;
-  digest:string;
-  installationId:string;
-  enrollmentId:string;
-  expiresAt:number;
+  proposalId: string;
+  digest: string;
+  installationId: string;
+  enrollmentId: string;
+  expiresAt: number;
 }
 
 /** The v1 correlation envelope is shared; legacy Notes names stay wire-compatible. */
-export type NativeDeviceReadReplyOrigin=NativeNotesReadReplyOrigin;
-export type NativeDeviceReadReplyHint=NativeNotesReadReplyHint;
-export type NativeDeviceReadReply=NativeNotesReadReply;
-export type NativeDeviceDeferredRead=NativeNotesDeferredRead;
-export const ORIGINAL_DEVICE_READ_TYPES=['calendar_named','calendar_availability','notes_query','notes_read_selected','calendar_read_selected','calendar_read_next','read_calendar_range','reminder_read_selected','maps_read_selected'] as const;
-export function isOriginalDeviceReadOperationType(type:string):boolean{return (ORIGINAL_DEVICE_READ_TYPES as readonly string[]).includes(type);}
+export type NativeDeviceReadReplyOrigin = NativeNotesReadReplyOrigin;
+export type NativeDeviceReadReplyHint = NativeNotesReadReplyHint;
+export type NativeDeviceReadReply = NativeNotesReadReply;
+export type NativeDeviceDeferredRead = NativeNotesDeferredRead;
+export const ORIGINAL_DEVICE_READ_TYPES = [
+  "calendar_named",
+  "calendar_availability",
+  "notes_query",
+  "notes_read_selected",
+  "calendar_read_selected",
+  "calendar_read_next",
+  "read_calendar_range",
+  "reminder_read_selected",
+  "maps_read_selected",
+] as const;
+export function isOriginalDeviceReadOperationType(type: string): boolean {
+  return (ORIGINAL_DEVICE_READ_TYPES as readonly string[]).includes(type);
+}

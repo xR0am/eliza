@@ -1,6 +1,18 @@
-import {calendarEditorCommand} from "./event-editor-command.js";
-export {eventEditorMutability,cancellationModeForEditorEvent,type EventEditorMutability,type EventEditorReadOnlyReason} from './event-editor-policy.js';
-import {eventEditorMutability,cancellationModeForEditorEvent,type EventEditorMutability,type EventEditorReadOnlyReason} from './event-editor-policy.js';
+import { calendarEditorCommand } from "./event-editor-command.js";
+
+export {
+  cancellationModeForEditorEvent,
+  type EventEditorMutability,
+  type EventEditorReadOnlyReason,
+  eventEditorMutability,
+} from "./event-editor-policy.js";
+
+import {
+  cancellationModeForEditorEvent,
+  type EventEditorMutability,
+  type EventEditorReadOnlyReason,
+  eventEditorMutability,
+} from "./event-editor-policy.js";
 /**
  * Owner-facing drawer for creating and editing a calendar event: title, time
  * window, calendar/account selection, and attendees, submitting through the
@@ -646,10 +658,17 @@ export function EventEditorDrawer({
         );
         return;
       }
-      const originalForm=event?formStateFromEvent(event):null;
-      const timingChanged=isCreate||!!originalForm&&(form.isAllDay!==originalForm.isAllDay||(form.isAllDay?(["startDate","lastDate"] as const):(["startAt","endAt"] as const)).some(key=>form[key]!==originalForm[key]));
-      const range=timingChanged?editorRange(form):undefined;
-      if (timingChanged&&!range) {
+      const originalForm = event ? formStateFromEvent(event) : null;
+      const timingChanged =
+        isCreate ||
+        (!!originalForm &&
+          (form.isAllDay !== originalForm.isAllDay ||
+            (form.isAllDay
+              ? (["startDate", "lastDate"] as const)
+              : (["startAt", "endAt"] as const)
+            ).some((key) => form[key] !== originalForm[key])));
+      const range = timingChanged ? editorRange(form) : undefined;
+      if (timingChanged && !range) {
         setError(
           t(
             form.isAllDay
@@ -672,7 +691,23 @@ export function EventEditorDrawer({
           const createIdempotencyKey =
             createOperationKey.current ?? createEditorOperationKey();
           createOperationKey.current = createIdempotencyKey;
-          const request=calendarEditorCommand({kind:"create",fields:{title:titleTrimmed,notes:form.notes.trim()||undefined,location:form.location.trim()||undefined,timeZone:TIME_ZONE,attendees:attendees.length?attendees:undefined},range:range!,operationKey:createIdempotencyKey,source:{side:form.side,grantId:form.grantId||undefined,calendarId:form.calendarId||undefined}});
+          const request = calendarEditorCommand({
+            kind: "create",
+            fields: {
+              title: titleTrimmed,
+              notes: form.notes.trim() || undefined,
+              location: form.location.trim() || undefined,
+              timeZone: TIME_ZONE,
+              attendees: attendees.length ? attendees : undefined,
+            },
+            range: range!,
+            operationKey: createIdempotencyKey,
+            source: {
+              side: form.side,
+              grantId: form.grantId || undefined,
+              calendarId: form.calendarId || undefined,
+            },
+          });
           const result =
             await calendarClient.createLifeOpsCalendarEvent(request);
           if (result.outcome === "accepted_without_readback") {
@@ -725,7 +760,28 @@ export function EventEditorDrawer({
           const updateIdempotencyKey =
             updateOperationKey.current ?? createEditorOperationKey();
           updateOperationKey.current = updateIdempotencyKey;
-          const patch=calendarEditorCommand({kind:"update",event,fields:{title:titleTrimmed,notes:form.notes.trim(),location:form.location.trim(),timeZone:event.timezone??TIME_ZONE,...(didAttendeesChange(form.attendees,event)?{attendees:attendeesToContract(form.attendees)}:{})},changed:{timing:timingChanged,zone:false},...(range?{range}:{}),operationKey:updateIdempotencyKey,expectedProviderVersion:mutability.providerVersion,source:{side:form.side,grantId:form.grantId||event.grantId,calendarId:form.calendarId||event.calendarId}});
+          const patch = calendarEditorCommand({
+            kind: "update",
+            event,
+            fields: {
+              title: titleTrimmed,
+              notes: form.notes.trim(),
+              location: form.location.trim(),
+              timeZone: event.timezone ?? TIME_ZONE,
+              ...(didAttendeesChange(form.attendees, event)
+                ? { attendees: attendeesToContract(form.attendees) }
+                : {}),
+            },
+            changed: { timing: timingChanged, zone: false },
+            ...(range ? { range } : {}),
+            operationKey: updateIdempotencyKey,
+            expectedProviderVersion: mutability.providerVersion,
+            source: {
+              side: form.side,
+              grantId: form.grantId || event.grantId,
+              calendarId: form.calendarId || event.calendarId,
+            },
+          });
           const result = await calendarClient.updateLifeOpsCalendarEvent(
             event.externalId,
             patch,

@@ -1,6 +1,6 @@
-import {calendarRangeFitsLocalDays} from "../../../../plugin-calendar/src/internal/time.ts";
-import {calendarEventOverlapsRange} from '@elizaos/contracts';
-import {calendarIdentifier} from './calendar-contract.ts';
+import { calendarEventOverlapsRange } from "@elizaos/contracts";
+import { calendarRangeFitsLocalDays } from "../../../../plugin-calendar/src/internal/time.ts";
+import { calendarIdentifier } from "./calendar-contract.ts";
 /** Canonical device proposal extension. These are data scopes, never executable code. */
 export interface WorkflowDeviceBinding {
   workflowId: string;
@@ -150,9 +150,7 @@ export function validateWorkflowReadOperation(
       end = utc(p.end);
     if (new Set(calendarIds).size !== calendarIds.length)
       return reject("Duplicate calendar");
-    if (
-      !calendarRangeFitsLocalDays(start,end,text(p.timeZone,100))
-    )
+    if (!calendarRangeFitsLocalDays(start, end, text(p.timeZone, 100)))
       return reject("Calendar range exceeds reviewed bound");
     const timeZone = text(p.timeZone, 100);
     try {
@@ -246,7 +244,10 @@ export function validateWorkflowReadResult(
     if (
       typeof result.allDay !== "boolean" ||
       !operation.calendarIds.includes(result.calendarId) ||
-      !calendarEventOverlapsRange(operation,{...result,allDay:result.allDay as boolean})
+      !calendarEventOverlapsRange(operation, {
+        ...result,
+        allDay: result.allDay as boolean,
+      })
     )
       return reject("Calendar event is outside selected scope");
     const revision = createHash("sha256")

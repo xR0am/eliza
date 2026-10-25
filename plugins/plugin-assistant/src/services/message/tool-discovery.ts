@@ -8,8 +8,8 @@
 import type {
   Action,
   AgentContext,
-  IAgentRuntime,
   ContextObject,
+  IAgentRuntime,
   Memory,
   RoleGateRole,
   ToolDefinition,
@@ -97,11 +97,23 @@ function renderDiscoveryNameIndex(
   return factored.length < literal.length ? factored : literal;
 }
 
-interface DiscoveryInvocationScope { runtime: IAgentRuntime; messageId: string; roomId: string; actorId: string }
-const discoveryInvocationScopes = new WeakMap<NonNullable<Action["handler"]>, Readonly<DiscoveryInvocationScope>>();
+interface DiscoveryInvocationScope {
+  runtime: IAgentRuntime;
+  messageId: string;
+  roomId: string;
+  actorId: string;
+}
+const discoveryInvocationScopes = new WeakMap<
+  NonNullable<Action["handler"]>,
+  Readonly<DiscoveryInvocationScope>
+>();
 /** A name or renderer flag cannot impersonate the locally created pure tool. */
-export function plannerDiscoveryInvocationScope(handler: unknown): Readonly<DiscoveryInvocationScope> | undefined {
-  return typeof handler === "function" ? discoveryInvocationScopes.get(handler as NonNullable<Action["handler"]>) : undefined;
+export function plannerDiscoveryInvocationScope(
+  handler: unknown,
+): Readonly<DiscoveryInvocationScope> | undefined {
+  return typeof handler === "function"
+    ? discoveryInvocationScopes.get(handler as NonNullable<Action["handler"]>)
+    : undefined;
 }
 
 export function createPlannerToolDiscoveryAction(
@@ -220,27 +232,79 @@ export function createPlannerToolDiscoveryAction(
         }
       }
       // An empty exact-name selector adds no restriction to an explicit search.
-      if(Array.isArray(names)&&names.length===0&&(query!==undefined||contexts!==undefined))names=undefined;
+      if (
+        Array.isArray(names) &&
+        names.length === 0 &&
+        (query !== undefined || contexts !== undefined)
+      )
+        names = undefined;
       // A model may accompany an exact name with its search intent. Treat this
       // as an intersection, never as a wider search or an ignored constraint.
-      if (Array.isArray(names) && names.length > 0 && query !== undefined && contexts === undefined &&
-          (mode === undefined || mode === "load" || mode === "describe") &&
-          names.every((name): name is string => typeof name === "string" && name.length > 0) &&
-          typeof query === "string" && query.trim()) {
-        const freshActions = resolveAdditionalActions ? await resolveAdditionalActions(names) : [...authorizedActions];
-        const exact = freshActions.filter(action => names.includes(action.name));
-        const matches = retrieveContextualPlannerActions({actions: exact, query}).actions;
-        if (names.every(name => matches.some(action => action.name === name))) {
+      if (
+        Array.isArray(names) &&
+        names.length > 0 &&
+        query !== undefined &&
+        contexts === undefined &&
+        (mode === undefined || mode === "load" || mode === "describe") &&
+        names.every(
+          (name): name is string => typeof name === "string" && name.length > 0,
+        ) &&
+        typeof query === "string" &&
+        query.trim()
+      ) {
+        const freshActions = resolveAdditionalActions
+          ? await resolveAdditionalActions(names)
+          : [...authorizedActions];
+        const exact = freshActions.filter((action) =>
+          names.includes(action.name),
+        );
+        const matches = retrieveContextualPlannerActions({
+          actions: exact,
+          query,
+        }).actions;
+        if (
+          names.every((name) => matches.some((action) => action.name === name))
+        ) {
           if (mode !== "describe") onDiscover(matches, names);
-          return {success: true, transcriptVisibility: "internal", modelReplyRequired: true,
+          return {
+            success: true,
+            transcriptVisibility: "internal",
+            modelReplyRequired: true,
             text: "Exact authorized names matched the supplied query. Complete schemas are available; continue with the requested operation. No domain work was performed.",
-            data: {readOnlyOperation: true, ...(mode === "describe"
-              ? {catalog: matches.map(action => ({name: action.name, description: action.description, parameters: normalizeActionJsonSchema(action)}))}
-              : {loadedOperationCount: matches.length, loadedTools: matches.map(action => action.name)})}};
+            data: {
+              readOnlyOperation: true,
+              ...(mode === "describe"
+                ? {
+                    catalog: matches.map((action) => ({
+                      name: action.name,
+                      description: action.description,
+                      parameters: normalizeActionJsonSchema(action),
+                    })),
+                  }
+                : {
+                    loadedOperationCount: matches.length,
+                    loadedTools: matches.map((action) => action.name),
+                  }),
+            },
+          };
         }
-        const available = resolveAdditionalActions ? await resolveAdditionalActions([]) : [...authorizedActions];
-        const suggestions = retrieveContextualPlannerActions({actions:available,query}).actions.map(action=>action.name);
-        return {success:false,error:"The exact names did not match both current authorization and the supplied query. No tools were loaded. Use the available matching names or a query alone.",data:{readOnlyOperation:true,coachingFailure:true,availableMatchingNames:suggestions}};
+        const available = resolveAdditionalActions
+          ? await resolveAdditionalActions([])
+          : [...authorizedActions];
+        const suggestions = retrieveContextualPlannerActions({
+          actions: available,
+          query,
+        }).actions.map((action) => action.name);
+        return {
+          success: false,
+          error:
+            "The exact names did not match both current authorization and the supplied query. No tools were loaded. Use the available matching names or a query alone.",
+          data: {
+            readOnlyOperation: true,
+            coachingFailure: true,
+            availableMatchingNames: suggestions,
+          },
+        };
       }
       const searching = query !== undefined || contexts !== undefined;
       if (searching) {
@@ -440,7 +504,10 @@ export function createPlannerToolDiscoveryAction(
                   parent.source.descriptionCompressed ||
                   parent.source.description ||
                   ""
-                ).replace(/\s+/g, " ").trim().slice(0, 160),
+                )
+                  .replace(/\s+/g, " ")
+                  .trim()
+                  .slice(0, 160),
                 children: parent.childNames,
               })),
             },
@@ -516,7 +583,11 @@ export function createPlannerToolDiscoveryAction(
     },
     examples: [],
   };
-  if (options?.admissionScope && discoveryAction.handler) discoveryInvocationScopes.set(discoveryAction.handler, Object.freeze({ ...options.admissionScope }));
+  if (options?.admissionScope && discoveryAction.handler)
+    discoveryInvocationScopes.set(
+      discoveryAction.handler,
+      Object.freeze({ ...options.admissionScope }),
+    );
   return discoveryAction;
 }
 

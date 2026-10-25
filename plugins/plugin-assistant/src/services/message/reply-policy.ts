@@ -13,9 +13,9 @@ import type {
 } from "@elizaos/core";
 import {
   bindEffectDelivery,
-  isObjectRecord,
   getTrajectoryContext,
   getTrustedDeliveryAudience,
+  isObjectRecord,
   stampAppConversationProvenance,
   trustedDeliveryAudienceIsBoundToRuntime,
 } from "@elizaos/core";
@@ -555,30 +555,73 @@ export function candidateActionsIncludeAsyncHandoff(
 /** Reuse this turn's held navigation prose only after an exact prepared handoff.
  * This releases no new action and never labels preparation as delivery. */
 export function preparedViewReply(args: {
-    stageOne: unknown;
-    effectStatus: unknown;
-    reply: unknown;
-    steps: readonly unknown[];
-    allow: (text: string) => boolean;
+  stageOne: unknown;
+  effectStatus: unknown;
+  reply: unknown;
+  steps: readonly unknown[];
+  allow: (text: string) => boolean;
 }): string | undefined {
-    if (args.effectStatus !== 'pending' || typeof args.reply !== 'string' || !args.reply.trim() || args.steps.length !== 1 || !isObjectRecord(args.stageOne))
-        return;
-    const visual = args.stageOne.visualContinuation, intents = args.stageOne.intents;
-    if (!isObjectRecord(visual) || visual.disposition !== 'direct' || typeof visual.viewId !== 'string' || !Array.isArray(intents) || intents.length !== 1 || typeof intents[0] !== 'string' || !intents[0].trim())
-        return;
-    const step = args.steps[0];
-    if (!isObjectRecord(step) || !isObjectRecord(step.toolCall) || typeof step.toolCall.name !== 'string' || !isObjectRecord(step.result) || step.result.success !== true || typeof step.result.text !== 'string' || !isObjectRecord(step.result.data))
-        return;
-    const result = step.result as unknown as PlannerToolResult;
-    const effect = structuredEffectFromToolResult(result);
-    const handoff = findViewActionHandoff([{ success: true, actionName: step.toolCall.name, values: step.result.data.values }]);
-    if (effect?.effect !== 'view_navigation' || effect.status !== 'prepared' || !effect.label || !handoff?.navigationPrepared || handoff.viewId !== visual.viewId || effect.viewId !== handoff.viewId)
-        return;
-    const navigation = step.result.data.navigation;
-    if (!isObjectRecord(navigation) || navigation.handoffId !== handoff.completedActionHandoffId || handoff.navigationBinding?.requestId !== navigation.handoffId)
-        return;
-    const reply = args.reply.trim();
-    if (!replyNamesStructuredEffectDestination(reply, effect) || !args.allow(reply))
-        return;
-    return reply;
+  if (
+    args.effectStatus !== "pending" ||
+    typeof args.reply !== "string" ||
+    !args.reply.trim() ||
+    args.steps.length !== 1 ||
+    !isObjectRecord(args.stageOne)
+  )
+    return;
+  const visual = args.stageOne.visualContinuation,
+    intents = args.stageOne.intents;
+  if (
+    !isObjectRecord(visual) ||
+    visual.disposition !== "direct" ||
+    typeof visual.viewId !== "string" ||
+    !Array.isArray(intents) ||
+    intents.length !== 1 ||
+    typeof intents[0] !== "string" ||
+    !intents[0].trim()
+  )
+    return;
+  const step = args.steps[0];
+  if (
+    !isObjectRecord(step) ||
+    !isObjectRecord(step.toolCall) ||
+    typeof step.toolCall.name !== "string" ||
+    !isObjectRecord(step.result) ||
+    step.result.success !== true ||
+    typeof step.result.text !== "string" ||
+    !isObjectRecord(step.result.data)
+  )
+    return;
+  const result = step.result as unknown as PlannerToolResult;
+  const effect = structuredEffectFromToolResult(result);
+  const handoff = findViewActionHandoff([
+    {
+      success: true,
+      actionName: step.toolCall.name,
+      values: step.result.data.values,
+    },
+  ]);
+  if (
+    effect?.effect !== "view_navigation" ||
+    effect.status !== "prepared" ||
+    !effect.label ||
+    !handoff?.navigationPrepared ||
+    handoff.viewId !== visual.viewId ||
+    effect.viewId !== handoff.viewId
+  )
+    return;
+  const navigation = step.result.data.navigation;
+  if (
+    !isObjectRecord(navigation) ||
+    navigation.handoffId !== handoff.completedActionHandoffId ||
+    handoff.navigationBinding?.requestId !== navigation.handoffId
+  )
+    return;
+  const reply = args.reply.trim();
+  if (
+    !replyNamesStructuredEffectDestination(reply, effect) ||
+    !args.allow(reply)
+  )
+    return;
+  return reply;
 }

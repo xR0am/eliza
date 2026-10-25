@@ -151,7 +151,8 @@ export const DEFAULT_CONTEXT_DEFINITIONS: readonly ContextDefinition[] =
       id: "tasks",
       label: "Tasks",
       description: "Todos, reminders, habits, routines and tracked progress.",
-      descriptionCompressed: "personal reminders/deadlines, habits, goals and tracked work",
+      descriptionCompressed:
+        "personal reminders/deadlines, habits, goals and tracked work",
       sensitivity: "personal",
       cacheScope: "agent",
       aliases: ["reminder", "reminders", "alarm", "alarms"],
@@ -170,8 +171,10 @@ export const DEFAULT_CONTEXT_DEFINITIONS: readonly ContextDefinition[] =
     {
       id: "todos",
       label: "Todos",
-      description: "Checklist todos and their completion status. Scheduled reminders and deadlines belong to Tasks.",
-      descriptionCompressed: "checklist todos; scheduled reminders/deadlines use tasks",
+      description:
+        "Checklist todos and their completion status. Scheduled reminders and deadlines belong to Tasks.",
+      descriptionCompressed:
+        "checklist todos; scheduled reminders/deadlines use tasks",
       parent: "tasks",
       sensitivity: "personal",
       cacheScope: "agent",

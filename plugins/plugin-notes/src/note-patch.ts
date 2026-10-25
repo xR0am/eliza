@@ -1,7 +1,7 @@
-import {editAuthoredNoteFormat,authoredNoteText} from "./note-authored.js";
-import {ElizaError} from '@elizaos/core';
-import type {StickyNote,UpdateNoteInput} from './types.js';
-import {parseNoteContent,parseStickyNote} from './validation.js';
+import { ElizaError } from "@elizaos/core";
+import { authoredNoteText, editAuthoredNoteFormat } from "./note-authored.js";
+import type { StickyNote, UpdateNoteInput } from "./types.js";
+import { parseNoteContent, parseStickyNote } from "./validation.js";
 
 export function applyNotePatch(
   existing: StickyNote,
@@ -9,10 +9,32 @@ export function applyNotePatch(
   updatedAt: string,
 ): StickyNote {
   const updated: StickyNote = { ...existing, updatedAt };
-  if(patch.authoredEdit){
-   try{return parseStickyNote({...updated,format:editAuthoredNoteFormat(existing.format,patch.authoredEdit)});}catch(error){throw new ElizaError("Authored note edit conflicts with its current format or text.",{code:"NOTES_EDIT_CONFLICT",cause:error,severity:"ephemeral"});}
+  if (patch.authoredEdit) {
+    try {
+      return parseStickyNote({
+        ...updated,
+        format: editAuthoredNoteFormat(existing.format, patch.authoredEdit),
+      });
+    } catch (error) {
+      throw new ElizaError(
+        "Authored note edit conflicts with its current format or text.",
+        { code: "NOTES_EDIT_CONFLICT", cause: error, severity: "ephemeral" },
+      );
+    }
   }
-  if(existing.format&&existing.format.kind!=="text"&&authoredNoteText(existing.format)&&patch.format===undefined&&((patch.content!==undefined&&patch.content.trim()!=="")||(patch.body!==undefined&&patch.body.trim()!=="")||patch.textEdit?.field==="body"))throw new ElizaError("Use the current note's authoredEdit field and index for rich content; body replacement cannot edit a checklist or transcript.",{code:"NOTES_RICH_EDIT_REQUIRED",severity:"ephemeral"});
+  if (
+    existing.format &&
+    existing.format.kind !== "text" &&
+    authoredNoteText(existing.format) &&
+    patch.format === undefined &&
+    ((patch.content !== undefined && patch.content.trim() !== "") ||
+      (patch.body !== undefined && patch.body.trim() !== "") ||
+      patch.textEdit?.field === "body")
+  )
+    throw new ElizaError(
+      "Use the current note's authoredEdit field and index for rich content; body replacement cannot edit a checklist or transcript.",
+      { code: "NOTES_RICH_EDIT_REQUIRED", severity: "ephemeral" },
+    );
   if (patch.textEdit) {
     const { field, oldText, newText } = patch.textEdit;
     const original = existing[field];
@@ -51,14 +73,22 @@ export function applyNotePatch(
     return updated;
   }
   if (patch.content !== undefined) {
-    Object.assign(updated, parseNoteContent(patch.content,"content",!!authoredNoteText(patch.format??existing.format).trim()));
+    Object.assign(
+      updated,
+      parseNoteContent(
+        patch.content,
+        "content",
+        !!authoredNoteText(patch.format ?? existing.format).trim(),
+      ),
+    );
   } else {
     if (patch.title !== undefined) updated.title = patch.title;
     // Public structured bodies exclude the separator; stored remainders include it.
     if (patch.body !== undefined)
       updated.body = patch.body ? `\n${patch.body}` : "";
   }
-  if(patch.format!==undefined)updated.format=structuredClone(patch.format);
+  if (patch.format !== undefined)
+    updated.format = structuredClone(patch.format);
   if (patch.color !== undefined) updated.color = patch.color;
   return updated;
 }

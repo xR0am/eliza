@@ -52,15 +52,23 @@ const properties = {
     items: { type: "integer" as const, minimum: 0, maximum: 6 },
   },
   timeOfDay: {
-    description: "Copy an explicit requested wall-clock time as HH:MM, including noon as 12:00 and midnight as 00:00. Use null only when the owner gave no clock time; unresolved requested timing requires mode=respond.",
+    description:
+      "Copy an explicit requested wall-clock time as HH:MM, including noon as 12:00 and midnight as 00:00. Use null only when the owner gave no clock time; unresolved requested timing requires mode=respond.",
     anyOf: [
-      { type: "string" as const, pattern: "^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$" },
+      {
+        type: "string" as const,
+        pattern: "^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$",
+      },
       { type: "null" as const },
     ],
   },
   timeZone: {
-    description: "Copy an explicitly requested time zone as its IANA identifier. Use null only when the owner gave no time zone; never omit an explicit zone in favor of the owner's default.",
-    anyOf: [{ type: "string" as const, minLength: 1 }, { type: "null" as const }],
+    description:
+      "Copy an explicitly requested time zone as its IANA identifier. Use null only when the owner gave no time zone; never omit an explicit zone in favor of the owner's default.",
+    anyOf: [
+      { type: "string" as const, minLength: 1 },
+      { type: "null" as const },
+    ],
   },
   everyMinutes: { type: "number" as const, minimum: 1 },
   timesPerDay: { type: "integer" as const, minimum: 1 },

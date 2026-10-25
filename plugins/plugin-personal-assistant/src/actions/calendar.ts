@@ -38,7 +38,10 @@ import {
   type SubactionsMap,
   stableStringify,
 } from "@elizaos/core";
-import { renderGroundedActionReply,requestLocalCalendarAgenda } from "@elizaos/plugin-assistant";
+import {
+  renderGroundedActionReply,
+  requestLocalCalendarAgenda,
+} from "@elizaos/plugin-assistant";
 import {
   CALENDAR_CREATE_DETAILS_PARAMETER_SCHEMA,
   CALENDAR_DETAILS_PARAMETER_SCHEMA,
@@ -49,8 +52,8 @@ import {
   CalendarService,
   CalendarServiceError,
   createCalendarActionRunner,
-  registerCalendarActionHostAdapter,
   createCalendarMutationApprovalGateway,
+  registerCalendarActionHostAdapter,
 } from "@elizaos/plugin-calendar";
 import { hasLifeOpsAccess, INTERNAL_URL } from "../lifeops/access.js";
 import {
@@ -122,7 +125,7 @@ function resolveCalendarService(runtime: IAgentRuntime): CalendarService {
  * injected rather than moved.
  */
 const calendarActionDeps: CalendarActionDeps = {
-  requestLocalAgenda:requestLocalCalendarAgenda,
+  requestLocalAgenda: requestLocalCalendarAgenda,
   runTextModel: runLifeOpsTextModel,
   runJsonModel: runLifeOpsJsonModel,
   recentConversationTexts: (args) => recentConversationTexts(args),
@@ -163,7 +166,9 @@ const calendarActionDeps: CalendarActionDeps = {
 };
 
 /** Bind PA integrations before Calendar's registered actions can execute. */
-export function registerPersonalAssistantCalendarHost(runtime: IAgentRuntime): void {
+export function registerPersonalAssistantCalendarHost(
+  runtime: IAgentRuntime,
+): void {
   registerCalendarActionHostAdapter(runtime, calendarActionDeps);
 }
 

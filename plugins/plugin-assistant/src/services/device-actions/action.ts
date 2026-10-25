@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { isNativeNotesQuery } from "@elizaos/contracts/native-notes-query";
-import type { Action, ActionParameterSchema, IAgentRuntime, Memory } from "@elizaos/core";
+import type {
+  Action,
+  ActionParameterSchema,
+  IAgentRuntime,
+  Memory,
+} from "@elizaos/core";
 import {
   isCalendarOperation,
   validateCalendarResult,
@@ -48,7 +53,16 @@ import {
   validateReminderCreateResult,
 } from "./reminder-create-contract.ts";
 import { resolveReminderCreateInput } from "./reminder-create-input.ts";
-import { DeviceActionService, deviceAppRecordOperationAvailable, getDeviceActionTurn, currentReminderRecordSource, requestLocalCalendarUpdate, requestLocalNotesUpdate,requestLocalCalendarCreate,requestOriginalNativeCalendarAvailability } from "./service.ts";
+import {
+  currentReminderRecordSource,
+  DeviceActionService,
+  deviceAppRecordOperationAvailable,
+  getDeviceActionTurn,
+  requestLocalCalendarCreate,
+  requestLocalCalendarUpdate,
+  requestLocalNotesUpdate,
+  requestOriginalNativeCalendarAvailability,
+} from "./service.ts";
 import {
   isSmsSend,
   smsBindingText,
@@ -605,7 +619,9 @@ export const proposeDeviceAction: Action = {
             type: "object",
             additionalProperties: false,
             required: ["type"],
-            properties: { type: { type: "string", enum: ["camera_capture_photo"] } },
+            properties: {
+              type: { type: "string", enum: ["camera_capture_photo"] },
+            },
           },
           ...clockSchemas,
           ...clockAlarmSchemas,
@@ -704,43 +720,127 @@ export const proposeDeviceAction: Action = {
     if (!context || context.runtime !== runtime)
       throw new Error("No authenticated phone is bound to this turn");
     const p = object(options?.parameters);
-    const operationType=(p.operation as {type?:unknown}|undefined)?.type;
-    if(!deviceAppRecordOperationAvailable(runtime,p.operation,_message))return {success:false,text:'Device Notes/Calendar record authority is not selected for this turn. No device proposal was created.',data:{code:'DEVICE_OPERATION_RECORD_SOURCE',coachingFailure:true}};
-    if(operationType==='calendar_create_local'||operationType==='calendar_create'){
-      if(p.afterRead!==undefined)throw Error('Calendar creation is derived from the original request');
-      return await requestLocalCalendarCreate({runtime,message:_message,type:operationType})??{success:false,text:'The requesting-device Calendar is unavailable. No event was created.',data:{code:'DEVICE_CALENDAR_CREATE_SCOPE'}};
+    const operationType = (p.operation as { type?: unknown } | undefined)?.type;
+    if (!deviceAppRecordOperationAvailable(runtime, p.operation, _message))
+      return {
+        success: false,
+        text: "Device Notes/Calendar record authority is not selected for this turn. No device proposal was created.",
+        data: { code: "DEVICE_OPERATION_RECORD_SOURCE", coachingFailure: true },
+      };
+    if (
+      operationType === "calendar_create_local" ||
+      operationType === "calendar_create"
+    ) {
+      if (p.afterRead !== undefined)
+        throw Error("Calendar creation is derived from the original request");
+      return (
+        (await requestLocalCalendarCreate({
+          runtime,
+          message: _message,
+          type: operationType,
+        })) ?? {
+          success: false,
+          text: "The requesting-device Calendar is unavailable. No event was created.",
+          data: { code: "DEVICE_CALENDAR_CREATE_SCOPE" },
+        }
+      );
     }
-    if(operationType==='calendar_availability'){
-      if(p.afterRead!==undefined)throw Error('Availability read continuation is host-owned');
-      return requestOriginalNativeCalendarAvailability({runtime,message:_message});
+    if (operationType === "calendar_availability") {
+      if (p.afterRead !== undefined)
+        throw Error("Availability read continuation is host-owned");
+      return requestOriginalNativeCalendarAvailability({
+        runtime,
+        message: _message,
+      });
     }
-    if(operationType==='notes_named'&&(p.operation as {action?:unknown}).action==='update'){
-      if(p.afterRead!==undefined)throw Error('Named Notes updates require their original lookup continuation');
-      const name=(p.operation as {name?:unknown}).name;
-      if(typeof name!=='string')throw Error('Named Notes update requires the requested note name');
+    if (
+      operationType === "notes_named" &&
+      (p.operation as { action?: unknown }).action === "update"
+    ) {
+      if (p.afterRead !== undefined)
+        throw Error(
+          "Named Notes updates require their original lookup continuation",
+        );
+      const name = (p.operation as { name?: unknown }).name;
+      if (typeof name !== "string")
+        throw Error("Named Notes update requires the requested note name");
       // Replacement fields from the planner are not the current note body.
-      return await requestLocalNotesUpdate({runtime,message:_message,name})??{success:false,text:'Open Notes or Home to find the exact note for this edit. Nothing was read or changed.',data:{code:'DEVICE_NOTES_UPDATE_SCOPE'}};
+      return (
+        (await requestLocalNotesUpdate({
+          runtime,
+          message: _message,
+          name,
+        })) ?? {
+          success: false,
+          text: "Open Notes or Home to find the exact note for this edit. Nothing was read or changed.",
+          data: { code: "DEVICE_NOTES_UPDATE_SCOPE" },
+        }
+      );
     }
-    if(operationType==='notes_update'){
-      if(p.afterRead!==undefined)throw Error('Notes updates require their original selected-read continuation');
-      return await requestLocalNotesUpdate({runtime,message:_message})??{success:false,text:'Open the exact note to prepare its requested edit. Nothing was read or changed.',data:{code:'DEVICE_NOTES_UPDATE_SCOPE'}};
+    if (operationType === "notes_update") {
+      if (p.afterRead !== undefined)
+        throw Error(
+          "Notes updates require their original selected-read continuation",
+        );
+      return (
+        (await requestLocalNotesUpdate({ runtime, message: _message })) ?? {
+          success: false,
+          text: "Open the exact note to prepare its requested edit. Nothing was read or changed.",
+          data: { code: "DEVICE_NOTES_UPDATE_SCOPE" },
+        }
+      );
     }
-    if(operationType==='calendar_named'){
-      const raw=p.operation as {action?:unknown;name?:unknown};
-      if(raw.action==='read')throw Error('Named Calendar reads are host-owned edit continuations');
-      if(raw.action==='update'){
-        if(p.afterRead!==undefined||typeof raw.name!=='string')throw Error('Named Calendar update requires its original name and host-owned read continuation');
-        return await requestLocalCalendarUpdate({runtime,message:_message,name:raw.name})??{success:false,text:'Open Calendar or Home to prepare this event edit. Nothing was read or changed.',data:{code:'DEVICE_CALENDAR_UPDATE_SCOPE'}};
+    if (operationType === "calendar_named") {
+      const raw = p.operation as { action?: unknown; name?: unknown };
+      if (raw.action === "read")
+        throw Error("Named Calendar reads are host-owned edit continuations");
+      if (raw.action === "update") {
+        if (p.afterRead !== undefined || typeof raw.name !== "string")
+          throw Error(
+            "Named Calendar update requires its original name and host-owned read continuation",
+          );
+        return (
+          (await requestLocalCalendarUpdate({
+            runtime,
+            message: _message,
+            name: raw.name,
+          })) ?? {
+            success: false,
+            text: "Open Calendar or Home to prepare this event edit. Nothing was read or changed.",
+            data: { code: "DEVICE_CALENDAR_UPDATE_SCOPE" },
+          }
+        );
       }
     }
-    if(operationType==='calendar_update'){
-      if(p.afterRead!==undefined)throw Error('Calendar updates require their original selected-read continuation');
-      return await requestLocalCalendarUpdate({runtime,message:_message})??{success:false,text:'Open the exact Calendar event to prepare its requested changes. Nothing was read or changed.',data:{code:'DEVICE_CALENDAR_UPDATE_SCOPE'}};
+    if (operationType === "calendar_update") {
+      if (p.afterRead !== undefined)
+        throw Error(
+          "Calendar updates require their original selected-read continuation",
+        );
+      return (
+        (await requestLocalCalendarUpdate({ runtime, message: _message })) ?? {
+          success: false,
+          text: "Open the exact Calendar event to prepare its requested changes. Nothing was read or changed.",
+          data: { code: "DEVICE_CALENDAR_UPDATE_SCOPE" },
+        }
+      );
     }
-    if(typeof operationType==="string"&&(operationType.startsWith("reminder_")||operationType==="create_reminder")&&runtime.actions.some(action=>action.name==="OWNER_REMINDERS")&&currentReminderRecordSource(runtime)!=="device")return {
-      success:false,text:"Ordinary reminders use OWNER_REMINDERS in this runtime's canonical reminder store. Device reminder operations require an explicitly selected native reminder source or record. No device proposal was created.",
-      data:{code:"REMINDER_RECORD_SOURCE_MISMATCH",recommendedAction:"OWNER_REMINDERS",coachingFailure:true},
-    };
+    if (
+      typeof operationType === "string" &&
+      (operationType.startsWith("reminder_") ||
+        operationType === "create_reminder") &&
+      runtime.actions.some((action) => action.name === "OWNER_REMINDERS") &&
+      currentReminderRecordSource(runtime) !== "device"
+    )
+      return {
+        success: false,
+        text: "Ordinary reminders use OWNER_REMINDERS in this runtime's canonical reminder store. Device reminder operations require an explicitly selected native reminder source or record. No device proposal was created.",
+        data: {
+          code: "REMINDER_RECORD_SOURCE_MISMATCH",
+          recommendedAction: "OWNER_REMINDERS",
+          coachingFailure: true,
+        },
+      };
 
     if (
       (p.operation as { type?: unknown } | undefined)?.type === "open_view" &&
@@ -763,7 +863,8 @@ export const proposeDeviceAction: Action = {
     // encode other bounded text deterministically without weakening queue conflicts.
     const rawOperationKey = text(p.operationKey, 128);
     const operationKey = /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(rawOperationKey)
-      ? rawOperationKey : "opaque_" + createHash("sha256").update(rawOperationKey).digest("hex");
+      ? rawOperationKey
+      : "opaque_" + createHash("sha256").update(rawOperationKey).digest("hex");
     const outcome = await new DeviceActionService(runtime).proposeWithOutcome(
       context.credential,
       resolveReminderCreateInput(p.operation, context.startedAt),
@@ -1045,12 +1146,34 @@ export function deviceActionForCapabilities(
         )
           return false;
         const types = branch.properties?.type?.enum;
-        const current=getDeviceActionTurn();
+        const current = getDeviceActionTurn();
         const runtime = binding?.runtime ?? current?.runtime;
-        if (runtime && types?.some(type => typeof type === "string" &&
-          !deviceAppRecordOperationAvailable(runtime, {type}, binding?.message,
-            {requestBound: binding !== undefined}))) return false;
-        if(current?.runtime.actions.some(action=>action.name==="OWNER_REMINDERS")&&currentReminderRecordSource(current.runtime)!=="device"&&types?.some(type=>typeof type==="string"&&(type.startsWith("reminder_")||type==="create_reminder")))return false;
+        if (
+          runtime &&
+          types?.some(
+            (type) =>
+              typeof type === "string" &&
+              !deviceAppRecordOperationAvailable(
+                runtime,
+                { type },
+                binding?.message,
+                { requestBound: binding !== undefined },
+              ),
+          )
+        )
+          return false;
+        if (
+          current?.runtime.actions.some(
+            (action) => action.name === "OWNER_REMINDERS",
+          ) &&
+          currentReminderRecordSource(current.runtime) !== "device" &&
+          types?.some(
+            (type) =>
+              typeof type === "string" &&
+              (type.startsWith("reminder_") || type === "create_reminder"),
+          )
+        )
+          return false;
 
         if (navigation && types?.includes("open_view")) return false;
         if (

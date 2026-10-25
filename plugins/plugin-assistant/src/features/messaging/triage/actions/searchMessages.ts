@@ -197,7 +197,11 @@ export const searchMessagesAction: Action = {
           subject: m.subject ?? null,
           snippet: m.snippet,
           receivedAtMs: m.receivedAtMs,
-          receivedAt: Number.isFinite(m.receivedAtMs)&&Number.isFinite(new Date(m.receivedAtMs).getTime())?new Date(m.receivedAtMs).toISOString():null,
+          receivedAt:
+            Number.isFinite(m.receivedAtMs) &&
+            Number.isFinite(new Date(m.receivedAtMs).getTime())
+              ? new Date(m.receivedAtMs).toISOString()
+              : null,
           tags: m.tags ?? [],
           contactWeight: m.triageScore?.contactWeight ?? null,
         })),
