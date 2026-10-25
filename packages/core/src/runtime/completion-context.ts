@@ -19,6 +19,39 @@ import type {
 	ContextSegmentEvent,
 } from "./context-object";
 
+/** Runtime-only proof from the owner-scoped approval reader. Serialized/model
+ * metadata cannot mint this symbol; complete original receipt bytes stay intact. */
+export const HISTORICAL_EFFECT_TERMINALS: unique symbol = Symbol(
+	"historicalEffectTerminals",
+);
+export interface HistoricalEffectTerminal {
+	requestSourceEventId: string;
+	originalReceiptHash: string;
+	terminalReceipt: unknown;
+	state: "done" | "rejected" | "expired";
+}
+
+function hasHistoricalTerminal(
+	event: ContextSegmentEvent,
+	requestSourceEventId: string,
+	receipt: unknown,
+): boolean {
+	const proofs = (
+		event as ContextSegmentEvent & {
+			[HISTORICAL_EFFECT_TERMINALS]?: readonly HistoricalEffectTerminal[];
+		}
+	)[HISTORICAL_EFFECT_TERMINALS];
+	return (
+		proofs?.some(
+			(proof) =>
+				proof.requestSourceEventId === requestSourceEventId &&
+				["done", "rejected", "expired"].includes(proof.state) &&
+				(proof.originalReceiptHash === hashStableJson(receipt) ||
+					hashStableJson(proof.terminalReceipt) === hashStableJson(receipt)),
+		) === true
+	);
+}
+
 const SOURCE_ID_PATTERN = /^h[1-9]\d*$/;
 
 /** Shared source-selection policy; each stage supplies its request-local binding. */
@@ -305,6 +338,7 @@ export function selectHistoricalNavigation(
 					!known.has(receipt.requestSourceEventId)
 				)
 					return true;
+				const requestSourceEventId = receipt.requestSourceEventId;
 				if (
 					effects ||
 					event.segment.label === "runtime:historical_observations"
@@ -350,7 +384,12 @@ export function selectHistoricalNavigation(
 									(observation.success === true &&
 										(normalized.outcome === "applied" ||
 											(normalized.outcome === "noop" &&
-												normalized.idempotency.replayed)))) &&
+												normalized.idempotency.replayed))) ||
+									hasHistoricalTerminal(
+										event,
+										requestSourceEventId,
+										normalized,
+									)) &&
 								hashStableJson(normalized) ===
 									hashStableJson(observation.receipt)
 							);

@@ -1,3 +1,4 @@
+import { reconcileHistoricalProposalTerminals } from "./historical-proposal-terminals.ts";
 import {readDeviceConversationReceipts} from "../device-actions/conversation-receipts.ts";
 import type {
   Action,
@@ -269,6 +270,16 @@ export async function createV5MessageContextObject(args: {
   appendPriorDialogueEvents(events, args.runtime, args.state, args.message, {
     includeOwnReplies: true,
   });
+  const recent = (args.state.data?.providers?.RECENT_MESSAGES as {
+    data?: { recentMessages?: unknown };
+  } | undefined)?.data?.recentMessages;
+  if (Array.isArray(recent)) {
+    const reconciled = await reconcileHistoricalProposalTerminals(
+      args.runtime, args.message, events, recent,
+    );
+    events.splice(0, events.length, ...reconciled);
+  }
+
 
   // Advertise recall only for an authorized search child or search-capable umbrella.
   const hasMemoryRecallSurface =
