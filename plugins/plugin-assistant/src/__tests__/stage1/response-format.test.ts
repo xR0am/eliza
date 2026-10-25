@@ -2247,9 +2247,8 @@ describe("Stage 1 response format", () => {
           JSON.stringify({
             response: "I need more context to answer that question.",
           }),
-          acceptedRecoveryReview(
-            "The candidate acknowledges missing information without asserting an effect.",
-          ),
+          // The candidate acknowledges missing information without a claim.
+          acceptedRecoveryReview(),
         ]),
       );
       const result = await runStage1({

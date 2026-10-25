@@ -1390,9 +1390,15 @@ describe("planner-loop death after a completed tool", () => {
           );
           return JSON.stringify({
             grounded: true,
-            completedChangeClaim: false,
-            reason:
-              "The read result and original fictional history support the reply; no edit is claimed.",
+            claims: [
+              {
+                quote: "The page heading is Example Domain.",
+                actor: "assistant",
+                change: false,
+                supported: true,
+                evidence: "The live page heading is Example Domain.",
+              },
+            ],
           });
         }
         rewriteCalls++;
