@@ -2597,7 +2597,9 @@ public class ElizaAgentService extends Service {
             // nothing. Skip the whole augmentation path when the
             // embedding handler is in the disabled state.
             if (!env.containsKey("ELIZA_DOCUMENT_AUGMENTATION_DISABLED")
-                    && !"1".equals(env.get("ELIZA_LOCAL_EMBEDDING_ENABLED"))) {
+                    && !agentEnv.containsKey("ELIZA_DOCUMENT_AUGMENTATION_DISABLED")
+                    && !"1".equals(agentEnv.getOrDefault("ELIZA_LOCAL_EMBEDDING_ENABLED",
+                        env.get("ELIZA_LOCAL_EMBEDDING_ENABLED")))) {
                 agentEnv.put("ELIZA_DOCUMENT_AUGMENTATION_DISABLED", "1");
             }
             // Skip the auto-download of recommended GGUF models that
