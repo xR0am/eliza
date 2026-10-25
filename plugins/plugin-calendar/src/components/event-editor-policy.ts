@@ -1,4 +1,4 @@
-import type {LifeOpsCalendarEvent} from '@elizaos/contracts';
+import type { LifeOpsCalendarEvent } from "@elizaos/contracts";
 
 export type EventEditorReadOnlyReason =
   | "provider_version_missing"

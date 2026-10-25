@@ -303,8 +303,10 @@ async function dispatchCapability(
     const input = {
       content: params.content,
       ...(Object.hasOwn(params, "color") ? { color: params.color } : {}),
-      ...(Object.hasOwn(params,"format")?{format:params.format}:{}),
-      ...(Object.hasOwn(params,"authoredEdit")?{authoredEdit:params.authoredEdit}:{}),
+      ...(Object.hasOwn(params, "format") ? { format: params.format } : {}),
+      ...(Object.hasOwn(params, "authoredEdit")
+        ? { authoredEdit: params.authoredEdit }
+        : {}),
     };
     const {
       value: note,
@@ -341,8 +343,10 @@ async function dispatchCapability(
     const patch: Record<string, unknown> = {
       ...(Object.hasOwn(params, "content") ? { content: params.content } : {}),
       ...(Object.hasOwn(params, "color") ? { color: params.color } : {}),
-      ...(Object.hasOwn(params,"format")?{format:params.format}:{}),
-      ...(Object.hasOwn(params,"authoredEdit")?{authoredEdit:params.authoredEdit}:{}),
+      ...(Object.hasOwn(params, "format") ? { format: params.format } : {}),
+      ...(Object.hasOwn(params, "authoredEdit")
+        ? { authoredEdit: params.authoredEdit }
+        : {}),
     };
     const updated =
       target.selector === "id"
@@ -399,13 +403,29 @@ async function dispatchCapability(
       { note, removedCount: removedIds.length, removedIds },
     );
   }
-  if(capability==="restore-note"){
-    assertOnlyParams(params,["id","expectedRevision"]);
-    const {value:note,snapshot}=await service.restoreNoteWithCommit(params.id,params.expectedRevision);
-    return mutationSuccess(snapshot,capability,{kind:"notes.note",id:note.id},`Restored note ${quoted(note.title)}.`,{note});
+  if (capability === "restore-note") {
+    assertOnlyParams(params, ["id", "expectedRevision"]);
+    const { value: note, snapshot } = await service.restoreNoteWithCommit(
+      params.id,
+      params.expectedRevision,
+    );
+    return mutationSuccess(
+      snapshot,
+      capability,
+      { kind: "notes.note", id: note.id },
+      `Restored note ${quoted(note.title)}.`,
+      { note },
+    );
   }
-  if(capability==="get-notes-trash"){
-    assertOnlyParams(params,[]);const state=service.snapshot();return {success:true,text:"Notes Trash read.",state,data:{trash:state.trash??[]}};
+  if (capability === "get-notes-trash") {
+    assertOnlyParams(params, []);
+    const state = service.snapshot();
+    return {
+      success: true,
+      text: "Notes Trash read.",
+      state,
+      data: { trash: state.trash ?? [] },
+    };
   }
   if (capability === "clear-notes") {
     // The synchronous check is a fast path against the current snapshot; the

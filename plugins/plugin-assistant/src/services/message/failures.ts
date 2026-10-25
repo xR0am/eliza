@@ -9,9 +9,9 @@ import type {
 } from "@elizaos/core";
 import {
   addHeader,
-  ElizaError,
   buildFailureReplyPrompt,
   conversationMessagesHeader,
+  ElizaError,
   getRecentMessagesData,
   INSUFFICIENT_CREDITS_REPLY,
   isAuthError,
@@ -227,7 +227,8 @@ export class MessageFailures {
   ): Promise<StrategyResult> {
     // The Stage-1 guard rejects before fields/tools. Do not ask a failure-reply
     // model to improvise a proposal or infer pending approval from old dialogue.
-    const routingConflict = initialError instanceof ElizaError &&
+    const routingConflict =
+      initialError instanceof ElizaError &&
       initialError.code === "STAGE1_ROUTING_CONFLICT";
     // Short-circuit when no LLM provider is configured at all. The fallback
     // model loop below would just throw `NoModelProviderConfiguredError` for
@@ -251,7 +252,13 @@ export class MessageFailures {
     // call cannot resume it and may exceed the very token budget that ended
     // the turn. Settled effects are handled by the caller before this path.
     const attempt: FailureReplyAttempt =
-      (routingConflict ? {kind: "text", value: "I couldn't prepare that request correctly. No action was started."} as const : undefined) ??
+      (routingConflict
+        ? ({
+            kind: "text",
+            value:
+              "I couldn't prepare that request correctly. No action was started.",
+          } as const)
+        : undefined) ??
       (cause === "planner_exhaustion"
         ? { kind: "text", value: "" }
         : undefined) ??
@@ -348,8 +355,9 @@ export class MessageFailures {
     // auth, and credit failures remain stable until their cause changes;
     // throttling, planner exhaustion, and generic infrastructure failures can
     // be retried without presenting a durable success record.
-    const failureKind = routingConflict ? "handler_error" :
-      attempt.kind === "creditsExhausted"
+    const failureKind = routingConflict
+      ? "handler_error"
+      : attempt.kind === "creditsExhausted"
         ? "insufficient_credits"
         : attempt.kind === "rateLimited"
           ? "rate_limited"
@@ -388,7 +396,7 @@ export class MessageFailures {
       mode: "simple",
       terminalFailure: {
         kind: failureKind,
-        ...(routingConflict ? {code: "STAGE1_ROUTING_CONFLICT"} : {}),
+        ...(routingConflict ? { code: "STAGE1_ROUTING_CONFLICT" } : {}),
         transient: responseContent.transient === true,
         message: replyText,
         ...((attempt.kind === "rateLimited" ||

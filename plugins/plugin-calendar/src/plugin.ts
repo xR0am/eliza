@@ -13,12 +13,27 @@ import {
   logger,
 } from "@elizaos/core";
 import type { HttpPlugin as Plugin } from "@elizaos/host/protocol";
-import { calendarOperationActions } from "./calendar-read-parameters.js";
+import {
+  registerLocalCalendarCreatePlanner,
+  registerLocalCalendarTimeUpdateRouting,
+  registerLocalCalendarUpdatePlanner,
+  requestLocalCalendarAgenda,
+  requestLocalCalendarAvailability,
+  requestLocalCalendarCreate,
+  requestLocalCalendarUpdate,
+} from "@elizaos/plugin-assistant";
 import { calendarAction } from "./actions/calendar.js";
-import { registerCalendarActionHostAdapter, inferSelectedCalendarUpdate,inferNativeCalendarCreate } from "./actions/calendar-handler.js";
-import { requestLocalCalendarAgenda,requestLocalCalendarAvailability,requestLocalCalendarUpdate,requestLocalCalendarCreate,registerLocalCalendarTimeUpdateRouting,registerLocalCalendarUpdatePlanner,registerLocalCalendarCreatePlanner } from "@elizaos/plugin-assistant";
+import {
+  inferNativeCalendarCreate,
+  inferSelectedCalendarUpdate,
+  registerCalendarActionHostAdapter,
+} from "./actions/calendar-handler.js";
 import { calendarSourcesAction } from "./actions/calendar-sources.js";
-import { conflictDetectAction,registerConflictDetectHostAdapter } from "./actions/conflict-detect.js";
+import {
+  conflictDetectAction,
+  registerConflictDetectHostAdapter,
+} from "./actions/conflict-detect.js";
+import { calendarOperationActions } from "./calendar-read-parameters.js";
 import { createMicrosoftConnectorAccountProvider } from "./microsoft/connector-account-provider.js";
 import { calendarSourcesProvider } from "./providers/calendar-sources.js";
 import {
@@ -73,10 +88,16 @@ export const calendarPlugin: Plugin = {
       requestLocalUpdate: requestLocalCalendarUpdate,
       requestLocalCreate: requestLocalCalendarCreate,
     });
-    registerConflictDetectHostAdapter(runtime,{requestLocalAvailability:requestLocalCalendarAvailability});
+    registerConflictDetectHostAdapter(runtime, {
+      requestLocalAvailability: requestLocalCalendarAvailability,
+    });
     registerLocalCalendarTimeUpdateRouting(runtime);
-    registerLocalCalendarUpdatePlanner(runtime,args=>inferSelectedCalendarUpdate({runtime,...args}));
-    registerLocalCalendarCreatePlanner(runtime,args=>inferNativeCalendarCreate({runtime,...args}));
+    registerLocalCalendarUpdatePlanner(runtime, (args) =>
+      inferSelectedCalendarUpdate({ runtime, ...args }),
+    );
+    registerLocalCalendarCreatePlanner(runtime, (args) =>
+      inferNativeCalendarCreate({ runtime, ...args }),
+    );
     const manager = getConnectorAccountManager(runtime);
     manager.registerProvider(createMicrosoftConnectorAccountProvider(runtime));
     logger.info(

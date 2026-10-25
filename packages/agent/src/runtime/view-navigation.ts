@@ -287,9 +287,10 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
       plan.contexts.every((context) => context === "general") &&
       // Empty hints are not positive evidence of a navigation-only request.
       // Without an explicit navigation candidate, preserve the planner path.
-      [...(plan.candidateActions ?? []), ...(plan.parentActionHints ?? [])].some(
-        (name) => name === "VIEWS" || name === "VIEWS_SHOW",
-      ) &&
+      [
+        ...(plan.candidateActions ?? []),
+        ...(plan.parentActionHints ?? []),
+      ].some((name) => name === "VIEWS" || name === "VIEWS_SHOW") &&
       (plan.candidateActions ?? []).every(
         (name) => name === "VIEWS" || name === "VIEWS_SHOW",
       ) &&

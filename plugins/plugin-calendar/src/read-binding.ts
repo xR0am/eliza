@@ -132,7 +132,9 @@ export const calendarReadBindingEvaluator: ResponseHandlerEvaluator = {
             clearCandidateActions: true,
             addCandidateActions: [
               ...otherCandidates,
-              ...bindings.map((binding) => CALENDAR_READ_ACTIONS[binding.operation]),
+              ...bindings.map(
+                (binding) => CALENDAR_READ_ACTIONS[binding.operation],
+              ),
             ],
           }
         : {}),

@@ -119,11 +119,13 @@ export interface CalendarClientMethods {
 // the ui client's `requestMeetingBot` / `listMeetings` directly.
 
 /** Host-owned authenticated fetch. No UI singleton, constructor, token or repository. */
-export interface CalendarApiHost {fetch<T>(path:string,init?:RequestInit):Promise<T>;}
-export type CalendarApi=CalendarApiHost & CalendarClientMethods;
+export interface CalendarApiHost {
+  fetch<T>(path: string, init?: RequestInit): Promise<T>;
+}
+export type CalendarApi = CalendarApiHost & CalendarClientMethods;
 /** One implementation shared by the ElizaClient installer and renderer-only hosts. */
-export function installCalendarApi(host:CalendarApiHost):CalendarApi{
- const calendarClientPrototype=host as CalendarApi;
+export function installCalendarApi(host: CalendarApiHost): CalendarApi {
+  const calendarClientPrototype = host as CalendarApi;
   calendarClientPrototype.getLinkedCalendarControl = async function (
     this: CalendarApiHost,
   ) {
@@ -403,6 +405,10 @@ export function installCalendarApi(host:CalendarApiHost):CalendarApi{
     );
   };
 
- return calendarClientPrototype;
+  return calendarClientPrototype;
 }
-export function createCalendarApi(fetch:CalendarApiHost['fetch']):CalendarApi{return installCalendarApi({fetch});}
+export function createCalendarApi(
+  fetch: CalendarApiHost["fetch"],
+): CalendarApi {
+  return installCalendarApi({ fetch });
+}

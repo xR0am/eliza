@@ -806,7 +806,16 @@ export function preferredOperationNames(
     list: ["list", "enumerate", "count"],
     search: ["search", "find", "lookup"],
     create: ["create", "add", "write", "save"],
-    update: ["update", "edit", "change", "modify", "replace", "rename", "append", "prepend"],
+    update: [
+      "update",
+      "edit",
+      "change",
+      "modify",
+      "replace",
+      "rename",
+      "append",
+      "prepend",
+    ],
     rename: ["rename"],
     delete: ["delete", "remove", "erase"],
     get: ["get", "read", "retrieve"],
@@ -833,7 +842,13 @@ export function preferredOperationNames(
     wanted.add(operation);
     // Add/write/save can change an existing record's fields as well as create
     // a record. Keep both discoverable; only the planner interprets the target.
-    if(operation==='create'&&['add','write','save'].some(term=>words.has(term))){wanted.add('update');wanted.add('patch');}
+    if (
+      operation === "create" &&
+      ["add", "write", "save"].some((term) => words.has(term))
+    ) {
+      wanted.add("update");
+      wanted.add("patch");
+    }
     if (operation === "search") wanted.add("list");
     if (operation === "update") wanted.add("patch");
     if (operation === "get") {

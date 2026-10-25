@@ -3080,7 +3080,10 @@ export async function handleConversationRoutes(
     let authenticated = false;
     const authenticatedRuntime = ctx.state.runtime;
     const authenticatedCaller = resolveConversationCaller(
-      ctx.req, ctx.state, resolveTrustedApiPrincipal(ctx.req, ctx.callerAuthorization), authenticatedRuntime,
+      ctx.req,
+      ctx.state,
+      resolveTrustedApiPrincipal(ctx.req, ctx.callerAuthorization),
+      authenticatedRuntime,
     );
     try {
       return await withDeviceActionTurn(

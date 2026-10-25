@@ -1,5 +1,5 @@
-import {authoredNoteText} from "./note-authored.js";
-import {applyNotePatch} from "./note-patch.js";
+import { authoredNoteText } from "./note-authored.js";
+import { applyNotePatch } from "./note-patch.js";
 import { reconstructNoteContent } from "./types.js";
 /**
  * Server-owned Notes domain service. It is the only layer allowed to mutate
@@ -11,7 +11,7 @@ import { reconstructNoteContent } from "./types.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { CalendarNoteSourceReference } from "@elizaos/contracts";
 import { ElizaError, type IAgentRuntime, logger, Service } from "@elizaos/core";
-import { NotesStore, type EncryptedNotesDocumentPort } from "./store.js";
+import { type EncryptedNotesDocumentPort, NotesStore } from "./store.js";
 import type {
   NotesSnapshot,
   NotesStoreStatus,
@@ -130,7 +130,11 @@ function lookupError(
 
 /** Identity key for copies with exactly the same user-visible content. */
 function noteContentKey(note: StickyNote): string {
-  return JSON.stringify(note.format?[note.id,note.title,note.body,note.color,note.format]:[note.title,note.body,note.color]);
+  return JSON.stringify(
+    note.format
+      ? [note.id, note.title, note.body, note.color, note.format]
+      : [note.title, note.body, note.color],
+  );
 }
 
 function distinctNotes(notes: readonly StickyNote[]): StickyNote[] {
@@ -199,7 +203,6 @@ function assertEditRevision(
       },
     );
 }
-
 
 export class NotesService extends Service {
   static override readonly serviceType = NOTES_SERVICE_TYPE;
@@ -384,13 +387,15 @@ export class NotesService extends Service {
         title: input.title,
         body: input.body,
         color: input.color,
-        ...(input.format?{format:structuredClone(input.format)}:{}),
+        ...(input.format ? { format: structuredClone(input.format) } : {}),
         createdAt: now,
         updatedAt: now,
       });
-      const existing = input.format?undefined:draft.notes.find(
-        (note) => !note.format&&noteContentKey(note) === requestedKey,
-      );
+      const existing = input.format
+        ? undefined
+        : draft.notes.find(
+            (note) => !note.format && noteContentKey(note) === requestedKey,
+          );
       if (existing) return { note: existing, replayed: true };
       if (draft.notes.some((note) => note.id === id)) {
         throw new ElizaError(`Notes generated duplicate note id "${id}".`, {
@@ -404,7 +409,7 @@ export class NotesService extends Service {
         title: input.title,
         body: input.body,
         color: input.color,
-        ...(input.format?{format:structuredClone(input.format)}:{}),
+        ...(input.format ? { format: structuredClone(input.format) } : {}),
         createdAt: now,
         updatedAt: now,
       };
@@ -562,8 +567,16 @@ export class NotesService extends Service {
       removedIds = draft.notes
         .filter((note) => noteContentKey(note) === key)
         .map((note) => note.id);
-      const trashed=draft.notes.filter(note=>removedIds.includes(note.id));
-      draft.trash=[...(draft.trash??[]),...trashed.map(note=>({note:structuredClone(note),deletedAt:this.now().toISOString()}))];
+      const trashed = draft.notes.filter((note) =>
+        removedIds.includes(note.id),
+      );
+      draft.trash = [
+        ...(draft.trash ?? []),
+        ...trashed.map((note) => ({
+          note: structuredClone(note),
+          deletedAt: this.now().toISOString(),
+        })),
+      ];
       draft.notes = draft.notes.filter((note) => !removedIds.includes(note.id));
       return existing;
     });
@@ -579,14 +592,26 @@ export class NotesService extends Service {
   }
 
   /** Restores one stable ID without overwriting an active note; a stale view cannot restore. */
-  async restoreNoteWithCommit(idValue:unknown,expectedRevision:unknown):Promise<{value:StickyNote;snapshot:NotesSnapshot}>{
-   const id=parseEntityId(idValue);const revision=parseNoteEditRevision(expectedRevision,true);
-   const transaction=await this.store.transact(draft=>{
-    assertEditRevision(draft.revision,revision);
-    const index=(draft.trash??[]).findIndex(entry=>entry.note.id===id);const entry=draft.trash?.[index];
-    if(!entry||draft.notes.some(note=>note.id===id))throw notFound(id);
-    draft.notes.unshift(structuredClone(entry.note));draft.trash!.splice(index,1);return entry.note;
-   });await this.emitStateUpdated(transaction.snapshot,"note:restored");return transaction;
+  async restoreNoteWithCommit(
+    idValue: unknown,
+    expectedRevision: unknown,
+  ): Promise<{ value: StickyNote; snapshot: NotesSnapshot }> {
+    const id = parseEntityId(idValue);
+    const revision = parseNoteEditRevision(expectedRevision, true);
+    const transaction = await this.store.transact((draft) => {
+      assertEditRevision(draft.revision, revision);
+      const index = (draft.trash ?? []).findIndex(
+        (entry) => entry.note.id === id,
+      );
+      const entry = draft.trash?.[index];
+      if (!entry || draft.notes.some((note) => note.id === id))
+        throw notFound(id);
+      draft.notes.unshift(structuredClone(entry.note));
+      draft.trash!.splice(index, 1);
+      return entry.note;
+    });
+    await this.emitStateUpdated(transaction.snapshot, "note:restored");
+    return transaction;
   }
 
   async deleteNote(idValue: unknown): Promise<StickyNote> {
@@ -632,7 +657,15 @@ export class NotesService extends Service {
       removedIds = draft.notes
         .filter((note) => noteContentKey(note) === key)
         .map((note) => note.id);
-      draft.trash=[...(draft.trash??[]),...draft.notes.filter(note=>removedIds.includes(note.id)).map(note=>({note:structuredClone(note),deletedAt:this.now().toISOString()}))];
+      draft.trash = [
+        ...(draft.trash ?? []),
+        ...draft.notes
+          .filter((note) => removedIds.includes(note.id))
+          .map((note) => ({
+            note: structuredClone(note),
+            deletedAt: this.now().toISOString(),
+          })),
+      ];
       draft.notes = kept;
       return existing;
     });
@@ -678,7 +711,13 @@ export class NotesService extends Service {
         );
       }
       const count = draft.notes.length;
-      draft.trash=[...(draft.trash??[]),...draft.notes.map(note=>({note:structuredClone(note),deletedAt:this.now().toISOString()}))];
+      draft.trash = [
+        ...(draft.trash ?? []),
+        ...draft.notes.map((note) => ({
+          note: structuredClone(note),
+          deletedAt: this.now().toISOString(),
+        })),
+      ];
       draft.notes = [];
       return count;
     });

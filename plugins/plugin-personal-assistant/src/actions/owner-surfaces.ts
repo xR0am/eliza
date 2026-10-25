@@ -306,7 +306,8 @@ export const ownerRemindersAction: Action = {
     defaultKind: "definition",
   }),
   name: "OWNER_REMINDERS",
-  routingHint: "saved owner reminders/deadlines: review reads by title or lists; update edits existing. Search under tasks or calendar. TODO is a separate checklist, not this reminder store.",
+  routingHint:
+    "saved owner reminders/deadlines: review reads by title or lists; update edits existing. Search under tasks or calendar. TODO is a separate checklist, not this reminder store.",
   tags: [
     ...OWNER_OPERATION_TAGS,
     "resource:reminders-records",

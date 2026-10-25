@@ -38,8 +38,12 @@ const UNAVAILABLE: ProviderResult = {
 /** Bind each exact ID to its complete text without a positional lookup. */
 function noteLine(note: StickyNote): string {
   const full = reconstructNoteContent(note);
-  const authored=projectNoteForModel(note).authored;
-  return JSON.stringify([note.id,toWellFormedUnicode(full),...(authored?[authored]:[])]);
+  const authored = projectNoteForModel(note).authored;
+  return JSON.stringify([
+    note.id,
+    toWellFormedUnicode(full),
+    ...(authored ? [authored] : []),
+  ]);
 }
 
 export function renderSavedNotesText(
@@ -106,7 +110,10 @@ export const notesProvider: Provider = {
           ),
         ].join("\n"),
         values: { savedNotesAvailable: true, savedNoteCount: notes.length },
-        data: { savedNotes: notes.map(projectNoteForModel), notesRevision: snapshot.revision },
+        data: {
+          savedNotes: notes.map(projectNoteForModel),
+          notesRevision: snapshot.revision,
+        },
       };
     } catch (error) {
       // error-policy:J4 user-facing degrade — provider composition is a
@@ -144,7 +151,10 @@ export const namedNotesProvider: Provider = {
           ...notes.map((note) => `- ${noteLine(note)}`),
         ].join("\n"),
         values: {},
-        data: { namedNotes: notes.map(projectNoteForModel), notesRevision: snapshot.revision },
+        data: {
+          namedNotes: notes.map(projectNoteForModel),
+          notesRevision: snapshot.revision,
+        },
       };
     } catch (error) {
       // error-policy:J4 source failure must not license historical body claims.

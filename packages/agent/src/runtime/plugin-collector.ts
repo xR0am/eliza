@@ -996,7 +996,8 @@ export function collectPluginNames(
   }
   // Full PA already owns this canonical surface. Never install a second
   // promotion/handler set alongside it; mobile/store uses the selective owner.
-  if(pluginsToLoad.has("@elizaos/plugin-personal-assistant"))pluginsToLoad.delete("@elizaos/plugin-personal-assistant/reminders-plugin");
+  if (pluginsToLoad.has("@elizaos/plugin-personal-assistant"))
+    pluginsToLoad.delete("@elizaos/plugin-personal-assistant/reminders-plugin");
   return pluginsToLoad;
 }
 

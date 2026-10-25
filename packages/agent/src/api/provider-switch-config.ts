@@ -852,9 +852,10 @@ export async function applyFirstRunConnectionConfig(
   // Embeddings follow the runtime: a cloud agent uses cloud embeddings, a
   // local agent (including local+cloud-inference hybrid) keeps embeddings
   // local so vectors never depend on a network round-trip.
-  const defaultLocalEmbeddingRoute = !hadCanonicalRouting && existingDeploymentTarget?.runtime !== "cloud"
-    ? { backend: "eliza-local-inference", transport: "direct" as const }
-    : undefined;
+  const defaultLocalEmbeddingRoute =
+    !hadCanonicalRouting && existingDeploymentTarget?.runtime !== "cloud"
+      ? { backend: "eliza-local-inference", transport: "direct" as const }
+      : undefined;
   const excludeServices =
     existingDeploymentTarget?.runtime === "cloud"
       ? undefined
@@ -908,7 +909,8 @@ export async function applyFirstRunConnectionConfig(
       ...(excludeServices ? { excludeServices } : {}),
     });
 
-    if (defaultLocalEmbeddingRoute) serviceRouting.embeddings = defaultLocalEmbeddingRoute;
+    if (defaultLocalEmbeddingRoute)
+      serviceRouting.embeddings = defaultLocalEmbeddingRoute;
 
     applyCanonicalFirstRunConfig(config, {
       deploymentTarget: existingDeploymentTarget,
@@ -1014,7 +1016,9 @@ export async function applyFirstRunConnectionConfig(
       })
     : {
         llmText: directLlmRoute,
-        ...(defaultLocalEmbeddingRoute ? { embeddings: defaultLocalEmbeddingRoute } : {}),
+        ...(defaultLocalEmbeddingRoute
+          ? { embeddings: defaultLocalEmbeddingRoute }
+          : {}),
       };
 
   if (requiresAdditionalRuntimeProvider(normalizedConnection.provider)) {

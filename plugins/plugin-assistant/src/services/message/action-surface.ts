@@ -275,7 +275,7 @@ export function retrieveContextualPlannerActions(args: {
   actions: readonly Action[];
   query: string;
   /** Current typed selection contributes affinity only; all actions already pass admission. */
-  message?:Memory;
+  message?: Memory;
   /** Model-selected outcomes rank operations; the full request still ranks domains. */
   intents?: readonly string[];
   contexts?: readonly string[];
@@ -303,7 +303,14 @@ export function retrieveContextualPlannerActions(args: {
         messageText: args.query,
         intents: args.intents,
         selectedContexts: args.contexts,
-        parentActionHints:args.message&&!args.selectedActions?.length?plannerSelectedRecordActionHints(args.message,args.actions,args.intents):undefined,
+        parentActionHints:
+          args.message && !args.selectedActions?.length
+            ? plannerSelectedRecordActionHints(
+                args.message,
+                args.actions,
+                args.intents,
+              )
+            : undefined,
       })
     : undefined;
   const actionsByName = new Map(
@@ -327,7 +334,7 @@ export function retrieveContextualPlannerActions(args: {
     ...declaredDomains,
     ...pendingActionContexts(
       args.actions,
-      [args.query,...(args.intents ?? [])],
+      [args.query, ...(args.intents ?? [])],
       args.contextAliases,
       args.selectedActions,
     ),
@@ -398,10 +405,20 @@ export function retrieveContextualPlannerActions(args: {
         if (actionsByName.has(name)) selectedOperationNames.add(name);
       }
     }
-    const requestedOperationsCovered = (domain:string):boolean => {
-      const strongest=Math.max(0,...args.actions.map(action=>plannerDomainOwnership(action,domain)));
-      const requested=preferredOperationNames(positiveIntentText(args.query),args.actions.filter(action=>plannerDomainOwnership(action,domain)===strongest).map(action=>action.name));
-      return [...requested].every(name=>selectedOperationNames.has(name));
+    const requestedOperationsCovered = (domain: string): boolean => {
+      const strongest = Math.max(
+        0,
+        ...args.actions.map((action) => plannerDomainOwnership(action, domain)),
+      );
+      const requested = preferredOperationNames(
+        positiveIntentText(args.query),
+        args.actions
+          .filter(
+            (action) => plannerDomainOwnership(action, domain) === strongest,
+          )
+          .map((action) => action.name),
+      );
+      return [...requested].every((name) => selectedOperationNames.has(name));
     };
     // Matching both the current request and its sole intent may narrow initial
     // preload for that owner; this is not completion evidence.
@@ -473,13 +490,12 @@ export function retrieveContextualPlannerActions(args: {
           // operation check used for lexical claims above; payload nouns alone
           // do not add another domain. Explicit contexts remain authoritative.
           if (
-            requestedOperationsCovered(domain) && (
-              [domain, ...(args.contextAliases?.(domain) ?? [])].some((context) =>
-                covered.has(normalizeContextId(context)),
-              ) ||
+            requestedOperationsCovered(domain) &&
+            ([domain, ...(args.contextAliases?.(domain) ?? [])].some(
+              (context) => covered.has(normalizeContextId(context)),
+            ) ||
               (!declaredDomains.has(domain) &&
-                !hasDomainOperation(args.actions, intents[0], domain))
-            )
+                !hasDomainOperation(args.actions, intents[0], domain)))
           )
             domains.delete(domain);
         }
@@ -519,8 +535,10 @@ export function retrieveContextualPlannerActions(args: {
   const selected = new Set<Action>();
   // Model interpretation enriches the original request; it cannot erase an
   // explicit operation when a prerequisite read was selected as a hint.
-  const operationQuery = [args.query,...(args.intents ?? [])]
-    .map(positiveIntentText).filter(Boolean).join("\n");
+  const operationQuery = [args.query, ...(args.intents ?? [])]
+    .map(positiveIntentText)
+    .filter(Boolean)
+    .join("\n");
   for (const domain of searchDomains) {
     const candidates =
       domain === undefined
@@ -661,8 +679,9 @@ export function retrieveContextualPlannerActions(args: {
     }
     if (operationNames.size > 0) {
       const wanted = new Set(operationNames);
-      const clauses = [args.query,...(args.intents ?? [])]
-        .map(positiveIntentText).filter(Boolean);
+      const clauses = [args.query, ...(args.intents ?? [])]
+        .map(positiveIntentText)
+        .filter(Boolean);
       for (const parent of owners) {
         const childNames = new Set(
           parent.subActions?.map((child) =>
@@ -888,13 +907,20 @@ export async function collectV5PlannerCandidateActions(args: {
   const declaredAdmissionDomains = new Set(
     (args.selectedContexts ?? []).map(normalizeContextId),
   );
-  const discoveryContexts=args.candidateActions?.length?args.selectedContexts:plannerDiscoveryContexts(args.message,args.selectedContexts);
+  const discoveryContexts = args.candidateActions?.length
+    ? args.selectedContexts
+    : plannerDiscoveryContexts(args.message, args.selectedContexts);
   const pendingDomains = new Set(
-    [...(discoveryContexts??[]).filter(context=>context!=='general'&&context!=='simple'),...pendingActionContexts(
-      allRuntimeActions,
-      args.intents,
-      (context) => args.runtime.contexts?.get(context)?.aliases,
-    )].filter((context) => !declaredAdmissionDomains.has(context)),
+    [
+      ...(discoveryContexts ?? []).filter(
+        (context) => context !== "general" && context !== "simple",
+      ),
+      ...pendingActionContexts(
+        allRuntimeActions,
+        args.intents,
+        (context) => args.runtime.contexts?.get(context)?.aliases,
+      ),
+    ].filter((context) => !declaredAdmissionDomains.has(context)),
   );
   // Bound additional admission checks before validate()/connector policy can
   // perform I/O. Unknown parent-only families remain explicit discovery work.
@@ -909,7 +935,7 @@ export async function collectV5PlannerCandidateActions(args: {
               ),
           ),
           query: (args.intents ?? []).join("\n"),
-          message:args.message,
+          message: args.message,
           intents: args.intents,
           contexts: discoveryContexts,
           contextAliases: (context) =>
@@ -1607,7 +1633,16 @@ export function buildV5PlannerActionSurface(params: {
   const retrievalMessageText =
     typeof messageText === "string" ? messageText : "";
   const retrievalStartedAt = performance.now();
-  const retrievalParentActionHints=candidateActions.length?parentActionHints:[...parentActionHints,...plannerSelectedRecordActionHints(params.message,params.actions,params.messageHandler.plan.intents)];
+  const retrievalParentActionHints = candidateActions.length
+    ? parentActionHints
+    : [
+        ...parentActionHints,
+        ...plannerSelectedRecordActionHints(
+          params.message,
+          params.actions,
+          params.messageHandler.plan.intents,
+        ),
+      ];
   const retrieval = retrieveActions({
     catalog,
     messageText: retrievalMessageText,
@@ -1616,9 +1651,11 @@ export function buildV5PlannerActionSurface(params: {
       params.state,
       params.message,
     ),
-    selectedContexts: candidateActions.length?params.selectedContexts:plannerDiscoveryContexts(params.message,params.selectedContexts),
+    selectedContexts: candidateActions.length
+      ? params.selectedContexts
+      : plannerDiscoveryContexts(params.message, params.selectedContexts),
     candidateActions,
-    parentActionHints:retrievalParentActionHints,
+    parentActionHints: retrievalParentActionHints,
     measurementMode,
   });
   recordInferenceSpan(
