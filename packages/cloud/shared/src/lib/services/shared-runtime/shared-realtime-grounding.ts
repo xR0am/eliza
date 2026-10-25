@@ -18,7 +18,10 @@ import {
   parseCurrentWeatherSourceDiagnostics,
   parseExplicitUsWeatherQuery,
 } from "./shared-current-weather";
-import { sharedSelectedGroundingMetadata } from "./shared-runtime-history-policy";
+import {
+  isSharedPublicGroundingFollowUp,
+  sharedSelectedGroundingMetadata,
+} from "./shared-runtime-history-policy";
 
 export type SharedRealtimeDomain = "markets" | "weather" | "news" | "sports" | "mutable_fact";
 
@@ -399,7 +402,8 @@ export function hasSharedRealtimeIntent(
   return Boolean(
     (isSharedPublicSearchSafe(normalized) && sharedPublicGoogleProductQuery(normalized)) ||
       classifyPublicIntent(normalized) ||
-      sharedSelectedGroundingMetadata(history, normalized),
+      (isSharedPublicGroundingFollowUp(normalized) &&
+        sharedSelectedGroundingMetadata(history, normalized)),
   );
 }
 
@@ -418,6 +422,7 @@ export function resolveSharedRealtimeRequirement(
     const query = publicProviderQuery(direct, normalized);
     return query ? { domain: direct, query, correction } : undefined;
   }
+  if (!isSharedPublicGroundingFollowUp(normalized)) return undefined;
   const selected = sharedSelectedGroundingMetadata(history, normalized);
   const priorQuery = selected?.query.normalize("NFKC").trim();
   const priorDomain = priorQuery ? classifyPublicStandalone(priorQuery) : undefined;

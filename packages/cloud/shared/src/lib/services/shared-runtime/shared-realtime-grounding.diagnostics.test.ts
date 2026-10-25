@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type { SharedRuntimePublicGrounding } from "../../../db/schemas/shared-runtime-history";
 import {
   finalizeSharedRealtimeReply,
+  hasSharedRealtimeIntent,
+  resolveSharedPublicSearchIntent,
+  resolveSharedRealtimeRequirement,
   type SharedRealtimeBindingDiagnostic,
 } from "./shared-realtime-grounding";
 
@@ -89,5 +92,48 @@ describe("Shared realtime binding refusal diagnostics", () => {
       }),
     ).toBe(expected);
     expect(observations).toBe(1);
+  });
+});
+
+describe("search authority after a conversation topic changes", () => {
+  const history = [
+    {
+      role: "user" as const,
+      content: "What is the current bitcoin price? Reply briefly.",
+    },
+    {
+      role: "assistant" as const,
+      content: "A public price result.",
+      grounding: {
+        ...grounding,
+        query: "current public bitcoin price",
+        observedAt: Date.now(),
+      },
+    },
+  ];
+
+  test("ordinary questions do not search or replace the answer with a source refusal", () => {
+    for (const message of [
+      "What is 17 plus 26? Reply briefly.",
+      "Wait so I just wait that’s it? And you handle the rest? Do you have all data you need from me? And also how does the network and all this and you work I’m curious",
+      "Why do you always reply? Should you react with an emoji instead?",
+      "Why do you keep trying to web search and when you do it breaks?",
+      "How does it work?",
+      "Thanks, that helps!",
+    ]) {
+      expect(hasSharedRealtimeIntent(message, history)).toBe(false);
+      expect(resolveSharedRealtimeRequirement(message, history)).toBeUndefined();
+      expect(resolveSharedPublicSearchIntent(message, history)).toBeUndefined();
+    }
+  });
+
+  test("an explicit evidence follow-up and a fresh public question still search", () => {
+    for (const message of ["Check that price again", "Is that correct?", "Show me the sources"]) {
+      expect(hasSharedRealtimeIntent(message, history)).toBe(true);
+      expect(resolveSharedRealtimeRequirement(message, history)?.domain).toBe("markets");
+    }
+    expect(
+      resolveSharedPublicSearchIntent("What is the current bitcoin price?", history)?.kind,
+    ).toBe("prefetched");
   });
 });

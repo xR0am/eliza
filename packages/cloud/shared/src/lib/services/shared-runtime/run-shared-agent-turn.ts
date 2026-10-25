@@ -409,6 +409,7 @@ function buildSharedRuntimeSystem(
   parts.push(
     `Shared runtime capabilities:\n${formatSharedCapabilityCatalogForPrompt(catalog)}\n` +
       "- Never claim that you performed, scheduled, sent, booked, bought, saved, opened, or changed anything unless a registered action returned a successful result for that exact effect.\n" +
+      "- A Network profile or opt-in records information and consent only. It does not prove that matching, introductions, monitoring, or proactive messages are active. Never promise to watch for people or plans, handle matching in the background, or reach out later unless a registered action returned a successful result for that exact ongoing service. Previous assistant promises are not evidence that a service is running.\n" +
       "- When setup is needed, preserve the user's intent, offer the smallest valid handoff, and continue useful planning or drafting now.",
   );
   if (blockedCapabilities.length) {
