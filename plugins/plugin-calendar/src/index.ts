@@ -3,6 +3,7 @@
 export {
   buildWideLookupRange,
   resolveCalendarMutationCandidates,
+  registerCalendarActionHostAdapter,
 } from "./actions/calendar-handler.js";
 export {
   type CalendarSourcesActionDeps,
