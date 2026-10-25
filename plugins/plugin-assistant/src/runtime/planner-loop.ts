@@ -659,6 +659,7 @@ async function runPlannerLoopIterations(
   }
   const failures: FailureLike[] = [];
   let terminalOnlyContinuations = 0;
+  let silenceReviewed = false;
   let consecutiveCodingTerminalContinuations = 0;
   let codingVerificationDeferrals = 0;
   let lastCodingVerificationProgressCount = -1;
@@ -2306,6 +2307,29 @@ async function runPlannerLoopIterations(
           if (settled) return settled;
           continue;
         }
+        // The message service delivers a reply on an owed turn regardless,
+        // so a planner that chose silence before doing anything reconsiders
+        // once with the tools and context it already has.
+        const hasReplyCall = plannerOutput.toolCalls.some(
+          (toolCall) => toolCall.name.toUpperCase() === "REPLY",
+        );
+        if (
+          params.replyOwed &&
+          !hasReplyCall &&
+          !silenceReviewed &&
+          !hasExecutedNonTerminalTool(trajectory)
+        ) {
+          silenceReviewed = true;
+          appendPlannerModelFeedbackEvent(trajectory, {
+            id: `silent-terminal-review:${iteration}`,
+            type: "instruction",
+            source: "planner-loop",
+            createdAt: Date.now(),
+            content:
+              "Stage 1 decided to respond to this message, so a reply is owed; ending with IGNORE/STOP delivers nothing. Answer with REPLY (the answer, or an honest statement of what you cannot do), or call a tool the request needs. Nothing has been delivered or executed.",
+          });
+          continue;
+        }
         if (codingDrainQueue) {
           const verificationTerminal =
             await handleCodingVerificationTerminal(iteration);
@@ -2320,9 +2344,6 @@ async function runPlannerLoopIterations(
         // accompanying the call is scratch reasoning, not a user reply
         // ("We should wait for the sub-agent result before replying."
         // reached Discord verbatim, live 2026-06-12).
-        const hasReplyCall = plannerOutput.toolCalls.some(
-          (toolCall) => toolCall.name.toUpperCase() === "REPLY",
-        );
         const finalMessage = hasReplyCall
           ? terminalMessageFromToolCalls(
               plannerOutput.toolCalls,

@@ -440,6 +440,13 @@ export interface PlannerLoopParams {
 	 */
 	requireNonTerminalToolCall?: boolean;
 	/**
+	 * The caller delivers a reply even when the planner ends silent (for the
+	 * message service: a non-ambient RESPOND with nothing sent yet). A
+	 * STOP/IGNORE-only terminal before any non-terminal tool runs is then
+	 * returned to the planner once for review.
+	 */
+	replyOwed?: boolean;
+	/**
 	 * The Stage-1 router's own replyText for this turn, when it produced one.
 	 * When the required-tool gate exhausts its miss budget without a captured
 	 * refusal, the loop finishes with this text (shape-guarded) instead of
