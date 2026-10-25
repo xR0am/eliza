@@ -25,7 +25,7 @@ import {
   validateNamedTargetResult,
   validateNotesSearchOperation,
   validateNotesSearchResult,
-} from "../../../../../packages/contracts/src/device-reviews.ts";
+} from "@elizaos/contracts";
 import {
   type CalendarOperation,
   type CalendarRecordResult,

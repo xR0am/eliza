@@ -1,7 +1,7 @@
 import {
   CALENDAR_NAMED_READ_CAPABILITY,
   type NamedTargetOperation,
-} from "../../../../packages/contracts/src/device-reviews.ts";
+} from "@elizaos/contracts";
 import {
   CALENDAR_CAPABILITY,
   type CalendarOperation,
