@@ -518,9 +518,9 @@ export async function ensureLifeOpsGooglePluginRegistered(
  * to) is available. The calendar plugin is a hard LifeOps dependency, so a
  * static import is sufficient.
  *
- * PA composes its own CALENDAR and CONFLICT_DETECT actions with LifeOps deps
- * (travel buffers, approval gateway, host adapter), so only those two names
- * are withheld from the standalone plugin. Every other calendar action — the
+ * PA composes CALENDAR, its promoted child actions, and CONFLICT_DETECT with
+ * LifeOps deps (travel buffers, approval gateway, host adapter). Withhold that
+ * entire family from the standalone plugin. Other calendar actions — the
  * typed CALENDAR_SOURCES source-administration surface in particular — must
  * stay reachable: this init runs before PA's own actions register, so passing
  * a colliding action here would silently win first-wins and shadow the
@@ -539,7 +539,10 @@ export async function ensureLifeOpsCalendarPluginRegistered(
     return;
   }
   const composedByPersonalAssistant = new Set([
-    calendarAction.name,
+    ...promoteSubactionsToActions(
+      calendarAction,
+      calendarActionPromotionOptions,
+    ).map((action) => action.name),
     conflictDetectAction.name,
   ]);
   await runtime.registerPlugin({
