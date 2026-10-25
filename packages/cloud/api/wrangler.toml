@@ -733,6 +733,8 @@ OIDC_ISSUER_URL = "https://api-staging.eliza.app"
 # this environment (Alpha Phone staging authority). A var, not a secret, so a
 # missing secret push cannot silently change the issuer.
 ELIZA_ENTITLEMENT_ISSUER = "https://api-staging.eliza.app"
+# Preserve the published client contract; other deployments select their own audience.
+ELIZA_ENTITLEMENT_AUDIENCE = "eliza-alpha-phone"
 # Per-tenant `magicLinkBaseUrl` (set in Steward Neon `tenant_configs.email_config`)
 # redirects email magic-link callbacks to staging.elizacloud.ai instead of the
 # prod fallback (www.elizacloud.ai). Tenant row provisioned manually.
@@ -1078,6 +1080,8 @@ OIDC_ENABLED = "true"
 OIDC_ISSUER_URL = "https://api.eliza.app"
 # Subscription entitlement `iss`; see the staging block.
 ELIZA_ENTITLEMENT_ISSUER = "https://api.eliza.app"
+# Preserve the published client contract; other deployments select their own audience.
+ELIZA_ENTITLEMENT_AUDIENCE = "eliza-alpha-phone"
 OIDC_REDIRECT_URI_ALIASES = '{"elizahub":["https://git.slop.cash/user/oauth2/elizacloud/callback"]}'
 # Pin the prod Steward tenant explicitly instead of leaning on the implicit
 # DEFAULT_STEWARD_TENANT_ID ("elizacloud") in steward-tenant-config.ts. That
