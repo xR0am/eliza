@@ -97,8 +97,13 @@ final class WorkflowSurvivorInventory {
    StructStat stat;try{stat=Os.stat(entry.getPath());}catch(android.system.ErrnoException gone){if(gone.errno==OsConstants.ENOENT)continue;throw gone;}
    if(stat.st_uid!=Process.myUid()||entry.getName().equals(String.valueOf(Process.myPid())))continue;
    final int pid=Integer.parseInt(entry.getName());
-   byte[] args=observePresent(pid,()->bounded(new File(entry,"cmdline"),65536));if(args==null)continue;
-   if(!residentArguments(args,bun,loader,bundle))continue;
+   // cmdline may be readable but empty while a process exits. Validate inside
+   // the same observation boundary, so only fresh absence/terminal proof can
+   // excuse malformed argv; malformed live processes still fail closed.
+   byte[] args=observePresent(pid,()->{
+    byte[] observed=bounded(new File(entry,"cmdline"),65536);
+    return residentArguments(observed,bun,loader,bundle)?observed:null;
+   });if(args==null)continue;
    check(selected==null,"multiple resident processes; preserve all");
    Identity identity=observePresent(pid,()->processIdentity(pid,deadline));if(identity==null)continue;
    check(identity.uid==Process.myUid()&&identity.executable.equals(loader)&&identity.sha256.equals(loaderHash)
