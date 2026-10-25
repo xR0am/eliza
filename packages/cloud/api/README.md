@@ -534,3 +534,8 @@ accept caller-defined branding, infer consent, or require a login session.
 Missing, malformed, or over-256-KiB configuration returns HTTP 503. Responses use
 `Cache-Control: no-store`; consumers must render strings as text, never HTML.
 No product identity or default legal agreement is inserted by this endpoint.
+The Cloudflare release workflow reads the same-named protected environment
+variable through its atomic Worker-binding pipeline. A blank source preserves
+the deployed value. This uses the existing binding mechanism even though the
+content is public. To withdraw published documents, replace the binding with
+`{}` so the endpoint refuses it; an empty source is not a deletion request.
