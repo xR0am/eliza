@@ -1,4 +1,9 @@
-import type { IAgentRuntime } from "@elizaos/core";
+import {
+  type IAgentRuntime,
+  type Memory,
+  ResponseHandlerFieldRegistry,
+} from "@elizaos/core";
+import { viewNavigationField } from "../src/runtime/view-navigation.ts";
 import { afterEach, expect, it, vi } from "vitest";
 import { mapsPlugin } from "../../../plugins/plugin-maps/src/plugin.ts";
 import { BUILTIN_VIEWS } from "../src/api/builtin-views.ts";
@@ -112,4 +117,174 @@ it("preserves an already installed plugin and yields only to the declared packag
   expect(getView(second, "maps")?.label).toBe("Maps");
   unregisterPluginViews(second, installation);
   expect(getView(second, "maps")).toBe(fallback);
+});
+
+it.each(["plugin-first", "builtin-first"])(
+  "retains exact native Notes delivery after plugin registration (%s)",
+  async (order) => {
+    vi.stubEnv(
+      "ELIZA_NATIVE_VIEW_DECLARATIONS",
+      JSON.stringify([
+        {
+          id: "notes",
+          label: "Notes",
+          path: "/notes",
+          fallbackFor: "@elizaos/plugin-notes",
+        },
+      ]),
+    );
+    const owner = runtime();
+    const plugin = {
+      name: "notes",
+      packageName: "@elizaos/plugin-notes",
+      views: [
+        {
+          id: "notes",
+          label: "Notes",
+          path: "/notes",
+          viewKind: "release" as const,
+          roleGate: { minRole: "OWNER" as const },
+          bundlePath: "missing/bundle.js",
+        },
+      ],
+    };
+    if (order === "builtin-first") registerBuiltinViews(owner);
+    const installation = await registerPluginViews(owner, plugin, {
+      pluginDir: process.cwd(),
+    });
+    if (order === "plugin-first") registerBuiltinViews(owner);
+    expect(getView(owner, "notes")).toMatchObject({
+      pluginName: "notes",
+      nativeOs: true,
+      available: false,
+      roleGate: { minRole: "OWNER" },
+    });
+    expect(getView(owner, "notes")?.installationId).toBe(installation.id);
+    // Hosted execution still has no bundle; a native marker is only delivery metadata.
+    expect(getView(owner, "notes")?.bundleHash).toBeUndefined();
+    owner.actions = [{ name: "VIEWS" }] as IAgentRuntime["actions"];
+    const fields = new ResponseHandlerFieldRegistry();
+    fields.register(viewNavigationField);
+    for (const completed of [false, true]) {
+      const input = {
+        content: {
+          text: "Open Notes",
+          source: "client_chat",
+          channelType: "DM",
+          metadata: {
+            viewClientId: "native-test-client",
+            uiView: "chat",
+            ...(completed ? { viewDelivery: "completed-action" } : {}),
+          },
+        },
+      } as Memory;
+      const slices = await fields.composePromptSlices({
+        runtime: owner,
+        message: input,
+        state: { values: {}, data: {}, text: "" },
+        senderRole: "OWNER",
+        turnSignal: new AbortController().signal,
+      });
+      if (completed)
+        expect(slices.context).toContain('"id":"notes","label":"Notes"');
+      else expect(slices.context).not.toContain('"id":"notes"');
+    }
+  },
+);
+
+it.each([
+  {
+    packageName: "@unrelated/notes",
+    path: "/notes",
+    viewType: "gui",
+    minRole: "OWNER",
+  },
+  {
+    packageName: "@elizaos/plugin-notes",
+    path: "/other",
+    viewType: "gui",
+    minRole: "OWNER",
+  },
+  {
+    packageName: "@elizaos/plugin-notes",
+    path: "/notes",
+    viewType: "tui",
+    minRole: "OWNER",
+  },
+  {
+    packageName: "@elizaos/plugin-notes",
+    path: "/notes",
+    viewType: "gui",
+    minRole: "USER",
+  },
+] as const)(
+  "does not grant native delivery to mismatched plugin declarations: %j",
+  async (candidate) => {
+    vi.stubEnv(
+      "ELIZA_NATIVE_VIEW_DECLARATIONS",
+      JSON.stringify([
+        {
+          id: "notes",
+          label: "Notes",
+          path: "/notes",
+          fallbackFor: "@elizaos/plugin-notes",
+        },
+      ]),
+    );
+    const owner = runtime();
+    await registerPluginViews(
+      owner,
+      {
+        name: "notes",
+        packageName: candidate.packageName,
+        views: [
+          {
+            id: "notes",
+            label: "Notes",
+            path: candidate.path,
+            viewType: candidate.viewType,
+            roleGate: { minRole: candidate.minRole },
+            bundlePath: "missing/bundle.js",
+          },
+        ],
+      },
+      { pluginDir: process.cwd() },
+    );
+    expect(
+      listViews(owner).find((view) => view.id === "notes")?.nativeOs,
+    ).not.toBe(true);
+  },
+);
+
+it("pins absent native policy before later environment changes", async () => {
+  const owner = runtime();
+  registerBuiltinViews(owner);
+  vi.stubEnv(
+    "ELIZA_NATIVE_VIEW_DECLARATIONS",
+    JSON.stringify([
+      {
+        id: "notes",
+        label: "Notes",
+        path: "/notes",
+        fallbackFor: "@elizaos/plugin-notes",
+      },
+    ]),
+  );
+  await registerPluginViews(
+    owner,
+    {
+      name: "notes",
+      packageName: "@elizaos/plugin-notes",
+      views: [
+        {
+          id: "notes",
+          label: "Notes",
+          path: "/notes",
+          roleGate: { minRole: "OWNER" },
+        },
+      ],
+    },
+    { pluginDir: process.cwd() },
+  );
+  expect(getView(owner, "notes")?.nativeOs).not.toBe(true);
 });
