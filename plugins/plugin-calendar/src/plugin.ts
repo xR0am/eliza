@@ -41,6 +41,7 @@ import { serverInteract } from "./view-interact.js";
  */
 export const calendarPlugin: Plugin = {
   name: "calendar",
+  packageName: "@elizaos/plugin-calendar",
   description:
     "Multi-provider calendar feeds, scheduling, and event management for Eliza agents.",
   dependencies: ["@elizaos/plugin-scheduling"],

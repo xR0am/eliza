@@ -139,13 +139,6 @@ export class PluginActivatorService extends Service {
     this.secretsService =
       this.runtime.getService<SecretsService>(SECRETS_SERVICE_TYPE);
 
-    // Keep the service and explicit inspection/registration APIs available,
-    // without subscribing, waiting or activating plugins automatically.
-    if(this.runtime.deferBackgroundTasks===true){
-      logger.info("[PluginActivator] Automatic activation deferred by runtime");
-      return;
-    }
-
     if (!this.secretsService) {
       // Service not ready yet - use getServiceLoadPromise if available
       await this.waitForSecretsService();
@@ -218,7 +211,6 @@ export class PluginActivatorService extends Service {
    * Bind to the SecretsService for change notifications
    */
   private bindToSecretsService(): void {
-    if(this.runtime.deferBackgroundTasks===true)return;
     if (!this.secretsService || this.unsubscribeSecretChanges) return;
 
     this.unsubscribeSecretChanges = this.secretsService.onAnySecretChanged(
@@ -545,7 +537,6 @@ export class PluginActivatorService extends Service {
     value: string | null,
     context: SecretContext,
   ): Promise<void> {
-    if(this.runtime.deferBackgroundTasks===true)return;
     // Only process global secret changes for plugin activation
     if (context.level !== "global") {
       return;
@@ -698,7 +689,6 @@ export class PluginActivatorService extends Service {
    * Start polling for pending plugins
    */
   private startPolling(): void {
-    if(this.runtime.deferBackgroundTasks===true)return;
     if (this.pollingInterval) {
       return;
     }
@@ -714,7 +704,6 @@ export class PluginActivatorService extends Service {
 
   /** Start one observed poll without overlapping a still-running cycle. */
   private pollPendingPlugins(): void {
-    if(this.runtime.deferBackgroundTasks===true)return;
     if (this.activePoll) {
       return;
     }
@@ -742,7 +731,6 @@ export class PluginActivatorService extends Service {
    * Check all pending plugins
    */
   private async checkPendingPlugins(): Promise<void> {
-    if(this.runtime.deferBackgroundTasks===true)return;
     if (this.pendingPlugins.size === 0) {
       return;
     }
