@@ -300,6 +300,67 @@ function evaluatorBudgetOptions(contextWindowTokens: number): {
   };
 }
 
+function evaluatorProtocolDiagnostic(parsed: EvaluatorOutput) {
+  const raw = parsed.raw as Record<string, unknown> | undefined;
+  const error = raw?.protocolError;
+  const staticReasons: Record<string, string> = {
+    "replyEffectStatus must be none, applied or non_applied":
+      "reply_effect_status",
+    "requestFullyCovered must be a boolean": "coverage_boolean",
+    "outcomeCoverage must contain exact intent IDs, completion statuses and distinct evidence step IDs":
+      "coverage_items",
+    'required field "success" must be a boolean': "success_boolean",
+    'required field "decision" must be a supported routing or restoration decision':
+      "decision",
+    'fields "decision" and legacy "route" must agree':
+      "decision_route_mismatch",
+    'required field "thought" must be a string': "thought_type",
+    "Context restoration requires a restoration decision (or legacy contextRequest with CONTINUE), success=false, no reply text, and no copyToClipboard":
+      "context_request",
+    'optional field "messageToUser" must be a string': "message_type",
+    'optional field "effectReceiptIds" must be an array of distinct nonempty strings':
+      "effect_receipt_ids",
+    'optional field "recommendedToolCallId" must be a string':
+      "recommended_tool_call_id",
+    'optional field "copyToClipboard" must be an object': "clipboard_type",
+    'fields "copyToClipboard.title" and "copyToClipboard.content" must be strings':
+      "clipboard_fields",
+    'optional field "copyToClipboard.tags" must be an array of strings':
+      "clipboard_tags",
+  };
+  const reason =
+    typeof error !== "string"
+      ? null
+      : Object.hasOwn(staticReasons, error)
+        ? staticReasons[error]
+        : error.startsWith('field "copyToClipboard.')
+          ? "clipboard_unknown_field"
+          : error.startsWith('field "')
+            ? "unknown_field"
+            : error.startsWith('optional field "nextTool"')
+              ? "next_tool"
+              : error.startsWith('optional field "nextRecommendedTool"')
+                ? "next_recommended_tool"
+                : "unclassified_protocol_error";
+  const typeOfField = (name: string) => {
+    if (!raw || !Object.hasOwn(raw, name)) return "absent";
+    const value = raw[name];
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  };
+  return {
+    protocolGuard: reason,
+    requiredFieldTypes: {
+      success: typeOfField("success"),
+      requestFullyCovered: typeOfField("requestFullyCovered"),
+      decision: typeOfField("decision"),
+      thought: typeOfField("thought"),
+      replyEffectStatus: typeOfField("replyEffectStatus"),
+    },
+  };
+}
+
 function finalizeEvaluatorOutput(
   parsed: EvaluatorOutput,
   raw: EvaluatorModelResult,
@@ -314,11 +375,7 @@ function finalizeEvaluatorOutput(
           repairMissingEvaluatorMessage(
             repairMissingEvaluatorSuccess(
               rejectEvaluatorInvocationMessage(
-                recoverEvaluatorTextOutput(
-                  parsed,
-                  raw,
-                  trajectory,
-                ),
+                recoverEvaluatorTextOutput(parsed, raw, trajectory),
               ),
               trajectory,
             ),
@@ -895,7 +952,10 @@ async function runEvaluatorWithSelectedModel(
     decisionState,
   );
   // Finite metadata only: diagnose completion coercion without exposing model text.
-  if (output.decision === "CONTINUE" && (parsedOutput.decision === "FINISH" || output.protocolFailure === true)) {
+  if (
+    output.decision === "CONTINUE" &&
+    (parsedOutput.decision === "FINISH" || output.protocolFailure === true)
+  ) {
     const rejection = output.protocolFailure
       ? "protocol_rejected"
       : "finish_rejected_after_normalization";
@@ -907,6 +967,7 @@ async function runEvaluatorWithSelectedModel(
           messageId: streamingContext?.messageId,
           iteration: params.iteration ?? 1,
           rejection,
+          ...evaluatorProtocolDiagnostic(parsedOutput),
           parsedDecision: parsedOutput.decision,
           parsedSuccess: parsedOutput.success,
           parsedRequestFullyCovered: parsedOutput.requestFullyCovered ?? null,
