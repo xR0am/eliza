@@ -8593,6 +8593,46 @@ async function ensureToolTurnFinalMessage(
     // completed evidence directly to its existing receipt-bound recovery.
     return { ...result, finalMessage: undefined, replyRecoveryRequired: true };
   }
+  // The host already owns bound prepared-navigation prose and its final
+  // egress check. Defer that pending reply before paying for generic synthesis;
+  // preparation still is not a delivered effect or a successful completion.
+  if (
+    params.deferInternalReplyRecoveryToCaller === true &&
+    result.evaluator?.decision === "FINISH" &&
+    result.evaluator.success === false &&
+    result.evaluator.requestFullyCovered === false &&
+    result.evaluator.replyEffectStatus === "non_applied" &&
+    !result.evaluator.protocolFailure &&
+    result.trajectory.plannedQueue.length === 0 &&
+    result.trajectory.archivedSteps.length === 0 &&
+    result.trajectory.outcomeIntents?.length === 1 &&
+    !latestUnresolvedFailedNonTerminalToolStep(result.trajectory)
+  ) {
+    const steps = result.trajectory.steps.filter(
+      (step) => !step.terminalOnly || step.toolCall != null || step.result != null,
+    );
+    const step = steps.length === 1 ? steps[0] : undefined;
+    const handoff =
+      step?.result &&
+      findViewActionHandoff([
+        {
+          success: step.result.success,
+          actionName: step.toolCall?.name,
+          values: step.result.data?.values,
+        },
+      ]);
+    if (
+      step?.result?.transcriptVisibility === "internal" &&
+      step.result.modelReplyRequired === true &&
+      hasAwaitingDeviceExecutionMarker(step.result) &&
+      handoff?.navigationPrepared === true
+    )
+      return {
+        ...result,
+        finalMessage: undefined,
+        replyRecoveryRequired: true,
+      };
+  }
   const iteration = result.trajectory.steps.length + 1;
   try {
     const synthesized = await finishWithForcedSynthesis({

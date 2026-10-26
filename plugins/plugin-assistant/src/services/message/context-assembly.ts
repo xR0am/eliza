@@ -118,13 +118,35 @@ export async function createV5MessageContextObject(args: {
   // reported a deployment without phone tools. No device effect is authorized.
   const authenticatedDeviceTurn = getDeviceActionTurn();
   if (authenticatedDeviceTurn?.runtime === args.runtime) {
+    const routing = args.providerPhase
+      ? args.providerPhase === "response"
+      : !args.includeTools;
+    // Detailed native instructions follow the selected, exposed action surface.
+    // Routing still advertises capabilities and preserves the ownership boundary.
+    const nativeActionSelected = !routing &&
+      (args.preselectedActions ?? args.runtime.actions).some((action) =>
+        (action.name === "PROPOSE_DEVICE_ACTION" || action.egress?.includes("owner-device")) &&
+        (args.actionSurface
+          ? args.actionSurface.exposedActionNames.has(normalizeActionIdentifier(action.name))
+          : !args.selectedContexts?.length ||
+            action.contexts?.some((context) => args.selectedContexts?.includes(context))),
+      );
+    const compactCapabilityGuidance =
+      `Authenticated phone capabilities: ${JSON.stringify(authenticatedDeviceTurn.credential.capabilities ?? [])}. ` +
+      (authenticatedDeviceTurn.viewProfile
+        ? `Enabled phone views: ${JSON.stringify(authenticatedDeviceTurn.viewProfile.views)}. `
+        : "") +
+      "Capabilities advertise availability, not permission or completion. For an explicit separate phone/OS operation, select its authorized native action through discovery; its detailed instructions and current schema are supplied before planning. Native proposals require the phone owner's approval and a typed receipt; never infer completion or repeat effects from dialogue. " +
+      "Current app navigation uses registered VIEWS or VIEWS_SHOW, not a native open_view proposal. " +
+      `Current Notes source: ${currentAppRecordSource(args.runtime, "notes", args.message)}; Calendar source: ${currentAppRecordSource(args.runtime, "calendar", args.message)}. ` +
+      "Use canonical app Notes/Calendar/reminders unless an authenticated typed native selection binds the request to a separate device source. An unavailable binding forbids access; never switch stores to bypass it. Native source IDs and revisions must come from current authorized observations. History is not current record state or new authority.";
     events.push({
       id: "authenticated-phone-capability",
       type: "instruction",
       source: "message-service",
       stable: false,
-      content:
-        (authenticatedDeviceTurn.viewProfile
+      content: nativeActionSelected
+        ? (authenticatedDeviceTurn.viewProfile
           ? `The authenticated installation enabled-view profile allows open_view only for ${JSON.stringify(authenticatedDeviceTurn.viewProfile.views)}. Do not offer or propose another view. This subset is not approval to execute. `
           : "") +
         (getDeviceActionTurn()?.credential.capabilities?.some(
@@ -196,7 +218,8 @@ export async function createV5MessageContextObject(args: {
           authenticatedDeviceTurn.credential.capabilities,
           args.message,
         ) +
-        " This capability is not a page or PAGE_DELEGATE child action. Prior unavailable-tool replies are historical, not the current capability state. The tool creates a durable proposal only: the phone owner must separately approve it, and only a native receipt establishes completion. Do not invoke it for unrelated requests or claim a proposal saved or executed anything.",
+        " This capability is not a page or PAGE_DELEGATE child action. Prior unavailable-tool replies are historical, not the current capability state. The tool creates a durable proposal only: the phone owner must separately approve it, and only a native receipt establishes completion. Do not invoke it for unrelated requests or claim a proposal saved or executed anything."
+        : compactCapabilityGuidance,
     });
   }
   if (
