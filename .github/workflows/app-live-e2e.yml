@@ -54,7 +54,7 @@ on:
       shared_runtime_suite:
         description: "Shared QA: baseline = qualified SF/weather + math + public fact; bare-weather = bare SF + math; full adds quiet/truth controls."
         type: choice
-        options: [baseline, bare-weather, typed-weather, full]
+        options: [baseline, bare-weather, typed-weather, behavior, full]
         default: baseline
       run_only_requested:
         description: "Skip the default local/walkthrough/desktop lanes and run only explicitly selected opt-in lanes."

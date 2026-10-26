@@ -20,41 +20,54 @@ const LIMITS = {
   modelBodyBytes: 1024 * 1024,
 } as const;
 const suite = process.argv.find((arg) => arg.startsWith("--suite="))?.split("=")[1] ?? "baseline";
-if (!["baseline", "bare-weather", "typed-weather", "full"].includes(suite))
+if (!["baseline", "bare-weather", "typed-weather", "behavior", "full"].includes(suite))
   throw new Error("QA_SUITE_INVALID");
 const weather =
   suite === "bare-weather" || suite === "typed-weather"
     ? "What's the current temperature in San Francisco? Please include a source."
     : "What is the current temperature in San Francisco, California? Please give the source.";
-const cases = [
-  { id: "sf-weather", message: weather },
-  { id: "math-after-search", message: "What is 17 plus 26? Reply briefly." },
-  ...(suite === "bare-weather" || suite === "typed-weather"
-    ? []
-    : [
-        {
-          id: "public-fact",
-          message:
-            "Search the web for the official Python 3.13 release date. Give the date and its source.",
-        },
-      ]),
-  ...(suite === "full"
+const cases =
+  suite === "behavior"
     ? [
         {
-          id: "sf-bare-place",
-          message: "What's the current temperature in San Francisco? Please include a source.",
+          id: "reaction-thumbs-up",
+          message: "Please react to this message with a thumbs-up and don't send a text reply.",
         },
-        { id: "closing-thanks", message: "Thanks" },
-        { id: "closing-ok", message: "OK" },
-        { id: "closing-emoji", message: "❤️" },
         {
-          id: "matching-deferred",
-          message:
-            "My profile is saved. Does that mean you are watching for matches and will text me later?",
+          id: "search-behavior",
+          message: "Why did you search the web? I'm asking about your behavior.",
         },
       ]
-    : []),
-];
+    : [
+        { id: "sf-weather", message: weather },
+        { id: "math-after-search", message: "What is 17 plus 26? Reply briefly." },
+        ...(suite === "bare-weather" || suite === "typed-weather"
+          ? []
+          : [
+              {
+                id: "public-fact",
+                message:
+                  "Search the web for the official Python 3.13 release date. Give the date and its source.",
+              },
+            ]),
+        ...(suite === "full"
+          ? [
+              {
+                id: "sf-bare-place",
+                message:
+                  "What's the current temperature in San Francisco? Please include a source.",
+              },
+              { id: "closing-thanks", message: "Thanks" },
+              { id: "closing-ok", message: "OK" },
+              { id: "closing-emoji", message: "❤️" },
+              {
+                id: "matching-deferred",
+                message:
+                  "My profile is saved. Does that mean you are watching for matches and will text me later?",
+              },
+            ]
+          : []),
+      ];
 if (process.argv.includes("--plan")) {
   console.log(
     JSON.stringify(
@@ -540,7 +553,11 @@ async function run() {
   await mkdir(root, { recursive: false, mode: 0o700 });
   ownsOutput = true;
   await mkdir(raw, { mode: 0o700 });
-  if (cases.length + (suite !== "bare-weather" && suite !== "typed-weather" ? 1 : 0) > LIMITS.cases)
+  if (
+    cases.length +
+      (suite !== "bare-weather" && suite !== "typed-weather" && suite !== "behavior" ? 1 : 0) >
+    LIMITS.cases
+  )
     fail("QA_CASE_LIMIT");
   if (!secret) fail("QA_CEREBRAS_KEY_MISSING");
   const unexpected = [
@@ -871,6 +888,35 @@ async function run() {
           /python\.org/.test(turn.reply)
             ? "passed-controls-review-required"
             : "failed";
+      } else if (item.id === "reaction-thumbs-up") {
+        const { parseImessageReaction } = await import("@elizaos/contracts/imessage-reaction");
+        const candidate = parseImessageReaction(emitted.acknowledgementReaction);
+        observation.candidateNotDelivered = true;
+        observation.validatedAcknowledgementCandidate = candidate ?? null;
+        observation.status =
+          turn.responded === false &&
+          !turn.reply.trim() &&
+          (candidate === "like" || candidate === "👍") &&
+          publicTools.length === 0 &&
+          ownReads.length === 0
+            ? "passed-controls-review-required"
+            : "failed";
+      } else if (item.id === "search-behavior") {
+        observation.candidateNotDelivered = true;
+        observation.possibleUnsupportedPromise =
+          /\b(?:i['’]ll|i will|we will)\b[^.!?]{0,100}\b(?:watch|monitor|reach out|text|ping|match)\b/i.test(
+            turn.reply,
+          );
+        observation.status =
+          turn.responded === true &&
+          /[A-Za-z]{3}/.test(turn.reply) &&
+          turn.reply.length <= 1200 &&
+          !/<(?:tool_call|analysis|think)>/i.test(turn.reply) &&
+          !observation.possibleUnsupportedPromise &&
+          publicTools.length === 0 &&
+          ownReads.length === 0
+            ? "passed-controls-review-required"
+            : "failed";
       } else if (item.id.startsWith("closing-")) {
         observation.status =
           turn.responded === false &&
@@ -905,9 +951,14 @@ async function run() {
     await save(`${item.id}.json`, observation);
   }
   // A separate real public transport probe. It is NOT a model WEB_FETCH/Shared-path claim.
-  if (suite !== "bare-weather" && suite !== "typed-weather" && Date.now() < deadline) {
+  if (
+    suite !== "bare-weather" &&
+    suite !== "typed-weather" &&
+    suite !== "behavior" &&
+    Date.now() < deadline
+  ) {
     activeCase = "public-fetch-transport";
-    const { fetchKeylessWeb } = await import("@elizaos/plugin-web-search");
+    const { fetchKeylessWeb } = await import("@elizaos/plugin-web-search/edge");
     try {
       const fetched = await fetchKeylessWeb(
         ["https://www.python.org/downloads/release/python-3130/"],
@@ -989,6 +1040,7 @@ async function run() {
     captures.every((capture) => capture.complete === true) &&
     (suite === "bare-weather" ||
       suite === "typed-weather" ||
+      suite === "behavior" ||
       (report.publicFetchTransport as { success?: boolean } | undefined)?.success === true)
       ? "LIVE_CONTROLS_PASSED_PUBLIC_TRANSCRIPTS_REQUIRE_REVIEW"
       : "FAILED_NOT_ACCEPTANCE";
