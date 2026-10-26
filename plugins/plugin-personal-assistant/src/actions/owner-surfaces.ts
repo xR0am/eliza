@@ -306,6 +306,8 @@ export const ownerRemindersAction: Action = {
     defaultKind: "definition",
   }),
   name: "OWNER_REMINDERS",
+  // This surface pins definitions; review lists/reads them without mutation.
+  historicalObservationOperations: ["lifeops.owner.review"],
   routingHint:
     "saved owner reminders/deadlines: review reads by title or lists; update edits existing. Search under tasks or calendar. TODO is a separate checklist, not this reminder store.",
   tags: [

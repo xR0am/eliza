@@ -4974,6 +4974,7 @@ export function createCalendarActionRunner(
     historicalObservationOperations: [
       "calendar.event.next.read",
       "calendar.feed.read",
+      "calendar.event.search",
     ],
     // This operation union needs absent optional detail fields to stay absent on the wire.
     toolSchemaStrict: false,
