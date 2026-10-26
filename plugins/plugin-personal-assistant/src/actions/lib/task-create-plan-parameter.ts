@@ -17,6 +17,8 @@ const properties = {
     enum: ["alarm", "reminder", "unspecified"],
   },
   nativeProjection: {
+    description:
+      "This owner action creates a canonical app record. Use in_app_only for an ordinary app reminder, regardless of host OS or phone enrollment. Use apple_reminders only when the owner explicitly requests that authorized native destination. Use null only for a genuinely unresolved or conflicting destination; never infer Apple from the server platform.",
     anyOf: [
       { type: "string" as const, enum: ["in_app_only", "apple_reminders"] },
       { type: "null" as const },
@@ -90,24 +92,32 @@ const properties = {
   priority: { type: "integer" as const, minimum: 1, maximum: 5 },
   durationMinutes: { type: "number" as const, minimum: 1 },
   dueDate: {
+    description:
+      "Absolute local date YYYY-MM-DD. Other date selectors must be null.",
     anyOf: [
       { type: "string" as const, pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
       { type: "null" as const },
     ],
   },
   dueInDays: {
+    description:
+      "Whole days from today. Other date selectors must be null.",
     anyOf: [
       { type: "integer" as const, minimum: 0 },
       { type: "null" as const },
     ],
   },
   dueWeekday: {
+    description:
+      "Requested weekday (0=Sunday). Other date selectors must be null.",
     anyOf: [
       { type: "integer" as const, minimum: 0, maximum: 6 },
       { type: "null" as const },
     ],
   },
   dueInMinutes: {
+    description:
+      "Minutes from now. Other date selectors must be null.",
     anyOf: [{ type: "number" as const, minimum: 1 }, { type: "null" as const }],
   },
   multiStep: { type: "boolean" as const },
@@ -164,7 +174,7 @@ export const TASK_CREATE_PLAN_PARAMETER: ActionParameter = {
   requiredForSubactions: ["create"],
   description: [
     "For a definition create, supply the complete semantic plan here using the current owner request and relevant conversation already in context. This avoids a second interpretation call. Use intent for the owner's full request; do not duplicate this plan in title/details. The parent umbrella may omit createPlan when necessary context is unavailable; promoted CREATE requires it. Use the existing mode=respond plan for clarification when the title or timing cannot be established, without guessing. Unknown nativeProjection remains null and follows the existing safe extraction path. This plan never grants permission to save or confirm a pending draft; the handler applies owner consent and draft rules.",
-    "Always include mode, multiStep, requestKind and notificationMode. Set notificationMode=none for no alert or silent requests, default for normal notifications, null only when unclear; this choice never removes an explicitly requested due time. For mode=create include title, description and cadenceKind; for mode=respond include response. Use requestKind=unspecified only when neither alarm nor reminder is explicit. For mode=create, always include nativeProjection; use null for an unknown destination. For mode=create, always include dueDate, dueInDays, dueWeekday and dueInMinutes: fill the applicable selector from the owner's request and use null for the others. Always include timeOfDay and timeZone: preserve an explicit clock time and zone from the request; use null only when not specified. Noon is 12:00, midnight is 00:00. Never use a default clock time or zone in place of one the owner supplied. A relative minute/hour offset belongs in dueInMinutes and does not require a clock time. Always include description: copy an explicit requested reminder body exactly, independently of the title; use null when no separate alert body was requested. Do not silently reduce an explicit body to the title or put delivery instructions in it. Omit other unknown/inapplicable fields. Use the current date/time in context for date grounding; retain relative date fields when applicable.",
+    "Always include mode, multiStep, requestKind and notificationMode. Set notificationMode=none for no alert or silent requests, default for normal notifications, null only when unclear; this choice never removes an explicitly requested due time. For mode=create include title, description and cadenceKind; for mode=respond include response. Use requestKind=unspecified only when neither alarm nor reminder is explicit. For mode=create, always include nativeProjection; use null for an unknown destination. For mode=create, always include dueDate, dueInDays, dueWeekday and dueInMinutes: fill exactly one applicable date selector from the owner's request and use null for all the others; do not also encode the same day as an absolute date, relative offset and weekday. Always include timeOfDay and timeZone: preserve an explicit clock time and zone from the request; use null only when not specified. Noon is 12:00, midnight is 00:00. Never use a default clock time or zone in place of one the owner supplied. A relative minute/hour offset belongs in dueInMinutes and does not require a clock time. Always include description: copy an explicit requested reminder body exactly, independently of the title; use null when no separate alert body was requested. Do not silently reduce an explicit body to the title or put delivery instructions in it. Omit other unknown/inapplicable fields. Use the current date/time in context for date grounding; retain relative date fields when applicable.",
     taskCreatePlanGuidance(true),
   ].join("\n"),
   schema,
