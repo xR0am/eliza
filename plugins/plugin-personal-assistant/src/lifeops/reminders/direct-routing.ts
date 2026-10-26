@@ -1,6 +1,6 @@
 /**
- * Declares the deterministic owner-reminder creation boundary so explicit
- * “remind me” requests reach the definition-owning OWNER_REMINDERS surface.
+ * Declares owner-reminder read and creation availability so complete reads
+ * and explicit “remind me” requests reach the definition-owning surface.
  * Core still applies role, capability-tag, connector, and action validation
  * gates before promoting the turn to planning.
  */
@@ -106,6 +106,42 @@ export function createOwnerReminderDirectRoutingRule(): DirectActionRoutingRule 
   };
 }
 
+/** Complete owner-inventory reads belong to saved reminder records, not raw triggers.
+ * This declares availability only; ordinary role, source and action admission
+ * still apply. Extra clauses, quoted commands and scoped/ambiguous reads keep
+ * normal planning rather than replacing another requested operation.
+ */
+export function createOwnerReminderReadRoutingRule(): DirectActionRoutingRule {
+  return {
+    id: "lifeops.owner-reminder-read",
+    actionNames: ["OWNER_REMINDERS_REVIEW"],
+    replacesActionNames: ["OWNER_REMINDERS", "TRIGGER_LIST"],
+    requiredActionTags: [
+      "domain:reminders",
+      "resource:reminders-records",
+      "capability:read",
+      "effect:receipt-required",
+    ],
+    contexts: ["tasks", "productivity"],
+    matches(text, message) {
+      if (message && !["DM", "VOICE_DM"].includes(String(message.content.channelType)))
+        return false;
+      let request = extractUserText(text).trim()
+        .replace(DIRECT_REQUEST_LEAD_IN, "")
+        .replace(/[.!?]+$/u, "").trim();
+      // The typed intent describes this already matched owner's request in
+      // third person. Do not reinterpret a human's third-party request.
+      if (!message) request = request.replace(/\b(?:the\s+)?(?:user|owner)['’]s\b/iu, "my");
+      return [
+        /^(?:list|read|review|show)(?:\s+me)?\s+(?:(?:all|my|saved|existing|current)\s+)*reminders$/iu,
+        /^(?:what|which)\s+(?:(?:saved|existing|current)\s+)*reminders\s+do\s+i\s+have$/iu,
+        /^(?:what|which)\s+are\s+my\s+(?:(?:saved|existing|current)\s+)*reminders$/iu,
+        /^do\s+i\s+have\s+(?:any\s+)?(?:saved\s+)?reminders$/iu,
+      ].some((pattern) => pattern.test(request));
+    },
+  };
+}
+
 /** Typed control replies select a route; the action still authorizes the effect. */
 export const ownerReminderChoiceDirectRoutingRules: readonly DirectActionRoutingRule[] =
   [
@@ -189,6 +225,7 @@ export function registerOwnerReminderDirectRouting(
     runtime,
     createOwnerReminderDirectRoutingRule(),
   );
+  registerDirectActionRoutingRule(runtime, createOwnerReminderReadRoutingRule());
   for (const rule of ownerReminderChoiceDirectRoutingRules) {
     registerDirectActionRoutingRule(runtime, rule);
   }
