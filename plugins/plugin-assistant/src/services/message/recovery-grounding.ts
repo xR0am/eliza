@@ -5,7 +5,7 @@
  * model recording so their latency, tokens and original requests remain visible.
  */
 
-import type { IAgentRuntime } from "@elizaos/core";
+import type { IAgentRuntime, JSONSchema } from "@elizaos/core";
 import {
   ElizaError,
   getStreamingContext,
@@ -58,7 +58,9 @@ export async function reviewRecoveredReply(args: {
     const raw = await runWithSuppressedModelStream(() =>
       args.runtime.useModel(ModelType.TEXT_SMALL, {
         prompt,
-        responseSchema: z.toJSONSchema(verdictSchema),
+        // This fixed union emits object-valued property schemas; Zod also types
+        // boolean property schemas that core JSONSchema does not accept.
+        responseSchema: z.toJSONSchema(verdictSchema) as JSONSchema,
         providerOptions: { eliza: { thinking: "off" } },
       }),
     );
