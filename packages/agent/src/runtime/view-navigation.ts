@@ -1,6 +1,7 @@
 /** Host-owned, model-selected navigation; execution remains in the canonical action pipeline. */
 import {
   checkSenderRole,
+  registerDirectActionRoutingRule,
   getStreamingContext,
   getUserMessageText,
   type IAgentRuntime,
@@ -14,7 +15,38 @@ import {
 } from "@elizaos/core";
 import { readViewInteractionClientId } from "@elizaos/core/protocol";
 import { listViews } from "../api/views-registry.ts";
-import { resolveViewNavigationTargets, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
+import { resolveViewNavigationTargets, isExplicitRegisteredViewRequest, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
+
+/** Add an availability hint for explicit known navigation, never an execution override. */
+export function registerViewNavigationRoutingRule(
+  runtime: IAgentRuntime,
+): void {
+  registerDirectActionRoutingRule(runtime, {
+    id: "views.explicit-navigation",
+    actionNames: ["VIEWS_SHOW"],
+    requiredActionTags: [],
+    contexts: ["general"],
+    matches(text, message) {
+      if (
+        message &&
+        (message.content.source !== "client_chat" ||
+          !["DM", "VOICE_DM"].includes(String(message.content.channelType)) ||
+          !readViewInteractionClientId(message))
+      )
+        return false;
+      const metadata = message?.content.metadata;
+      const completedAction =
+        isObjectRecord(metadata) &&
+        metadata.viewDelivery === "completed-action";
+      return isExplicitRegisteredViewRequest(
+        listViews(runtime, { viewType: "gui" }).filter((view) =>
+          viewNavigationAvailable(view, completedAction),
+        ),
+        text,
+      );
+    },
+  });
+}
 
 type Navigation = {
   disposition:

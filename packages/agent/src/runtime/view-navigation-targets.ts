@@ -28,3 +28,21 @@ export function viewNavigationAvailable(
 ): boolean {
   return view.available !== false || (completedAction && view.nativeOs === true);
 }
+
+/** Conservative complete navigation commands; matching grants no execution authority. */
+export function isExplicitRegisteredViewRequest(
+  views: readonly { id: string; label: string }[],
+  text: string,
+): boolean {
+  const request = text
+    .trim()
+    .replace(/[.!]+$/u, "")
+    .trim();
+  const command =
+    /^(?:please\s+)?(?:open|show|go(?:\s+to)?)\s+(?:the\s+)?(.+)$/iu.exec(
+      request,
+    );
+  return (
+    !!command && resolveViewNavigationTargets(views, command[1]).length === 1
+  );
+}
