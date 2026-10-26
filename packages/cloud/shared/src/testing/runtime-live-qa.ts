@@ -927,12 +927,25 @@ async function run() {
   }
   await Promise.all(pendingCaptures);
   report.sdkBodyCaptures = captures;
-  const files = await readdir(process.env.ELIZA_TRAJECTORY_DIR).catch(() => []);
+  // Canonical Core stores trajectories under an agent UUID, not only at the root.
+  // Inspect only this run's owned directory and its direct agent subdirectories.
+  const trajectoryRoot = process.env.ELIZA_TRAJECTORY_DIR;
+  const entries = await readdir(trajectoryRoot, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.endsWith(".json")) files.push(entry.name);
+    else if (entry.isDirectory() && /^[0-9a-f-]{36}$/.test(entry.name)) {
+      const children = await readdir(path.join(trajectoryRoot, entry.name), {
+        withFileTypes: true,
+      });
+      for (const child of children)
+        if (child.isFile() && child.name.endsWith(".json"))
+          files.push(path.join(entry.name, child.name));
+    }
+  }
   const trajectories: unknown[] = [];
-  for (const file of files.filter((name) => name.endsWith(".json")))
-    trajectories.push(
-      JSON.parse(await readFile(path.join(process.env.ELIZA_TRAJECTORY_DIR, file), "utf8")),
-    );
+  for (const file of files)
+    trajectories.push(JSON.parse(await readFile(path.join(trajectoryRoot, file), "utf8")));
   const stages = trajectories.flatMap((t) =>
     t && typeof t === "object" && Array.isArray((t as Record<string, unknown>).stages)
       ? (t as { stages: unknown[] }).stages
