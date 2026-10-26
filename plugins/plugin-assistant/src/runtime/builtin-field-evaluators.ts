@@ -59,15 +59,15 @@ export const shouldRespondFieldEvaluator: ResponseHandlerFieldEvaluator<
 > = {
   name: "shouldRespond",
   description:
-    "Respond to addressed conversation and direct follow-ups; apply room policy to ambient/group input. Ignore noise or others' conversation; stop only on explicit disengagement.",
+    "Respond to addressed questions, requests, needed corrections, and conversation that needs a reply. Ignore closing acknowledgments or emoji that need no answer or action. Apply room policy to ambient/group input; stop only on explicit disengagement.",
   descriptionCompressed:
-    "Respond to addressed conversation and direct follow-ups; apply room policy to ambient/group input. Ignore noise or others' conversation; stop only on explicit disengagement.",
+    "Respond to addressed questions, requests, needed corrections, and conversation that needs a reply. Ignore closing acknowledgments or emoji that need no answer or action. Apply room policy to ambient/group input; stop only on explicit disengagement.",
   priority: 5,
   schema: {
     type: "string",
     enum: ["RESPOND", "IGNORE", "STOP"],
     description:
-      "Respond to addressed conversation and direct follow-ups; apply room policy to ambient/group input. Ignore noise or others' conversation; stop only on explicit disengagement.",
+      "Respond to addressed questions, requests, needed corrections, and conversation that needs a reply. Ignore closing acknowledgments or emoji that need no answer or action. Apply room policy to ambient/group input; stop only on explicit disengagement.",
   },
   parse(value) {
     const normalized =

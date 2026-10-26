@@ -280,6 +280,7 @@ export {
 } from "./runtime/provider-originals.ts";
 export * from "./runtime/sub-planner.ts";
 export * from "./runtime/trajectory-recorder";
+export { verifyTypedReadEgressReceipt } from "./runtime/typed-read-reply";
 export * from "./services/approval/index.ts";
 export {
   DEVICE_VIEWS,

@@ -1009,6 +1009,7 @@
       "dependencies": {
         "@elizaos/cloud-sdk": "workspace:*",
         "@elizaos/cloud-services-common": "workspace:*",
+        "@elizaos/contracts": "workspace:*",
         "@elizaos/core": "workspace:*",
         "@elizaos/plugin-network": "workspace:*",
         "@upstash/redis": "^1.37.0",
@@ -1109,6 +1110,7 @@
         "@elizaos/core": "workspace:*",
         "@elizaos/host": "workspace:*",
         "@elizaos/plugin-assistant": "workspace:*",
+        "@elizaos/plugin-coding-tools": "workspace:*",
         "@elizaos/plugin-elizacloud": "workspace:*",
         "@elizaos/plugin-google-workspace": "workspace:*",
         "@elizaos/plugin-mcp": "workspace:*",

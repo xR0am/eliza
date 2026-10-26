@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "customConditions": ["eliza-source"],
-    "target": "ES2022",
+    "target": "ES2024",
     "lib": ["esnext", "dom"],
     "module": "esnext",
     "moduleResolution": "bundler",
