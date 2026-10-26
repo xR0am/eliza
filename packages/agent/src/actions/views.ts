@@ -108,21 +108,24 @@ export const viewsAction: Action = {
         "Use action=show with a registered view id or label.",
       );
     const target = params.view.trim().toLowerCase();
-    const matches = views.filter(
-      (view) =>
-        view.id.toLowerCase() === target ||
-        view.label.toLowerCase() === target ||
-        (target === "home" && view.id === "chat") ||
-        // Consumer shells may brand the existing Automations destination as Workflows.
-        // Resolve only an installed, role-authorized registry entry; never add a view.
-        (target === "workflows" && view.id === "automations"),
-    );
+    const matches: Array<{ view: (typeof views)[number]; resolvedAlias?: string }> = views.flatMap((view) => {
+      if (view.id.toLowerCase() === target || view.label.toLowerCase() === target)
+        return [{ view }];
+      // Resolve aliases only against an installed, role-authorized entry.
+      // The resolver returns the verified name; raw target text is not proof.
+      const resolvedAlias = target === "home" && view.id === "chat"
+        ? "home"
+        : target === "workflows" && view.id === "automations"
+          ? "workflows"
+          : undefined;
+      return resolvedAlias ? [{ view, resolvedAlias }] : [];
+    });
     if (matches.length !== 1)
       return fail(
         matches.length ? "ambiguous" : "not-found",
         "No unique registered view matches. Use VIEWS action=list to inspect available views.",
       );
-    const view = matches[0];
+    const { view, resolvedAlias } = matches[0];
     const clientId = readViewInteractionClientId(message);
     if (!clientId)
       return fail(
@@ -241,6 +244,9 @@ export const viewsAction: Action = {
         viewId: view.id,
         path: view.path,
         label: view.label,
+        // Carry only an alias that this action resolved to this authorized
+        // installed view; reply validation must not guess consumer branding.
+        ...(resolvedAlias ? { resolvedAlias } : {}),
         stepId:
           typeof params.navigationStepId === "string"
             ? params.navigationStepId

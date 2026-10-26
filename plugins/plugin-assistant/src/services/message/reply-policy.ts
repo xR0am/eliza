@@ -132,6 +132,7 @@ export interface StructuredToolEffect {
   status: string;
   label?: string;
   viewId?: string;
+  resolvedAlias?: string;
 }
 
 export function structuredEffectFromToolResult(
@@ -151,11 +152,12 @@ export function structuredEffectFromToolResult(
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return undefined;
   }
-  const { effect, status, label, viewId } = parsed as {
+  const { effect, status, label, viewId, resolvedAlias } = parsed as {
     effect?: unknown;
     status?: unknown;
     label?: unknown;
     viewId?: unknown;
+    resolvedAlias?: unknown;
   };
   if (typeof effect !== "string" || effect.trim().length === 0) {
     return undefined;
@@ -168,6 +170,10 @@ export function structuredEffectFromToolResult(
     status: status.trim(),
     ...(typeof label === "string" && label.trim().length > 0
       ? { label: label.trim() }
+      : {}),
+    ...(effect.trim() === "view_navigation" &&
+    typeof resolvedAlias === "string" && resolvedAlias.trim()
+      ? { resolvedAlias: resolvedAlias.trim() }
       : {}),
     ...(effect.trim() === "view_navigation" &&
     typeof viewId === "string" &&
@@ -193,6 +199,10 @@ export function replyNamesStructuredEffectDestination(
     normalizedReply.length > 0 &&
     ((normalizedLabel.length > 0 &&
       normalizedReply.includes(normalizedLabel)) ||
+      // An alias is evidence only when the navigation executor resolved it
+      // to this registered destination, not a guessed synonym in the reply.
+      (!!effect.resolvedAlias &&
+        ` ${normalizedReply} `.includes(` ${normalize(effect.resolvedAlias)} `)) ||
       // A delivered view has a canonical identity as well as its display
       // label (for example chat / Home). Use only that receipt's identity,
       // not guessed aliases or request text, and match complete words.
@@ -623,7 +633,12 @@ export function preparedViewReply(args: {
   if (
     !isObjectRecord(navigation) ||
     navigation.handoffId !== handoff.completedActionHandoffId ||
-    handoff.navigationBinding?.requestId !== navigation.handoffId
+    handoff.navigationBinding?.requestId !== navigation.handoffId ||
+    effect.resolvedAlias !== navigation.resolvedAlias ||
+    (effect.resolvedAlias !== undefined &&
+      (!isObjectRecord(step.toolCall.params) ||
+        typeof step.toolCall.params.view !== "string" ||
+        step.toolCall.params.view.trim().toLowerCase() !== effect.resolvedAlias))
   )
     return;
   const reply = args.reply.trim();
