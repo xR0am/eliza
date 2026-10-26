@@ -2377,6 +2377,7 @@ export async function runV5MessageRuntimeStage1(
       );
 
     let plannerResult: Awaited<ReturnType<typeof invokePlannerLoop>>;
+    let plannerFailurePhase: "execution" | "continuation_persistence" | "release_facts" | "post_execution_abort_check" = "execution";
     try {
       plannerResult =
         messageHandler.plan.deterministicToolCall && !resumedPlanner
@@ -2385,6 +2386,7 @@ export async function runV5MessageRuntimeStage1(
               invokeDeterministicToolCall,
             )
           : await invokePlannerLoop(plannerContextAfterEarlyReply);
+      plannerFailurePhase = "continuation_persistence";
       await persistPlannerContinuation(
         args.runtime,
         args.message,
@@ -2392,7 +2394,9 @@ export async function runV5MessageRuntimeStage1(
         resumedPlanner?.authorizedTotalPromptBudget ??
           args.plannerLoopConfig?.maxTrajectoryPromptTokens,
       );
+      plannerFailurePhase = "release_facts";
       releaseFactsStage?.(settledPlannerToolResults);
+      plannerFailurePhase = "post_execution_abort_check";
       getStreamingContext()?.abortSignal?.throwIfAborted();
     } catch (error) {
       // Cancellation belongs to the interrupted-turn boundary, even after preliminary delivery.
@@ -2420,6 +2424,8 @@ export async function runV5MessageRuntimeStage1(
         endStatus = "errored";
         args.runtime.reportError("MessageService.plannerLoop", error, {
           roomId: args.message.roomId,
+          messageId: args.message.id,
+          plannerFailurePhase,
         });
         const replyFailure = {
           ...createUnavailableGroundedActionReply({
@@ -2497,6 +2503,8 @@ export async function runV5MessageRuntimeStage1(
           endStatus = "errored";
           args.runtime.reportError("MessageService.plannerLoop", error, {
             roomId: args.message.roomId,
+            messageId: args.message.id,
+            plannerFailurePhase,
           });
           return {
             kind: "direct_reply",
@@ -2543,6 +2551,8 @@ export async function runV5MessageRuntimeStage1(
           endStatus = "errored";
           args.runtime.reportError("MessageService.plannerLoop", error, {
             roomId: args.message.roomId,
+            messageId: args.message.id,
+            plannerFailurePhase,
           });
           return {
             kind: "direct_reply",
@@ -2560,6 +2570,8 @@ export async function runV5MessageRuntimeStage1(
         endStatus = "errored";
         args.runtime.reportError("MessageService.plannerLoop", error, {
           roomId: args.message.roomId,
+          messageId: args.message.id,
+          plannerFailurePhase,
         });
         return {
           kind: "direct_reply",
