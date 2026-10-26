@@ -368,6 +368,8 @@ const NON_CREDENTIAL_SECRET_KEYS: ReadonlySet<string> = new Set([
 	"LOCALE",
 	"LANGUAGE",
 	"LANG",
+	"ELIZAOS_CLOUD_ENABLED",
+	"ELIZAOS_CLOUD_BASE_URL",
 ]);
 
 // One process-lifetime context avoids per-runtime async-hook registrations.
@@ -837,7 +839,10 @@ export class AgentRuntime implements IAgentRuntime {
 			const result: Record<string, string | undefined> = {};
 			const entries = values ? Object.entries(values) : [];
 			for (const [key, value] of entries) {
-				if (typeof value === "string") {
+				if (
+					typeof value === "string" &&
+					!NON_CREDENTIAL_SECRET_KEYS.has(key.trim().toUpperCase())
+				) {
 					result[key] = value;
 				}
 			}
