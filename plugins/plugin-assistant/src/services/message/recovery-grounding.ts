@@ -53,25 +53,41 @@ export async function reviewRecoveredReply(args: {
     `Selected effect receipt IDs: ${JSON.stringify(args.effectReceiptIds)}`,
     `Complete turn evidence: ${args.evidenceJson}`,
   ].join("\n");
+  let reviewStage: "model" | "parse" | "schema" | "context_request" = "model";
   try {
     const raw = await runWithSuppressedModelStream(() =>
       args.runtime.useModel(ModelType.TEXT_SMALL, {
         prompt,
+        responseSchema: z.toJSONSchema(verdictSchema),
         providerOptions: { eliza: { thinking: "off" } },
       }),
     );
     getStreamingContext()?.abortSignal?.throwIfAborted();
-    const verdict = verdictSchema.parse(
-      parseJSONObjectFromText(getV5ModelText(raw)),
-    );
+    reviewStage = "parse";
+    const parsed = parseJSONObjectFromText(getV5ModelText(raw));
+    if (parsed !== null) reviewStage = "schema";
+    const verdict = verdictSchema.parse(parsed);
     if ("contextRequest" in verdict && !args.allowFullContextRequest) {
+      reviewStage = "context_request";
       throw new Error("Complete recovery evidence was already supplied");
     }
     return verdict;
   } catch (cause) {
     // error-policy:J2 An unavailable or malformed review cannot authorize delivery.
+    // Only finite stage/type/status metadata enters ordinary error context.
+    // Never read message/stack/response/reason or invoke provider getters.
+    let providerStatus: number | undefined;
+    try {
+      if (cause !== null && typeof cause === "object") {
+        const status = Object.getOwnPropertyDescriptor(cause, "statusCode")?.value ??
+          Object.getOwnPropertyDescriptor(cause, "status")?.value;
+        if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599)
+          providerStatus = status;
+      }
+    } catch { /* Diagnostic reflection must not replace the original cause. */ }
     const error = new ElizaError("Recovered reply grounding review failed", {
       code: "REPLY_GROUNDING_REVIEW_FAILED",
+      context: { reviewStage, ...(providerStatus === undefined ? {} : { providerStatus }) },
       cause,
     });
     args.runtime.reportError("MessageService.replyRecoveryGrounding", error);
