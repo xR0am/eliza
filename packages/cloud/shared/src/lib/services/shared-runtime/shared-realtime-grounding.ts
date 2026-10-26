@@ -8,9 +8,9 @@ import {
   ElizaError,
   isBlockedHostname,
   isPrivateIpAddress,
-  logger,
 } from "@elizaos/core";
 import type { SharedRuntimePublicGrounding } from "../../../db/schemas/shared-runtime-history";
+import { logger } from "../../utils/logger";
 import type { SharedTurnMessage } from "./run-shared-agent-turn";
 import {
   currentNwsObservationSource,
