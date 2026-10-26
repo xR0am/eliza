@@ -444,7 +444,10 @@ export class NotesService extends Service {
   }> {
     const id = parseEntityId(idValue);
     const patch = parseUpdateNoteInput(patchValue);
-    const revision = parseNoteEditRevision(expectedRevision, !patch.textEdit);
+    const revision = parseNoteEditRevision(
+      expectedRevision,
+      !patch.textEdit || patch.textEdit.action === "append",
+    );
     const updatedAt = this.now().toISOString();
     let consolidatedIds: string[] = [];
     const transaction = await this.store.transact((draft) => {
@@ -502,7 +505,10 @@ export class NotesService extends Service {
     consolidatedIds: string[];
   }> {
     const patch = parseUpdateNoteInput(patchValue);
-    const revision = parseNoteEditRevision(expectedRevision, !patch.textEdit);
+    const revision = parseNoteEditRevision(
+      expectedRevision,
+      !patch.textEdit || patch.textEdit.action === "append",
+    );
     const updatedAt = this.now().toISOString();
     const consolidatedIds: string[] = [];
     const transaction = await this.store.transact((draft) => {

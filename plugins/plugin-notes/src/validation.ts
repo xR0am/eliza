@@ -370,7 +370,24 @@ export function parseUpdateNoteInput(value: unknown): UpdateNoteInput {
       );
     }
     const edit = requireRecord(record.textEdit, "textEdit");
-    assertOnlyKeys(edit, ["field", "oldText", "newText"], "textEdit");
+    if (edit.action === "append") {
+      assertOnlyKeys(edit, ["action", "field", "text"], "textEdit");
+      if (
+        edit.field !== "body" ||
+        typeof edit.text !== "string" ||
+        edit.text.length === 0 ||
+        edit.text.length > MAX_BODY_LENGTH
+      ) {
+        throw validationError(
+          "Append requires field=body and a nonempty exact text suffix.",
+          "textEdit",
+        );
+      }
+      return { textEdit: { action: "append", field: "body", text: edit.text } };
+    }
+    assertOnlyKeys(edit, ["action", "field", "oldText", "newText"], "textEdit");
+    if (edit.action !== undefined && edit.action !== "replace")
+      throw validationError("Unknown text edit action.", "textEdit.action");
     if (edit.field !== "title" && edit.field !== "body") {
       throw validationError(
         "textEdit.field must be title or body.",

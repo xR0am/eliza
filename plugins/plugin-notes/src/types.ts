@@ -1,3 +1,4 @@
+import type { ActionParameterSchema, JSONSchema } from "@elizaos/core";
 import {
   type AuthoredNoteContent,
   type AuthoredNoteEdit,
@@ -77,6 +78,43 @@ export interface CreateNoteInput {
   color: StickyColor;
 }
 
+/** Append carries only the exact suffix; old content stays inside the transaction. */
+export type NoteTextEdit =
+  | {
+      action?: "replace";
+      field: "title" | "body";
+      oldText: string;
+      newText: string;
+    }
+  | { action: "append"; field: "body"; text: string };
+
+/** Shared model/capability schema; parseUpdateNoteInput owns runtime checks. */
+export const noteTextEditSchema: ActionParameterSchema & JSONSchema = {
+  anyOf: [
+    {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["replace"] },
+        field: { type: "string", enum: ["title", "body"] },
+        oldText: { type: "string", minLength: 1 },
+        newText: { type: "string" },
+      },
+      required: ["field", "oldText", "newText"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["append"] },
+        field: { type: "string", enum: ["body"] },
+        text: { type: "string", minLength: 1, maxLength: 20001 },
+      },
+      required: ["action", "field", "text"],
+      additionalProperties: false,
+    },
+  ],
+};
+
 export interface UpdateNoteInput {
   authoredEdit?: AuthoredNoteEdit;
   format?: NoteFormat;
@@ -84,11 +122,7 @@ export interface UpdateNoteInput {
   title?: string;
   body?: string;
   color?: StickyColor;
-  textEdit?: {
-    field: "title" | "body";
-    oldText: string;
-    newText: string;
-  };
+  textEdit?: NoteTextEdit;
 }
 
 /** Schema 2 stores the separator, if any, in the verbatim remainder. */

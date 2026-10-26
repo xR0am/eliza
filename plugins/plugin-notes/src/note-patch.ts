@@ -25,7 +25,8 @@ export function applyNotePatch(
   if (
     existing.format &&
     existing.format.kind !== "text" &&
-    authoredNoteText(existing.format) &&
+    (authoredNoteText(existing.format) ||
+      patch.textEdit?.action === "append") &&
     patch.format === undefined &&
     ((patch.content !== undefined && patch.content.trim() !== "") ||
       (patch.body !== undefined && patch.body.trim() !== "") ||
@@ -36,28 +37,35 @@ export function applyNotePatch(
       { code: "NOTES_RICH_EDIT_REQUIRED", severity: "ephemeral" },
     );
   if (patch.textEdit) {
-    const { field, oldText, newText } = patch.textEdit;
+    const edit = patch.textEdit;
+    const { field } = edit;
     const original = existing[field];
-    const first = original.indexOf(oldText);
-    const ambiguous = first >= 0 && original.indexOf(oldText, first + 1) >= 0;
-    if (first < 0 || ambiguous) {
-      throw new ElizaError(
-        first < 0
-          ? "The exact old text is absent from the current note; read it before choosing another edit. Nothing changed."
-          : "The old text matches more than once; include enough surrounding text to identify one occurrence. Nothing changed.",
-        {
-          code:
-            first < 0
-              ? "NOTES_EDIT_TEXT_NOT_FOUND"
-              : "NOTES_EDIT_TEXT_AMBIGUOUS",
-          context: { noteId: existing.id, field },
-          severity: "ephemeral",
-        },
-      );
+    let replacement: string;
+    if (edit.action === "append") {
+      // The caller supplies the separator as part of the exact suffix.
+      replacement = original + edit.text;
+    } else {
+      const { oldText, newText } = edit;
+      const first = original.indexOf(oldText);
+      const ambiguous = first >= 0 && original.indexOf(oldText, first + 1) >= 0;
+      if (first < 0 || ambiguous) {
+        throw new ElizaError(
+          first < 0
+            ? "The exact old text is absent from the current note; read it before choosing another edit. Nothing changed."
+            : "The old text matches more than once; include enough surrounding text to identify one occurrence. Nothing changed.",
+          {
+            code:
+              first < 0
+                ? "NOTES_EDIT_TEXT_NOT_FOUND"
+                : "NOTES_EDIT_TEXT_AMBIGUOUS",
+            context: { noteId: existing.id, field },
+            severity: "ephemeral",
+          },
+        );
+      }
+      // A callback keeps $&, $1 and similar text literal.
+      replacement = original.replace(oldText, () => newText);
     }
-    // A replacement callback keeps $&, $1 and similar text literal. The
-    // match is checked under the same store barrier that commits the update.
-    const replacement = original.replace(oldText, () => newText);
     const validated = parseStickyNote({ ...updated, [field]: replacement });
     if (validated[field] !== replacement) {
       throw new ElizaError(
