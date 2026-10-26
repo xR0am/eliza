@@ -10,6 +10,12 @@ const file = ts.createSourceFile(
   ts.ScriptTarget.Latest,
   true,
 );
+const effectFile = ts.createSourceFile(
+  "structured-tool-effect.ts",
+  readFileSync(new URL("./structured-tool-effect.ts", import.meta.url), "utf8"),
+  ts.ScriptTarget.Latest,
+  true,
+);
 const names = [
   "structuredEffectFromToolResult",
   "replyNamesStructuredEffectDestination",
@@ -17,11 +23,12 @@ const names = [
 ];
 const code = names
   .map((name) => {
-    const node = file.statements.find(
+    const source = name === "preparedViewReply" ? file : effectFile;
+    const node = source.statements.find(
       (n) => ts.isFunctionDeclaration(n) && n.name?.text === name,
     );
     if (!node) throw Error(name + " missing");
-    return node.getText(file).replace(/^export\s+/, "");
+    return node.getText(source).replace(/^export\s+/, "");
   })
   .join("\n");
 const js = ts.transpileModule(code, {

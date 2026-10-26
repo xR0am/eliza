@@ -468,7 +468,7 @@ function navigationClaimIsUngrounded(args: {
       const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const target = `(?:the\\s+)?${escaped}(?:\\s+(?:view|screen|app))?`;
       return new RegExp(
-        `^(?:Done[.!]?\\s*[-—:]?\\s*)?(?:${target}\\s+(?:(?:is|are)\\s+)?(?:now\\s+)?open|(?:I(?:['’]ve| have)?\\s+)?opened\\s+${target}|you(?:['’]re| are)\\s+(?:now\\s+)?on\\s+${target})(?:[.!]+(?=\\s|$)|$)`,
+        `^(?:Done[.!]?\\s*[-—:]?\\s*)?(?:${target}\\s+(?:(?:is|are)\\s+)?(?:now\\s+)?open|(?:I(?:['’]ve| have)?\\s+)?opened\\s+${target}|you(?:['’]re| are)\\s+(?:now\\s+)?on\\s+${target}|back\\s+on\\s+${target})(?:[.!]+(?=\\s|$)|$)`,
         "iu",
       ).test(args.reply.trim());
     }),

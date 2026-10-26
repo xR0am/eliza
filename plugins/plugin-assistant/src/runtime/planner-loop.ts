@@ -1,3 +1,8 @@
+import { evaluatePlannedReplyEgress } from "../services/message/egress-policy.ts";
+import {
+  replyNamesStructuredEffectDestination,
+  structuredEffectFromToolResult,
+} from "../services/message/structured-tool-effect.ts";
 import { findViewActionHandoff } from "@elizaos/core/protocol";
 import { projectBackgroundHistory } from "../services/message/history-discovery.ts";
 import {
@@ -8521,6 +8526,135 @@ function hasSuccessfulNonTerminalToolStep(
  * model failure here keeps the original result rather than discarding the
  * completed tool work.
  */
+function preparedNavigationSynthesisStep(
+  trajectory: PlannerTrajectory,
+): PlannerStep | undefined {
+  if (
+    trajectory.archivedSteps.length ||
+    trajectory.plannedQueue.length ||
+    trajectory.outcomeIntents?.length !== 1
+  )
+    return;
+  const effects = trajectory.steps.filter((step) => {
+    if (step.terminalOnly && !step.toolCall && !step.result) return false;
+    const r = step.result;
+    return !(
+      step.toolCall &&
+      isDiscoveryActionName(step.toolCall.name) &&
+      r?.success === true &&
+      r.data?.readOnlyOperation === true &&
+      !r.effectReceipts?.length &&
+      !r.userFacingEffectReceiptIds?.length &&
+      !hasExecutionPrerequisite(r)
+    );
+  });
+  const step = effects.length === 1 ? effects[0] : undefined;
+  const result = step?.result;
+  if (
+    !step?.toolCall ||
+    result?.success !== true ||
+    result.transcriptVisibility !== "internal" ||
+    !result.modelReplyRequired ||
+    !hasAwaitingDeviceExecutionMarker(result) ||
+    hasAwaitingUserInputMarker(result) ||
+    hasRequiresConfirmationMarker(result) ||
+    result.error != null ||
+    result.replyFailure ||
+    result.effectReceipts?.length ||
+    result.userFacingEffectReceiptIds?.length
+  )
+    return;
+  const handoff = findViewActionHandoff([
+    {
+      success: true,
+      actionName: step.toolCall.name,
+      values: result.data?.values,
+    },
+  ]);
+  const effect = structuredEffectFromToolResult(result);
+  const navigation = result.data?.navigation;
+  if (
+    !handoff?.navigationPrepared ||
+    effect?.effect !== "view_navigation" ||
+    effect.status !== "prepared" ||
+    !effect.label ||
+    !isObjectRecord(navigation) ||
+    navigation.viewId !== handoff.viewId ||
+    effect.viewId !== handoff.viewId ||
+    navigation.handoffId !== handoff.completedActionHandoffId ||
+    navigation.label !== effect.label ||
+    navigation.status !== "prepared" ||
+    effect.resolvedAlias !== navigation.resolvedAlias
+  )
+    return;
+  const view = result.data?.view;
+  if (
+    !isObjectRecord(view) ||
+    view.id !== handoff.viewId ||
+    view.installationId !== handoff.navigationBinding?.installationId
+  )
+    return;
+  const wanted = step.toolCall.params?.view;
+  if (
+    typeof wanted !== "string" ||
+    ![effect.viewId, effect.label, effect.resolvedAlias].some(
+      (name) =>
+        typeof name === "string" &&
+        name.trim().toLowerCase() === wanted.trim().toLowerCase(),
+    )
+  )
+    return;
+  return step;
+}
+
+function pendingNavigationSynthesisReply(
+  candidate: string | undefined,
+  trajectory: PlannerTrajectory,
+): string | undefined {
+  const step = preparedNavigationSynthesisStep(trajectory);
+  if (!step?.result) return;
+  const effect = structuredEffectFromToolResult(step.result);
+  const reply = userSafeRescueReply(candidate, trajectory);
+  if (
+    !effect ||
+    !reply ||
+    !replyNamesStructuredEffectDestination(reply, effect)
+  )
+    return;
+  const source = [...(trajectory.modelBaseContext ?? trajectory.context).events]
+    .reverse()
+    .find(
+      (event): event is ContextProviderEvent =>
+        event.type === "provider" && "name" in event && event.name === "VIEW_NAVIGATION",
+    );
+  // The current full destination registry is needed to reject completion
+  // claims about any other view, not only the prepared destination.
+  if (!source?.data || !Array.isArray(source.data.views)) return;
+  const verdict = evaluatePlannedReplyEgress({
+    reply,
+    pendingWork: true,
+    providers: {
+      VIEW_NAVIGATION: {
+        ...source,
+        data: { ...source.data, currentViewId: null },
+      },
+    },
+    actionResults: [
+      {
+        success: step.result.success,
+        transcriptVisibility: step.result.transcriptVisibility,
+        text: step.result.text,
+        effectReceipts: step.result.effectReceipts,
+        userFacingEffectReceiptIds: step.result.userFacingEffectReceiptIds,
+        data: step.result.data as ActionResult["data"],
+        values: step.result.data?.values as ActionResult["values"],
+      },
+    ],
+    actions: [],
+  });
+  return verdict.verdict === "allow" ? reply : undefined;
+}
+
 async function ensureToolTurnFinalMessage(
   params: PlannerLoopParams,
   result: PlannerLoopResult,
@@ -8633,6 +8767,7 @@ async function ensureToolTurnFinalMessage(
         replyRecoveryRequired: true,
       };
   }
+  const preparedNavigation = preparedNavigationSynthesisStep(result.trajectory);
   const iteration = result.trajectory.steps.length + 1;
   try {
     const synthesized = await finishWithForcedSynthesis({
@@ -8640,13 +8775,14 @@ async function ensureToolTurnFinalMessage(
       config: mergeChainingLoopConfig(params.config),
       trajectory: result.trajectory,
       iteration,
-      instruction:
-        "Tool work for this turn is complete but no user-facing reply was produced. " +
-        "Do not call any tool. Write the final answer to the user now from the tool " +
-        "results already in this trajectory; if they do not contain the answer, say " +
-        "plainly what you found and what was missing. For completed UI navigation, " +
-        "name the destination shown in the accepted receipt in your own concise wording; " +
-        "do not answer with only a generic acknowledgement.",
+      instruction: preparedNavigation
+        ? "The requested app-view navigation is prepared for the originating renderer, which will apply and acknowledge the bound handoff after receiving this reply. It is not yet confirmed on screen. Write one concise, natural prospective sentence naming that destination. Do not call tools, claim it already opened, or expose handoff/preparation/acknowledgment mechanics or add a disclaimer."
+        : "Tool work for this turn is complete but no user-facing reply was produced. " +
+          "Do not call any tool. Write the final answer to the user now from the tool " +
+          "results already in this trajectory; if they do not contain the answer, say " +
+          "plainly what you found and what was missing. For completed UI navigation, " +
+          "name the destination shown in the accepted receipt in your own concise wording; " +
+          "do not answer with only a generic acknowledgement.",
       onUsage: params.onModelUsage,
     });
     const finalMessage = synthesized.finalMessage;
@@ -8655,13 +8791,21 @@ async function ensureToolTurnFinalMessage(
       finalMessage.trim() !== "" &&
       finalMessage !== HANDLED_STEP_FALLBACK_MESSAGE &&
       finalMessage !== FAILED_TOOL_FALLBACK_MESSAGE &&
-      userSafeCapturedAnswerCandidate(finalMessage) !== undefined;
+      (preparedNavigation
+        ? pendingNavigationSynthesisReply(finalMessage, result.trajectory) !==
+          undefined
+        : userSafeCapturedAnswerCandidate(finalMessage) !== undefined);
     params.runtime.logger?.warn?.(
       { iteration, synthesizedUsable },
       "[planner-loop] tool work finished without a usable reply; forced a no-tools synthesis pass",
     );
     if (synthesizedUsable) {
       return { ...result, trajectory: synthesized.trajectory, finalMessage };
+    }
+    if (preparedNavigation) {
+      // An invalid pending-navigation draft must pass the host's existing
+      // grounded recovery, not an unqualified completed-tool rescue.
+      return { ...result, finalMessage: undefined, replyRecoveryRequired: true };
     }
     const rescued = await rescueReplyFromSuccessfulResults(
       params,
