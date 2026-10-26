@@ -30,10 +30,10 @@ export function viewNavigationAvailable(
 }
 
 /** Conservative complete navigation commands; matching grants no execution authority. */
-export function isExplicitRegisteredViewRequest(
-  views: readonly { id: string; label: string }[],
+export function resolveExplicitRegisteredViewRequest<T extends { id: string; label: string }>(
+  views: readonly T[],
   text: string,
-): boolean {
+): { view: T; resolvedAlias?: string } | undefined {
   const request = text
     .trim()
     .replace(/[.!]+$/u, "")
@@ -42,7 +42,7 @@ export function isExplicitRegisteredViewRequest(
     /^(?:please\s+)?(?:open|show|go(?:\s+to)?)\s+(?:the\s+)?(.+)$/iu.exec(
       request,
     );
-  return (
-    !!command && resolveViewNavigationTargets(views, command[1]).length === 1
-  );
+  if (!command) return;
+  const matches = resolveViewNavigationTargets(views, command[1]);
+  return matches.length === 1 ? matches[0] : undefined;
 }

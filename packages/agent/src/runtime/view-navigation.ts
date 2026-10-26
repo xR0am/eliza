@@ -15,7 +15,7 @@ import {
 } from "@elizaos/core";
 import { readViewInteractionClientId } from "@elizaos/core/protocol";
 import { listViews } from "../api/views-registry.ts";
-import { resolveViewNavigationTargets, isExplicitRegisteredViewRequest, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
+import { resolveViewNavigationTargets, resolveExplicitRegisteredViewRequest, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
 
 /** Add an availability hint for explicit known navigation, never an execution override. */
 export function registerViewNavigationRoutingRule(
@@ -38,12 +38,12 @@ export function registerViewNavigationRoutingRule(
       const completedAction =
         isObjectRecord(metadata) &&
         metadata.viewDelivery === "completed-action";
-      return isExplicitRegisteredViewRequest(
+      return resolveExplicitRegisteredViewRequest(
         listViews(runtime, { viewType: "gui" }).filter((view) =>
           viewNavigationAvailable(view, completedAction),
         ),
         text,
-      );
+      ) !== undefined;
     },
   });
 }
@@ -259,13 +259,11 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
     getStreamingContext()?.abortSignal?.throwIfAborted();
     if (!caller?.isOwner || caller.role !== staged.senderRole) return;
     const target = value.viewId.trim().toLowerCase();
-    const matches = resolveViewNavigationTargets(
-      listViews(runtime, { viewType: "gui" }).filter((view) =>
-        viewNavigationAvailable(view, completedAction) &&
-        satisfiesRoleGate([caller.role], view.roleGate),
-      ),
-      target,
+    const availableViews = listViews(runtime, { viewType: "gui" }).filter((view) =>
+      viewNavigationAvailable(view, completedAction) &&
+      satisfiesRoleGate([caller.role], view.roleGate),
     );
+    const matches = resolveViewNavigationTargets(availableViews, target);
     const viewAction = runtime.actions.find(
       (action) => action.name === "VIEWS",
     );
@@ -339,6 +337,9 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
           "Preserve every requested read/write and navigation intent. Use VIEWS action=show for an exact registered destination; use action=list for unknown targets. A domain read/write receipt does not satisfy navigation, and navigation does not satisfy domain work. VIEWS only selects an app view; loading a requested URL requires the authorized Browser operation and cannot be reported complete from a view-selection receipt. Preserve ordering, conditions and restrictions: evaluate prerequisite reads before conditional navigation; do not navigate when the condition is false. Do not report the complete request finished while required navigation remains undelivered or unexplained.",
         ],
       };
+    const requested = resolveExplicitRegisteredViewRequest(availableViews, staged.text);
+    const requestedAlias = requested?.view.id === matches[0].view.id
+      ? requested.resolvedAlias : undefined;
     return {
       requiresTool: true,
       clearReply: true,
@@ -348,7 +349,7 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
       clearParentActionHints: true,
       deterministicToolCall: {
         name: "VIEWS",
-        params: { action: "show", view: matches[0].resolvedAlias ?? matches[0].view.id },
+        params: { action: "show", view: requestedAlias ?? matches[0].resolvedAlias ?? matches[0].view.id },
       },
     };
   },

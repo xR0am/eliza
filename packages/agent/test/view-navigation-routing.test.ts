@@ -16,7 +16,7 @@ import {
   closeRuntimeViewRegistry,
 } from "../src/api/views-registry.ts";
 import { registerViewNavigationRoutingRule } from "../src/runtime/view-navigation.ts";
-import { isExplicitRegisteredViewRequest } from "../src/runtime/view-navigation-targets.ts";
+import { resolveExplicitRegisteredViewRequest } from "../src/runtime/view-navigation-targets.ts";
 const runtimes: IAgentRuntime[] = [];
 afterEach(() => {
   for (const runtime of runtimes.splice(0)) closeRuntimeViewRegistry(runtime);
@@ -99,21 +99,37 @@ describe("registered view navigation exposure", () => {
     );
     expect((await eligible(r, "Open Mission Board.")).length).toBe(1);
     expect(
-      isExplicitRegisteredViewRequest(
+      resolveExplicitRegisteredViewRequest(
         [
           { id: "one", label: "Same" },
           { id: "two", label: "Same" },
         ],
         "Open Same.",
       ),
-    ).toBe(false);
+    ).toBeUndefined();
     closeRuntimeViewRegistry(r);
-    await expect(eligible(r, "Open Workflows.")).rejects.toMatchObject({code:"VIEW_REGISTRY_CLOSED"});
+    await expect(eligible(r, "Open Workflows.")).rejects.toMatchObject({
+      code: "VIEW_REGISTRY_CLOSED",
+    });
   });
   it("does not expose an unavailable registered view", async () => {
     const r = fixture();
-    await registerPluginViews(r, {name:"test-missing-view",views:[{id:"missing",label:"Missing Surface",path:"/missing",bundlePath:"does-not-exist.js"}]} as never, {pluginDir:process.cwd(),indexEmbeddings:false});
-    expect(await eligible(r,"Open Missing Surface.")).toEqual([]);
+    await registerPluginViews(
+      r,
+      {
+        name: "test-missing-view",
+        views: [
+          {
+            id: "missing",
+            label: "Missing Surface",
+            path: "/missing",
+            bundlePath: "does-not-exist.js",
+          },
+        ],
+      } as never,
+      { pluginDir: process.cwd(), indexEmbeddings: false },
+    );
+    expect(await eligible(r, "Open Missing Surface.")).toEqual([]);
   });
   it("only adds capability candidates and leaves optional visual judgment unchanged", async () => {
     const r = fixture();
