@@ -1407,6 +1407,7 @@ async function executeMeasuredSharedElizaRuntimeTurn(
     if (
       publicSearchIntent?.kind === "prefetched" &&
       !preflightWebSearchResult &&
+      !typedReadTurn &&
       !privateCapabilityIntent
     ) {
       // A missing server receipt is not permission to search from private history
