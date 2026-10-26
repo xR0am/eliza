@@ -19,11 +19,8 @@ const LIMITS = {
   artifactBytes: 50 * 1024 * 1024,
   modelBodyBytes: 1024 * 1024,
 } as const;
-const suite =
-  process.argv.find((arg) => arg.startsWith("--suite="))?.split("=")[1] ??
-  "baseline";
-if (!["baseline", "bare-weather", "full"].includes(suite))
-  throw new Error("QA_SUITE_INVALID");
+const suite = process.argv.find((arg) => arg.startsWith("--suite="))?.split("=")[1] ?? "baseline";
+if (!["baseline", "bare-weather", "full"].includes(suite)) throw new Error("QA_SUITE_INVALID");
 const weather =
   suite === "bare-weather"
     ? "What's the current temperature in San Francisco? Please include a source."
@@ -44,8 +41,7 @@ const cases = [
     ? [
         {
           id: "sf-bare-place",
-          message:
-            "What's the current temperature in San Francisco? Please include a source.",
+          message: "What's the current temperature in San Francisco? Please include a source.",
         },
         { id: "closing-thanks", message: "Thanks" },
         { id: "closing-ok", message: "OK" },
@@ -78,11 +74,7 @@ if (process.argv.includes("--plan")) {
 
 const root = path.resolve(
   process.env.SHARED_RUNTIME_LIVE_QA_DIR ??
-    path.join(
-      process.cwd(),
-      "test-results/shared-runtime-live-qa",
-      randomUUID(),
-    ),
+    path.join(process.cwd(), "test-results/shared-runtime-live-qa", randomUUID()),
 );
 const raw = path.join(root, "private");
 const publish = path.join(root, "publish");
@@ -96,9 +88,7 @@ const cleanJson = (value: unknown) =>
   JSON.stringify(
     value,
     (key, item) =>
-      /^(?:authorization|api[_-]?key|token|password|secret|credential|cookie)$/i.test(
-        key,
-      )
+      /^(?:authorization|api[_-]?key|token|password|secret|credential|cookie)$/i.test(key)
         ? "[REDACTED]"
         : typeof item === "string"
           ? cleanText(item)
@@ -109,8 +99,7 @@ const report: Record<string, unknown> = {
   state: "RUNNING",
   suite,
   limits: LIMITS,
-  context:
-    "PUBLIC_SYNTHETIC_ONLY; synthetic auth principal; not native/account/signup acceptance",
+  context: "PUBLIC_SYNTHETIC_ONLY; synthetic auth principal; not native/account/signup acceptance",
   productionChanged: false,
   nativeDelivery: false,
   credentialName: "CEREBRAS_API_KEY",
@@ -123,13 +112,11 @@ const omitted = (kind: string) => {
   exportRedactions[kind] = (exportRedactions[kind] ?? 0) + 1;
 };
 function projectFinal(value: unknown): unknown {
-  if (Array.isArray(value))
-    return value.map(projectFinal).filter((item) => item !== undefined);
+  if (Array.isArray(value)) return value.map(projectFinal).filter((item) => item !== undefined);
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     if (
-      (typeof record.type === "string" &&
-        /reasoning|analysis|thinking/i.test(record.type)) ||
+      (typeof record.type === "string" && /reasoning|analysis|thinking/i.test(record.type)) ||
       (typeof record.channel === "string" &&
         /^(?:analysis|reasoning|thought)$/i.test(record.channel)) ||
       (typeof record.role === "string" &&
@@ -171,8 +158,7 @@ function projectFinal(value: unknown): unknown {
     return (
       text
         .match(/<\|channel\|>final(?:<\|message\|>)?([\s\S]*)/i)?.[1]
-        ?.replace(/<\|(?:return|end|im_end)\|>/g, "") ??
-      "[PRIVATE_REASONING_OMITTED]"
+        ?.replace(/<\|(?:return|end|im_end)\|>/g, "") ?? "[PRIVATE_REASONING_OMITTED]"
     );
   }
   if (/<(?:think|analysis|reasoning)>/i.test(text)) {
@@ -188,9 +174,7 @@ function projectFinal(value: unknown): unknown {
       text
         .split(/\r?\n/)
         .filter((line) =>
-          /^\s*(?:replyText|shouldRespond|contexts|intents|candidateActionNames)\s*:/i.test(
-            line,
-          ),
+          /^\s*(?:replyText|shouldRespond|contexts|intents|candidateActionNames)\s*:/i.test(line),
         )
         .join("\n") || "[PRIVATE_REASONING_OMITTED]"
     );
@@ -230,17 +214,14 @@ function projectSdkBody(text: string): unknown {
   let usage: unknown;
   for (const frame of frames) {
     const event = JSON.parse(frame) as Record<string, unknown>;
-    if (!Array.isArray(event.choices))
-      fail("QA_SDK_STREAM_FORMAT_UNSUPPORTED_NOT_EXPORTED");
+    if (!Array.isArray(event.choices)) fail("QA_SDK_STREAM_FORMAT_UNSUPPORTED_NOT_EXPORTED");
     model = event.model ?? model;
     usage = event.usage ?? usage;
     for (const rawChoice of event.choices) {
       const choice = rawChoice as Record<string, unknown>;
       const index = typeof choice.index === "number" ? choice.index : 0;
       const landed = choices.get(index) ?? { content: "", tools: new Map() };
-      const delta = (choice.delta ?? choice.message) as
-        | Record<string, unknown>
-        | undefined;
+      const delta = (choice.delta ?? choice.message) as Record<string, unknown> | undefined;
       if (delta) {
         if (typeof delta.content === "string") landed.content += delta.content;
         // Never collect reasoning_content or analysis channels. Tool arguments are assembled first, then redacted as complete JSON.
@@ -255,8 +236,7 @@ function projectSdkBody(text: string): unknown {
             };
             if (typeof tool.id === "string") joined.id = tool.id;
             if (typeof fn?.name === "string") joined.name += fn.name;
-            if (typeof fn?.arguments === "string")
-              joined.arguments += fn.arguments;
+            if (typeof fn?.arguments === "string") joined.arguments += fn.arguments;
             landed.tools.set(toolIndex, joined);
           }
       }
@@ -337,9 +317,7 @@ if (process.argv.includes("--check-export")) {
         {
           index: 0,
           delta: {
-            tool_calls: [
-              { index: 0, function: { arguments: '","replyText":"43"}' } },
-            ],
+            tool_calls: [{ index: 0, function: { arguments: '","replyText":"43"}' } }],
           },
           finish_reason: "tool_calls",
         },
@@ -372,9 +350,7 @@ if (process.argv.includes("--check-export")) {
     }),
   );
   const harmony = String(
-    projectFinal(
-      `<|channel|>analysis<|message|>${hidden}<|channel|>final<|message|>43<|return|>`,
-    ),
+    projectFinal(`<|channel|>analysis<|message|>${hidden}<|channel|>final<|message|>43<|return|>`),
   );
   if (
     [json, sse, core, harmony].some((text) => text.includes(hidden)) ||
@@ -392,8 +368,7 @@ if (process.argv.includes("--check-export")) {
     closed = true;
   }
   if (!closed) fail("QA_UNPARSEABLE_STREAM_NOT_CLOSED");
-  if (secret && cleanText(secret).includes(secret))
-    fail("QA_SECRET_REDACTION_CONTROL_FAILED");
+  if (secret && cleanText(secret).includes(secret)) fail("QA_SECRET_REDACTION_CONTROL_FAILED");
   console.log("SOURCE_EXPORT_CONTROLS_PASSED_NOT_LIVE_QA");
   process.exit(0);
 }
@@ -401,9 +376,7 @@ if (process.argv.includes("--check-export")) {
 const captures: Array<Record<string, unknown>> = [];
 const pendingCaptures: Promise<void>[] = [];
 
-async function boundedBody(
-  stream: ReadableStream<Uint8Array> | null,
-): Promise<string> {
+async function boundedBody(stream: ReadableStream<Uint8Array> | null): Promise<string> {
   if (!stream) return "";
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -457,30 +430,23 @@ function captureBody(
         recursive: true,
         mode: 0o700,
       });
-      await writeFile(
-        path.join(raw, "sdk-private", `${name}.${kind}.body.txt`),
-        clean,
-        { mode: 0o600 },
-      );
+      await writeFile(path.join(raw, "sdk-private", `${name}.${kind}.body.txt`), clean, {
+        mode: 0o600,
+      });
       const projection = cleanJson(projectSdkBody(clean));
       await mkdir(path.join(raw, "sdk-final"), {
         recursive: true,
         mode: 0o700,
       });
-      await writeFile(
-        path.join(raw, "sdk-final", `${name}.${kind}.json`),
-        projection,
-        { mode: 0o600 },
-      );
+      await writeFile(path.join(raw, "sdk-final", `${name}.${kind}.json`), projection, {
+        mode: 0o600,
+      });
       record.writeMs = Date.now() - writing;
       record.bytes = Buffer.byteLength(clean);
       record.exportSHA256 = hash(projection);
       record.complete = true;
     } catch (error) {
-      record.error =
-        error instanceof Error
-          ? cleanText(error.message)
-          : "capture unavailable";
+      record.error = error instanceof Error ? cleanText(error.message) : "capture unavailable";
     }
   })();
   pendingCaptures.push(task);
@@ -494,8 +460,7 @@ let callsBeforeMath = false;
 let deadline = Date.now() + LIMITS.totalMs;
 const originalFetch = globalThis.fetch;
 const originalInfo = console.info;
-const hash = (value: string) =>
-  createHash("sha256").update(value).digest("hex");
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
 async function save(name: string, value: unknown) {
   await writeFile(path.join(raw, name), `${cleanJson(value)}\n`, {
@@ -521,9 +486,7 @@ function forbiddenHost(host: string) {
       "ntwrk.party",
       "peon.biz",
     ].some(
-      (suffix) =>
-        host === suffix ||
-        host.endsWith(suffix.startsWith(".") ? suffix : `.${suffix}`),
+      (suffix) => host === suffix || host.endsWith(suffix.startsWith(".") ? suffix : `.${suffix}`),
     )
   );
 }
@@ -540,8 +503,7 @@ async function publishSanitizedArtifacts() {
         const input = await readFile(file, "utf8");
         const text = cleanJson(projectFinal(JSON.parse(input)));
         bytes += Buffer.byteLength(text);
-        if (bytes > LIMITS.artifactBytes)
-          fail("QA_ARTIFACT_LIMIT_EXCEEDED_NOT_TRUNCATED");
+        if (bytes > LIMITS.artifactBytes) fail("QA_ARTIFACT_LIMIT_EXCEEDED_NOT_TRUNCATED");
         files.push({ relative: path.relative(raw, file), data: text });
       }
     }
@@ -575,8 +537,7 @@ async function run() {
   await mkdir(root, { recursive: false, mode: 0o700 });
   ownsOutput = true;
   await mkdir(raw, { mode: 0o700 });
-  if (cases.length + (suite !== "bare-weather" ? 1 : 0) > LIMITS.cases)
-    fail("QA_CASE_LIMIT");
+  if (cases.length + (suite !== "bare-weather" ? 1 : 0) > LIMITS.cases) fail("QA_CASE_LIMIT");
   if (!secret) fail("QA_CEREBRAS_KEY_MISSING");
   const unexpected = [
     "OPENAI_API_KEY",
@@ -592,8 +553,7 @@ async function run() {
     "REDIS_URL",
     "GATEWAY_INTERNAL_SECRET",
   ].filter((name) => process.env[name]?.trim());
-  if (unexpected.length)
-    fail(`QA_UNEXPECTED_CREDENTIALS:${unexpected.join(",")}`);
+  if (unexpected.length) fail(`QA_UNEXPECTED_CREDENTIALS:${unexpected.join(",")}`);
   if (process.env.ELIZA_DISABLE_TRAJECTORY_LOGGING === "1")
     fail("QA_TRAJECTORIES_DISABLED_BY_OPERATOR");
   const source = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -616,8 +576,7 @@ async function run() {
     bunNodeCompatibility: process.version,
     source,
   };
-  if (Bun.version !== "1.4.2" || hostNode !== "v24.15.0")
-    fail("QA_TOOLCHAIN_VERSION_MISMATCH");
+  if (Bun.version !== "1.4.2" || hostNode !== "v24.15.0") fail("QA_TOOLCHAIN_VERSION_MISMATCH");
   process.env.ELIZA_STATE_DIR = path.join(raw, "state");
   process.env.ELIZA_TRAJECTORY_DIR = path.join(raw, "trajectories");
   process.env.ELIZA_TRAJECTORY_LOGGING = "1";
@@ -627,22 +586,15 @@ async function run() {
     apply: async (target, receiver, args: Parameters<typeof fetch>) => {
       const [input, init] = args;
       const url = new URL(input instanceof Request ? input.url : String(input));
-      if (
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        forbiddenHost(url.hostname)
-      )
+      if (url.protocol !== "https:" || url.username || url.password || forbiddenHost(url.hostname))
         fail("QA_NETWORK_SCOPE_REFUSED");
       if (Date.now() >= deadline || network.length >= LIMITS.networkRequests)
         fail("QA_NETWORK_OR_TIME_LIMIT");
       const model =
-        url.hostname === "api.cerebras.ai" &&
-        url.pathname.endsWith("/chat/completions");
+        url.hostname === "api.cerebras.ai" && url.pathname.endsWith("/chat/completions");
       if (
         model &&
-        (modelRequests >= LIMITS.modelRequests ||
-          caseModelRequests >= LIMITS.modelRequestsPerCase)
+        (modelRequests >= LIMITS.modelRequests || caseModelRequests >= LIMITS.modelRequestsPerCase)
       )
         fail("QA_MODEL_REQUEST_LIMIT");
       if (model) {
@@ -654,8 +606,7 @@ async function run() {
         kind: model ? "model" : "public-read",
         host: url.hostname,
         path: url.pathname,
-        method:
-          init?.method ?? (input instanceof Request ? input.method : "GET"),
+        method: init?.method ?? (input instanceof Request ? input.method : "GET"),
         startedAt: new Date().toISOString(),
       };
       if (model && typeof init?.body === "string") {
@@ -675,8 +626,7 @@ async function run() {
       if (model) {
         const setup = Date.now();
         try {
-          if (typeof init?.body === "string")
-            captureBody(captureName, "request", init.body);
+          if (typeof init?.body === "string") captureBody(captureName, "request", init.body);
           else if (init?.body === undefined && input instanceof Request)
             captureBody(captureName, "request", input.clone().body);
           else
@@ -707,12 +657,7 @@ async function run() {
         if (model) {
           const setup = Date.now();
           try {
-            captureBody(
-              captureName,
-              "response",
-              response.clone().body,
-              String(entry.case),
-            );
+            captureBody(captureName, "response", response.clone().body, String(entry.case));
           } catch {
             captures.push({
               name: captureName,
@@ -722,13 +667,11 @@ async function run() {
               error: "QA_SDK_RESPONSE_CLONE_UNAVAILABLE",
             });
           }
-          entry.captureSetupMs =
-            Number(entry.captureSetupMs ?? 0) + Date.now() - setup;
+          entry.captureSetupMs = Number(entry.captureSetupMs ?? 0) + Date.now() - setup;
         }
         return response;
       } catch (error) {
-        entry.error =
-          error instanceof Error ? cleanText(error.message) : "network failure";
+        entry.error = error instanceof Error ? cleanText(error.message) : "network failure";
         throw error;
       } finally {
         entry.elapsedMs = Date.now() - start;
@@ -750,10 +693,10 @@ async function run() {
   };
   const { ChannelType } = await import("@elizaos/core");
   const { runSharedAgentTurn, resolveSharedAgentTurnModel } = await import(
-    "../../shared/src/lib/services/shared-runtime/run-shared-agent-turn"
+    "../lib/services/shared-runtime/run-shared-agent-turn"
   );
   const { isVerifiedCurrentNwsObservation } = await import(
-    "../../shared/src/lib/services/shared-runtime/shared-current-weather"
+    "../lib/services/shared-runtime/shared-current-weather"
   );
   report.resolvedModel = resolveSharedAgentTurnModel();
   if (!report.resolvedModel) fail("QA_NORMAL_MODEL_RESOLVER_UNAVAILABLE");
@@ -783,8 +726,7 @@ async function run() {
       const turn = await runSharedAgentTurn({
         character: {
           name: "Eliza",
-          system:
-            "You are Eliza, a helpful conversational assistant. Be brief and clear.",
+          system: "You are Eliza, a helpful conversational assistant. Be brief and clear.",
         },
         history,
         message: item.message,
@@ -800,9 +742,7 @@ async function run() {
           channel: { type: ChannelType.DM, source: "blooio" },
           authenticatedPersonalSharedUser: true,
         },
-        abortSignal: AbortSignal.timeout(
-          Math.min(LIMITS.caseMs, deadline - Date.now()),
-        ),
+        abortSignal: AbortSignal.timeout(Math.min(LIMITS.caseMs, deadline - Date.now())),
         onRuntimeTiming: (value) => {
           timings.push(value);
         },
@@ -813,16 +753,13 @@ async function run() {
       };
       observation.output = turn.reply;
       observation.responded = turn.responded;
-      observation.acknowledgementCandidate =
-        emitted.acknowledgementReaction ?? null;
+      observation.acknowledgementCandidate = emitted.acknowledgementReaction ?? null;
       observation.usage = turn.usage ?? null;
       observation.model = turn.model;
       observation.providerReceipts = turn.actionResults ?? [];
       observation.internalGrounding = turn.internalGrounding ?? null;
       observation.bindingDiagnostics = diagnostics.slice(diagnosticStart);
-      const ownReads = network
-        .slice(networkStart)
-        .filter((r) => r.kind === "public-read");
+      const ownReads = network.slice(networkStart).filter((r) => r.kind === "public-read");
       const publicTools = (turn.actionResults ?? []).filter((r) =>
         ["WEB_SEARCH", "WEB_FETCH"].includes(String(r.data?.actionName)),
       );
@@ -832,10 +769,7 @@ async function run() {
         const verifiedObservation =
           grounding?.kind === "web_search" &&
           grounding.provider === "nws" &&
-          isVerifiedCurrentNwsObservation(
-            grounding.weatherObservation,
-            grounding.query,
-          );
+          isVerifiedCurrentNwsObservation(grounding.weatherObservation, grounding.query);
         observation.verifiedCurrentObservation = verifiedObservation;
         observation.status =
           verifiedObservation &&
@@ -879,25 +813,18 @@ async function run() {
             turn.reply,
           );
         observation.status =
-          observation.possibleUnsupportedPromise ||
-          publicTools.length ||
-          ownReads.length
+          observation.possibleUnsupportedPromise || publicTools.length || ownReads.length
             ? "failed"
             : "passed-controls-review-required";
       }
-      if (
-        turn.degraded ||
-        (caseModelRequests === 0 && !item.id.startsWith("closing-"))
-      ) {
+      if (turn.degraded || (caseModelRequests === 0 && !item.id.startsWith("closing-"))) {
         observation.status = "failed";
         observation.error = "QA_NO_REAL_MODEL_TURN";
       }
     } catch (error) {
       observation.status = "failed";
       observation.error =
-        error instanceof Error
-          ? cleanText(error.stack ?? error.message)
-          : "unknown failure";
+        error instanceof Error ? cleanText(error.stack ?? error.message) : "unknown failure";
     }
     observation.elapsedMs = Date.now() - start;
     observation.modelRequests = caseModelRequests;
@@ -931,17 +858,10 @@ async function run() {
   const trajectories: unknown[] = [];
   for (const file of files.filter((name) => name.endsWith(".json")))
     trajectories.push(
-      JSON.parse(
-        await readFile(
-          path.join(process.env.ELIZA_TRAJECTORY_DIR, file),
-          "utf8",
-        ),
-      ),
+      JSON.parse(await readFile(path.join(process.env.ELIZA_TRAJECTORY_DIR, file), "utf8")),
     );
   const stages = trajectories.flatMap((t) =>
-    t &&
-    typeof t === "object" &&
-    Array.isArray((t as Record<string, unknown>).stages)
+    t && typeof t === "object" && Array.isArray((t as Record<string, unknown>).stages)
       ? (t as { stages: unknown[] }).stages
       : [],
   );
@@ -968,18 +888,9 @@ async function run() {
     "Public synthetic requests, final responses, tool calls/parsed decisions and source evidence only. Private reasoning/analysis/thought fields, flattened Core prompts, raw SDK bodies and Markdown logs are not published. Complete original SDK bodies are hashed and retained only in the ephemeral private runner directory.";
   report.exportRedactions = exportRedactions;
   report.captureObservations = {
-    setupMs: network.reduce(
-      (sum, request) => sum + Number(request.captureSetupMs ?? 0),
-      0,
-    ),
-    readMs: captures.reduce(
-      (sum, capture) => sum + Number(capture.readMs ?? 0),
-      0,
-    ),
-    writeAndProjectionMs: captures.reduce(
-      (sum, capture) => sum + Number(capture.writeMs ?? 0),
-      0,
-    ),
+    setupMs: network.reduce((sum, request) => sum + Number(request.captureSetupMs ?? 0), 0),
+    readMs: captures.reduce((sum, capture) => sum + Number(capture.readMs ?? 0), 0),
+    writeAndProjectionMs: captures.reduce((sum, capture) => sum + Number(capture.writeMs ?? 0), 0),
     note: "Clone reads and disk writes overlap model execution; these are observed work times, not additive latency or a performance benchmark.",
   };
   report.state =
@@ -990,8 +901,7 @@ async function run() {
     captures.length >= modelRequests * 2 &&
     captures.every((capture) => capture.complete === true) &&
     (suite === "bare-weather" ||
-      (report.publicFetchTransport as { success?: boolean } | undefined)
-        ?.success === true)
+      (report.publicFetchTransport as { success?: boolean } | undefined)?.success === true)
       ? "LIVE_CONTROLS_PASSED_PUBLIC_TRANSCRIPTS_REQUIRE_REVIEW"
       : "FAILED_NOT_ACCEPTANCE";
 }
@@ -1003,10 +913,7 @@ const watchdog = setTimeout(() => {
 }, LIMITS.totalMs + 10_000);
 try {
   await run();
-  status =
-    report.state === "LIVE_CONTROLS_PASSED_PUBLIC_TRANSCRIPTS_REQUIRE_REVIEW"
-      ? 0
-      : 1;
+  status = report.state === "LIVE_CONTROLS_PASSED_PUBLIC_TRANSCRIPTS_REQUIRE_REVIEW" ? 0 : 1;
 } catch (error) {
   report.state = "FAILED_NOT_ACCEPTANCE";
   report.error =

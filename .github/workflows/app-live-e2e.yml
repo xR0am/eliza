@@ -1009,7 +1009,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          bun --conditions=eliza-source --tsconfig-override=tsconfig.json ../scripts/shared/runtime-live-qa.ts --suite="$QA_SUITE" > "$RUNNER_TEMP/shared-runtime-live-qa-console.log" 2>&1
+          bun --conditions=eliza-source --tsconfig-override=tsconfig.json src/testing/runtime-live-qa.ts --suite="$QA_SUITE" > "$RUNNER_TEMP/shared-runtime-live-qa-console.log" 2>&1
           status=$?
           set -e
           echo "Shared runtime live QA finished; exit=$status. Review the synthetic public trajectories."
