@@ -257,6 +257,16 @@ export {
   setViewsBroadcastWs,
 } from "./view-interaction-host.ts";
 export interface CurrentViewState {
+  /** Only a validated native switch acknowledgment may establish this history. */
+  navigationConfirmation?: {
+    ownerId: string;
+    handoffId: string;
+    installationId: string;
+    previousView?: {
+      viewId: string;
+      installationId: string;
+    };
+  };
   viewId: string;
   viewPath: string | null;
   viewLabel: string;
@@ -763,11 +773,28 @@ export async function handleViewsRoutes(
     const commitCurrentViewState = (
       committedViewPath: string | null,
       announceSwitch = true,
+      confirmation?: { ownerId: string; handoffId: string },
     ) => {
       if (isCloseNavigation) {
         clearCurrentViewState(viewRuntime, scope);
         return;
       }
+      // Read at commit, not from the request's earlier asynchronous snapshot.
+      currentViewState = getCurrentViewState(viewRuntime, scope);
+      const priorConfirmation = currentViewState?.navigationConfirmation;
+      const previousConfirmed =
+        confirmation && priorConfirmation &&
+        priorConfirmation.ownerId === confirmation.ownerId &&
+        currentViewState &&
+        getView(viewRuntime, currentViewState.viewId, { viewType: "gui" })
+          ?.installationId === priorConfirmation?.installationId
+          ? currentViewState.viewId === id
+            ? priorConfirmation?.previousView
+            : {
+                viewId: currentViewState.viewId,
+                installationId: priorConfirmation.installationId,
+              }
+          : undefined;
       const now = new Date().toISOString();
       const source = reportedSource;
       // Stamp `switchedAt` only when the view actually changes; a re-navigate to
@@ -778,6 +805,15 @@ export async function handleViewsRoutes(
         ? now
         : (currentViewState?.switchedAt ?? now);
       currentViewState = {
+        ...(confirmation && typeof entry?.installationId === "string"
+          ? {
+              navigationConfirmation: {
+                ...confirmation,
+                installationId: entry.installationId,
+                ...(previousConfirmed ? { previousView: previousConfirmed } : {}),
+              },
+            }
+          : {}),
         viewId: id,
         viewPath: committedViewPath,
         viewLabel,
@@ -882,6 +918,7 @@ export async function handleViewsRoutes(
         );
         return true;
       }
+      const preparedBase = currentViewState;
       let settled: Promise<ViewInteractResult>;
       try {
         settled = viewInteractionHost(viewRuntime, ctx.hostKey).waitFor(
@@ -906,8 +943,10 @@ export async function handleViewsRoutes(
         .then((result) => {
           if (!result.success) return;
           assertRuntimeViewEntry(viewRuntime, entry);
+          // A manual or newer switch after preparation wins over this acknowledgment.
+          if (getCurrentViewState(viewRuntime, scope) !== preparedBase) return;
           // Explicit native navigation is not an invitation to a proactive greeting.
-          commitCurrentViewState(entry.path ?? null, false);
+          commitCurrentViewState(entry.path ?? null, false, { ownerId, handoffId });
         })
         .catch((error) => {
           viewRuntime.reportError("VIEWS.preparedNavigation", error, {

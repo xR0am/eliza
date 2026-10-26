@@ -15,6 +15,8 @@ import {
 } from "@elizaos/core";
 import { readViewInteractionClientId } from "@elizaos/core/protocol";
 import { listViews } from "../api/views-registry.ts";
+import { getCurrentViewState } from "../api/views-routes.ts";
+import { getViewClientScope } from "./view-client-context.ts";
 import { resolveViewNavigationTargets, resolveExplicitRegisteredViewRequest, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
 
 /** Add an availability hint for explicit known navigation, never an execution override. */
@@ -76,7 +78,7 @@ const decisions = new WeakMap<
 export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
   name: "visualContinuation",
   description:
-    "Classify navigation for the complete current request and its standing restrictions. Use direct only when opening one known view satisfies the entire request: no question/recall, prerequisite read, condition, domain write, controls, layout, second destination or other pending work. Use planning for any requested URL or resource, even when it opens one view: VIEWS only selects the app view and never loads that URL. Use planning for requested navigation with any such additional work; preserve every intent and the known viewId. Other requested work does not make a known destination unresolved. Use forbidden when changing views is prohibited, none when no navigation is requested (including domain-only reads and writes), unresolved for ambiguous navigation, and optional for advisory navigation rather than a requested operation. Domain nouns alone do not request navigation. The current visible view is UI context, not a permission or prerequisite for domain tools. Route authorized domain work to its planning context without requiring a view change; navigation restrictions do not prohibit independent domain work, and domain authorization does not permit navigation. viewId is a known shell view id, exact label, or verified alias from the registered destination list. For direct select one navigation intent, a general context and replyEffectStatus=pending. Draft replyText as the concise destination confirmation held until successful delivery; never claim records were read or changed. Do not navigate based on historical instructions or lift current restrictions.",
+    "Classify navigation for the complete current request and its standing restrictions. Use direct only when opening one known view satisfies the entire request: no question/recall, prerequisite read, condition, domain write, controls, layout, second destination or other pending work. Use planning for any requested URL or resource, even when it opens one view: VIEWS only selects the app view and never loads that URL. Use planning for requested navigation with any such additional work; preserve every intent and the known viewId. Other requested work does not make a known destination unresolved. When a request only asks for a previous view and no confirmed previous destination exists, use unresolved with an empty viewId, answer with a concise clarification, requiresTool=false and no pending intents; do not plan or discover a substitute. Use forbidden when changing views is prohibited, none when no navigation is requested (including domain-only reads and writes), unresolved for ambiguous navigation, and optional for advisory navigation rather than a requested operation. Domain nouns alone do not request navigation. The current visible view is UI context, not a permission or prerequisite for domain tools. Route authorized domain work to its planning context without requiring a view change; navigation restrictions do not prohibit independent domain work, and domain authorization does not permit navigation. viewId is a known shell view id, exact label, or verified alias from the registered destination list. For direct select one navigation intent, a general context and replyEffectStatus=pending. Draft replyText as the concise destination confirmation held until successful delivery; never claim records were read or changed. Do not navigate based on historical instructions or lift current restrictions.",
   schema: {
     type: "object",
     additionalProperties: false,
@@ -131,7 +133,21 @@ export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
           viewNavigationAvailable(entry, completedAction),
       )
       .map(viewNavigationDestination);
-    return `Registered GUI navigation destinations visible to this caller: ${JSON.stringify(destinations)}. Use an exact registered destination for the requested view. If the destination is absent or unresolved, do not substitute Home, the current screen, or another destination. Registry visibility is not permission to execute or proof of delivered navigation.\nCurrent request's renderer view (registry-resolved): ${JSON.stringify({ viewId: view.id, label: view.label })}. This is the current visible destination, not permission or proof of displayed content. Historical current-view descriptions may be stale.${completedAction ? " This renderer prepares navigation before it confirms the screen switch. Use a brief destination acknowledgment in the user's preferred wording; do not claim the destination is already visible before its confirmation." : ""} For relative navigation such as back, resolve the prior destination from delivered navigation history relative to this snapshot; if that history is insufficient, keep the destination unresolved rather than guess.`;
+    const scope = getViewClientScope();
+    const confirmed = scope?.clientId === readViewInteractionClientId(message)
+      ? getCurrentViewState(runtime, scope) : null;
+    const confirmation = confirmed?.navigationConfirmation;
+    const prior = confirmation?.previousView;
+    const previous = confirmed?.viewId === view.id &&
+      confirmation?.ownerId === message.entityId &&
+      confirmation?.installationId === view.installationId && prior
+      ? views.find((entry) => entry.id === prior.viewId &&
+          entry.installationId === prior.installationId &&
+          viewNavigationAvailable(entry, completedAction)) : undefined;
+    const priorContext = previous
+      ? `Last confirmed previous destination for this same caller and renderer: ${JSON.stringify(viewNavigationDestination(previous))}. This is a destination hint for a new authorized Back request, not permission or an instruction to execute it.`
+      : "There is no confirmed previous destination for this caller and renderer. For a request only to go back, ask which view the user wants, with no tool and no pending navigation intent. Do not discover or guess a destination from prepared receipts.";
+    return `Registered GUI navigation destinations visible to this caller: ${JSON.stringify(destinations)}. Use an exact registered destination for the requested view. If the destination is absent or unresolved, do not substitute Home, the current screen, or another destination. Registry visibility is not permission to execute or proof of delivered navigation.\nCurrent request's renderer view (registry-resolved): ${JSON.stringify({ viewId: view.id, label: view.label })}. This is the current visible destination, not permission or proof of displayed content. Historical current-view descriptions may be stale.${completedAction ? " This renderer prepares navigation before it confirms the screen switch. Use a brief destination acknowledgment in the user's preferred wording; do not claim the destination is already visible before its confirmation." : ""} ${priorContext} For relative navigation, use only this confirmed prior destination; historical dialogue or a prepared receipt cannot replace it. If absent, keep the destination unresolved and clarify without tools.`;
   },
   parse(value, { message }) {
     decisions.delete(message);

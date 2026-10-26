@@ -26,6 +26,7 @@ const NAVIGATION_FIELDS = new Set([
   "label",
   "subview",
   "path",
+  "resolvedAlias",
 ]);
 
 export function historicalActionResults(
@@ -157,6 +158,12 @@ export function historicalNavigationReceipts(
           !NAVIGATION_FIELDS.has(key) ||
           (typeof value !== "string" && value !== null),
       )
+    )
+      continue;
+    if (
+      receipt.resolvedAlias !== undefined &&
+      (typeof receipt.resolvedAlias !== "string" ||
+        !receipt.resolvedAlias.trim())
     )
       continue;
     if (
