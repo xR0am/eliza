@@ -301,6 +301,7 @@ function evaluatorBudgetOptions(contextWindowTokens: number): {
 }
 
 function finalizeEvaluatorOutput(
+  parsed: EvaluatorOutput,
   raw: EvaluatorModelResult,
   context: ContextObject,
   trajectory: PlannerTrajectory,
@@ -314,7 +315,7 @@ function finalizeEvaluatorOutput(
             repairMissingEvaluatorSuccess(
               rejectEvaluatorInvocationMessage(
                 recoverEvaluatorTextOutput(
-                  parseEvaluatorOutput(raw),
+                  parsed,
                   raw,
                   trajectory,
                 ),
@@ -882,8 +883,10 @@ async function runEvaluatorWithSelectedModel(
     });
     throw error;
   }
+  const parsedOutput = parseEvaluatorOutput(raw);
   let output = enforceEvaluatorDecisionState(
     finalizeEvaluatorOutput(
+      parsedOutput,
       raw,
       params.context,
       params.trajectory,
@@ -891,6 +894,37 @@ async function runEvaluatorWithSelectedModel(
     ),
     decisionState,
   );
+  // Finite metadata only: diagnose completion coercion without exposing model text.
+  if (output.decision === "CONTINUE" && (parsedOutput.decision === "FINISH" || output.protocolFailure === true)) {
+    const rejection = output.protocolFailure
+      ? "protocol_rejected"
+      : "finish_rejected_after_normalization";
+    try {
+      params.runtime.logger?.warn?.(
+        {
+          diagnosticOnly: true,
+          scope: "Evaluator.normalizedDecision",
+          messageId: streamingContext?.messageId,
+          iteration: params.iteration ?? 1,
+          rejection,
+          parsedDecision: parsedOutput.decision,
+          parsedSuccess: parsedOutput.success,
+          parsedRequestFullyCovered: parsedOutput.requestFullyCovered ?? null,
+          decision: output.decision,
+          success: output.success,
+          requestFullyCovered: output.requestFullyCovered ?? null,
+          protocolFailure: output.protocolFailure === true,
+          parseErrorPresent: typeof output.parseError === "string",
+          messagePresent: Boolean(output.messageToUser?.trim()),
+          terminalOnly: latestStep?.terminalOnly === true,
+          requiresReplyField,
+        },
+        "[evaluator] proposed finish rejected after normalization",
+      );
+    } catch {
+      // Diagnostic sinks cannot change the evaluator result or trigger another call.
+    }
+  }
   if (!clipboardAvailable && output.copyToClipboard) {
     output = {
       ...output,
