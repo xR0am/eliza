@@ -1,7 +1,6 @@
 {
   "extends": "../../../tsconfig.json",
   "compilerOptions": {
-    "target": "ES2024",
     "lib": ["ES2023", "WebWorker", "DOM", "DOM.Iterable"],
     "composite": false,
     "incremental": false,
