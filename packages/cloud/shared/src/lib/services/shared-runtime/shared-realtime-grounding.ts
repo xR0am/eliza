@@ -8,6 +8,7 @@ import {
   ElizaError,
   isBlockedHostname,
   isPrivateIpAddress,
+  logger,
 } from "@elizaos/core";
 import type { SharedRuntimePublicGrounding } from "../../../db/schemas/shared-runtime-history";
 import type { SharedTurnMessage } from "./run-shared-agent-turn";
@@ -520,6 +521,29 @@ export function requireTraceableRealtimeSearch(
       },
     };
   }
+  logger.audit("[shared-realtime] source receipt refused", {
+    success: result.success === true,
+    actionMatches: data.actionName === "WEB_SEARCH",
+    queryMatches: normalizedRealtimeQuery(data.query) === normalizedRealtimeQuery(query),
+    providerMatches: weather ? nws : data.provider === "parallel",
+    timestampFresh:
+      typeof receiptObservedAt === "number" &&
+      Number.isSafeInteger(receiptObservedAt) &&
+      Math.abs(receiptObservedAt - observedAt) <= 5 * 60 * 1000,
+    complete: data.truncated === false,
+    overflowed: data.evidenceOverflowed === true,
+    sourceCount: Array.isArray(data.sources) ? data.sources.length : 0,
+    sourcesValid: sources !== undefined,
+    sourceFailure: !Array.isArray(data.sources)
+      ? "missing"
+      : data.sources.some((source) => {
+            if (!source || typeof source !== "object") return true;
+            const item = source as Record<string, unknown>;
+            return typeof item.text === "string" && containsUnsafeHttpUrl(item.text);
+          })
+        ? "unsafe-source-url"
+        : "missing-or-invalid-source",
+  });
   return {
     success: false,
     text: "Live public data is temporarily unavailable from complete, source-bound evidence.",

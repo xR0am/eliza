@@ -109,6 +109,7 @@ const report: Record<string, unknown> = {
 const network: Array<Record<string, unknown>> = [];
 const diagnostics: Array<Record<string, unknown>> = [];
 const typedVerifications: Array<Record<string, unknown>> = [];
+const sourceDiagnostics: Array<Record<string, unknown>> = [];
 const exportRedactions: Record<string, number> = {};
 const omitted = (kind: string) => {
   exportRedactions[kind] = (exportRedactions[kind] ?? 0) + 1;
@@ -693,6 +694,12 @@ async function run() {
         ...(args[1] as Record<string, unknown>),
       });
     if (
+      args[0] === "[shared-realtime] source receipt refused" &&
+      args[1] &&
+      typeof args[1] === "object"
+    )
+      sourceDiagnostics.push({ case: activeCase, ...(args[1] as Record<string, unknown>) });
+    if (
       args[0] === "[shared-typed-read] egress verification" &&
       args[1] &&
       typeof args[1] === "object"
@@ -949,6 +956,7 @@ async function run() {
   report.modelRequests = modelRequests;
   report.network = network;
   report.bindingDiagnostics = diagnostics;
+  report.sourceReceiptDiagnostics = sourceDiagnostics;
   report.manualPublicOutputReviewRequired = true;
   report.exportScope =
     "Public synthetic requests, final responses, tool calls/parsed decisions and source evidence only. Private reasoning/analysis/thought fields, flattened Core prompts, raw SDK bodies and Markdown logs are not published. Complete original SDK bodies are hashed and retained only in the ephemeral private runner directory.";
