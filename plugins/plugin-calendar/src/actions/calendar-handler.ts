@@ -2251,7 +2251,7 @@ function createEndDetail(
 }
 
 const DATE_SEGMENT_SPLIT_PATTERN =
-  /\s*(?:,|;|\band\b|\bthen\b|\bplus\b|\balso\b|\bas well as\b)\s*/i;
+  /\s*(?:,|;|\band\b|\bthen\b|\bplus\b|\balso\b|\bas well as\b|\bthrough\b|\buntil\b|\btill\b|\bto\b)\s*/i;
 
 function distinctStatedLocalDates(
   text: string,
