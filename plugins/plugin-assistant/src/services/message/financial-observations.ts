@@ -154,8 +154,10 @@ function holdingClaims(
       ) {
         personal = false;
       }
+      // Outside a wallet turn only an ownership statement is a holding:
+      // "per wallet" or "from their wallet" names a wallet without stating its contents.
       const holdingContext =
-        /\b(?:wallet|holdings|portfolio|(?:token|SOL|ETH|BTC|USDC|USDT)\s+balance)\b/i.test(
+        /\b(?:(?:your|my)\s+(?:[A-Za-z][A-Za-z0-9]*\s+)?(?:wallet|holdings|portfolio)|(?:wallet|holdings|portfolio)\s+(?:(?:currently|now|still)\s+)?(?:holds|contains|has|includes)|(?:token|SOL|ETH|BTC|USDC|USDT)\s+balance)\b/i.test(
           clause,
         ) ||
         (walletTurn &&

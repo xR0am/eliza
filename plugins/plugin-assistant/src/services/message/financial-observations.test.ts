@@ -27,6 +27,10 @@ describe("financial holding grounding", () => {
       "saw it. 0 stars, 0 forks, 8 commits.",
       "Do you have feedback on my USDC wallet SDK?",
     ],
+    [
+      "60 req/min per wallet is reasonable for v0.2.",
+      "added rate limiting at 60 req/min per wallet",
+    ],
   ])(
     "does not read repository counts in %j as holdings outside a wallet turn",
     (reply, request) => {
@@ -75,12 +79,19 @@ describe("financial holding grounding", () => {
     ).toEqual({ verdict: "allow" });
   });
 
-  it("rejects an explicit unobserved wallet holding outside a wallet turn", () => {
-    expect(egress("your wallet holds 5 SOL", "hey")).toEqual({
-      verdict: "reject",
-      kind: "financial_holding",
-    });
-  });
+  it.each([
+    "your wallet holds 5 SOL",
+    "The wallet holds 5 SOL.",
+    "Your SOL balance is 5 SOL.",
+  ])(
+    "rejects an explicit unobserved wallet holding %j outside a wallet turn",
+    (reply) => {
+      expect(egress(reply, "hey")).toEqual({
+        verdict: "reject",
+        kind: "financial_holding",
+      });
+    },
+  );
 
   it("reads a turn with wallet observations as a wallet turn", () => {
     const providers = {
