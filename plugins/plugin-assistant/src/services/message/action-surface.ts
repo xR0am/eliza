@@ -432,12 +432,32 @@ export function retrieveContextualPlannerActions(args: {
       intents.length === 1 &&
       [request, intents[0]].every((text) => {
         const positive = positiveIntentText(text);
+        const clauses = intentClauses(positive)
+          .flatMap((clause) => clause.split(/[.!?\r\n:&]/u))
+          .map((clause) => clause.trim())
+          .filter(Boolean);
         return (
           positive.length > 0 &&
           !COMPOUND_INTENT_BOUNDARY.test(positive) &&
-          intentClauses(positive)
-            .flatMap((clause) => clause.split(/[.!?\r\n:&]/u))
-            .filter((clause) => clause.trim()).length === 1
+          clauses.length > 0 &&
+          // A single negative constraint can qualify the same request; it
+          // does not introduce another positive operation. Keep its original
+          // text in context. Operation words or longer clauses stay ambiguous.
+          clauses.slice(1).every((clause) => {
+            const constraint = /^no\s+([\p{L}\p{N}]+)$/iu.exec(clause)?.[1];
+            if (!constraint) return false;
+            const words = tokenizeActionSearchText(constraint);
+            if (words.length !== 1) return false;
+            const terms = new Set(inflectionTermKeys(words[0]));
+            return (
+              ![...GENERIC_OPERATION_WORDS].some((word) => terms.has(word)) &&
+              !args.actions.some((action) =>
+                tokenizeActionSearchText(action.name).some((word) =>
+                  inflectionTermKeys(word).some((term) => terms.has(term)),
+                ),
+              )
+            );
+          })
         );
       });
     if (direct && singleOutcome && args.selectedActions.length > 0) {
@@ -485,18 +505,30 @@ export function retrieveContextualPlannerActions(args: {
         )
           continue;
         const covered = new Set(rule.contexts.map(normalizeContextId));
+        // Extra explicit domains make the scope uncertain. Preserve the whole
+        // existing bootstrap rather than partially narrowing that request.
+        if (
+          [...declaredDomains].some(
+            (domain) =>
+              ![domain, ...(args.contextAliases?.(domain) ?? [])].some(
+                (context) => covered.has(normalizeContextId(context)),
+              ),
+          )
+        )
+          continue;
         for (const domain of domains) {
           // The registered owner can claim this single intent even when its
           // action name differs from the user's wording. Apply the same
-          // operation check used for lexical claims above; payload nouns alone
-          // do not add another domain. Explicit contexts remain authoritative.
+          // operation check for inferred domains. An owner declaration covers
+          // its declared domains: payload nouns must not add sibling schemas.
+          // Other explicit contexts remain authoritative.
           if (
-            requestedOperationsCovered(domain) &&
-            ([domain, ...(args.contextAliases?.(domain) ?? [])].some(
+            [domain, ...(args.contextAliases?.(domain) ?? [])].some(
               (context) => covered.has(normalizeContextId(context)),
             ) ||
-              (!declaredDomains.has(domain) &&
-                !hasDomainOperation(args.actions, intents[0], domain)))
+            (requestedOperationsCovered(domain) &&
+              !declaredDomains.has(domain) &&
+              !hasDomainOperation(args.actions, intents[0], domain))
           )
             domains.delete(domain);
         }
