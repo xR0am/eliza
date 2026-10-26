@@ -18,6 +18,7 @@ import {
   getDirectActionRoutingRules,
   getInferenceTimer,
   getUserMessageText,
+  inflectionTermKeys,
   type LocalizedActionExampleResolver,
   normalizeContextId,
   readEnvBool,
@@ -780,10 +781,21 @@ export function retrieveContextualPlannerActions(args: {
       const children = owners.filter((action) => childNames.has(action.name));
       if (children.length === 0) continue;
       const parentWords = new Set(tokenizeActionSearchText(parent.name));
+      // Shared nouns (event/events, item/items) do not identify one operation.
+      // Keep the parent's complete contract when no specific operation was
+      // requested instead of selecting a sibling by singular/plural spelling.
+      const familyTerms = args.actions
+        .filter((action) => childNames.has(action.name))
+        .map((action) => new Set(
+          operationWords(action.name, parentWords).flatMap(inflectionTermKeys),
+        ));
+      const queryTerms = new Set([...queryWords].flatMap(inflectionTermKeys));
       const explicitChildren = children.filter((action) =>
-        operationWords(action.name, parentWords).some((word) =>
-          queryWords.has(word),
-        ),
+        operationWords(action.name, parentWords).some((word) => {
+          const keys = inflectionTermKeys(word);
+          return keys.some((key) => queryTerms.has(key)) &&
+            familyTerms.filter((terms) => keys.some((key) => terms.has(key))).length === 1;
+        }),
       );
       if (explicitChildren.length === 0 && typeof parent.handler !== "function")
         continue;
