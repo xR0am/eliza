@@ -1207,7 +1207,13 @@ async function executeMeasuredSharedElizaRuntimeTurn(
     isSharedGoogleContextRequest(input.capabilityText)
       ? createSharedGoogleContextPlugin(input.execution.google)
       : undefined;
-  if (!typedReadTurn && webSearchPlugin && publicSearchIntent?.kind === "general") {
+  const explicitPublicQuery =
+    typedReadTurn?.authorizedPublicQueries.length === 1
+      ? typedReadTurn.authorizedPublicQueries[0]
+      : !typedReadTurn && publicSearchIntent?.kind === "general"
+        ? publicSearchIntent.topic
+        : undefined;
+  if (webSearchPlugin && explicitPublicQuery) {
     webSearchPlugin.responseHandlerEvaluators = [
       {
         name: "shared.explicit_public_search",
@@ -1222,21 +1228,31 @@ async function executeMeasuredSharedElizaRuntimeTurn(
           clearReply: true,
           deterministicToolCall: {
             name: "WEB_SEARCH",
-            params: { query: publicSearchIntent.topic },
+            params: { query: explicitPublicQuery },
           },
         }),
       },
     ];
   }
   const character =
-    publicSearchIntent?.kind === "general"
+    typedReadTurn && explicitPublicQuery
       ? {
           ...input.character,
-          system: [input.character.system, sharedRealtimePromptPolicy(undefined)]
+          system: [
+            input.character.system,
+            `The public read for this request starts with WEB_SEARCH query ${JSON.stringify(explicitPublicQuery)}. Use these exact query bytes. After returned public sources identify a fully qualified place with the same city, you may request a current observation with WEB_SEARCH query "current public weather in <same original city>, <US state>" using that source location; any explicit original state or country must match. Do not infer a state from private history, profile, or population. A qualified alternative is one possible place, not confirmation of the user's intended place.`,
+          ]
             .filter(Boolean)
             .join("\n\n"),
         }
-      : input.character;
+      : publicSearchIntent?.kind === "general"
+        ? {
+            ...input.character,
+            system: [input.character.system, sharedRealtimePromptPolicy(undefined)]
+              .filter(Boolean)
+              .join("\n\n"),
+          }
+        : input.character;
   // A group turn labels each speaker `Participant <n>` (see
   // `group-participant-labels.ts`). That is a slot, not a name, so the model
   // needs one line telling it where real names come from; scoping it to the
