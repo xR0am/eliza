@@ -1218,7 +1218,7 @@ async function executeMeasuredSharedElizaRuntimeTurn(
       {
         name: "shared.explicit_public_search",
         priority: 999,
-        deterministicActions: ["WEB_SEARCH"],
+        ...(!typedReadTurn ? { deterministicActions: ["WEB_SEARCH"] } : {}),
         shouldRun: ({ messageHandler }) => messageHandler.processMessage === "RESPOND",
         evaluate: () => ({
           requiresTool: true,
@@ -1226,10 +1226,16 @@ async function executeMeasuredSharedElizaRuntimeTurn(
           clearCandidateActions: true,
           addCandidateActions: ["WEB_SEARCH"],
           clearReply: true,
-          deterministicToolCall: {
-            name: "WEB_SEARCH",
-            params: { query: explicitPublicQuery },
-          },
+          // Typed reads need the full planner's real tools and opaque egress
+          // callback. The single-action shortcut forbids follow-up tool calls.
+          ...(!typedReadTurn
+            ? {
+                deterministicToolCall: {
+                  name: "WEB_SEARCH",
+                  params: { query: explicitPublicQuery },
+                },
+              }
+            : {}),
         }),
       },
     ];
