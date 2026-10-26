@@ -10,7 +10,13 @@ export const IMESSAGE_CLASSIC_REACTIONS = [
 
 // Unicode's complete RGI sequences include flags, modifiers, ZWJ and keycaps.
 // Also admit a standalone text-default emoji (e.g. ❤), but not components/digits.
-const emoji = /^(?:\p{RGI_Emoji}|[\p{Emoji}--\p{Emoji_Component}])$/v;
+// Keep the runtime's Unicode v semantics without requiring every transitive
+// TypeScript consumer to emit ES2024 regular-expression literal syntax.
+// biome-ignore lint/complexity/useRegexLiterals: A v-flag literal fails ES2022 consumers; the supported runtime still evaluates identical Unicode sets.
+const emoji = new RegExp(
+  "^(?:\\p{RGI_Emoji}|[\\p{Emoji}--\\p{Emoji_Component}])$",
+  "v",
+);
 const grapheme = new Intl.Segmenter("und", { granularity: "grapheme" });
 
 export function parseImessageReaction(value: unknown): string | undefined {
