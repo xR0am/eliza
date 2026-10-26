@@ -46,3 +46,8 @@ export function resolveExplicitRegisteredViewRequest<T extends { id: string; lab
   const matches = resolveViewNavigationTargets(views, command[1]);
   return matches.length === 1 ? matches[0] : undefined;
 }
+
+/** A complete relative navigation command; the caller must supply trusted history. */
+export function isExplicitBackViewRequest(text: string): boolean {
+  return /^(?:please\s+)?(?:go\s+)?back[.!]*$/iu.test(text.trim());
+}
