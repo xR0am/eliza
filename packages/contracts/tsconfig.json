@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
+    "target": "ES2024",
     "composite": false,
     "incremental": false,
     "rootDir": "../..",

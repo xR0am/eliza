@@ -20,15 +20,16 @@ const LIMITS = {
   modelBodyBytes: 1024 * 1024,
 } as const;
 const suite = process.argv.find((arg) => arg.startsWith("--suite="))?.split("=")[1] ?? "baseline";
-if (!["baseline", "bare-weather", "full"].includes(suite)) throw new Error("QA_SUITE_INVALID");
+if (!["baseline", "bare-weather", "typed-weather", "full"].includes(suite))
+  throw new Error("QA_SUITE_INVALID");
 const weather =
-  suite === "bare-weather"
+  suite === "bare-weather" || suite === "typed-weather"
     ? "What's the current temperature in San Francisco? Please include a source."
     : "What is the current temperature in San Francisco, California? Please give the source.";
 const cases = [
   { id: "sf-weather", message: weather },
   { id: "math-after-search", message: "What is 17 plus 26? Reply briefly." },
-  ...(suite === "bare-weather"
+  ...(suite === "bare-weather" || suite === "typed-weather"
     ? []
     : [
         {
@@ -107,6 +108,7 @@ const report: Record<string, unknown> = {
 };
 const network: Array<Record<string, unknown>> = [];
 const diagnostics: Array<Record<string, unknown>> = [];
+const typedVerifications: Array<Record<string, unknown>> = [];
 const exportRedactions: Record<string, number> = {};
 const omitted = (kind: string) => {
   exportRedactions[kind] = (exportRedactions[kind] ?? 0) + 1;
@@ -537,7 +539,8 @@ async function run() {
   await mkdir(root, { recursive: false, mode: 0o700 });
   ownsOutput = true;
   await mkdir(raw, { mode: 0o700 });
-  if (cases.length + (suite !== "bare-weather" ? 1 : 0) > LIMITS.cases) fail("QA_CASE_LIMIT");
+  if (cases.length + (suite !== "bare-weather" && suite !== "typed-weather" ? 1 : 0) > LIMITS.cases)
+    fail("QA_CASE_LIMIT");
   if (!secret) fail("QA_CEREBRAS_KEY_MISSING");
   const unexpected = [
     "OPENAI_API_KEY",
@@ -689,6 +692,19 @@ async function run() {
         case: activeCase,
         ...(args[1] as Record<string, unknown>),
       });
+    if (
+      args[0] === "[shared-typed-read] egress verification" &&
+      args[1] &&
+      typeof args[1] === "object"
+    ) {
+      const audit = args[1] as Record<string, unknown>;
+      typedVerifications.push({
+        case: activeCase,
+        traceId: audit.traceId,
+        verified: audit.verified === true,
+        requirementCount: audit.requirementCount,
+      });
+    }
     originalInfo.apply(console, args);
   };
   const { ChannelType } = await import("@elizaos/core");
@@ -741,6 +757,9 @@ async function run() {
           roomKey: "shared-live-qa:synthetic-room",
           channel: { type: ChannelType.DM, source: "blooio" },
           authenticatedPersonalSharedUser: true,
+          ...(suite === "typed-weather" && item.id === "sf-weather"
+            ? { typedPublicReadReplies: true as const }
+            : {}),
         },
         abortSignal: AbortSignal.timeout(Math.min(LIMITS.caseMs, deadline - Date.now())),
         onRuntimeTiming: (value) => {
@@ -771,16 +790,63 @@ async function run() {
           grounding.provider === "nws" &&
           isVerifiedCurrentNwsObservation(grounding.weatherObservation, grounding.query);
         observation.verifiedCurrentObservation = verifiedObservation;
-        observation.status =
-          verifiedObservation &&
-          turn.reply.trim() &&
-          publicTools.some((r) => r.success) &&
-          diagnostics.length === diagnosticStart &&
-          /\d/.test(turn.reply) &&
-          /https?:\/\//.test(turn.reply) &&
-          /temperature|°|degrees?|celsius|fahrenheit/i.test(turn.reply)
-            ? "passed-controls-review-required"
-            : "failed";
+        if (suite === "typed-weather") {
+          // The caller independently verified the original opaque proof before
+          // removing it. Observe only its content-free audit, never serialize it.
+          const expectedTrace = hash(`${source}:${item.id}`).slice(0, 32);
+          const verifiedAudit = typedVerifications.filter(
+            (entry) =>
+              entry.case === item.id &&
+              entry.traceId === expectedTrace &&
+              entry.verified === true &&
+              entry.requirementCount === 1,
+          );
+          const freshProducer = publicTools.find((result) => {
+            const data = result.data;
+            return (
+              result.success === true &&
+              data?.provider === "nws" &&
+              typeof data.query === "string" &&
+              typeof data.observedAt === "number" &&
+              data.observedAt >= start &&
+              data.observedAt <= Date.now() &&
+              isVerifiedCurrentNwsObservation(data.weatherObservation, data.query, Date.now())
+            );
+          });
+          const qualifiedPlace =
+            /San Francisco,\s*(?:CA|California),?\s*(?:United States|US|USA)/i.test(turn.reply);
+          const honestAlternative =
+            /couldn[’' ]t verify that this is the place you meant|one possible place|possible (?:place|location)|if you mean|assuming you mean|ambiguous|not specified/i.test(
+              turn.reply,
+            );
+          observation.syntheticTrustedTypedQa = true;
+          observation.opaqueVerificationAudit = verifiedAudit;
+          observation.freshProducerObservation = Boolean(freshProducer);
+          observation.honestQualifiedPlace = qualifiedPlace && honestAlternative;
+          observation.status =
+            freshProducer &&
+            verifiedAudit.length === 1 &&
+            qualifiedPlace &&
+            honestAlternative &&
+            turn.responded === true &&
+            turn.reply.trim() &&
+            diagnostics.length === diagnosticStart &&
+            /\d/.test(turn.reply) &&
+            /https?:\/\//.test(turn.reply) &&
+            /temperature|°|degrees?|celsius/i.test(turn.reply)
+              ? "passed-controls-review-required"
+              : "failed";
+        } else
+          observation.status =
+            verifiedObservation &&
+            turn.reply.trim() &&
+            publicTools.some((r) => r.success) &&
+            diagnostics.length === diagnosticStart &&
+            /\d/.test(turn.reply) &&
+            /https?:\/\//.test(turn.reply) &&
+            /temperature|°|degrees?|celsius|fahrenheit/i.test(turn.reply)
+              ? "passed-controls-review-required"
+              : "failed";
       } else if (item.id === "math-after-search") {
         observation.afterSearchHistory = callsBeforeMath;
         observation.status =
@@ -832,7 +898,7 @@ async function run() {
     await save(`${item.id}.json`, observation);
   }
   // A separate real public transport probe. It is NOT a model WEB_FETCH/Shared-path claim.
-  if (suite !== "bare-weather" && Date.now() < deadline) {
+  if (suite !== "bare-weather" && suite !== "typed-weather" && Date.now() < deadline) {
     activeCase = "public-fetch-transport";
     const { fetchKeylessWeb } = await import("@elizaos/plugin-web-search");
     try {
@@ -901,6 +967,7 @@ async function run() {
     captures.length >= modelRequests * 2 &&
     captures.every((capture) => capture.complete === true) &&
     (suite === "bare-weather" ||
+      suite === "typed-weather" ||
       (report.publicFetchTransport as { success?: boolean } | undefined)?.success === true)
       ? "LIVE_CONTROLS_PASSED_PUBLIC_TRANSCRIPTS_REQUIRE_REVIEW"
       : "FAILED_NOT_ACCEPTANCE";
