@@ -83,7 +83,7 @@ test("split public service bindings preserve full legal text and reject partial 
     const response = await fetch(server.url);
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({
+    expect<unknown>(await response.json()).toEqual({
       success: true,
       version: 1,
       service,
@@ -102,7 +102,7 @@ test("split public service bindings preserve full legal text and reject partial 
       };
       const rejected = await fetch(server.url);
       expect(rejected.status).toBe(503);
-      expect(await rejected.json()).toEqual({
+      expect<unknown>(await rejected.json()).toEqual({
         success: false,
         error: "service_metadata_unavailable",
       });
