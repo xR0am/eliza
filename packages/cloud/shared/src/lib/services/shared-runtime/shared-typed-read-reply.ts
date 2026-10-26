@@ -118,6 +118,7 @@ export function createSharedTypedReadReplyResolver(input: {
       >();
       const conflictedUrls = new Set<string>();
       let settledSearch = false;
+      let settledNws = false;
       let articleReadAttempted = false;
       const settledFetchUrls = new Set<string>();
       const eligibleSearch = (query: unknown) =>
@@ -129,6 +130,23 @@ export function createSharedTypedReadReplyResolver(input: {
         const call = step.toolCall,
           result = step.result;
         if (!call || !result || !call.id) continue;
+        const attemptedNwsScope =
+          call.name === "WEB_SEARCH" && typeof call.params?.query === "string"
+            ? resolveTypedNwsReadScope(part, call.params.query)
+            : undefined;
+        const settledNwsScope =
+          result.data?.actionName === "WEB_SEARCH" && typeof result.data.query === "string"
+            ? resolveTypedNwsReadScope(part, result.data.query)
+            : undefined;
+        // A source-bearing search is discovery, not an observation. Permit the
+        // normal planner's one scoped producer attempt, then honor its settled
+        // success or failure rather than keeping an unbounded retry obligation.
+        if (
+          simpleTemperature &&
+          attemptedNwsScope &&
+          settledNwsScope?.producerQuery === attemptedNwsScope.producerQuery
+        )
+          settledNws = true;
         if (
           call.name === "WEB_SEARCH" &&
           call.params?.provider !== "fallback" &&
@@ -468,6 +486,7 @@ export function createSharedTypedReadReplyResolver(input: {
           requirement.domain === "news" && [...searchUrls].some((url) => !settledFetchUrls.has(url))
             ? "WEB_FETCH"
             : !settledSearch ||
+                (simpleTemperature && searchUrls.size > 0 && !settledNws) ||
                 (requirement.domain === "news" && input.fallbackAvailable?.() === true)
               ? "WEB_SEARCH"
               : undefined;

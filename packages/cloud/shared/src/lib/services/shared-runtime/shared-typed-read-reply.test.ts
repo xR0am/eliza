@@ -161,6 +161,67 @@ describe("default-off owner-scoped typed public reads", () => {
     expect(another?.requirementIds[0]).not.toBe(turn.requirementIds[0]);
   });
 
+  test("source discovery keeps one scoped observation attempt open, then honors its settled outcome", () => {
+    const resolve = resolverFor(exactApprovedSF);
+    if (!resolve) throw new Error("Expected scoped temperature resolver");
+    const search = trajectory("current public weather in San Francisco");
+    const first = search.steps[0];
+    if (!first?.result) throw new Error("Expected synthetic search step");
+    first.result = {
+      success: true,
+      text: JSON.stringify({
+        results: [
+          {
+            url: "https://weather.example/sf",
+            title: "San Francisco, California",
+            excerpt: "Public source identifies this city.",
+          },
+        ],
+      }),
+      data: {
+        actionName: "WEB_SEARCH",
+        query: "current public weather in San Francisco",
+        provider: "parallel",
+      },
+    };
+    const check = (value: PlannerTrajectory) =>
+      resolve({ trajectory: value, nowMs: now, admittedToolNames: ["WEB_SEARCH"] });
+    expect(check(search)?.phase).toBe("planning");
+    expect(check(search)?.remainingReadActionNames).toEqual(["WEB_SEARCH"]);
+    expect(check(search)?.facts).toEqual([]);
+    const wrongCity = trajectory("current public weather in Los Angeles, California");
+    expect(check({ ...search, steps: [...search.steps, ...wrongCity.steps] })?.phase).toBe(
+      "planning",
+    );
+    const failedNws = trajectory("current public weather in San Francisco, California");
+    if (!failedNws.steps[0]) throw new Error("Expected synthetic producer step");
+    failedNws.steps[0].result = {
+      success: false,
+      text: "A recent, location-matched weather observation is unavailable.",
+      data: {
+        actionName: "WEB_SEARCH",
+        query: "current public weather in San Francisco, CA",
+        unavailableReason: "CURRENT_WEATHER_RECENT_VERIFIED_OBSERVATION_MISSING",
+      },
+    };
+    const failed = check({ ...search, steps: [...search.steps, ...failedNws.steps] });
+    expect(failed?.phase).toBe("final-answer");
+    expect(failed?.remainingReadActionNames).toEqual([]);
+    expect(failed?.facts).toEqual([]);
+    const success = check({
+      ...search,
+      steps: [
+        ...search.steps,
+        ...trajectory("current public weather in San Francisco, California").steps,
+      ],
+    });
+    expect(success?.phase).toBe("final-answer");
+    expect(success?.facts).toHaveLength(1);
+    const noSources = structuredClone(search);
+    if (noSources.steps[0]?.result) noSources.steps[0].result.text = "No source evidence";
+    expect(check(noSources)?.phase).toBe("final-answer");
+  });
+
   test("the exact approved SF question admits source-unit evidence without inventing a requested unit", () => {
     expect(isSimpleCurrentCelsiusTemperature(exactApprovedSF)).toBe(false);
     expect(isSimpleCurrentTemperatureRequest(exactApprovedSF)).toBe(true);
