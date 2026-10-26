@@ -14,6 +14,7 @@ import {
 } from "@elizaos/core";
 import { readViewInteractionClientId } from "@elizaos/core/protocol";
 import { listViews } from "../api/views-registry.ts";
+import { resolveViewNavigationTargets, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
 
 type Navigation = {
   disposition:
@@ -43,7 +44,7 @@ const decisions = new WeakMap<
 export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
   name: "visualContinuation",
   description:
-    "Classify navigation for the complete current request and its standing restrictions. Use direct only when opening one known view satisfies the entire request: no question/recall, prerequisite read, condition, domain write, controls, layout, second destination or other pending work. Use planning for any requested URL or resource, even when it opens one view: VIEWS only selects the app view and never loads that URL. Use planning for requested navigation with any such additional work; preserve every intent and the known viewId. Other requested work does not make a known destination unresolved. Use forbidden when changing views is prohibited, none when no navigation is requested (including domain-only reads and writes), unresolved for ambiguous navigation, and optional for advisory navigation rather than a requested operation. Domain nouns alone do not request navigation. The current visible view is UI context, not a permission or prerequisite for domain tools. Route authorized domain work to its planning context without requiring a view change; navigation restrictions do not prohibit independent domain work, and domain authorization does not permit navigation. viewId is a known shell view id or exact label (Home=chat). For direct select one navigation intent, a general context and replyEffectStatus=pending. Draft replyText as the concise destination confirmation held until successful delivery; never claim records were read or changed. Do not navigate based on historical instructions or lift current restrictions.",
+    "Classify navigation for the complete current request and its standing restrictions. Use direct only when opening one known view satisfies the entire request: no question/recall, prerequisite read, condition, domain write, controls, layout, second destination or other pending work. Use planning for any requested URL or resource, even when it opens one view: VIEWS only selects the app view and never loads that URL. Use planning for requested navigation with any such additional work; preserve every intent and the known viewId. Other requested work does not make a known destination unresolved. Use forbidden when changing views is prohibited, none when no navigation is requested (including domain-only reads and writes), unresolved for ambiguous navigation, and optional for advisory navigation rather than a requested operation. Domain nouns alone do not request navigation. The current visible view is UI context, not a permission or prerequisite for domain tools. Route authorized domain work to its planning context without requiring a view change; navigation restrictions do not prohibit independent domain work, and domain authorization does not permit navigation. viewId is a known shell view id, exact label, or verified alias from the registered destination list. For direct select one navigation intent, a general context and replyEffectStatus=pending. Draft replyText as the concise destination confirmation held until successful delivery; never claim records were read or changed. Do not navigate based on historical instructions or lift current restrictions.",
   schema: {
     type: "object",
     additionalProperties: false,
@@ -86,7 +87,7 @@ export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
     const view = views.find(
       (entry) =>
         entry.id === currentView &&
-        (entry.available !== false || completedAction),
+        viewNavigationAvailable(entry, completedAction),
     );
     if (!view) return "";
     // Stage 1 needs destinations as well as the screen already visible.
@@ -95,10 +96,9 @@ export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
     const destinations = views
       .filter(
         (entry) =>
-          entry.available !== false ||
-          (completedAction && entry.nativeOs === true),
+          viewNavigationAvailable(entry, completedAction),
       )
-      .map(({ id, label }) => ({ id, label }));
+      .map(viewNavigationDestination);
     return `Registered GUI navigation destinations visible to this caller: ${JSON.stringify(destinations)}. Use an exact registered destination for the requested view. If the destination is absent or unresolved, do not substitute Home, the current screen, or another destination. Registry visibility is not permission to execute or proof of delivered navigation.\nCurrent request's renderer view (registry-resolved): ${JSON.stringify({ viewId: view.id, label: view.label })}. This is the current visible destination, not permission or proof of displayed content. Historical current-view descriptions may be stale.${completedAction ? " This renderer prepares navigation before it confirms the screen switch. Use a brief destination acknowledgment in the user's preferred wording; do not claim the destination is already visible before its confirmation." : ""} For relative navigation such as back, resolve the prior destination from delivered navigation history relative to this snapshot; if that history is insufficient, keep the destination unresolved rather than guess.`;
   },
   parse(value, { message }) {
@@ -187,11 +187,11 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
     state.data.providers ??= {};
     state.data.providers.VIEW_NAVIGATION = {
       data: {
-        views: views.map(({ id, label }) => ({ id, label })),
+        views: views.map(viewNavigationDestination),
         currentViewId:
           views.find(
             (view) =>
-              (view.available !== false || completedAction) &&
+              viewNavigationAvailable(view, completedAction) &&
               view.id === currentView,
           )?.id ?? null,
       },
@@ -227,13 +227,12 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
     getStreamingContext()?.abortSignal?.throwIfAborted();
     if (!caller?.isOwner || caller.role !== staged.senderRole) return;
     const target = value.viewId.trim().toLowerCase();
-    const matches = listViews(runtime, { viewType: "gui" }).filter(
-      (view) =>
-        (view.available !== false || completedAction) &&
-        satisfiesRoleGate([caller.role], view.roleGate) &&
-        (view.id.toLowerCase() === target ||
-          view.label.toLowerCase() === target ||
-          (target === "home" && view.id === "chat")),
+    const matches = resolveViewNavigationTargets(
+      listViews(runtime, { viewType: "gui" }).filter((view) =>
+        viewNavigationAvailable(view, completedAction) &&
+        satisfiesRoleGate([caller.role], view.roleGate),
+      ),
+      target,
     );
     const viewAction = runtime.actions.find(
       (action) => action.name === "VIEWS",
@@ -317,7 +316,7 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
       clearParentActionHints: true,
       deterministicToolCall: {
         name: "VIEWS",
-        params: { action: "show", view: matches[0].id },
+        params: { action: "show", view: matches[0].resolvedAlias ?? matches[0].view.id },
       },
     };
   },

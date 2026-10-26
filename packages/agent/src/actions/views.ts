@@ -17,6 +17,7 @@ import {
 import { dispatchApiRoute } from "../api/in-process-api.ts";
 import { listViews } from "../api/views-registry.ts";
 import { getViewClientScope } from "../runtime/view-client-context.ts";
+import { resolveViewNavigationTargets, viewNavigationAvailable } from "../runtime/view-navigation-targets.ts";
 
 export const viewsAction: Action = {
   name: "VIEWS",
@@ -108,18 +109,7 @@ export const viewsAction: Action = {
         "Use action=show with a registered view id or label.",
       );
     const target = params.view.trim().toLowerCase();
-    const matches: Array<{ view: (typeof views)[number]; resolvedAlias?: string }> = views.flatMap((view) => {
-      if (view.id.toLowerCase() === target || view.label.toLowerCase() === target)
-        return [{ view }];
-      // Resolve aliases only against an installed, role-authorized entry.
-      // The resolver returns the verified name; raw target text is not proof.
-      const resolvedAlias = target === "home" && view.id === "chat"
-        ? "home"
-        : target === "workflows" && view.id === "automations"
-          ? "workflows"
-          : undefined;
-      return resolvedAlias ? [{ view, resolvedAlias }] : [];
-    });
+    const matches = resolveViewNavigationTargets(views, target);
     if (matches.length !== 1)
       return fail(
         matches.length ? "ambiguous" : "not-found",
@@ -136,7 +126,7 @@ export const viewsAction: Action = {
     const completedAction =
       isObjectRecord(message.content.metadata) &&
       message.content.metadata.viewDelivery === "completed-action";
-    if (!completedAction && view.available === false)
+    if (!viewNavigationAvailable(view, completedAction))
       return fail(
         "unavailable",
         "This destination has no available hosted view for the originating renderer.",

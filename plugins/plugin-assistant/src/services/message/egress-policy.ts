@@ -455,13 +455,15 @@ function navigationClaimIsUngrounded(args: {
   const evidence = args.providers?.VIEW_NAVIGATION?.data;
   if (!Array.isArray(evidence?.views)) return false;
   const views = evidence.views.filter(
-    (view): view is { id: string; label: string } =>
+    (view): view is { id: string; label: string; aliases?: string[] } =>
       isRecord(view) &&
       typeof view.id === "string" &&
       typeof view.label === "string",
   );
   const claimed = views.find((view) =>
-    [view.id, view.label].some((name) => {
+    [view.id, view.label, ...(Array.isArray(view.aliases)
+      ? view.aliases.filter((alias: unknown): alias is string => typeof alias === "string")
+      : [])].some((name) => {
       if (!name.trim()) return false;
       const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const target = `(?:the\\s+)?${escaped}(?:\\s+(?:view|screen|app))?`;
