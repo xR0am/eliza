@@ -21,6 +21,7 @@ import {
   viewNavigationEvaluator,
 } from "../src/runtime/view-navigation.ts";
 const owner = "11111111-1111-4111-8111-111111111111" as UUID;
+const principal = "55555555-5555-4555-8555-555555555555" as UUID;
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((close) => close()));
@@ -85,7 +86,7 @@ async function fixture() {
       url,
       hostKey,
       runtime,
-      callerAuthorization: { ok: true, role: "OWNER", identityId: owner },
+      callerAuthorization: { ok: true, role: "OWNER", identityId: principal },
       json: (response, body) => {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end(JSON.stringify(body));
@@ -156,16 +157,25 @@ describe("confirmed previous navigation", () => {
     const context = async (
       viewId: string,
       clientId = scope.clientId,
-      entityId = owner,
+      callerPrincipal = principal,
       hostKey = f.hostKey,
+      overrides: Record<string, unknown> = {},
+      withoutRequest = false,
     ) =>
-      runWithViewClient({ hostKey, clientId }, () =>
+      runWithViewClient({ hostKey, clientId, ...(!withoutRequest ? { request: {
+        runtime: f.runtime,
+        authorization: { ok: true, role: "OWNER", identityId: callerPrincipal },
+        signal: new AbortController().signal,
+        ...overrides,
+      } } : {}) }, () =>
         viewNavigationField.getContext!({
           runtime: f.runtime,
           message: {
             ...clientMessage(),
-            entityId,
+            entityId: owner,
             content: {
+              source: "client_chat",
+              channelType: "DM",
               text: "Go back",
               metadata: {
                 viewClientId: clientId,
@@ -215,11 +225,30 @@ describe("confirmed previous navigation", () => {
       "Last confirmed previous destination",
     );
     expect(await context("chat")).toContain('"id":"notes"');
+    expect(confirmed?.ownerId).toBe(principal);
+    expect(principal).not.toBe(owner);
+    expect(await context("chat")).not.toContain(principal);
+    expect(await context("chat", scope.clientId, principal, f.hostKey, {}, true))
+      .toContain("no confirmed previous destination");
+    const cancelled = new AbortController();
+    cancelled.abort();
+    for (const overrides of [
+      { runtime: null },
+      { signal: cancelled.signal },
+      { authorization: undefined },
+      { authorization: { ok: false, role: "OWNER", identityId: principal } },
+      { authorization: { ok: true, role: "USER", identityId: principal } },
+      { authorization: { ok: true, role: "OWNER", identityId: "foreign-owner", principal } },
+    ]) {
+      expect(await context("chat", scope.clientId, principal, f.hostKey, overrides))
+        .toContain("no confirmed previous destination");
+    }
+
     for (const args of [
-      ["notes", scope.clientId, owner, f.hostKey],
-      ["chat", "foreign-client", owner, f.hostKey],
+      ["notes", scope.clientId, principal, f.hostKey],
+      ["chat", "foreign-client", principal, f.hostKey],
       ["chat", scope.clientId, "foreign-owner", f.hostKey],
-      ["chat", scope.clientId, owner, {}],
+      ["chat", scope.clientId, principal, {}],
     ] as const)
       expect(
         await context(args[0], args[1], args[2] as UUID, args[3]),

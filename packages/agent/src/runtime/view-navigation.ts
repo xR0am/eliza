@@ -16,6 +16,7 @@ import {
 import { readViewInteractionClientId } from "@elizaos/core/protocol";
 import { listViews } from "../api/views-registry.ts";
 import { getCurrentViewState } from "../api/views-routes.ts";
+import { resolveHostSessionAccessContext } from "../api/host-session-access-context.ts";
 import { getViewClientScope } from "./view-client-context.ts";
 import { resolveViewNavigationTargets, resolveExplicitRegisteredViewRequest, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
 
@@ -134,12 +135,21 @@ export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
       )
       .map(viewNavigationDestination);
     const scope = getViewClientScope();
-    const confirmed = scope?.clientId === readViewInteractionClientId(message)
+    const request = scope?.request;
+    const authorization = request?.runtime === runtime && !request.signal.aborted
+      ? request.authorization : undefined;
+    // The HTTP principal and conversation entity need not be the same ID.
+    // Use the same verified owner identity as the navigation acknowledgement.
+    const ownerId = authorization?.ok && authorization.role === "OWNER"
+      ? authorization.identityId ?? authorization.principal ??
+        resolveHostSessionAccessContext(authorization, runtime)?.requesterEntityId
+      : undefined;
+    const confirmed = ownerId && scope?.clientId === readViewInteractionClientId(message)
       ? getCurrentViewState(runtime, scope) : null;
     const confirmation = confirmed?.navigationConfirmation;
     const prior = confirmation?.previousView;
     const previous = confirmed?.viewId === view.id &&
-      confirmation?.ownerId === message.entityId &&
+      confirmation?.ownerId === ownerId &&
       confirmation?.installationId === view.installationId && prior
       ? views.find((entry) => entry.id === prior.viewId &&
           entry.installationId === prior.installationId &&
