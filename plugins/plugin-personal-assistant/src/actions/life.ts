@@ -1858,6 +1858,7 @@ async function renderLifeActionReply(args: {
       "When confirming a saved reminder, use one short natural sentence with the saved message, timing, and notification destination. Use 'at' for an exact saved time, not 'around'; format that time in created.timezone without seconds or field labels. Do not invent a new reminder message.",
       "In ordinary reminder confirmations, describe in_app as 'here' or 'in this app' and sms as 'by text'; use ordinary names for other destinations. Do not add channel codes, internal IDs, definition/cadence labels, or storage/runtime/lifecycle status narration. Mention a real limitation only when it affects the owner's requested destination; never invent one.",
       "Confirm only the saved reminder and channels in this reply's context. Never claim it was added to Apple Reminders or another native app unless the saved created/updated record's nativeAppleReminderId is non-null. A saved notification plan does not mean a notification has already been delivered.",
+      "If created.notificationsEnabled is false, no alert is scheduled. If true, never say no alert merely because the owner requested it; report the persisted notification state. A due time alone does not imply an alert.",
       "The in_app channel is this app's unified notification rail; it can also fan out OS notifications to registered devices through the host's configured push providers. nativeProjection=in_app_only excludes Apple Reminders record projection, not this app's Android or iOS notifications. Native record projection and Clock handoff capabilities do not establish push delivery availability.",
       "A saved channel is not an observed push delivery status. Report an Android or iOS push limitation only from explicit platform delivery status or error evidence in the supplied context; unassessed readiness is unknown, not unavailable. Before a reminder is due, a missing delivery receipt is expected: confirm the saved schedule without adding a warning about unconfirmed push, asking the owner to check delivery, or treating the in_app rail as excluding Android notifications. Do not promise future OS delivery or infer its absence from in_app, nativeProjection, or a missing native record ID.",
       "If this is a preview, make clear it is not saved yet and the user can confirm or change it naturally.",
@@ -4942,7 +4943,19 @@ async function runLifeOperationHandlerInner(
       const hasCompleteNativeDefinitionCreatePlan = Boolean(
         params.title && explicitCadenceDetail && detailString(details, "kind"),
       );
-      const nativeCreatePlan = parseNativeTaskCreatePlan(params.createPlan);
+      const explicitNoAlert = detailBoolean(details, "noAlert");
+      const suppliedCreatePlan =
+        params.createPlan &&
+        typeof params.createPlan === "object" &&
+        !Array.isArray(params.createPlan) &&
+        (params.createPlan as Record<string, unknown>).notificationMode == null &&
+        explicitNoAlert !== undefined
+          ? {
+              ...params.createPlan,
+              notificationMode: explicitNoAlert ? "none" : "default",
+            }
+          : params.createPlan;
+      const nativeCreatePlan = parseNativeTaskCreatePlan(suppliedCreatePlan);
       const fallbackTitle = deferredDefinitionDraft?.request.title ?? null;
       let title: string | null = editingDeferredDefinitionDraft
         ? (params.title ?? fallbackTitle)
@@ -5034,7 +5047,11 @@ async function runLifeOperationHandlerInner(
       let llmRequestKind: NativeAppleReminderLikeKind | null = null;
       if (
         (!deferredDefinitionDraft || editingDeferredDefinitionDraft) &&
-        (nativeCreatePlan || !hasCompleteNativeDefinitionCreatePlan)
+        (nativeCreatePlan ||
+          !hasCompleteNativeDefinitionCreatePlan ||
+          (ownerSurfaceActionName === "OWNER_REMINDERS" &&
+            explicitNoAlert === undefined &&
+            detailObject(details, "reminderPlan") === undefined))
       ) {
         try {
           llmPlan =
@@ -5189,6 +5206,23 @@ async function runLifeOperationHandlerInner(
           await invalidateDeferredLifeDraftCache(runtime, message);
         }
       }
+      if (
+        ownerSurfaceActionName === "OWNER_REMINDERS" &&
+        llmPlan?.notificationMode == null &&
+        detailBoolean(details, "noAlert") === undefined &&
+        detailObject(details, "reminderPlan") === undefined &&
+        !deferredDefinitionDraft
+      ) {
+        return {
+          success: false as const,
+          text: "Should this reminder alert you, or only keep the due time without an alert?",
+          data: {
+            actionName: ownerSurfaceActionName,
+            error: "REMINDER_ALERT_PREFERENCE_UNRESOLVED",
+            awaitingUserInput: true,
+          },
+        };
+      }
       const timedRequestKind = llmRequestKind;
       // A one-shot reminder fires at its requested time, not the generic
       // task visibility window. Preserve explicitly configured lead time.
@@ -5213,7 +5247,7 @@ async function runLifeOperationHandlerInner(
           ? draftProjection
           : undefined);
       const nativeAppleMetadata =
-        nativeProjection !== "in_app_only" &&
+        nativeProjection === "apple_reminders" &&
         timedRequestKind &&
         cadence?.kind === "once"
           ? buildNativeAppleReminderMetadata({
@@ -5378,7 +5412,8 @@ async function runLifeOperationHandlerInner(
         cadence.kind === "unscheduled" ||
         cadence.kind === "count_per_day" ||
         (ownerSurfaceActionName === "OWNER_REMINDERS" &&
-          detailBoolean(details, "noAlert") === true)
+          (llmPlan?.notificationMode === "none" ||
+            detailBoolean(details, "noAlert") === true))
           ? { cadence, plan: null }
           : applyLeadUpReminderShape({
               cadence,
@@ -5699,6 +5734,7 @@ async function runLifeOperationHandlerInner(
             description: created.definition.description,
             cadence: created.definition.cadence,
             timezone: created.definition.timezone,
+            notificationsEnabled: (created.reminderPlan?.steps.length ?? 0) > 0,
             notificationChannels:
               created.reminderPlan?.steps.map((step) => step.channel) ?? [],
             nativeProjection:
