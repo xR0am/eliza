@@ -54,7 +54,7 @@ on:
       shared_runtime_suite:
         description: "Shared QA: baseline = qualified SF/weather + math + public fact; bare-weather = bare SF + math; full adds quiet/truth controls."
         type: choice
-        options: [baseline, bare-weather, typed-weather, behavior, full]
+        options: [baseline, bare-weather, typed-weather, behavior, full, workerd-general]
         default: baseline
       run_only_requested:
         description: "Skip the default local/walkthrough/desktop lanes and run only explicitly selected opt-in lanes."
@@ -994,9 +994,23 @@ jobs:
           install-command: "true"
 
       - name: Install the selected Shared dependency closure once
+        if: ${{ inputs.shared_runtime_suite != 'workerd-general' }}
         run: bun install --filter @elizaos/cloud-shared --frozen-lockfile --ignore-scripts
 
+      - name: Install the selected API and Shared test closure once
+        if: ${{ inputs.shared_runtime_suite == 'workerd-general' }}
+        run: bun install --filter @elizaos/cloud-api --filter @elizaos/cloud-shared --frozen-lockfile --ignore-scripts
+
+      - name: Check the existing bounded general-search Workerd regression
+        if: ${{ inputs.shared_runtime_suite == 'workerd-general' }}
+        working-directory: packages/cloud/api
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          RUN_TURBO_CONCURRENCY: "1"
+        run: bun test __tests__/shared-eliza-runtime.miniflare.test.ts --test-name-pattern "canonical general search uses real Core and portable SQLite while private scope never dispatches publicly" --timeout 120000
+
       - name: Run the real Shared runtime with finite public cases
+        if: ${{ inputs.shared_runtime_suite != 'workerd-general' }}
         id: qa
         working-directory: packages/cloud/shared
         env:
@@ -1016,7 +1030,7 @@ jobs:
           exit "$status"
 
       - name: Upload only sanitized public/synthetic evidence
-        if: ${{ always() && steps.qa.outputs.artifact_ready == 'true' }}
+        if: ${{ always() && inputs.shared_runtime_suite != 'workerd-general' && steps.qa.outputs.artifact_ready == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: shared-runtime-live-qa-${{ github.sha }}-${{ inputs.shared_runtime_suite }}
