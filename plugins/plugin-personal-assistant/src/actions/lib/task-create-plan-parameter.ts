@@ -131,6 +131,11 @@ const schema = {
       properties: {
         ...properties,
         mode: { type: "string" as const, enum: ["create"] },
+        // Creation does not render a clarification. Strict providers may emit
+        // an empty placeholder; the semantic builder discards this field.
+        response: {
+          anyOf: [{ type: "string" as const }, { type: "null" as const }],
+        },
       },
     },
     {

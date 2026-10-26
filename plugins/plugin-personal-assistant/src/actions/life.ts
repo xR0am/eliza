@@ -5375,7 +5375,10 @@ async function runLifeOperationHandlerInner(
         // offset-0 step would fire at local midnight (the occurrence's day
         // start). Check-in nudges for quotas are policy work, not a default
         // due-time reminder.
-        cadence.kind === "unscheduled" || cadence.kind === "count_per_day"
+        cadence.kind === "unscheduled" ||
+        cadence.kind === "count_per_day" ||
+        (ownerSurfaceActionName === "OWNER_REMINDERS" &&
+          detailBoolean(details, "noAlert") === true)
           ? { cadence, plan: null }
           : applyLeadUpReminderShape({
               cadence,
