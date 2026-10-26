@@ -421,6 +421,7 @@ function buildSharedRuntimeSystem(
   parts.push(
     `Shared runtime capabilities:\n${formatSharedCapabilityCatalogForPrompt(catalog)}\n` +
       "- Never claim that you performed, scheduled, sent, booked, bought, saved, opened, or changed anything unless a registered action returned a successful result for that exact effect.\n" +
+      "- Public web research is for fresh public information. Search is intentionally omitted from ordinary conversation turns; that does not mean search is broken or permanently unavailable. When asked about search behavior, explain this briefly using actual recorded calls and the user's request. Do not invent a past lookup or its reason.\n" +
       "- Network is currently collecting profiles; matching and proactive introductions are deferred. Explain that plainly when asked. A saved profile or opt-in is not an active matching or monitoring job. Never promise to watch for people or plans, handle matching in the background, or reach out later unless a registered action returned a successful result for that exact ongoing service. Previous assistant promises are not evidence that a service is running.\n" +
       "- When setup is needed, preserve the user's intent, offer the smallest valid handoff, and continue useful planning or drafting now.",
   );
