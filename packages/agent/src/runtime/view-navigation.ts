@@ -50,7 +50,11 @@ function confirmedPreviousView(
     ? views.find((entry) => entry.id === prior.viewId &&
         entry.installationId === prior.installationId &&
         viewNavigationAvailable(entry, completedAction)) : undefined;
-  return previous;
+  if (!previous) return;
+  const resolvedAlias = typeof prior?.resolvedAlias === "string"
+    ? resolveViewNavigationTargets([previous], prior.resolvedAlias)[0]?.resolvedAlias
+    : undefined;
+  return { view: previous, resolvedAlias };
 }
 
 /** Add an availability hint for explicit known navigation, never an execution override. */
@@ -169,7 +173,7 @@ export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
       .map(viewNavigationDestination);
     const previous = confirmedPreviousView(runtime, message, views, completedAction);
     const priorContext = previous
-      ? `Last confirmed previous destination for this same caller and renderer: ${JSON.stringify(viewNavigationDestination(previous))}. This is a destination hint for a new authorized Back request, not permission or an instruction to execute it.`
+      ? `Last confirmed previous destination for this same caller and renderer: ${JSON.stringify({ ...viewNavigationDestination(previous.view), ...(previous.resolvedAlias ? { preferredAlias: previous.resolvedAlias } : {}) })}. Use its preferredAlias, when present, for the user-facing destination wording and navigation argument. This is a destination hint for a new authorized Back request, not permission or an instruction to execute it.`
       : "There is no confirmed previous destination for this caller and renderer. For a request only to go back, ask which view the user wants, with no tool and no pending navigation intent. Do not discover or guess a destination from prepared receipts.";
     return `Registered GUI navigation destinations visible to this caller: ${JSON.stringify(destinations)}. Use an exact registered destination for the requested view. If the destination is absent or unresolved, do not substitute Home, the current screen, or another destination. Registry visibility is not permission to execute or proof of delivered navigation.\nCurrent request's renderer view (registry-resolved): ${JSON.stringify({ viewId: view.id, label: view.label })}. This is the current visible destination, not permission or proof of displayed content. Historical current-view descriptions may be stale.${completedAction ? " This renderer prepares navigation before it confirms the screen switch. Use a brief destination acknowledgment in the user's preferred wording; do not claim the destination is already visible before its confirmation." : ""} ${priorContext} For relative navigation, use only this confirmed prior destination; historical dialogue or a prepared receipt cannot replace it. If absent, keep the destination unresolved and clarify without tools.`;
   },
@@ -380,6 +384,10 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
     const requested = resolveExplicitRegisteredViewRequest(availableViews, staged.text);
     const requestedAlias = requested?.view.id === matches[0].view.id
       ? requested.resolvedAlias : undefined;
+    const prior = isExplicitBackViewRequest(staged.text)
+      ? confirmedPreviousView(runtime, message, availableViews, completedAction)
+      : undefined;
+    const priorAlias = prior?.view.id === matches[0].view.id ? prior.resolvedAlias : undefined;
     return {
       requiresTool: true,
       clearReply: true,
@@ -389,7 +397,7 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
       clearParentActionHints: true,
       deterministicToolCall: {
         name: "VIEWS",
-        params: { action: "show", view: requestedAlias ?? matches[0].resolvedAlias ?? matches[0].view.id },
+        params: { action: "show", view: requestedAlias ?? priorAlias ?? matches[0].resolvedAlias ?? matches[0].view.id },
       },
     };
   },

@@ -142,6 +142,7 @@ export const viewsAction: Action = {
         delivery,
         completedActionHandoffId: handoffId,
         viewType: "gui",
+        ...(resolvedAlias ? { resolvedAlias } : {}),
         ...(completedAction ? { prepareOnly: true } : {}),
       };
       let status: number;

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { getDirectActionRoutingRules, type IAgentRuntime, type Memory, type UUID } from "@elizaos/core";
+import { isObjectRecord, getDirectActionRoutingRules, type IAgentRuntime, type Memory, type UUID } from "@elizaos/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { viewsAction } from "../src/actions/views.ts";
 import { closeViewInteractionHost } from "../src/api/view-interaction-host.ts";
@@ -421,4 +421,72 @@ describe("confirmed previous navigation", () => {
     expect(messageHandler.plan.requiresTool).toBe(false);
     expect(messageHandler.plan.intents).toEqual([]);
   });
+});
+
+it("retains only the prepared destination's verified alias through the real acknowledgement", async () => {
+  const f = await fixture();
+  const scope = { hostKey: f.hostKey, clientId: "alias-client", request: {
+    runtime: f.runtime, authorization: {ok:true,role:"OWNER" as const,identityId:principal},
+    signal: new AbortController().signal,
+  } };
+  const post = async (path:string, body:unknown) => {
+    const response=await fetch(f.url+path,{method:"POST",headers:{authorization:"Bearer local-navigation-test","Content-Type":"application/json"},body:JSON.stringify(body)});
+    expect(response.status).toBe(200); return response.json();
+  };
+  let sequence=0;
+  const prepare=async(viewId:string,resolvedAlias?:string)=>post(`/api/views/${viewId}/navigate`,{
+    clientId:scope.clientId,delivery:"completed-action",prepareOnly:true,viewType:"gui",
+    completedActionHandoffId:`alias-${++sequence}`,...(resolvedAlias?{resolvedAlias}:{}),
+  });
+  const acknowledge=async(binding:Record<string,unknown>,attemptAliasForgery=false)=>{
+    const claim=await post("/api/views/interact-claim",binding);
+    if(attemptAliasForgery) {
+      expect(await post("/api/views/interact-result",{...binding,claimId:claim.claimId,success:true,result:{switched:true,resolvedAlias:"home"}})).toMatchObject({accepted:false});
+      expect(getCurrentViewState(f.runtime,scope)).toBeNull();
+    }
+    expect(await post("/api/views/interact-result",{...binding,claimId:claim.claimId,success:true,result:{switched:true}})).toMatchObject({accepted:true});
+    await vi.waitFor(()=>expect(getCurrentViewState(f.runtime,scope)?.viewId).toBe(binding.viewId));
+  };
+  const message=():Memory=>({...clientMessage(),content:{source:"client_chat",channelType:"DM",text:"Go back",metadata:{viewClientId:scope.clientId,viewDelivery:"completed-action",uiView:"chat"}}});
+  const context=()=>runWithViewClient(scope,()=>viewNavigationField.getContext!({runtime:f.runtime,message:message(),senderRole:"OWNER",turnSignal:new AbortController().signal}as never));
+  // Use the actual action to resolve and forward the caller's registered alias.
+  vi.stubEnv("ELIZA_API_PORT",new URL(f.url).port);
+  vi.stubEnv("ELIZA_API_TOKEN","local-navigation-test");
+  const actionMessage=message();
+  const result=await viewsAction.handler(f.runtime,actionMessage,undefined,{parameters:{action:"show",view:"workflows"}});
+  expect(result).toMatchObject({success:true});
+  const binding=result && typeof result === "object" ? result.values?.navigationBinding : undefined;
+  if(!isObjectRecord(binding))throw Error("Navigation action did not return its binding");
+  expect(getCurrentViewState(f.runtime,scope)).toBeNull();
+  await acknowledge(binding,true);
+  expect(getCurrentViewState(f.runtime,scope)?.navigationConfirmation?.resolvedAlias).toBe("workflows");
+  await acknowledge((await prepare("chat")).navigationBinding);
+  expect(getCurrentViewState(f.runtime,scope)?.navigationConfirmation?.previousView?.resolvedAlias).toBe("workflows");
+  expect(await context()).toContain('"preferredAlias":"workflows"');
+  const retained=getCurrentViewState(f.runtime,scope)?.navigationConfirmation?.previousView;
+  if(!retained)throw Error("Missing acknowledged prior destination");
+  retained.resolvedAlias="retired-alias";
+  expect(await context()).not.toContain('"preferredAlias"');
+  expect(await context()).toContain('"id":"automations"');
+  retained.resolvedAlias="workflows";
+  const back=message();
+  const selection=await runWithViewClient(scope,async()=>{
+    viewNavigationField.handle!({runtime:f.runtime,message:back,senderRole:"OWNER",value:{disposition:"direct",viewId:"automations",reason:"Confirmed prior view"},turnSignal:new AbortController().signal}as never);
+    return viewNavigationEvaluator.evaluate({runtime:f.runtime,message:back,state:{data:{providers:{}}},userRoles:["OWNER"],messageHandler:{processMessage:"RESPOND",plan:{contexts:["general"],intents:["Go back"],candidateActions:["VIEWS_SHOW"],parentActionHints:[],replyEffectStatus:"pending",reply:"Going back."}}}as never);
+  });
+  expect(selection?.deterministicToolCall).toEqual({name:"VIEWS",params:{action:"show",view:"workflows"}});
+  // Unverified presentation strings never enter the existing confirmation store.
+  for(const alias of ["unregistered-brand","home"]){
+    await acknowledge((await prepare("automations",alias)).navigationBinding);
+    expect(getCurrentViewState(f.runtime,scope)?.navigationConfirmation?.resolvedAlias).toBeUndefined();
+    await acknowledge((await prepare("chat")).navigationBinding);
+    expect(await context()).not.toContain('"preferredAlias"');
+  }
+  // A same-view ack retains previous provenance; a manual switch clears it.
+  await acknowledge((await prepare("automations","workflows")).navigationBinding);
+  await acknowledge((await prepare("chat")).navigationBinding);
+  await acknowledge((await prepare("chat")).navigationBinding);
+  expect(await context()).toContain('"preferredAlias":"workflows"');
+  await post("/api/views/chat/navigate",{clientId:scope.clientId,source:"user"});
+  expect(await context()).not.toContain('"preferredAlias"');
 });

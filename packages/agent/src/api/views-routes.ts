@@ -73,6 +73,8 @@ import {
 } from "./views-registry.ts";
 import { getViewSearchIndex } from "./views-search-index.ts";
 
+import { resolveViewNavigationTargets } from "../runtime/view-navigation-targets.ts";
+
 const VIEW_TYPE_ERROR = "viewType must be one of: gui, tui, xr";
 /**
  * Parse the view-catalog `viewType` query. Omitted/empty keeps the historical
@@ -262,9 +264,12 @@ export interface CurrentViewState {
     ownerId: string;
     handoffId: string;
     installationId: string;
+    /** Alias verified by the prepared route, never supplied by its ack. */
+    resolvedAlias?: string;
     previousView?: {
       viewId: string;
       installationId: string;
+      resolvedAlias?: string;
     };
   };
   viewId: string;
@@ -773,7 +778,7 @@ export async function handleViewsRoutes(
     const commitCurrentViewState = (
       committedViewPath: string | null,
       announceSwitch = true,
-      confirmation?: { ownerId: string; handoffId: string },
+      confirmation?: { ownerId: string; handoffId: string; resolvedAlias?: string },
     ) => {
       if (isCloseNavigation) {
         clearCurrentViewState(viewRuntime, scope);
@@ -793,6 +798,7 @@ export async function handleViewsRoutes(
             : {
                 viewId: currentViewState.viewId,
                 installationId: priorConfirmation.installationId,
+                ...(priorConfirmation.resolvedAlias ? { resolvedAlias: priorConfirmation.resolvedAlias } : {}),
               }
           : undefined;
       const now = new Date().toISOString();
@@ -901,6 +907,7 @@ export async function handleViewsRoutes(
               "completedActionHandoffId",
               "viewType",
               "prepareOnly",
+              "resolvedAlias",
             ].includes(key),
         ) ||
         action ||
@@ -918,6 +925,11 @@ export async function handleViewsRoutes(
         );
         return true;
       }
+      // The action may carry its already resolved alias. Re-resolve it against
+      // this exact installed destination; arbitrary presentation text is ignored.
+      const requestedAlias = typeof body.resolvedAlias === "string"
+        ? resolveViewNavigationTargets([entry], body.resolvedAlias)[0]?.resolvedAlias
+        : undefined;
       const preparedBase = currentViewState;
       let settled: Promise<ViewInteractResult>;
       try {
@@ -946,7 +958,9 @@ export async function handleViewsRoutes(
           // A manual or newer switch after preparation wins over this acknowledgment.
           if (getCurrentViewState(viewRuntime, scope) !== preparedBase) return;
           // Explicit native navigation is not an invitation to a proactive greeting.
-          commitCurrentViewState(entry.path ?? null, false, { ownerId, handoffId });
+          commitCurrentViewState(entry.path ?? null, false, { ownerId, handoffId,
+            ...(requestedAlias ? { resolvedAlias: requestedAlias } : {}),
+          });
         })
         .catch((error) => {
           viewRuntime.reportError("VIEWS.preparedNavigation", error, {
