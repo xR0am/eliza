@@ -2632,8 +2632,11 @@ export async function runV5MessageRuntimeStage1(
     let recoveredReply:
       | Awaited<ReturnType<typeof resolvePlannedReplyEgress>>
       | undefined;
-    // A prepared renderer handoff may use this turn's held prospective voice.
-    // Preserve the full egress policy: never turn a prepared effect into delivery.
+    // Prefer this turn's held prospective voice for an exact prepared handoff,
+    // even when terminal synthesis passed egress: preparation is not a failed
+    // delivery, and the renderer receives this handoff with the reply itself.
+    // The helper keeps the single-intent/action/binding and full egress gates;
+    // it never turns preparation into a delivered receipt.
     const evaluateCandidateReply = (reply: string) =>
       evaluatePlannedReplyEgress({
         currentScope: {
@@ -2655,11 +2658,7 @@ export async function runV5MessageRuntimeStage1(
     if (
       plannerResult.status === "finished" &&
       !plannerResult.terminalFailure &&
-      plannerResult.trajectory.plannedQueue.length === 0 &&
-      ((plannerResult.replyRecoveryRequired === true &&
-        !plannerResult.finalMessage?.trim()) ||
-        (plannedReplyEgressDecision.verdict === "reject" &&
-          plannedReplyEgressDecision.kind === "view_navigation"))
+      plannerResult.trajectory.plannedQueue.length === 0
     ) {
       const held = sanitizeUserVisibleModelOutput(
         parsedResponseHandlerReply || fieldRunResult?.parsed.replyText,
