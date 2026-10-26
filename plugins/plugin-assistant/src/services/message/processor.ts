@@ -832,6 +832,14 @@ export class MessageProcessor {
         const [outcome] = await Promise.all([
           timeInferenceSpan("message:planner", () =>
             runV5MessageRuntimeStage1({
+              ...(opts.resolveTypedReadReply
+                ? {
+                    resolveTypedReadReply: opts.resolveTypedReadReply,
+                    ...(opts.onTypedReadEgress
+                      ? { onTypedReadEgress: opts.onTypedReadEgress }
+                      : {}),
+                  }
+                : {}),
               runtime,
               message,
               state,

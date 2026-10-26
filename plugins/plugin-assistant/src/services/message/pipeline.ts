@@ -832,7 +832,11 @@ export async function runV5MessageRuntimeStage1(
     // IGNOREs and the injection-gate return above never reach this.
     args.onStage1RespondDecision?.();
 
-    if (route.type === "final_reply" && !resumedPlanner) {
+    if (
+      route.type === "final_reply" &&
+      !resumedPlanner &&
+      !args.resolveTypedReadReply
+    ) {
       // The simple-context reply IS the answer: Stage 1 emits `replyText` (→
       // `route.reply`) inline as part of the required HANDLE_RESPONSE envelope,
       // uncapped for direct channels. There is no separate fast-path model
@@ -1013,7 +1017,10 @@ export async function runV5MessageRuntimeStage1(
     // receipt. Keep it buffered until the planner either produces a verified
     // action result or returns the terminal failure; otherwise the client sees a
     // fabricated success flash immediately before the real outcome replaces it.
-    if (prePatchStageOneReplyIsUngroundedAppliedClaim) {
+    if (
+      prePatchStageOneReplyIsUngroundedAppliedClaim ||
+      args.resolveTypedReadReply
+    ) {
       earlyReplyText = "";
     }
     const onResponseHandlerEarlyReply = args.onResponseHandlerEarlyReply;
@@ -2123,6 +2130,14 @@ export async function runV5MessageRuntimeStage1(
             };
           }
           return runPlannerLoop({
+            ...(args.resolveTypedReadReply
+              ? {
+                  resolveTypedReadReply: args.resolveTypedReadReply,
+                  ...(args.onTypedReadEgress
+                    ? { onTypedReadEgress: args.onTypedReadEgress }
+                    : {}),
+                }
+              : {}),
             deferInternalReplyRecoveryToCaller: true,
             runtime: plannerRuntime,
             context: plannerContextAfterEarlyReply,
@@ -2137,8 +2152,10 @@ export async function runV5MessageRuntimeStage1(
               runtime: plannerRuntimeForEval,
               context,
               trajectory,
+              ...typedReadOptions
             }) =>
               runEvaluator({
+                ...typedReadOptions,
                 runtime: plannerRuntimeForEval,
                 context,
                 trajectory,
@@ -2189,6 +2206,14 @@ export async function runV5MessageRuntimeStage1(
     ) =>
       timeInferenceSpan("message:planner", () =>
         runPlannerLoop({
+          ...(args.resolveTypedReadReply
+            ? {
+                resolveTypedReadReply: args.resolveTypedReadReply,
+                ...(args.onTypedReadEgress
+                  ? { onTypedReadEgress: args.onTypedReadEgress }
+                  : {}),
+              }
+            : {}),
           deferInternalReplyRecoveryToCaller: true,
           runtime: plannerRuntime,
           context: loopContext,
@@ -2350,9 +2375,15 @@ export async function runV5MessageRuntimeStage1(
               { tool: toolCall.name },
             );
           },
-          evaluate: ({ runtime: plannerRuntimeForEval, context, trajectory }) =>
+          evaluate: ({
+            runtime: plannerRuntimeForEval,
+            context,
+            trajectory,
+            ...typedReadOptions
+          }) =>
             timeInferenceSpan("evaluators:planner", () =>
               runEvaluator({
+                ...typedReadOptions,
                 runtime: plannerRuntimeForEval,
                 context,
                 trajectory,
