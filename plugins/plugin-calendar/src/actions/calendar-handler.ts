@@ -1701,6 +1701,7 @@ function formatExplicitCalendarDateLabel(args: {
 }): string {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: args.timeZone,
+    weekday: "long",
     month: "long",
     day: "numeric",
     year: "numeric",
