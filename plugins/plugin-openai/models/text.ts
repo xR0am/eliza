@@ -4,6 +4,8 @@
  * Provides text generation using OpenAI's language models.
  */
 
+import { z } from "zod";
+
 import type {
   GenerateTextContentPart,
   GenerateTextParams,
@@ -591,7 +593,7 @@ function resolveProviderOptions(
 function buildStructuredOutput(
   responseSchema: unknown,
   modelType: ModelTypeName,
-  cerebrasMode = false
+  cerebrasMode = false,
 ): PreparedStructuredOutput {
   if (
     responseSchema &&
@@ -603,16 +605,25 @@ function buildStructuredOutput(
   }
 
   const schemaOptions =
-    responseSchema && typeof responseSchema === "object" && "schema" in responseSchema
+    responseSchema &&
+    typeof responseSchema === "object" &&
+    "schema" in responseSchema
       ? (responseSchema as {
           schema: unknown;
           name?: string;
           description?: string;
         })
       : { schema: responseSchema };
-  const preparedSchema = prepareResponseFormatSchema(schemaOptions.schema, modelType);
+  const preparedSchema = prepareResponseFormatSchema(
+    schemaOptions.schema,
+    modelType,
+  );
+  const rootUnion = cerebrasMode
+    ? wrapCerebrasRootUnion(preparedSchema.schema)
+    : undefined;
+  const wireInput = rootUnion?.schema ?? preparedSchema.schema;
   const cerebrasSchema = cerebrasMode
-    ? factorResponseSchema(preparedSchema.schema as JSONSchema7)
+    ? factorResponseSchema(wireInput as JSONSchema7)
     : undefined;
 
   const wireSchema = sanitizeJsonSchema(
@@ -622,7 +633,7 @@ function buildStructuredOutput(
     undefined,
     {
       preserveStructure: cerebrasMode,
-    }
+    },
   );
   return {
     ...(cerebrasSchema !== undefined && cerebrasSchema !== preparedSchema.schema
@@ -631,15 +642,124 @@ function buildStructuredOutput(
     output: Output.object({
       schema: jsonSchema(wireSchema),
       ...(schemaOptions.name ? { name: schemaOptions.name } : {}),
-      ...(schemaOptions.description ? { description: schemaOptions.description } : {}),
+      ...(schemaOptions.description
+        ? { description: schemaOptions.description }
+        : {}),
     }) as NativeOutput,
     requestDescriptor: {
       type: "json_schema",
       schema: sanitizeJsonSchema(preparedSchema.schema, true),
       ...(schemaOptions.name ? { name: schemaOptions.name } : {}),
-      ...(schemaOptions.description ? { description: schemaOptions.description } : {}),
+      ...(schemaOptions.description
+        ? { description: schemaOptions.description }
+        : {}),
     },
-    ...(preparedSchema.transform ? { transform: preparedSchema.transform } : {}),
+    ...(rootUnion
+      ? {
+          transform: {
+            restoreText(text: string) {
+              const restored = rootUnion.restoreText(text);
+              return (
+                preparedSchema.transform?.restoreText(restored) ?? restored
+              );
+            },
+          },
+        }
+      : preparedSchema.transform
+        ? { transform: preparedSchema.transform }
+        : {}),
+  };
+}
+
+/** Reversible provider envelope for root unions rejected by Cerebras. */
+function wrapCerebrasRootUnion(
+  schema: unknown,
+): { schema: JSONSchema7; restoreText(text: string): string } | undefined {
+  const root = asOptionalRecord(schema);
+  if (!root || !Array.isArray(root.anyOf) || root.anyOf.length === 0) return;
+  if (
+    root.$schema !== undefined &&
+    root.$schema !== "https://json-schema.org/draft/2020-12/schema"
+  )
+    return;
+  // Validate only a known round-trippable vocabulary. References/resource
+  // IDs and other keywords keep their original provider-visible behavior.
+  const allowed = new Set([
+    "$schema",
+    "type",
+    "title",
+    "description",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "anyOf",
+    "enum",
+    "const",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minItems",
+    "maxItems",
+  ]);
+  const queue: unknown[] = [root];
+  while (queue.length) {
+    const node = queue.pop();
+    if (typeof node === "boolean") continue;
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    const record = node as Record<string, unknown>;
+    if (record !== root && Object.hasOwn(record, "$schema")) return;
+    if (Object.keys(record).some((key) => !allowed.has(key))) return;
+    if (record.properties && typeof record.properties === "object")
+      queue.push(...Object.values(record.properties));
+    for (const key of ["items", "additionalProperties"])
+      if (record[key] !== undefined) queue.push(record[key]);
+    if (Array.isArray(record.anyOf)) queue.push(...record.anyOf);
+  }
+  let validator: z.ZodType;
+  try {
+    validator = z.fromJSONSchema(
+      root as Parameters<typeof z.fromJSONSchema>[0],
+    );
+  } catch {
+    // An unsupported conversion is not permission to weaken the schema.
+    return;
+  }
+  const key = "__eliza_response";
+  const { $schema, ...valueSchema } = root;
+  return {
+    schema: {
+      type: "object",
+      properties: { [key]: valueSchema as JSONSchema7 },
+      required: [key],
+      additionalProperties: false,
+      ...(typeof $schema === "string" ? { $schema } : {}),
+    },
+    restoreText(text) {
+      const value: unknown = JSON.parse(text);
+      if (
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value) ||
+        Object.keys(value).length !== 1 ||
+        !Object.hasOwn(value, key)
+      )
+        throw new ElizaError("Structured response envelope is invalid", {
+          code: "OPENAI_RESPONSE_ENVELOPE_INVALID",
+          severity: "ephemeral",
+        });
+      const restored = (value as Record<string, unknown>)[key];
+      if (!validator.safeParse(restored).success)
+        throw new ElizaError(
+          "Structured response failed its original union schema",
+          { code: "OPENAI_RESPONSE_UNION_INVALID", severity: "ephemeral" },
+        );
+      return JSON.stringify(restored);
+    },
   };
 }
 
