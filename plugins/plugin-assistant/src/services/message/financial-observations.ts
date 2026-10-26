@@ -125,6 +125,16 @@ function observedHoldings(
 
 const UNVERIFIED =
   /\b(?:cannot|can't|unable|unavailable|unknown|unverified|not\s+(?:verified|confirmed)|if|unless|whether|could|would)\b/i;
+const ASSET = "(?:tokens?|crypto|SOL|ETH|BTC|USDC|USDT)";
+// A statement of what a wallet holds, in a reply or a request.
+const HOLDING_STATEMENT = new RegExp(
+  String.raw`\b(?:(?:your|my)\s+(?:[A-Za-z][A-Za-z0-9]*\s+)?(?:wallet|holdings|portfolio)|(?:wallet|holdings|portfolio)\s+(?:(?:currently|now|still)\s+)?(?:holds|contains|has|includes)|${ASSET}\s+balance)\b`,
+  "i",
+);
+const HOLDING_QUESTION = new RegExp(
+  String.raw`\b(?:how\s+(?:much|many)\s+${ASSET}|(?:do|does|did)\s+(?:I|you|we)\s+(?:still\s+)?(?:have|hold|own)\s+(?:any\s+)?${ASSET})\b`,
+  "i",
+);
 const NON_ASSET_UNITS =
   /^(?:seconds?|minutes?|hours?|days?|weeks?|times?|attempts?|results?|assets?|items?|tokens?|coins?)$/i;
 
@@ -157,9 +167,7 @@ function holdingClaims(
       // Outside a wallet turn only an ownership statement is a holding:
       // "per wallet" or "from their wallet" names a wallet without stating its contents.
       const holdingContext =
-        /\b(?:(?:your|my)\s+(?:[A-Za-z][A-Za-z0-9]*\s+)?(?:wallet|holdings|portfolio)|(?:wallet|holdings|portfolio)\s+(?:(?:currently|now|still)\s+)?(?:holds|contains|has|includes)|(?:token|SOL|ETH|BTC|USDC|USDT)\s+balance)\b/i.test(
-          clause,
-        ) ||
+        HOLDING_STATEMENT.test(clause) ||
         (walletTurn &&
           /\b(?:balance|holds|contains|(?:you|I)\s+(?:(?:currently|now|still)\s+)?(?:have|hold|own))\b/i.test(
             clause,
@@ -207,6 +215,7 @@ function holdingClaims(
 /** Missing holdings stay unknown; only an explicit observed zero can prove zero. */
 export function financialHoldingIsUngrounded(args: {
   reply: string;
+  request?: string;
   contexts?: readonly AgentContext[];
   actionResults: readonly ActionResult[];
   providers?: StateData["providers"];
@@ -215,14 +224,22 @@ export function financialHoldingIsUngrounded(args: {
   // Address lookups can target arbitrary third parties. Only configured wallet
   // providers supply personal-wallet context; a public lookup cannot establish ownership.
   const personalObservations = observedHoldings([], args.providers);
-  // Only a turn routed to a wallet domain or holding wallet observations reads
-  // bare counts and "you have" clauses as holdings; elsewhere "8 commits" is a
-  // count. "finance" alone is not a wallet domain: cloud credits share it.
+  // Only a wallet turn reads bare counts and "you have" clauses as holdings;
+  // elsewhere "8 commits" is a count. A turn is a wallet turn when it holds
+  // wallet observations, Stage 1 routed it to a wallet domain, or no domain was
+  // routed (a direct reply, or a caller without Stage 1 contexts) and the
+  // request asks what a wallet holds. "finance" alone is not a wallet domain:
+  // cloud credits share it.
+  const contexts = args.contexts ?? [];
   const walletTurn =
     observations.length > 0 ||
-    args.contexts?.some(
-      (context) => context === "wallet" || context === "crypto",
-    ) === true;
+    contexts.some((context) => context === "wallet" || context === "crypto") ||
+    (contexts.every(
+      (context) => context === "simple" || context === "general",
+    ) &&
+      args.request !== undefined &&
+      (HOLDING_STATEMENT.test(args.request) ||
+        HOLDING_QUESTION.test(args.request)));
   return holdingClaims(args.reply, walletTurn).some(
     (claim) =>
       !(claim.personal ? personalObservations : observations).some(

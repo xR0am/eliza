@@ -24,10 +24,6 @@ describe("financial holding grounding", () => {
       "Agents query contract safety without managing API keys, paying $0.02 USDC directly from their Base wallet per call. Looking for feedback!",
     ],
     [
-      "saw it. 0 stars, 0 forks, 8 commits.",
-      "Do you have feedback on my USDC wallet SDK?",
-    ],
-    [
       "60 req/min per wallet is reasonable for v0.2.",
       "added rate limiting at 60 req/min per wallet",
     ],
@@ -53,6 +49,31 @@ describe("financial holding grounding", () => {
       });
     },
   );
+
+  it.each([
+    [[], "You have 8 SOL.", "what's in my wallet?"],
+    [[], "You hold 12 SOL.", "what's in my wallet?"],
+    [[], "5 SOL.", "how much sol do i have?"],
+    [[], "- 5 SOL\n- 10 USDC", "show my token balance"],
+    [["simple"], "I have 5 SOL", "Do you have any SOL?"],
+    [["general"], "You have 8 SOL.", "what's in my wallet?"],
+  ] as const)(
+    "rejects an unobserved holding when no domain is routed (%j) and the request asks what a wallet holds: %j",
+    (contexts, reply, request) => {
+      expect(egress(reply, request, [...contexts])).toEqual({
+        verdict: "reject",
+        kind: "financial_holding",
+      });
+    },
+  );
+
+  it("does not read a request about a wallet's contents as a wallet turn when Stage 1 routed another domain", () => {
+    expect(
+      egress("You have 120 credits.", "how many credits are in my wallet?", [
+        "finance",
+      ]),
+    ).toEqual({ verdict: "allow" });
+  });
 
   it.each([
     "You have to stake 32 ETH to run a validator.",

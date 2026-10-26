@@ -62,4 +62,19 @@ describe("wallet holding egress through the message pipeline", () => {
     });
     expect(rejections).not.toHaveLength(0);
   });
+
+  it("rejects a direct Stage 1 reply that fabricates a balance for a holdings question", async () => {
+    const { result } = await runHoldingTurn(
+      stage1Response({
+        contexts: ["simple"],
+        intents: [],
+        replyText: "You have 120 SOL.",
+      }),
+      [],
+    );
+    expect(result).toMatchObject({
+      kind: "direct_reply",
+      result: { responseContent: { text: RECOVERED } },
+    });
+  });
 });
