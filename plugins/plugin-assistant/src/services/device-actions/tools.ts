@@ -5,6 +5,7 @@ import type {
   HandlerOptions,
 } from "@elizaos/core";
 import {
+  ElizaError,
   parseWebResourceAddress,
   registerDirectActionRoutingRule,
 } from "@elizaos/core";
@@ -510,11 +511,15 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
           } as HandlerOptions["parameters"],
         };
         if (!proposeDeviceAction.handler)
-          throw new Error("Device action handler is unavailable");
+          throw new ElizaError("Device action handler is unavailable", {
+            code: "DEVICE_ACTION_HANDLER_UNAVAILABLE",
+          });
         return proposeDeviceAction.handler(...next);
       }
       if (!proposeDeviceAction.handler)
-        throw new Error("Device action handler is unavailable");
+        throw new ElizaError("Device action handler is unavailable", {
+          code: "DEVICE_ACTION_HANDLER_UNAVAILABLE",
+        });
       return proposeDeviceAction.handler(...args);
     },
   })),

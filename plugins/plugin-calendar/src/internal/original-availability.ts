@@ -1,6 +1,7 @@
 /** Request-grounded readable availability window; model UTC/tool fields are never authority. */
 import {
   assertActiveTrajectoryForLlmCall,
+  ElizaError,
   extractUserText,
   type GenerateTextParams,
   type IAgentRuntime,
@@ -166,7 +167,10 @@ export async function originalAvailabilityWindow(args: {
       args.timeZone,
       "reject",
     );
-    if (!normalized) throw new Error("Availability absolute time is invalid");
+    if (!normalized)
+      throw new ElizaError("Availability absolute time is invalid", {
+        code: "CALENDAR_AVAILABILITY_TIME_INVALID",
+      });
     return normalized;
   };
   let start: string, end: string | undefined;
@@ -187,7 +191,10 @@ export async function originalAvailabilityWindow(args: {
         args.timeZone,
         "reject",
       );
-      if (!normalized) throw new Error("Availability start is invalid");
+      if (!normalized)
+        throw new ElizaError("Availability start is invalid", {
+          code: "CALENDAR_AVAILABILITY_TIME_INVALID",
+        });
       start = normalized;
     }
     if (fields.absoluteEnd !== null) end = absolute(fields.absoluteEnd);

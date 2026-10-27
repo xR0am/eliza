@@ -3,6 +3,7 @@ import {
   type Action,
   type ActionParameter,
   type ActionParameterSchema,
+  ElizaError,
   promotedSubactionDescription,
   promoteSubactionsToActions,
 } from "@elizaos/core";
@@ -218,7 +219,9 @@ export function calendarOperationActions(
       ...action,
       async handler(...args: Parameters<NonNullable<typeof action.handler>>) {
         if (!action.handler)
-          throw new Error("Calendar action handler is unavailable");
+          throw new ElizaError("Calendar action handler is unavailable", {
+            code: "CALENDAR_ACTION_HANDLER_UNAVAILABLE",
+          });
         const result = await action.handler(...args);
         return result
           ? { ...result, ...calendarReadPromptProjection(result.data) }
