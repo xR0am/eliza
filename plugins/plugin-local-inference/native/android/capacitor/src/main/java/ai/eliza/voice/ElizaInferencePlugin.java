@@ -156,8 +156,8 @@ public class ElizaInferencePlugin extends Plugin {
             float[] pcm = new float[bytes.length / 2];
             for (int i = 0; i < pcm.length; i++) pcm[i] = input.getShort() / 32768f;
             long start = SystemClock.elapsedRealtime();
-            // This is the local-inference endpoint: use the same admitted
-            // Phonon session as the native host, never a platform recognizer.
+            // This is the local-inference endpoint. Use its admitted Phonon
+            // session rather than selecting a platform recognizer.
             String heard = models.session(request).transcribe(pcm);
             if (heard == null) throw new IllegalStateException("Transcription unavailable");
             JSObject result = new JSObject();
