@@ -32,6 +32,57 @@ final class WorkflowSurvivorInventory {
    while((n=in.read(buffer))!=-1){check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");size+=n;check(size<=128L*1024*1024,"worker executable/source exceeds bound");digest.update(buffer,0,n);}}
   StringBuilder value=new StringBuilder();for(byte b:digest.digest())value.append(String.format(Locale.ROOT,"%02x",b&255));return value.toString();
  }
+ /** One stop observation, never a global cache. A held FD and current path must keep
+  * the same nanosecond-resolution identity; a changed file refuses, not re-baselines. */
+ interface DigestFile extends AutoCloseable {
+  String identity()throws Exception;
+  String digest(long deadline)throws Exception;
+  void close()throws IOException;
+ }
+ interface DigestOpener { DigestFile open(File file)throws Exception; }
+ static final class ExecutableDigests implements AutoCloseable {
+  private static final class Entry {
+   final DigestFile file;final String identity,digest;
+   Entry(DigestFile file,String identity,String digest){this.file=file;this.identity=identity;this.digest=digest;}
+  }
+  private final DigestOpener opener;private boolean closed;private final Map<String,Entry> files=new LinkedHashMap<>();private final Map<String,String> aliases=new HashMap<>();
+  ExecutableDigests(DigestOpener opener){this.opener=opener;}
+  String digest(File file,long deadline,boolean fresh)throws Exception {
+   check(!closed,"executable observation is closed");String path=file.getCanonicalPath(),alias=file.getAbsolutePath();
+   String admitted=aliases.get(alias);check(admitted==null||admitted.equals(path),"executable path changed during observation");
+   check(admitted!=null||aliases.size()<96,"too many executable aliases");aliases.put(alias,path);Entry entry=files.get(path);
+   if(entry==null){
+    check(files.size()<32,"too many executable observations");DigestFile opened=opener.open(new File(path));
+    try{String identity=opened.identity(),digest=opened.digest(deadline);check(identity.equals(opened.identity()),"executable changed during digest");entry=new Entry(opened,identity,digest);files.put(path,entry);}
+    catch(Exception failure){opened.close();throw failure;}
+   }else{
+    check(entry.identity.equals(entry.file.identity()),"executable changed during observation");
+    if(fresh){check(entry.digest.equals(entry.file.digest(deadline)),"executable digest changed");check(entry.identity.equals(entry.file.identity()),"executable changed during digest");}
+   }
+   return entry.digest;
+  }
+  public void close()throws IOException {if(closed)return;closed=true;IOException failed=null;for(Entry entry:files.values())try{entry.file.close();}catch(IOException error){if(failed==null)failed=error;else failed.addSuppressed(error);}files.clear();aliases.clear();if(failed!=null)throw failed;}
+ }
+ private static String fileIdentity(StructStat s){return s.st_dev+":"+s.st_ino+":"+s.st_uid+":"+s.st_gid+":"+s.st_mode+":"+s.st_nlink+":"+s.st_size+":"+s.st_mtim.tv_sec+":"+s.st_mtim.tv_nsec+":"+s.st_ctim.tv_sec+":"+s.st_ctim.tv_nsec;}
+ static ExecutableDigests executableDigests(){return new ExecutableDigests(file->{
+  java.io.FileDescriptor fd=Os.open(file.getPath(),OsConstants.O_RDONLY|OsConstants.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
+  FileInputStream in=new FileInputStream(fd);
+  return new DigestFile(){
+   public String identity()throws Exception {
+    StructStat held=Os.fstat(fd),current=Os.lstat(file.getPath());
+    check(OsConstants.S_ISREG(held.st_mode)&&held.st_size>0&&held.st_size<=128L*1024*1024&&fileIdentity(held).equals(fileIdentity(current)),"executable FD/path identity differs");return fileIdentity(held);
+   }
+   public String digest(long deadline)throws Exception {
+    in.getChannel().position(0);MessageDigest digest=MessageDigest.getInstance("SHA-256");byte[] buffer=new byte[65536];long size=0;int n;
+    while((n=in.read(buffer))!=-1){check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");size+=n;check(size<=128L*1024*1024,"worker executable/source exceeds bound");digest.update(buffer,0,n);}
+    StringBuilder value=new StringBuilder();for(byte b:digest.digest())value.append(String.format(Locale.ROOT,"%02x",b&255));return value.toString();
+   }
+   public void close()throws IOException{in.close();}
+  };
+ });}
+ private static String hash(File file,long deadline,ExecutableDigests observation)throws Exception {
+  check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");return observation==null?hash(file,deadline):observation.digest(file,deadline,false);
+ }
  private static String hashText(String text)throws Exception {MessageDigest digest=MessageDigest.getInstance("SHA-256");StringBuilder value=new StringBuilder();for(byte b:digest.digest(text.getBytes(StandardCharsets.UTF_8)))value.append(String.format(Locale.ROOT,"%02x",b&255));return value.toString();}
  static final class Identity {
   final int pid,uid;final String start,executable,device,inode,sha256;
@@ -39,9 +90,10 @@ final class WorkflowSurvivorInventory {
   String key(){return pid+":"+uid+":"+start+":"+executable+":"+device+":"+inode+":"+sha256;}
  }
  static Identity processIdentity(int pid)throws Exception {return processIdentity(pid,Long.MAX_VALUE);}
- private static Identity processIdentity(int pid,long deadline)throws Exception {
+ private static Identity processIdentity(int pid,long deadline)throws Exception {return processIdentity(pid,deadline,null);}
+ private static Identity processIdentity(int pid,long deadline,ExecutableDigests observation)throws Exception {
   File proc=new File("/proc/"+pid);StructStat before=Os.stat(proc.getPath());String stat=new String(bounded(new File(proc,"stat"),16384),StandardCharsets.UTF_8);int end=stat.lastIndexOf(')');check(end>=0,"malformed worker process");String[] fields=stat.substring(end+2).trim().split("\\s+");check(fields.length>19&&fields[19].matches("[0-9]+"),"missing worker start time");
-  File link=new File(proc,"exe");String executable=Os.readlink(link.getPath());check(executable.startsWith("/")&&!executable.endsWith(" (deleted)"),"invalid worker executable");StructStat exe=Os.stat(link.getPath());String digest=hash(link,deadline);StructStat after=Os.stat(proc.getPath());check(before.st_uid==after.st_uid&&before.st_ino==after.st_ino,"worker process changed");return new Identity(pid,before.st_uid,fields[19],executable,String.valueOf(exe.st_dev),String.valueOf(exe.st_ino),digest);
+  File link=new File(proc,"exe");String executable=Os.readlink(link.getPath());check(executable.startsWith("/")&&!executable.endsWith(" (deleted)"),"invalid worker executable");StructStat exe=Os.stat(link.getPath());String digest=hash(link,deadline,observation);StructStat after=Os.stat(proc.getPath());check(before.st_uid==after.st_uid&&before.st_ino==after.st_ino,"worker process changed");return new Identity(pid,before.st_uid,fields[19],executable,String.valueOf(exe.st_dev),String.valueOf(exe.st_ino),digest);
  }
  interface ProcessObservation<T> { T read()throws Exception; }
  interface ProcessPresence { boolean live(int pid)throws Exception; }
@@ -100,10 +152,13 @@ final class WorkflowSurvivorInventory {
   check(before.key().equals(processIdentity(pid,deadline).key())&&Arrays.equals(args,bounded(new File("/proc/"+pid+"/cmdline"),65536)),"resident peer changed during adoption");
  }
  static void stopResident(File suppliedBun,File suppliedLoader,File suppliedBundle,long deadline)throws Exception {
+  try(ExecutableDigests observation=executableDigests()){stopResident(suppliedBun,suppliedLoader,suppliedBundle,deadline,observation);}
+ }
+ static void stopResident(File suppliedBun,File suppliedLoader,File suppliedBundle,long deadline,ExecutableDigests observation)throws Exception {
   check(SystemClock.elapsedRealtime()<deadline,"resident stop inventory deadline");
   String bun=suppliedBun.getCanonicalPath(),loader=suppliedLoader.getCanonicalPath(),bundle=suppliedBundle.getCanonicalPath();
   check(bun.equals(suppliedBun.getPath())&&loader.equals(suppliedLoader.getPath())&&bundle.equals(suppliedBundle.getPath()),"resident deployment alias");
-  StructStat packaged=Os.stat(loader);String loaderHash=hash(new File(loader),deadline);
+  StructStat packaged=Os.stat(loader);String loaderHash=null;
   File[] entries=new File("/proc").listFiles();check(entries!=null&&entries.length>=20,"incomplete resident stop inventory");
   Identity selected=null;byte[] selectedArgs=null;
   for(File entry:entries){
@@ -120,37 +175,45 @@ final class WorkflowSurvivorInventory {
     return residentArguments(observed,bun,loader,bundle)?observed:null;
    });if(args==null)continue;
    check(selected==null,"multiple resident processes; preserve all");
-   Identity identity=observePresent(pid,()->processIdentity(pid,deadline));if(identity==null)continue;
+   Identity identity=observePresent(pid,()->processIdentity(pid,deadline,observation));if(identity==null)continue;
+   if(loaderHash==null)loaderHash=hash(new File(loader),deadline,observation);
    check(identity.uid==Process.myUid()&&identity.executable.equals(loader)&&identity.sha256.equals(loaderHash)
     &&identity.device.equals(String.valueOf(packaged.st_dev))&&identity.inode.equals(String.valueOf(packaged.st_ino)),"resident deployment changed");
-   if(observePresent(pid,()->mappedBunIdentity(pid,bun,deadline))==null)continue;selected=identity;selectedArgs=args;
+   if(observePresent(pid,()->mappedBunIdentity(pid,bun,deadline,observation))==null)continue;selected=identity;selectedArgs=args;
   }
   if(selected==null)return;
   final Identity target=selected;final byte[] targetArgs=selectedArgs;
-  if(observePresent(target.pid,()->{check(target.key().equals(processIdentity(target.pid,deadline).key())&&Arrays.equals(targetArgs,bounded(new File("/proc/"+target.pid+"/cmdline"),65536)),"resident changed before signal");return Boolean.TRUE;})==null)return;
+  // Fresh full executable digest plus exact process/argv/mapping before the only signal.
+  observation.digest(new File(loader),deadline,true);
+  if(observePresent(target.pid,()->{check(target.key().equals(processIdentity(target.pid,deadline,observation).key())&&Arrays.equals(targetArgs,bounded(new File("/proc/"+target.pid+"/cmdline"),65536)),"resident changed before signal");mappedBunIdentity(target.pid,bun,deadline,observation);return Boolean.TRUE;})==null)return;
   // The full UID/start/executable identity is rechecked immediately before signaling.
   if(observePresent(target.pid,()->{check(SystemClock.elapsedRealtime()<deadline,"resident stop inventory deadline");Os.kill(target.pid,OsConstants.SIGTERM);return Boolean.TRUE;})==null)return;
-  while(SystemClock.elapsedRealtime()<deadline){
-   Identity current;
-   try {current=observePresent(target.pid,()->processIdentity(target.pid,deadline));}
-   catch(android.system.ErrnoException transition){
-    // SIGTERM can remove /proc/PID/exe before the process becomes terminal.
-    // Retry observation only: no additional signal and no success without proof.
-    if(transition.errno!=OsConstants.ENOENT)throw transition;
-    SystemClock.sleep(50);continue;
-   }
-   catch(FileNotFoundException transition){SystemClock.sleep(50);continue;}
-   if(current==null)return;
-   check(target.key().equals(current.key()),"resident PID changed after signal");
-   SystemClock.sleep(50);
-  }
+  if(awaitResidentExit(target.pid,pid->residentStillLive(target),SystemClock::elapsedRealtime,SystemClock::sleep,deadline))return;
   throw refused("resident stop unconfirmed; preserve processes");
  }
- private static Map<Integer,Identity> processes(long deadline)throws Exception {
+ interface StopSleeper { void sleep(long ms)throws Exception; }
+ /** Liveness-only waiting grants neither a signal nor final ownership release. */
+ static boolean awaitResidentExit(int pid,ProcessPresence presence,java.util.function.LongSupplier now,StopSleeper sleeper,long deadline)throws Exception {
+  while(now.getAsLong()<deadline){
+   if(!presence.live(pid))return true;
+   sleeper.sleep(Math.min(50L,Math.max(0L,deadline-now.getAsLong())));
+  }
+  return false;
+ }
+ private static boolean residentStillLive(Identity target)throws Exception {
+  try{
+   File proc=new File("/proc/"+target.pid);StructStat before=Os.stat(proc.getPath());
+   String stat=new String(bounded(new File(proc,"stat"),16384),StandardCharsets.UTF_8);int end=stat.lastIndexOf(')');check(end>=0,"malformed worker process");String[] fields=stat.substring(end+2).trim().split("\\s+");
+   check(fields.length>19&&before.st_uid==target.uid&&fields[19].equals(target.start),"resident process changed while stopping");
+   return liveProcess(target.pid);
+  }catch(android.system.ErrnoException absent){if(absent.errno==OsConstants.ENOENT)return false;throw absent;}
+ }
+ private static Map<Integer,Identity> processes(long deadline)throws Exception {return processes(deadline,null);}
+ private static Map<Integer,Identity> processes(long deadline,ExecutableDigests observation)throws Exception {
   File[] entries=new File("/proc").listFiles();check(entries!=null&&entries.length>=20,"incomplete process inventory");Map<Integer,Identity> result=new TreeMap<>();
   for(File entry:entries){if(!entry.getName().matches("[0-9]+"))continue;StructStat stat;
    try{stat=Os.stat(entry.getPath());}catch(android.system.ErrnoException missing){if(missing.errno==OsConstants.ENOENT)continue;throw missing;}
-   if(stat.st_uid!=Process.myUid())continue;int pid=Integer.parseInt(entry.getName());Identity identity=observePresent(pid,()->processIdentity(pid,deadline));if(identity!=null)result.put(pid,identity);check(result.size()<=32,"too many same-UID processes");}
+   if(stat.st_uid!=Process.myUid())continue;int pid=Integer.parseInt(entry.getName());Identity identity=observePresent(pid,()->processIdentity(pid,deadline,observation));if(identity!=null)result.put(pid,identity);check(result.size()<=32,"too many same-UID processes");}
   check(result.containsKey(Process.myPid()),"current process absent");return result;
  }
  private static File[] children(File directory,int[] budget)throws Exception {
@@ -205,14 +268,18 @@ final class WorkflowSurvivorInventory {
   }
   check(executable,"packaged Bun executable mapping absent");return matched.toString();
  }
- private static String mappedBunIdentity(int pid,String bun,long deadline)throws Exception {
+ private static String mappedBunIdentity(int pid,String bun,long deadline)throws Exception {return mappedBunIdentity(pid,bun,deadline,null);}
+ private static String mappedBunIdentity(int pid,String bun,long deadline,ExecutableDigests observation)throws Exception {
   File file=new File(bun);check(file.getCanonicalPath().equals(bun),"mapped Bun path alias");
   java.io.FileDescriptor descriptor=Os.open(bun,OsConstants.O_RDONLY|OsConstants.O_CLOEXEC|OsConstants.O_NOFOLLOW,0);
   try(FileInputStream in=new FileInputStream(descriptor)) {
    StructStat first=Os.fstat(descriptor);check(OsConstants.S_ISREG(first.st_mode)&&(first.st_mode&0022)==0&&first.st_size>0&&first.st_size<=128L*1024*1024,"untrusted packaged Bun file");
-   MessageDigest digest=MessageDigest.getInstance("SHA-256");byte[] buffer=new byte[65536];long size=0;int n;
-   while((n=in.read(buffer))!=-1){check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");size+=n;check(size<=128L*1024*1024,"packaged Bun exceeds bound");digest.update(buffer,0,n);}
-   StringBuilder sha=new StringBuilder();for(byte value:digest.digest())sha.append(String.format(Locale.ROOT,"%02x",value&255));
+   byte[] buffer=new byte[65536];long size=0;int n;StringBuilder sha=new StringBuilder();
+   if(observation==null){
+    MessageDigest digest=MessageDigest.getInstance("SHA-256");
+    while((n=in.read(buffer))!=-1){check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");size+=n;check(size<=128L*1024*1024,"packaged Bun exceeds bound");digest.update(buffer,0,n);}
+    for(byte value:digest.digest())sha.append(String.format(Locale.ROOT,"%02x",value&255));
+   }else{sha.append(hash(file,deadline,observation));size=first.st_size;}
    ByteArrayOutputStream maps=new ByteArrayOutputStream();try(InputStream proc=new FileInputStream("/proc/"+pid+"/maps")){
     while((n=proc.read(buffer))!=-1){check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");check(n<=4*1024*1024-maps.size(),"worker maps exceeds bound");maps.write(buffer,0,n);}
    }
@@ -276,15 +343,20 @@ final class WorkflowSurvivorInventory {
   return verified;
  }
  static void requireClassified(File suppliedHome,File suppliedState,File suppliedBun,File suppliedLoader,long deadline)throws Exception {
-  check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");File home=suppliedHome.getCanonicalFile(),state=suppliedState.getCanonicalFile();owned(home,OsConstants.S_IFDIR,0700);check(state.equals(new File(home,".eliza/smthrs")),"unexpected workflow state scope");String bun=suppliedBun.getCanonicalPath(),loader=suppliedLoader.getCanonicalPath(),loaderHash=hash(new File(loader),deadline);Map<Integer,Identity> before=processes(deadline);Set<Integer> verified=new HashSet<>();
+  requireClassified(suppliedHome,suppliedState,suppliedBun,suppliedLoader,deadline,null);
+ }
+ static void requireClassified(File suppliedHome,File suppliedState,File suppliedBun,File suppliedLoader,long deadline,ExecutableDigests observation)throws Exception {
+  check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");File home=suppliedHome.getCanonicalFile(),state=suppliedState.getCanonicalFile();owned(home,OsConstants.S_IFDIR,0700);check(state.equals(new File(home,".eliza/smthrs")),"unexpected workflow state scope");String bun=suppliedBun.getCanonicalPath(),loader=suppliedLoader.getCanonicalPath(),loaderHash=null;Map<Integer,Identity> before=processes(deadline,observation);Set<Integer> verified=new HashSet<>();
   if(before.size()>1){
+   loaderHash=hash(new File(loader),deadline,observation);
+   final String expectedLoaderHash=loaderHash;
    List<JSONObject> candidates=new ArrayList<>();Map<JSONObject,File> origins=new IdentityHashMap<>();
    for(File journal:journals(state)){JSONObject owner=readableCandidate(journal);if(owner!=null){candidates.add(owner);origins.put(owner,journal);}}
    verified=classifyCandidates(before,candidates,Process.myPid(),(owner,observed)->{
     check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");
-    verify(origins.get(owner),owner,observed,home,bun,loader,loaderHash,deadline);
+    verify(origins.get(owner),owner,observed,home,bun,loader,expectedLoaderHash,deadline);
    });
   }
-  Map<Integer,Identity> after=processes(deadline);verifyInventory(before,after,verified,Process.myPid());check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");
+  Map<Integer,Identity> after=processes(deadline,observation);verifyInventory(before,after,verified,Process.myPid());check(SystemClock.elapsedRealtime()<deadline,"worker inventory deadline");
  }
 }

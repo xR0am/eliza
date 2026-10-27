@@ -3396,20 +3396,22 @@ public class ElizaAgentService extends Service {
             File loader=paths.processExecutable;
             // Startup launches with canonical paths, and getFilesDir() is usually
             // the /data/user/0 alias of /data/data, so match canonically.
+            try (WorkflowSurvivorInventory.ExecutableDigests observation = WorkflowSurvivorInventory.executableDigests()) {
             while (true) {
                 WorkflowSurvivorInventory.stopResident(
-                    bun.getCanonicalFile(), loader.getCanonicalFile(), bundle.getCanonicalFile(), deadline);
+                    bun.getCanonicalFile(), loader.getCanonicalFile(), bundle.getCanonicalFile(), deadline, observation);
                 try {
                     // A detached launch shell may fork after an earlier inventory saw no resident.
                     // Only authenticated workflow siblings may remain when ownership is released.
                     WorkflowSurvivorInventory.requireClassified(
-                        getFilesDir(), new File(agentStateDir(), "smthrs"), bun.getCanonicalFile(), loader.getCanonicalFile(), deadline);
+                        getFilesDir(), new File(agentStateDir(), "smthrs"), bun.getCanonicalFile(), loader.getCanonicalFile(), deadline, observation);
                     break;
                 } catch (IOException unsettled) {
                     if (android.os.SystemClock.elapsedRealtime() >= deadline) throw unsettled;
                     android.os.SystemClock.sleep(Math.min(50L,
                         Math.max(0L, deadline - android.os.SystemClock.elapsedRealtime())));
                 }
+            }
             }
         } catch (Exception error) {
             // Never fall back to path-wide signals: those also kill admitted workers.
