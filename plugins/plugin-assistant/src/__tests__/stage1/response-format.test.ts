@@ -491,6 +491,16 @@ describe("Stage 1 response format", () => {
         contexts: ["simple"],
         replyText: actionBatch,
       }),
+      {
+        text: "",
+        toolCalls: [
+          {
+            id: "safe-reply",
+            name: "REPLY",
+            arguments: { text: "I could not open that page." },
+          },
+        ],
+      },
     ]);
 
     const result = await runStage1({
@@ -498,10 +508,10 @@ describe("Stage 1 response format", () => {
       message: makeMessage({ text: "Open example.com" }),
     });
 
-    expect(result.kind).toBe("direct_reply");
-    if (result.kind === "direct_reply") {
+    expect(result.kind).toBe("planned_reply");
+    if (result.kind === "planned_reply") {
       expect(result.result.responseContent?.text).toBe(
-        "I'm not sure how to answer that.",
+        "I could not open that page.",
       );
       expect(result.result.responseContent?.text).not.toContain("BROWSER");
     }

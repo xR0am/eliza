@@ -314,6 +314,12 @@ const CLOUD_AUDIT_CASES: CloudAuditCase[] = [
   },
   { slug: "login", path: "/login", route: "login", auth: PUBLIC },
   {
+    slug: "network-sign-in",
+    path: "/network/sign-in",
+    route: "network/sign-in",
+    auth: PUBLIC,
+  },
+  {
     slug: "auth-success",
     // Public route without a backend-confirmed connection — captures the
     // explicit unverified recovery state (#18054).
