@@ -45,6 +45,13 @@ android {
         assets.srcDirs = [new File(paradeeNative, 'assets')]
         jniLibs.srcDirs = packageInference ? [new File(paradeeNative, 'jniLibs')] : []
     }
+    if (!packageInference) {
+        // CMake contributes imported libraries and the NDK C++ runtime even
+        // when jniLibs is empty.
+        // Hosts that own libelizainference also own its admitted C++ runtime;
+        // do not let this library introduce a second copy into their APK.
+        packaging.jniLibs.excludes += ['**/libc++_shared.so', '**/libelizainference.so']
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21
