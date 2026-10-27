@@ -73,6 +73,21 @@ public final class InferenceSession implements AutoCloseable {
         return VoiceNative.nativeParadeeStreamSupported() == 1;
     }
 
+    /** Explicitly prepare speech output and recognition for a readiness check. */
+    public void prepareSpeech() throws IOException {
+        long admitted = generation.get();
+        synchronized (this) {
+            voice(admitted);
+            asr(admitted);
+            checkGeneration(admitted);
+        }
+    }
+
+    /** Observe loaded speech output without creating a context or loading models. */
+    public boolean isSpeechLoaded() {
+        return !closed && voice != null;
+    }
+
     /** Load only speech output, if needed, and return its actual sample rate. */
     public int speechSampleRate() throws IOException {
         long admitted = generation.get();
