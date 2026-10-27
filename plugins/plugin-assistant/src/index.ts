@@ -12,6 +12,7 @@ import {
   PLANNER_CONTINUATION_TASK,
   registerPlannerContinuationWorker,
 } from "./services/message/planner-continuation.ts";
+import { registerDeviceBrowserOpenRouting } from "./services/device-actions/tools.ts";
 import { DefaultMessageService } from "./services/message.ts";
 
 export function createAssistantPlugin(): Plugin {
@@ -31,6 +32,7 @@ export function createAssistantPlugin(): Plugin {
       runtime.contexts.tryRegisterMany(DEFAULT_CONTEXT_DEFINITIONS);
       runtime.messageService = new DefaultMessageService();
       registerCoreShouldRespondRiskHook(runtime);
+      registerDeviceBrowserOpenRouting(runtime);
       // Registered once per runtime, after storage is ready: recovery reads the
       // persisted continuation tasks left by a previous process.
       void runtime.initPromise

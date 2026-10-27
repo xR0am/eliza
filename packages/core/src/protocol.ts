@@ -610,3 +610,5 @@ export {
 export * from "./views/view-command-matcher.js";
 export * from "./views/view-interact-protocol.js";
 export * from "./voice-cancellation-token.js";
+
+export { parseWebResourceAddress, containsResourceAddress } from "./utils/resource-address.js";

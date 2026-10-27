@@ -1,6 +1,7 @@
 /** Host-owned, model-selected navigation; execution remains in the canonical action pipeline. */
 import {
   checkSenderRole,
+  containsResourceAddress,
   registerDirectActionRoutingRule,
   getStreamingContext,
   getUserMessageText,
@@ -352,7 +353,7 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
       value.disposition === "direct" &&
       // An explicit resource address cannot be fulfilled by view selection.
       // This only declines the shortcut; the normal planner retains authority.
-      !/\b[a-z][a-z0-9+.-]*:\/\/\S+/iu.test(staged.text) &&
+      !containsResourceAddress(staged.text) &&
       matches.length === 1 &&
       plan.replyEffectStatus === "pending" &&
       plan.intents?.length === 1 &&

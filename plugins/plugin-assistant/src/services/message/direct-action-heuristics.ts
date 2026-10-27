@@ -9,7 +9,7 @@
  */
 
 import type { Action } from "@elizaos/core";
-import { isReservedNonToolActionName, trimEndCharacters } from "@elizaos/core";
+import { containsResourceAddress, isReservedNonToolActionName, trimEndCharacters } from "@elizaos/core";
 
 export interface DirectActionInferenceHooks {
   looksLikeCodingWorkRequest?: (text: string) => boolean;
@@ -1403,7 +1403,7 @@ export function inferDirectCurrentRequestCandidateInference(
   }
   // A view-only candidate cannot satisfy a URL-bearing request. Keep the full
   // planner surface available for browser navigation or a compound URL task.
-  if (/\bhttps?:\/\//iu.test(messageText)) {
+  if (containsResourceAddress(messageText)) {
     return EMPTY_DIRECT_CANDIDATE_INFERENCE;
   }
   const viewShellAction = findViewShellActionName(actions, messageText);

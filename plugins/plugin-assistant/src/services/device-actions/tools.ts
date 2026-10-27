@@ -4,6 +4,8 @@ import type {
   ActionParameterSchema,
   HandlerOptions,
 } from "@elizaos/core";
+import { parseWebResourceAddress, registerDirectActionRoutingRule } from "@elizaos/core";
+import { deviceOperationSupportedByCapabilities } from "./contract.ts";
 import { proposeDeviceAction } from "./action.ts";
 import {
   CALENDAR_CAPABILITY,
@@ -249,7 +251,9 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
           }
         : undefined,
     tags:
-      type === "notes_update"
+      type === "browser_navigate"
+        ? ["domain:browser", "capability:navigate", "effect:receipt-required", "target:selected-device"]
+        : type === "notes_update"
         ? [
             ...(proposeDeviceAction.tags || []),
             "domain:notes",
@@ -495,3 +499,33 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
     },
   })),
 );
+
+/** Availability for a complete URL-open request; the existing tool still creates
+ * a reviewed proposal and the phone's typed receipt owns completion.
+ */
+export function registerDeviceBrowserOpenRouting(runtime: Parameters<typeof registerDirectActionRoutingRule>[0]): void {
+  const matches = (text: string, message?: Parameters<NonNullable<Action["validate"]>>[1]): boolean => {
+    const current = getDeviceActionTurn();
+    const caller = current?.requestCaller;
+    if (!message || current?.runtime !== runtime || !current.isCurrent() ||
+      current.requestMessage?.message !== message || caller?.role !== "OWNER" ||
+      caller.entityId !== message.entityId || caller.subjectUserId !== current.credential.subjectUserId ||
+      message.content.source !== "client_chat" ||
+      !["DM", "VOICE_DM"].includes(String(message.content.channelType)) ||
+      !deviceOperationSupportedByCapabilities("browser_navigate", current.credential.capabilities))
+      return false;
+    const command = /^(?:please\s+)?(?:open|visit|navigate\s+to|go\s+to)\s+([^\s]+)[.!]?$/iu.exec(text.trim());
+    if (!command) return false;
+    const address = parseWebResourceAddress(command[1].replace(/[.!]$/u, ""));
+    return address?.protocol === "https:";
+  };
+  registerDirectActionRoutingRule(runtime, {
+    id: "device.browser-open",
+    actionNames: ["DEVICE_BROWSER_OPEN"],
+    replacesActionNames: ["VIEWS", "VIEWS_SHOW", "BROWSER", "BROWSER_OPEN", "BROWSER_NAVIGATE"],
+    requiredActionTags: ["domain:browser", "capability:navigate", "effect:receipt-required", "target:selected-device"],
+    contexts: ["browser", "web", "general"],
+    matches,
+    wholeRequest: { matches, invalidateFields: ["visualContinuation"] },
+  });
+}
