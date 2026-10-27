@@ -16,8 +16,8 @@ import {
   type TrajectoryRecorder,
 } from "@elizaos/core";
 import { describe, expect, it, vi } from "vitest";
-import { runEvaluator } from "./evaluator.ts";
 import { collectSubPlannerSubSteps } from "../services/message/planned-tool.ts";
+import { runEvaluator } from "./evaluator.ts";
 import {
   partitionRedundantSucceededCalls,
   runPlannerLoop,
