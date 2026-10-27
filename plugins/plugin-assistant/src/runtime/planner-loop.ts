@@ -447,6 +447,8 @@ export async function runPlannerLoop(
           ...final.evaluator,
           success: false,
           requestFullyCovered: false,
+          // This status disclaims the failed overall completion described by
+          // the reply; successful sibling receipts still prove their effects.
           replyEffectStatus: "non_applied",
           effectReceiptIds: undefined,
           outcomeCoverage: undefined,

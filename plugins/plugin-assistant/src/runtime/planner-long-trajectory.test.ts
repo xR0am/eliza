@@ -3137,6 +3137,9 @@ describe("final effective verdict retains unresolved effect authority", () => {
     "exploratory",
     "pending",
     "verified-sibling",
+    "coding-same",
+    "coding-different",
+    "coding-partial",
   ] as const)(
     "projects the authoritative terminal result to its parent (%s)",
     async (mode) => {
@@ -3145,14 +3148,45 @@ describe("final effective verdict retains unresolved effect authority", () => {
       );
       let plans = 0,
         attempts = 0;
+      const coding = mode.startsWith("coding-");
+      const sameTarget = mode === "same" || mode === "coding-same";
+      const verifiedSibling =
+        mode === "verified-sibling" || mode === "coding-partial";
       const claim = "Your original reminder is set.";
       const body = "Original reminder body";
       const result = await runPlannerLoop({
-        context: { id: `effective-verdict-${mode}`, events: [] },
-        codingMode: false,
+        context: {
+          id: `effective-verdict-${mode}`,
+          events: coding
+            ? [
+                {
+                  id: "handler",
+                  type: "message_handler",
+                  metadata: {
+                    plan: { intents: ["Create the requested reminder."] },
+                  },
+                },
+              ]
+            : [],
+        },
+        codingMode: coding,
         runtime: {
           useModel: async () => {
-            if (++plans > 2)
+            ++plans;
+            // Coding mode deliberately drains its queue, then asks the planner
+            // for an explicit terminal response; it does not call evaluate.
+            if (coding && plans === 3)
+              return {
+                text: "",
+                toolCalls: [
+                  {
+                    id: "coding-final",
+                    name: "REPLY",
+                    arguments: { text: claim, eliza_turn_scope: "final" },
+                  },
+                ],
+              };
+            if (plans > (coding ? 3 : 2))
               throw Error("No extra synthesized result in this fixture");
             return {
               text: "",
@@ -3163,7 +3197,7 @@ describe("final effective verdict retains unresolved effect authority", () => {
                   arguments: {
                     displayName: "Reminder",
                     instructions:
-                      plans === 1 || mode === "same"
+                      plans === 1 || sameTarget
                         ? body
                         : "Different reminder body",
                     ...(plans === 2 ? { delayMinutes: 2 } : {}),
@@ -3210,7 +3244,7 @@ describe("final effective verdict retains unresolved effect authority", () => {
             success: true,
             transcriptVisibility: "internal",
             modelReplyRequired: true,
-            ...(mode === "verified-sibling"
+            ...(verifiedSibling
               ? {
                   userFacingText: "Created the separate reminder.",
                   verifiedUserFacing: true,
@@ -3250,16 +3284,31 @@ describe("final effective verdict retains unresolved effect authority", () => {
                 requestFullyCovered: true,
                 replyEffectStatus: "applied",
                 effectReceiptIds: ["new-reminder"],
+                ...(coding
+                  ? {
+                      outcomeCoverage: [
+                        {
+                          intentId: "intent:1",
+                          status: "completed" as const,
+                          evidenceStepIds: ["step:2"],
+                        },
+                      ],
+                    }
+                  : {}),
               },
       });
+      const rawHistory = structuredClone(result.trajectory.evaluatorOutputs);
       const mapped = subPlannerResultToPlannerToolResult(result);
-      const complete = mode === "same" || mode === "exploratory";
+      expect(result.trajectory.evaluatorOutputs).toEqual(rawHistory);
+      expect(plans).toBe(coding || mode === "different" ? 3 : 2);
+      const complete = sameTarget || mode === "exploratory";
       expect(attempts).toBe(2);
       expect(result.trajectory.steps[0].result?.success).toBe(false);
       if (
         mode === "same" ||
         mode === "different" ||
-        mode === "verified-sibling"
+        mode === "verified-sibling" ||
+        coding
       ) {
         const parentEvaluate = vi.fn(async () => ({
           decision: "FINISH" as const,
@@ -3314,9 +3363,17 @@ describe("final effective verdict retains unresolved effect authority", () => {
         expect(mapped.subPlannerEvaluation?.success).not.toBe(true);
         expect(mapped.subPlannerEvaluation?.messageToUser).not.toBe(claim);
       }
+      if (verifiedSibling) {
+        expect(
+          result.trajectory.steps.find((step) => step.result?.userFacingText)
+            ?.result?.userFacingText,
+        ).toBe("Created the separate reminder.");
+        expect(result.finalMessage).toContain("separate reminder");
+      }
       const raw = result.trajectory.evaluatorOutputs.at(-1);
-      if (raw)
+      if (raw && !coding)
         expect(raw).toMatchObject({ success: true, messageToUser: claim });
+      if (coding) expect(raw?.success).toBe(complete);
       if (mode !== "pending")
         expect(mapped.effectReceipts).toEqual(
           expect.arrayContaining([
