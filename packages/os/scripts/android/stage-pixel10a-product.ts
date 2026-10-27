@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { resolveElizaSourceRoot } from "../eliza-source.ts";
 import {
   elizaNativeAdmission,
+  finalizeAndroidNative,
   stageAndroidNative,
 } from "./android-native-admission.mjs";
 import {
@@ -19,6 +20,7 @@ import {
 } from "./pixel10a-product.ts";
 import { stageSenseApk, validateSenseProduct } from "./sense-listener.mjs";
 import { senseSystemuiPatch } from "./sense-systemui.mjs";
+import { soongAppNativePatch } from "./soong-app-native.mjs";
 import { stageLauncher, validateDescriptor } from "./stage-launcher-overlay.ts";
 import { loadProfile, verifyProfileSource } from "./verify-source-lock.ts";
 
@@ -62,6 +64,10 @@ export async function stagePixel10aProduct(options) {
     );
   if (options.listenerApk && !options.voiceHost)
     throw new Error("Sense staging requires a voice-host record");
+  if (!options.appliedAppNativePatch)
+    throw new Error(
+      "Pixel 10a staging requires --applied-app-native-patch for native Soong installation",
+    );
   const admission = elizaNativeAdmission({
     sourceRoot: options.runtimeSource ?? resolveElizaSourceRoot(),
     sourceCommit: options.sourceCommit,
@@ -73,7 +79,10 @@ export async function stagePixel10aProduct(options) {
     {
       aospRoot: options.aospRoot,
       archivePath: options.archivePath,
-      appliedPatches: options.appliedSensePatch ? [senseSystemuiPatch()] : [],
+      appliedPatches: [
+        soongAppNativePatch(),
+        ...(options.appliedSensePatch ? [senseSystemuiPatch()] : []),
+      ],
     },
   );
   const parent = path.dirname(path.resolve(options.output));
@@ -126,6 +135,13 @@ export async function stagePixel10aProduct(options) {
       nativeStagingEvidence,
       production: !options.development,
     });
+    finalizeAndroidNative({
+      apk: path.join(output, "Launcher.apk"),
+      output,
+      moduleName: launcher.moduleName,
+      launcher,
+      admission,
+    });
     fs.renameSync(output, options.output);
     return result;
   } finally {
@@ -136,7 +152,7 @@ export async function stagePixel10aProduct(options) {
 export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === "--help") {
     console.log(
-      "Usage: node stage-pixel10a-product.ts --product PRODUCT_JSON --launcher-descriptor LAUNCHER_JSON --apk APK --aosp-root AOSP --vendor-archive FACTORY --output NEW_DIR --source-commit COMMIT [--runtime-source ELIZA_ROOT] [--bun-target linux-musl|android] [--listener-apk APK --listener-descriptor JSON --voice-host JSON] [--applied-sense-patch] [--development] [--aapt TOOL] [--apksigner TOOL]",
+      "Usage: node stage-pixel10a-product.ts --product PRODUCT_JSON --launcher-descriptor LAUNCHER_JSON --apk APK --aosp-root AOSP --vendor-archive FACTORY --output NEW_DIR --source-commit COMMIT --applied-app-native-patch [--runtime-source ELIZA_ROOT] [--bun-target linux-musl|android] [--listener-apk APK --listener-descriptor JSON --voice-host JSON] [--applied-sense-patch] [--development] [--aapt TOOL] [--apksigner TOOL]",
     );
     return;
   }
@@ -164,6 +180,8 @@ export async function main(argv = process.argv.slice(2)) {
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--applied-sense-patch") options.appliedSensePatch = true;
+    else if (argv[i] === "--applied-app-native-patch")
+      options.appliedAppNativePatch = true;
     else if (argv[i] === "--development") options.development = true;
     else {
       const field = fields[argv[i]],
