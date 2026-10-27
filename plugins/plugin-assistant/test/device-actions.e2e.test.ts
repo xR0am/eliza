@@ -10,6 +10,7 @@ import {
   activeCommittedEffectReceipts,
   ChannelType,
   executePlannedToolCall,
+  type IAgentRuntime,
   type Memory,
   ModelType,
   projectDeferredProviders,
@@ -92,6 +93,23 @@ import { stage1ResponseStateProviderNames } from "../src/services/message/provid
 import { collectDiscoveryCatalogActions } from "../src/services/message/tool-discovery.ts";
 import { runV5MessageRuntimeStage1 } from "../src/services/message.ts";
 import { withOwnerDeviceActionTurn } from "./device-owner-turn.ts";
+
+async function registerOwnerRoom(runtime: IAgentRuntime, message: Memory) {
+  const worldId = randomUUID() as UUID;
+  await runtime.createWorld({
+    id: worldId,
+    name: "Device action owner fixture",
+    agentId: runtime.agentId,
+    metadata: { ownership: { ownerId: message.entityId } },
+  });
+  await runtime.createRoom({
+    id: message.roomId,
+    worldId,
+    name: "Device action owner fixture",
+    source: "client_chat",
+    type: ChannelType.DM,
+  });
+}
 
 // Real HTTP, session authentication, registered proposal tool, SQL migrations,
 // and on-disk PGlite. All identities and requested content are synthetic.
@@ -3369,12 +3387,17 @@ test("device approval REST lifecycle survives restart and never duplicates claim
           deviceKey: "b".repeat(64),
         }),
       ]);
-      const serialized = contexts.map((context) => JSON.stringify(context));
-      expect(serialized[0]).toContain(
-        "enabled-view profile allows open_view only for",
+      const guidance = contexts.map((context) => {
+        const event = context.events.find(
+          (entry) => entry.id === "authenticated-phone-capability",
+        );
+        return event?.type === "instruction" ? event.content : "";
+      });
+      expect(guidance[0]).toContain(
+        'Enabled phone views: ["notes","workflows"]',
       );
-      expect(serialized[1]).not.toContain(
-        "enabled-view profile allows open_view only for",
+      expect(guidance[1]).not.toContain(
+        'Enabled phone views: ["notes","workflows"]',
       );
       const branch = (context: any) =>
         context.events
@@ -3609,7 +3632,9 @@ test("Clock-only enrollment scopes actual planner discovery and preserves pendin
       id: worldId,
       name: "Clock scope",
       agentId: runtime.agentId,
-      metadata: { ownership: { ownerId: runtime.agentId } },
+      metadata: {
+        ownership: { ownerId: resolveOwnerEntityIdOrDefault(runtime) },
+      },
     });
     await runtime.createRoom({
       id: roomId,
@@ -3953,7 +3978,9 @@ test.each([
         id: worldId,
         name: "Pending device",
         agentId: runtime.agentId,
-        metadata: { ownership: { ownerId: runtime.agentId } },
+        metadata: {
+          ownership: { ownerId: resolveOwnerEntityIdOrDefault(runtime) },
+        },
       });
       await runtime.createRoom({
         id: roomId,
@@ -4016,7 +4043,11 @@ test.each([
       expect(result.kind).toBe("planned_reply");
       if (result.kind === "planned_reply") {
         expect(result.result.requestFulfilled).toBe(false);
-        expect(result.result.responseContent?.text).toBe(pendingText);
+        expect(result.result.responseContent?.text).toBe(
+          action === "snooze"
+            ? "Your snooze request is queued for your phone. It isn’t confirmed yet."
+            : "Your stop request is queued for your phone. It isn’t confirmed yet.",
+        );
         expect(result.result.responseContent?.transcriptVisibility).not.toBe(
           "internal",
         );
@@ -4123,6 +4154,7 @@ test("selected native Notes authority blocks backend writes without affecting ca
       { name: "NOTES_CREATE", params: { content } },
     );
   try {
+    await registerOwnerRoom(runtime, message);
     await service.register(credential, "Native record owner");
     for (const action of actions) runtime.registerAction(action);
     const outside = discover();
@@ -4172,7 +4204,7 @@ test("selected native Notes authority blocks backend writes without affecting ca
           },
         ]) {
           expect(actionGateFailure(action, gateContext)).toMatch(
-            /Notes.*(unavailable|owns)/i,
+            /(?:owns Notes|Notes.*unavailable)/i,
           );
         }
       }
@@ -4186,7 +4218,7 @@ test("selected native Notes authority blocks backend writes without affecting ca
             userRoles: ["OWNER"],
             evaluateContexts: false,
           }),
-        ).toMatch(/Notes.*(unavailable|owns)/i);
+        ).toMatch(/(?:owns Notes|Notes.*unavailable)/i);
       }
       expect(
         await execute("Must not reach the server Notes store"),
@@ -4306,11 +4338,13 @@ test("executor decodes typed phone operation JSON before validation and preserve
       },
     );
   try {
+    await registerOwnerRoom(runtime, message);
     runtime.registerAction(proposeDeviceAction);
     await service.register(credential, "Typed operation fixture");
     await withOwnerDeviceActionTurn(runtime, credential, async () => {
       setDeviceActionRequestMessage(runtime, message);
-      expect(await execute(encoded)).toMatchObject({
+      const decodedResult = await execute(encoded);
+      expect(decodedResult, JSON.stringify(decodedResult)).toMatchObject({
         success: true,
         data: { state: "pending", executed: false, approvalRequired: true },
       });
@@ -4532,6 +4566,7 @@ test("registered Calendar preserves native ownership and explicit connected sour
       { name: "CALENDAR", params },
     );
   try {
+    await registerOwnerRoom(runtime, message);
     await new DeviceActionService(runtime).register(
       credential,
       "Native Calendar owner",
@@ -4631,7 +4666,7 @@ test("registered Calendar preserves native ownership and explicit connected sour
           subaction: "feed",
           details: { ...range, grantId, calendarId },
         });
-        expect(result).toMatchObject({ success: true });
+        expect(result, JSON.stringify(result)).toMatchObject({ success: true });
         expect(JSON.stringify(result)).not.toContain("Backend fixture");
       }
       const appleReadsBeforeGoogleNext = appleReads;
@@ -4779,7 +4814,7 @@ test("camera capture receipts bind a saved photo to one claimed operation withou
             result: invalid,
           },
         ),
-      ).rejects.toThrow("photo receipt");
+      ).rejects.toThrow("Invalid Camera receipt");
     const done = await service.receipt(
       credential,
       proposal.id,
