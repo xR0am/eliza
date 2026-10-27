@@ -11,6 +11,11 @@ trim on Android memory pressure.
 models. `speechSampleRate()` loads only speech output when needed and returns
 its actual rate. Consumers can use these methods on the shared session instead
 of opening a separate `ParadeeVoice` handle to check output capabilities.
+Use `prepareSpeech()` when readiness requires both speech output and recognition
+models to initialize. It uses the same context and reports initialization or
+cancellation failures. `isSpeechLoaded()` observes the actual output wrapper
+without loading anything, including after a cancelled first load. Trimming or
+closing the session clears that state.
 
 The optional `ElizaInferencePlugin` Capacitor transport provides one process
 queue, idle unloading and Android memory-pressure handling. Enable it with
