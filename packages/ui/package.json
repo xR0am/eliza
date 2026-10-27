@@ -117,6 +117,12 @@
       "import": "./dist/utils/value-formatting.mjs",
       "default": "./dist/utils/value-formatting.mjs"
     },
+    "./voice/voice-session-client": {
+      "eliza-source": "./src/voice/voice-session-client-core.ts",
+      "types": "./dist/voice/voice-session-client-core.d.ts",
+      "import": "./dist/voice/voice-session-client-core.js",
+      "default": "./dist/voice/voice-session-client-core.js"
+    },
     "./voice/batch-conversation": {
       "eliza-source": "./src/voice/batch-conversation.ts",
       "types": "./dist/voice/batch-conversation.d.ts",

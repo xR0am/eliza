@@ -7,6 +7,11 @@ lazy native context for text, embeddings, Paradee TTS and Phonon-2 ASR.
 reloads them. `close()` is terminal. Native callers own scheduling and should
 trim on Android memory pressure.
 
+`supportsStreaming()` checks the engine without opening a context or loading
+models. `speechSampleRate()` loads only speech output when needed and returns
+its actual rate. Consumers can use these methods on the shared session instead
+of opening a separate `ParadeeVoice` handle to check output capabilities.
+
 The optional `ElizaInferencePlugin` Capacitor transport provides one process
 queue, idle unloading and Android memory-pressure handling. Enable it with
 `elizaInferenceCapacitor=true` and register `ElizaInferencePlugin` with the host.
