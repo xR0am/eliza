@@ -6,6 +6,29 @@ import fs from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
+import ts from "typescript";
+
+function diagnosticHook(source, phase) {
+  const file = ts.createSourceFile(
+    "hook.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  let result;
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(file) === "emitNavigationDiagnostic" &&
+      node.arguments[2]?.getText(file) === JSON.stringify(phase) &&
+      node.getText(file).includes("errorCode:")
+    )
+      result = node.getText(file);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return result;
+}
 
 const file = new URL("./navigation-diagnostic.ts", import.meta.url);
 const code = stripTypeScriptTypes(
@@ -219,13 +242,7 @@ test("throwing error.code getter in the exact production lazy failure hook prese
     new URL("./pipeline.ts", import.meta.url),
     "utf8",
   );
-  const hook = source
-    .split("\n")
-    .find((line) =>
-      line.includes(
-        'emitNavigationDiagnostic(args.runtime,args.message,"failure"',
-      ),
-    );
+  const hook = diagnosticHook(source, "failure");
   assert.ok(hook);
   for (const enabled of [false, true]) {
     const f = fixture();
@@ -264,14 +281,7 @@ test("exact production recovery hook guards a throwing error.code getter and ret
     new URL("./egress-policy.ts", import.meta.url),
     "utf8",
   );
-  const hook = source
-    .split("\n")
-    .find(
-      (line) =>
-        line.includes(
-          'emitNavigationDiagnostic(args.runtime,args.message,"recovery"',
-        ) && line.includes("errorCode:"),
-    );
+  const hook = diagnosticHook(source, "recovery");
   assert.ok(hook);
   for (const enabled of [false, true]) {
     const f = fixture();

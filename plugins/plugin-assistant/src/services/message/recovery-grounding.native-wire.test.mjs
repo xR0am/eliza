@@ -56,14 +56,12 @@ async function capture(work) {
                 ? {
                     __eliza_response: {
                       grounded: true,
-                      completedChangeClaim: false,
-                      reason: "Prospective acknowledgement.",
+                      claims: [],
                     },
                   }
                 : {
                     grounded: true,
-                    completedChangeClaim: false,
-                    reason: "Prospective acknowledgement.",
+                    claims: [],
                   },
             ),
           },
@@ -110,7 +108,7 @@ for (const [model, canonical, expected] of [
         allowFullContextRequest: false,
       }),
     );
-    assert.equal(r.result.grounded, true);
+    assert.deepEqual(r.result.claims, []);
     assert.equal(r.requests.length, 1);
     const body = r.requests[0].body;
     assert.equal(body.response_format?.type, expected);
@@ -156,7 +154,7 @@ test("the same derived verdict schema also reaches the direct OpenAI/Cerebras ha
       allowFullContextRequest: false,
     }),
   );
-  assert.equal(r.result.grounded, true);
+  assert.deepEqual(r.result.claims, []);
   assert.equal(r.requests.length, 1);
   assert.equal(r.requests[0].body.response_format.type, "json_schema");
   assert.ok(r.requests[0].body.response_format.json_schema.schema);

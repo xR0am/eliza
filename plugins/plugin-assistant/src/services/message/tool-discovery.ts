@@ -156,7 +156,7 @@ export function createPlannerToolDiscoveryAction(
     "Find authorized operations that are not already exposed, or inspect definitions when explicitly requested. Exposed tools already have complete schemas: call a fitting one directly instead of discovering or loading it again. " +
     "Find authorized operations by query and/or contexts, or load exact names (parents load their families). Exact names plus query must match both; names cannot be combined with contexts. " +
     "mode=load enables complete schemas in the next tool surface; use loaded tools to perform work. " +
-    "Empty load selectors search the current task. mode=describe reads complete descriptions and schemas for exact names or matching queries without enabling tools. With no selectors, mode=describe,names=[] returns only the complete authorized name index. " +
+    "Empty load selectors search the current task. mode=describe reads complete descriptions and schemas for exact names or matching queries without enabling tools. With no selectors, mode=describe,names=[] returns the complete authorized catalog with all descriptions and parameter schemas. " +
     (catalogIndex
       ? "Without task context, names=[] returns a routing index. "
       : "") +
@@ -173,7 +173,7 @@ export function createPlannerToolDiscoveryAction(
       {
         name: "mode",
         description:
-          "load (default) enables matching tools; describe reads selected definitions, or the compact name index when no selectors are supplied.",
+          "load (default) enables matching tools; describe reads selected definitions, or the complete catalog when no selectors are supplied.",
         required: false,
         schema: { type: "string", enum: ["load", "describe"] },
       },
@@ -232,13 +232,6 @@ export function createPlannerToolDiscoveryAction(
           };
         }
       }
-      // An empty exact-name selector adds no restriction to an explicit search.
-      if (
-        Array.isArray(names) &&
-        names.length === 0 &&
-        (query !== undefined || contexts !== undefined)
-      )
-        names = undefined;
       // A model may accompany an exact name with its search intent. Treat this
       // as an intersection, never as a wider search or an ignored constraint.
       if (
@@ -481,62 +474,30 @@ export function createPlannerToolDiscoveryAction(
               });
         const completeCatalog = catalogFor(describedActions);
         const parameterSchemas = new Map(
-          names.length === 0
-            ? []
-            : describedActions.map((action) => [
-                action.name,
-                normalizeActionJsonSchema(action),
-              ]),
+          describedActions.map((action) => [
+            action.name,
+            normalizeActionJsonSchema(action),
+          ]),
         );
-        if (names.length === 0) {
-          return {
-            success: true,
-            transcriptVisibility: "internal",
-            modelReplyRequired: true,
-            text: "Complete authorized name index only. Routing hints are summaries, not full definitions. Use exact names or an intent query for complete descriptions and schemas. Every listed operation remains discoverable; no tools were loaded or executed.",
-            data: {
-              readOnlyOperation: true,
-              catalogDetail: "index",
-              completeNames: true,
-              catalog: completeCatalog.parents.map((parent) => ({
-                name: parent.name,
-                routingHint: (
-                  parent.routingHint ||
-                  parent.source.descriptionCompressed ||
-                  parent.source.description ||
-                  ""
-                )
-                  .replace(/\s+/g, " ")
-                  .trim()
-                  .slice(0, 160),
-                children: parent.childNames,
-              })),
-            },
-          };
-        }
         return {
           success: true,
           transcriptVisibility: "internal",
           modelReplyRequired: true,
           text:
             names.length === 0
-              ? "Complete authorized name index. Select exact names for definitions; no domain work was performed."
+              ? "Complete authorized catalog with full descriptions and schemas; no domain work was performed."
               : "Complete descriptions and parameter schemas for the requested authorized tools. Other families remain discoverable with mode=describe,names=[]. No tools were enabled or domain work performed.",
           data: {
             readOnlyOperation: true,
             catalog: completeCatalog.parents.map((parent) => ({
               name: parent.name,
               description: parent.source.description,
-              ...(names.length > 0
-                ? { parameters: parameterSchemas.get(parent.name) }
-                : {}),
+              parameters: parameterSchemas.get(parent.name),
               children: parent.childNames,
               childDefinitions: parent.children.map((child) => ({
                 name: child.name,
                 description: child.source.description,
-                ...(names.length > 0
-                  ? { parameters: parameterSchemas.get(child.name) }
-                  : {}),
+                parameters: parameterSchemas.get(child.name),
               })),
             })),
           },

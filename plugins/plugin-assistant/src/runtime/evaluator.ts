@@ -1839,6 +1839,7 @@ function projectEvaluatorContext(context: ContextObject): ContextObject {
 
 export function parseEvaluatorOutput(
   raw: EvaluatorModelResult,
+  typedRead = false,
 ): EvaluatorOutput {
   const parsedResult = getStructuredEvaluatorObject(raw);
   if (parsedResult.parseError) {
@@ -1926,6 +1927,7 @@ export function parseEvaluatorOutput(
 
 function evaluatorEnvelopeProtocolError(
   output: RawEvaluatorOutput,
+  typedRead = false,
 ): string | undefined {
   if (
     output.replyEffectStatus !== undefined &&

@@ -1,55 +1,11 @@
 // Source-owning controlled output contracts; no provider calls.
 // SDK root: node --test plugins/plugin-assistant/src/services/message/recovery-grounding.contract.test.mjs
 import assert from "node:assert/strict";
-import path from "node:path";
 import test from "node:test";
-import { build } from "esbuild";
+import { runWithStreamingContext } from "@elizaos/core";
+import { reviewRecoveredReply } from "./recovery-grounding.ts";
 
-const root = path.resolve(import.meta.dirname, "../../../../..");
-const dependencies = {
-  zod: new URL(import.meta.resolve("zod")).pathname,
-  json5: new URL(import.meta.resolve("json5")).pathname,
-};
-const core = `export {ElizaError} from ${JSON.stringify(root + "/packages/core/src/errors.ts")};export {getStreamingContext,runWithSuppressedModelStream,runWithStreamingContext} from ${JSON.stringify(root + "/packages/core/src/streaming-context.ts")};export const ModelType={TEXT_SMALL:'TEXT_SMALL'};`;
-const built = await build({
-  stdin: {
-    contents: `export * from ${JSON.stringify(root + "/plugins/plugin-assistant/src/services/message/recovery-grounding.ts")};export {runWithStreamingContext} from ${JSON.stringify(root + "/packages/core/src/streaming-context.ts")};`,
-    resolveDir: root,
-    loader: "ts",
-  },
-  bundle: true,
-  write: false,
-  format: "esm",
-  platform: "node",
-  logLevel: "silent",
-  plugins: [
-    {
-      name: "actual-bounded-source-contracts",
-      setup(b) {
-        b.onResolve({ filter: /^@elizaos\/core$/ }, () => ({
-          path: "core",
-          namespace: "actual",
-        }));
-        b.onLoad({ filter: /.*/, namespace: "actual" }, () => ({
-          contents: core,
-          loader: "ts",
-          resolveDir: root,
-        }));
-        b.onResolve({ filter: /^@elizaos\/core\/protocol$/ }, () => ({
-          path: root + "/packages/core/src/utils/json5-model-output.ts",
-        }));
-        b.onResolve({ filter: /^zod$/ }, () => ({ path: dependencies.zod }));
-        b.onResolve({ filter: /^json5$/ }, () => ({
-          path: dependencies.json5,
-        }));
-      },
-    },
-  ],
-});
-const api = await import(
-  "data:text/javascript;base64," +
-    Buffer.from(built.outputFiles[0].text).toString("base64")
-);
+const api = { runWithStreamingContext, reviewRecoveredReply };
 function fixture(output) {
   const calls = [],
     errors = [];
@@ -74,9 +30,7 @@ const args = (f) => ({
   allowFullContextRequest: false,
 });
 test("review derives the existing shared output schema while keeping ordinary thinking off", async () => {
-  const f = fixture(
-    '{"grounded":true,"completedChangeClaim":false,"reason":"Prospective wording."}',
-  );
+  const f = fixture('{"grounded":true,"claims":[]}');
   await api.reviewRecoveredReply(args(f));
   assert.ok(f.calls[0].params.responseSchema?.anyOf);
   assert.equal(f.calls[0].params.responseFormat, undefined);
@@ -86,10 +40,10 @@ test("review derives the existing shared output schema while keeping ordinary th
 });
 test("valid negative grounding verdict is returned and is not REVIEW_FAILED", async () => {
   const f = fixture(
-    '{"grounded":false,"completedChangeClaim":false,"reason":"Missing supporting evidence."}',
+    '{"grounded":false,"claims":[{"quote":"Heading home.","actor":"assistant","change":false,"supported":false,"evidence":""}]}',
   );
   const result = await api.reviewRecoveredReply(args(f));
-  assert.equal(result.grounded, false);
+  assert.equal(result.claims[0].supported, false);
   assert.equal(f.errors.length, 0);
   assert.equal(f.calls.length, 1);
 });
@@ -190,9 +144,9 @@ test("hostile provider status getter cannot alter original error or enter finite
 });
 
 for (const raw of [
-  '{"grounded":true,"completedChangeClaim":false,"reason":""}',
-  '{"grounded":true,"completedChangeClaim":false,"reason":"   "}',
-  '{"grounded":true,"completedChangeClaim":false,"reason":"valid","extra":"forbidden"}',
+  '{"grounded":true,"claims":[{"quote":"","actor":"assistant","change":false,"supported":true,"evidence":""}]}',
+  '{"grounded":true,"claims":[{"quote":"   ","actor":"assistant","change":false,"supported":true,"evidence":""}]}',
+  '{"grounded":true,"claims":[],"extra":"forbidden"}',
 ])
   test("derived wire schema never weakens strict local verdict or reason validation", async () => {
     const f = fixture(raw);
@@ -207,9 +161,7 @@ for (const raw of [
 
 // The interop assertion is limited to this fixed derived schema.
 test("fixed derived schema satisfies core object-valued properties contract", async () => {
-  const f = fixture(
-    '{"grounded":true,"completedChangeClaim":false,"reason":"Evidence present."}',
-  );
+  const f = fixture('{"grounded":true,"claims":[]}');
   await api.reviewRecoveredReply(args(f));
   const schema = f.calls[0].params.responseSchema;
   let propertyMaps = 0;
@@ -236,9 +188,9 @@ test("fixed derived schema satisfies core object-valued properties contract", as
     for (const child of Object.values(node)) inspect(child);
   }
   inspect(schema);
-  assert.equal(propertyMaps, 2);
+  assert.equal(propertyMaps, 3);
   assert.deepEqual(
     schema.anyOf.map((branch) => Object.keys(branch.properties)),
-    [["grounded", "completedChangeClaim", "reason"], ["contextRequest"]],
+    [["grounded", "claims"], ["contextRequest"]],
   );
 });

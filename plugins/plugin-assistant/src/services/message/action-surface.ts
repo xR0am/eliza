@@ -261,9 +261,10 @@ function positiveIntentText(intent: string): string {
     /"[^"]*"|(?<![\p{L}\p{N}])'[^']*'(?![\p{L}\p{N}])|“[^”]*”|‘[^’]*’|`[^`]*`/gu,
     " ",
   );
-  return /\b(?:not|never|without|don['’]t|cannot|can['’]t)\b/iu.test(unquoted)
-    ? ""
-    : unquoted.trim();
+  const negative = unquoted.search(
+    /\b(?:not|never|without|don['’]t|cannot|can['’]t)\b/iu,
+  );
+  return (negative < 0 ? unquoted : unquoted.slice(0, negative)).trim();
 }
 
 /**
@@ -411,15 +412,20 @@ export function retrieveContextualPlannerActions(args: {
         0,
         ...args.actions.map((action) => plannerDomainOwnership(action, domain)),
       );
-      const requested = preferredOperationNames(
-        positiveIntentText(args.query),
-        args.actions
-          .filter(
-            (action) => plannerDomainOwnership(action, domain) === strongest,
-          )
-          .map((action) => action.name),
-      );
-      return [...requested].every((name) => selectedOperationNames.has(name));
+      const names = args.actions
+        .filter(
+          (action) => plannerDomainOwnership(action, domain) === strongest,
+        )
+        .map((action) => action.name);
+      return intentClauses(positiveIntentText(args.query))
+        .flatMap((clause) => clause.split(/\band\b/iu))
+        .every((clause) => {
+          const requested = preferredOperationNames(clause, names);
+          return (
+            requested.size === 0 ||
+            [...requested].some((name) => selectedOperationNames.has(name))
+          );
+        });
     };
     // Matching both the current request and its sole intent may narrow initial
     // preload for that owner; this is not completion evidence.
@@ -712,7 +718,12 @@ export function retrieveContextualPlannerActions(args: {
     }
     if (operationNames.size > 0) {
       const wanted = new Set(operationNames);
-      const clauses = [args.query, ...(args.intents ?? [])]
+      const clauses = [
+        ...intentClauses(positiveIntentText(args.query)).flatMap((clause) =>
+          clause.split(/\band\b/iu),
+        ),
+        ...(args.intents ?? []),
+      ]
         .map(positiveIntentText)
         .filter(Boolean);
       for (const parent of owners) {
@@ -833,7 +844,7 @@ export function retrieveContextualPlannerActions(args: {
           return (
             keys.some((key) => queryTerms.has(key)) &&
             familyTerms.filter((terms) => keys.some((key) => terms.has(key)))
-              .length === 1
+              .length < familyTerms.length
           );
         }),
       );
