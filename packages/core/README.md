@@ -12,6 +12,10 @@ files directly. Implementation leaves are private; JSON catalog assets retain
 explicit data exports. Hosts compose database adapters, model providers and
 `@elizaos/plugin-assistant` explicitly.
 
+Browser log sinks use `@elizaos/core/logging` for the canonical logger types and
+credential redaction. `@elizaos/core/view-interaction` exposes renderer routing
+and completed-action handoff contracts without the full protocol catalog.
+
 Model providers use request guards from `@elizaos/core`. The protocol entry
 exports only their types, so browser code does not load the Node turn context.
 

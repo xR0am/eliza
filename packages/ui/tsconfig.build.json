@@ -46,6 +46,7 @@
     "src/voice/pcm-wave.ts",
     "src/voice/microphone-capture.ts",
     "src/voice/batch-conversation.ts",
+    "src/voice/voice-session-client-core.ts",
     "src/**/*.d.ts"
   ]
 }

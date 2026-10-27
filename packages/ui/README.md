@@ -14,6 +14,12 @@ UI root: `@elizaos/ui/text-control-editing` and `@elizaos/ui/voice/` followed by
 `draft-transcript-guard`, `microphone-capture`, `pcm-wave`,
 `progressive-speech-playback`, `recorded-transcription-controller` or
 `segmented-speech-playback`. The same packed-consumer test covers these entries.
+
+`@elizaos/ui/voice/voice-session-client` exposes the realtime PCM client with a
+required host-owned fetch transport. It does not load dashboard credentials or
+connection settings. The app's existing internal entry retains its default
+dashboard transport. The packed-consumer check verifies the public client's
+mint, first-frame handshake, interruption and cleanup with injected transports.
 The app owns renderer composition and native transport selection. Consumers render
 domain DTOs imported from `@elizaos/contracts`; business logic belongs to domain services. Use `bun run --cwd packages/ui storybook` for
 component development. Changes reaching the app require its visual audit.
