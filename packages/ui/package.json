@@ -90,6 +90,12 @@
     "test:batch-voice-package": "node scripts/verify-batch-voice-package.ts"
   },
   "exports": {
+    "./view-primitives": {
+      "eliza-source": "./src/view-primitives.ts",
+      "types": "./dist/view-primitives.d.ts",
+      "import": "./dist/view-primitives.js",
+      "default": "./dist/view-primitives.js"
+    },
     ".": {
       "eliza-source": "./src/index.ts",
       "types": "./dist/index.d.ts",

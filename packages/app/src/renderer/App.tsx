@@ -1965,9 +1965,64 @@ function FullBleedShellContent(props: ShellContentProps): ReactNode {
  * RoutedShellContent → ViewRouter path.
  */
 function ShellContent(props: ShellContentProps): ReactNode {
-  if (props.isFullBleed) return <FullBleedShellContent {...props} />;
-  if (props.isChat) return <ChatRouteShellContent {...props} />;
-  return <RoutedShellContent {...props} />;
+  const notesAuthority = useActiveAgentAuthority();
+  useAppShellPageRegistryVersion();
+  const retainedNotes = useRef<{
+    authority: string;
+    registration: AppShellPageRegistration;
+  } | null>(null);
+  const notesRegistration = listAppShellPages().find(
+    (page) => page.id === "notes",
+  );
+  if (
+    retainedNotes.current?.authority !== notesAuthority ||
+    !notesRegistration
+  ) {
+    retainedNotes.current = null;
+  }
+  const showNotes =
+    props.tab === "notes" && !props.viewLayout && !!notesRegistration;
+  if (showNotes && notesRegistration) {
+    retainedNotes.current = {
+      authority: notesAuthority,
+      registration: notesRegistration,
+    };
+  }
+  const otherContent = showNotes ? null : props.isFullBleed ? (
+    <FullBleedShellContent {...props} />
+  ) : props.isChat ? (
+    <ChatRouteShellContent {...props} />
+  ) : (
+    <RoutedShellContent {...props} />
+  );
+  return (
+    <>
+      {/* Retain one canonical Notes tree across Home and app navigation. Its
+        owner key changes synchronously; hidden Notes cannot receive input,
+        publish a selected context or start foreground work. */}
+      {retainedNotes.current ? (
+        <div
+          key={retainedNotes.current.authority}
+          data-retained-notes
+          className={APP_SHELL_CLASS}
+          inert={!showNotes || undefined}
+          aria-hidden={!showNotes || undefined}
+          style={{ display: showNotes ? "flex" : "none" }}
+        >
+          {props.desktopTabBar}
+          <main className={routedShellMainClass("notes")}>
+            <ViewSurfaceFrame declaration={retainedNotes.current.registration}>
+              <RegisteredAppShellPage
+                registration={retainedNotes.current.registration}
+                viewProps={{ active: showNotes }}
+              />
+            </ViewSurfaceFrame>
+          </main>
+        </div>
+      ) : null}
+      {otherContent}
+    </>
+  );
 }
 /**
  * Vault modal, loaded on first open (#11351). `SecretsManagerSection` pulls the

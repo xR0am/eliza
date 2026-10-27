@@ -60,3 +60,11 @@ current-owner check and view callbacks. The editor keeps unsaved text in memory;
 these clients do not migrate older local stores, acquire credentials, or replay
 an uncertain write. Forward only authenticated invalidation events to `invalidate(revision)`;
 omit the revision when an authenticated event requires a fresh snapshot.
+
+`./workspace` exposes the shared editable React `NotesWorkspace`. Supply the
+canonical client, a current-owner binding and admitted invalidation events.
+Hosts own navigation and optional speech, sharing and source-opening ports;
+the workspace owns editor controls and canonical mutations. Keep its binding
+stable across layout changes. `requestLeave()` retains a failed draft and
+returns false; a host must not discard the workspace after that result.
+This component does not open or migrate an older local Notes collection.
