@@ -10,6 +10,12 @@ import {
   describePlannerSourceReview,
   type PlannerSourceReviewAttribution,
 } from "./evaluator-context-attribution.ts";
+
+import {
+  applyTypedReadReply,
+  createTypedReadEgressReceipt,
+  partialTypedReadReply,
+} from "./typed-read-reply";
 /**
  * The planner's tool-calling agent loop: iteratively calls the planner model,
  * dispatches queued tool calls, and either gates or runs the trajectory
@@ -396,6 +402,14 @@ export async function runPlannerLoop(
     ...params,
     config: { ...params.config, maxTrajectoryPromptTokens: maxPromptTokens },
     onModelUsage: observeModelUsage,
+    ...(params.resolveTypedReadReply
+      ? {
+          admitTypedReadCorrection: () =>
+            getStreamingContext()?.abortSignal?.aborted !== true &&
+            usage.promptTokens < maxPromptTokens &&
+            params.admitTypedReadCorrection?.() !== false,
+        }
+      : {}),
   };
   let result: PlannerLoopResult;
   let liveTrajectory: PlannerTrajectory | undefined;
@@ -419,6 +433,44 @@ export async function runPlannerLoop(
     // not re-enter the pre-tool acknowledgement heuristic and be replaced by
     // another synthesis that lacks the recorded failure context.
     const final = await ensureFailedTurnFinalMessage(trackedParams, withReply);
+    const binding = params.resolveTypedReadReply?.({
+      trajectory: final.trajectory,
+      nowMs: Date.now(),
+      admittedToolNames: (params.tools ?? []).map((tool) => tool.name),
+    });
+    if (
+      binding &&
+      final.status === "finished" &&
+      !final.terminalFailure &&
+      final.finalMessage &&
+      !final.endedWithDeliberateSilence
+    ) {
+      const output: EvaluatorOutput = {
+        ...final.evaluator,
+        decision: "FINISH",
+        success: final.evaluator?.success ?? false,
+        thought:
+          final.evaluator?.thought ??
+          "Checking terminal public-read output against producer facts.",
+        messageToUser: final.finalMessage,
+      };
+      const checked = applyTypedReadReply(
+        output,
+        { ...binding, phase: "final-answer" },
+        true,
+      );
+      const guarded = checked.typedReadRejected
+        ? partialTypedReadReply(output, binding)
+        : checked;
+      const receipt = createTypedReadEgressReceipt(guarded, binding);
+      if (receipt) params.onTypedReadEgress?.(receipt);
+      return {
+        ...final,
+        evaluator: guarded,
+        finalMessage: guarded.messageToUser,
+        modelUsage: usage,
+      };
+    }
     return { ...final, modelUsage: usage };
   } catch (error) {
     // error-policy:J4 Preserve settled effects and pending work at a resource boundary.
@@ -681,6 +733,7 @@ async function runPlannerLoopIterations(
   }
   const failures: FailureLike[] = [];
   let terminalOnlyContinuations = 0;
+  let silenceReviewed = false;
   let consecutiveCodingTerminalContinuations = 0;
   let codingVerificationDeferrals = 0;
   let lastCodingVerificationProgressCount = -1;
@@ -2014,6 +2067,59 @@ async function runPlannerLoopIterations(
         };
       }
 
+      const typedReadTerminal = params.resolveTypedReadReply?.({
+        trajectory,
+        nowMs: Date.now(),
+        admittedToolNames: (params.tools ?? []).map((tool) => tool.name),
+      });
+      const typedReadDeclined = Boolean(
+        typedReadTerminal &&
+          trajectory.plannedQueue.length === 0 &&
+          allTrajectorySteps(trajectory).some(
+            (step) =>
+              step.result &&
+              step.toolCall &&
+              ["WEB_FETCH", "WEB_SEARCH"].includes(
+                step.toolCall.name.toUpperCase(),
+              ),
+          ) &&
+          plannerOutput.toolCalls.length > 0 &&
+          plannerOutput.toolCalls.every((call) =>
+            ["IGNORE", "NONE"].includes(call.name.toUpperCase()),
+          ),
+      );
+      if (
+        typedReadTerminal &&
+        (typedReadDeclined ||
+          plannerOutput.toolCalls.length === 0 ||
+          (plannerOutput.toolCalls.every(isTerminalToolCall) &&
+            plannerOutput.toolCalls.some(
+              (call) => call.name.toUpperCase() === "REPLY",
+            )))
+      ) {
+        // A native/text terminal is a proposed answer, not evidence of a completed read.
+        const evaluator = await evaluateTrajectory(
+          params,
+          trajectory,
+          iteration,
+          typedReadDeclined,
+        );
+        trajectory.evaluatorOutputs.push(evaluator);
+        appendEvaluatorContextEvent(
+          trajectory,
+          evaluator,
+          iteration,
+          redactDiagnosticText,
+        );
+        if (evaluator.decision === "FINISH")
+          return finishWithEvaluator(evaluator);
+        if (evaluator.decision === "NEXT_RECOMMENDED") {
+          if (!preferRecommendedToolCall(trajectory, evaluator))
+            trajectory.plannedQueue.length = 0;
+        } else trajectory.plannedQueue.length = 0;
+        continue;
+      }
+
       if (plannerOutput.toolCalls.length === 0) {
         if (
           requireNonTerminalToolCall &&
@@ -2328,6 +2434,29 @@ async function runPlannerLoopIterations(
           if (settled) return settled;
           continue;
         }
+        // The message service delivers a reply on an owed turn regardless,
+        // so a planner that chose silence before doing anything reconsiders
+        // once with the tools and context it already has.
+        const hasReplyCall = plannerOutput.toolCalls.some(
+          (toolCall) => toolCall.name.toUpperCase() === "REPLY",
+        );
+        if (
+          params.replyOwed &&
+          !hasReplyCall &&
+          !silenceReviewed &&
+          !hasExecutedNonTerminalTool(trajectory)
+        ) {
+          silenceReviewed = true;
+          appendPlannerModelFeedbackEvent(trajectory, {
+            id: `silent-terminal-review:${iteration}`,
+            type: "instruction",
+            source: "planner-loop",
+            createdAt: Date.now(),
+            content:
+              "Stage 1 decided to respond to this message, so a reply is owed; ending with IGNORE/STOP delivers nothing. Answer with REPLY (the answer, or an honest statement of what you cannot do), or call a tool the request needs. Nothing has been delivered or executed.",
+          });
+          continue;
+        }
         if (codingDrainQueue) {
           const verificationTerminal =
             await handleCodingVerificationTerminal(iteration);
@@ -2342,9 +2471,6 @@ async function runPlannerLoopIterations(
         // accompanying the call is scratch reasoning, not a user reply
         // ("We should wait for the sub-agent result before replying."
         // reached Discord verbatim, live 2026-06-12).
-        const hasReplyCall = plannerOutput.toolCalls.some(
-          (toolCall) => toolCall.name.toUpperCase() === "REPLY",
-        );
         const finalMessage = hasReplyCall
           ? terminalMessageFromToolCalls(
               plannerOutput.toolCalls,
@@ -3048,22 +3174,28 @@ async function runPlannerLoopIterations(
     // action-owned completion. Falls through on any ambiguity. See
     // `tryGateEvaluator` for the full contract.
     const gateStartedAt = Date.now();
-    const gatedDecision = evaluateSettledReply
-      ? null
-      : (trySubPlannerVerdictGate({
-          trajectory,
-          failures,
-          lastPlannerExplicitCompleted,
-          declaredIntentCount,
-        }) ??
-        (requiresIntentEvaluation
-          ? null
-          : tryGateEvaluator({
-              trajectory,
-              failures,
-              lastPlannerExplicitMessageToUser,
-              lastPlannerExplicitCompleted,
-            })));
+    const typedReadBinding = params.resolveTypedReadReply?.({
+      trajectory,
+      nowMs: Date.now(),
+      admittedToolNames: (params.tools ?? []).map((tool) => tool.name),
+    });
+    const gatedDecision =
+      evaluateSettledReply || typedReadBinding
+        ? null
+        : (trySubPlannerVerdictGate({
+            trajectory,
+            failures,
+            lastPlannerExplicitCompleted,
+            declaredIntentCount,
+          }) ??
+          (requiresIntentEvaluation
+            ? null
+            : tryGateEvaluator({
+                trajectory,
+                failures,
+                lastPlannerExplicitMessageToUser,
+                lastPlannerExplicitCompleted,
+              })));
     if (gatedDecision) {
       const { output: gated, reason } = gatedDecision;
       trajectory.evaluatorOutputs.push(
@@ -5441,9 +5573,21 @@ async function evaluateTrajectory(
   params: PlannerLoopParams,
   trajectory: PlannerTrajectory,
   iteration: number,
+  typedReadFinalizing = false,
 ): Promise<EvaluatorOutput> {
+  const typedReadOptions = params.resolveTypedReadReply
+    ? {
+        resolveTypedReadReply: params.resolveTypedReadReply,
+        admittedToolNames: (params.tools ?? []).map((tool) => tool.name),
+        iteration,
+        onUsage: params.onModelUsage,
+        admitTypedReadCorrection: params.admitTypedReadCorrection,
+        ...(typedReadFinalizing ? { typedReadFinalizing: true as const } : {}),
+      }
+    : {};
   if (params.evaluate) {
     return params.evaluate({
+      ...typedReadOptions,
       runtime: params.runtime,
       context: trajectory.context,
       trajectory,
@@ -5451,6 +5595,7 @@ async function evaluateTrajectory(
   }
 
   return runEvaluator({
+    ...typedReadOptions,
     hasUnresolvedToolFailure:
       latestUnresolvedFailedNonTerminalToolStep(trajectory) !== undefined,
     runtime: params.runtime,

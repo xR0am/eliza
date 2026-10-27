@@ -33,6 +33,12 @@
       "types": "./dist/calendar-linked-sync.d.ts",
       "import": "./dist/calendar-linked-sync.js",
       "default": "./dist/calendar-linked-sync.js"
+    },
+    "./imessage-reaction": {
+      "eliza-source": "./src/imessage-reaction.ts",
+      "types": "./dist/imessage-reaction.d.ts",
+      "import": "./dist/imessage-reaction.js",
+      "default": "./dist/imessage-reaction.js"
     }
   },
   "scripts": {

@@ -1050,8 +1050,13 @@ export async function resolvePlannedReplyEgress(args: {
   if (
     "contextRequest" in grounding ||
     (rewritten?.effectReceiptIds.length && !finalProof) ||
-    !grounding.grounded ||
-    (grounding.completedChangeClaim && !finalProof)
+    // The judge attributes each claim; only the assistant's own changes need
+    // this turn's receipt, and that proof stays in code.
+    grounding.claims.some(
+      (claim) =>
+        !claim.supported ||
+        (claim.change && claim.actor === "assistant" && !finalProof),
+    )
   ) {
     const error = new ElizaError(
       "Recovered reply asserts an unsupported outcome",

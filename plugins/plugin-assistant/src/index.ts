@@ -282,6 +282,7 @@ export {
 } from "./runtime/provider-originals.ts";
 export * from "./runtime/sub-planner.ts";
 export * from "./runtime/trajectory-recorder";
+export { verifyTypedReadEgressReceipt } from "./runtime/typed-read-reply";
 export * from "./services/approval/index.ts";
 export { proposeDeviceAction } from "./services/device-actions/action.ts";
 export { registerLocalCalendarUpdatePlanner } from "./services/device-actions/calendar-update-continuation.ts";
