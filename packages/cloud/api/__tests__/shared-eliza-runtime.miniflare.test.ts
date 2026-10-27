@@ -1789,9 +1789,9 @@ describe("Shared Eliza runtime in Workerd", () => {
           })
           .parse(JSON.parse(publicBody));
         expect(result.reply).toContain("C# installation uses the .NET SDK.");
-        expect(result.reply).toContain(
-          `Source: learn.microsoft.com — ${boundedSourceUrl} (parallel, checked `,
-        );
+        expect(result.reply).toContain(`Source: ${boundedSourceUrl}`);
+        expect(result.reply).not.toContain("parallel");
+        expect(result.reply).not.toContain("checked ");
         expect(result.reply).not.toContain("[[SOURCE_URL:");
         expect(result.reply).not.toContain("could not verify");
         expect(result.degraded).toBe(false);

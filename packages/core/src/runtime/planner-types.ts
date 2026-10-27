@@ -1,3 +1,9 @@
+import type {
+	TypedReadEgressReceipt,
+	TypedReadReplyBinding,
+	TypedReadReplyPart,
+	TypedReadReplyResolver,
+} from "./typed-read-contract";
 /**
  * Shared type contracts for the planner subsystem: the planner/evaluator runtime
  * shapes, a single tool call and its result, a trajectory step, and the loop's
@@ -102,6 +108,13 @@ export interface EvaluatorEffects {
 }
 
 export type EvaluatorOutput = EvaluationResult & {
+	/** Canonical typed-read receipts; never populated from model fields. */
+	typedReadRejected?: true;
+	typedReadSnapshot?: string;
+	typedReadFinal?: true;
+	typedReadValidatedParts?: readonly TypedReadReplyPart[];
+	typedReadAwaitingEvidence?: true;
+	typedReadRendered?: true;
 	/** Auditable semantic coverage judgment, never independent execution proof. */
 	requestFullyCovered?: boolean;
 	outcomeCoverage?: readonly {
@@ -366,6 +379,9 @@ export interface PlannerLoopResult {
 }
 
 export interface PlannerLoopParams {
+	resolveTypedReadReply?: TypedReadReplyResolver;
+	onTypedReadEgress?: (receipt: TypedReadEgressReceipt) => void;
+	admitTypedReadCorrection?: () => boolean;
 	/** Host owns receipt-bound recovery of missing replies after evaluated internal effects. */
 	deferInternalReplyRecoveryToCaller?: boolean;
 	runtime: PlannerRuntime;
@@ -414,6 +430,12 @@ export interface PlannerLoopParams {
 		},
 	) => Promise<PlannerToolResult> | PlannerToolResult;
 	evaluate?: (params: {
+		resolveTypedReadReply?: TypedReadReplyResolver;
+		typedReadFinalizing?: true;
+		admitTypedReadCorrection?: () => boolean;
+		admittedToolNames?: readonly string[];
+		iteration?: number;
+		onUsage?: RunEvaluatorParams["onUsage"];
 		runtime: PlannerRuntime;
 		context: ContextObject;
 		trajectory: PlannerTrajectory;
@@ -498,6 +520,11 @@ export interface PlannerLoopParams {
 }
 
 export interface RunEvaluatorParams {
+	resolveTypedReadReply?: TypedReadReplyResolver;
+	typedReadFinalizing?: true;
+	admitTypedReadCorrection?: () => boolean;
+	admittedToolNames?: readonly string[];
+	typedReadReply?: TypedReadReplyBinding;
 	/** Runtime failure authority; does not prevent continuation or recovery. */
 	hasUnresolvedToolFailure?: boolean;
 	runtime: EvaluatorRuntime;
