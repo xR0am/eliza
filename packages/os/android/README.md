@@ -21,8 +21,36 @@ commands. Building an image does not flash a physical device.
 The Pixel 11 Pro lock targets stock B1 (`CD1A.260905.001.B1`) with the pinned
 Android 17 `cp2a` release and vendor API `202604`. Its hashed vendor reference is
 a build input; physical installation still requires qualification and a signed contract.
-Alpha Phone (#31023) names Pixel 10, which has no lock here; see the grizzly
-`decisionNote` in `hardware-targets.json` before choosing a device.
+The shared `pixel10a` profile in `aosp.lock.json` pins the Pixel 10a (`stallion`)
+Android 17 source inventory in `sources/pixel10a-stallion.json`. Eliza and Alpha
+can both consume it; product branding does not select a different hardware source.
+It is distinct from Pixel 10 (`frankel`/`blazer`/`mustang`) and Pixel 11 Pro.
+
+Verify the full prepared source tree and matching factory archive without writing
+to either input:
+
+```bash
+node packages/os/scripts/android/verify-source-lock.ts --profile pixel10a \
+  --aosp-root /absolute/aosp --vendor-archive /absolute/stallion-factory.zip
+```
+
+This profile binds all 1,087 project revisions, manifest configuration, 16 reviewed
+source overrides, 6,360 generated files, and recorded ignored inputs. The inventory
+is copied byte-for-byte from Alpha's reviewed source contract (SHA-256
+`760a7184c62c93aeac40595cf5733f8089aa16ccd28eb7a5f5ce41d4dae741d3`).
+Alpha names inside that immutable inventory identify provenance, not launcher branding.
+An API consumer can pass independently authenticated, reviewed patch envelopes to
+`verifyProfileSource` or `verifyDeviceSource`; exact baseline preimages and postimages
+are checked, and every other source fence remains in force.
+
+A product's explicit brand config can select `aospLockPath: "android/aosp.lock.json"`
+and `aospLockProfile: "pixel10a"`. `build-aosp.ts` runs the same full source check
+before staging; supply `--vendor-archive` or `ELIZA_PIXEL_VENDOR_ARCHIVE`. The default
+Cuttlefish selection is unchanged. Selecting a source profile does not supply a
+hardware product, alter APK privileges, or qualify an image. Both products still
+need the common hardware product/build integration and their real image, signing,
+voice, telephony and physical-device validation. `pixel10a-stallion` therefore stays
+installer- and lab-ineligible, and `releaseQualified` stays false.
 The `eliza_gsi_arm64` and `eliza_gsi_x86_64` lunch targets build system-only
 images from the `gsi-android17` (`cp2a`) profile in `aosp.lock.json`, not from the Cuttlefish
 checkout; `make build` does not select them. They use system_ext SELinux policy,
