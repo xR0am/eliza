@@ -1,6 +1,5 @@
 /** The canonical reconciler's provider I/O over the existing owner-scoped host broker. */
 import {
-  isLinkedCalendarSemanticEvent,
   type LinkedCalendarEventRecord,
   type LinkedCalendarProviderPort,
   type LinkedCalendarProviderSnapshot,
@@ -8,6 +7,7 @@ import {
   linkedCalendarSemanticText,
 } from "@elizaos/contracts";
 import { ElizaError } from "@elizaos/core";
+import { isLinkedCalendarSemanticEvent } from "./managed-calendar-host.js";
 import type { createManagedCalendarRead } from "./managed-calendar-read.js";
 
 type Transport = NonNullable<ReturnType<typeof createManagedCalendarRead>>;

@@ -1,11 +1,44 @@
 /** Existing managed Cloud Calendar write/readback adapter, composed with host-owned API admission.
  * No credential reads, auth/billing implementation, provider retry, transport or repository. */
-import {
-  isLinkedCalendarSemanticEvent,
-  type LifeOpsCalendarEvent,
-  type LinkedCalendarProviderSnapshot,
-  type LinkedCalendarSemanticEvent,
+import type {
+  LifeOpsCalendarEvent,
+  LinkedCalendarProviderSnapshot,
+  LinkedCalendarSemanticEvent,
 } from "@elizaos/contracts";
+/** Validate the semantic event carried across the managed Calendar host boundary. */
+export function isLinkedCalendarSemanticEvent(
+  value: unknown,
+): value is LinkedCalendarSemanticEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Record<string, unknown>;
+  return (
+    typeof event.title === "string" &&
+    typeof event.description === "string" &&
+    typeof event.location === "string" &&
+    typeof event.startAt === "string" &&
+    Number.isFinite(Date.parse(event.startAt)) &&
+    typeof event.endAt === "string" &&
+    Number.isFinite(Date.parse(event.endAt)) &&
+    Date.parse(event.endAt) > Date.parse(event.startAt) &&
+    (event.timeZone === null || typeof event.timeZone === "string") &&
+    typeof event.isAllDay === "boolean" &&
+    Array.isArray(event.attendees) &&
+    event.attendees.every((attendee: unknown) => {
+      if (!attendee || typeof attendee !== "object" || Array.isArray(attendee))
+        return false;
+      const item = attendee as Record<string, unknown>;
+      return (
+        typeof item.email === "string" &&
+        (item.optional === undefined || typeof item.optional === "boolean")
+      );
+    }) &&
+    (event.recurrence === undefined ||
+      (Array.isArray(event.recurrence) &&
+        event.recurrence.every((rule: unknown) => typeof rule === "string"))) &&
+    (event.deleted === undefined || typeof event.deleted === "boolean")
+  );
+}
+
 export type CalendarSyncSelection = {
   grantId: string;
   calendarId: string;
