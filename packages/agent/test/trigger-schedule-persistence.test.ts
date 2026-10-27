@@ -118,10 +118,8 @@ it.each([true, false])(
                 name: "TRIGGER_CREATE",
                 arguments: {
                   displayName: "Stretch your shoulders",
-                  instructions:
-                    plans === 1
-                      ? "Remind the user to stretch their shoulders. Message: Stretch your shoulders."
-                      : instructions,
+                  // A schedule-only repair keeps the requested effect intact.
+                  instructions,
                   ...(plans === 2 ? { delayMinutes: 2 } : {}),
                   eliza_turn_scope: "final",
                 },
