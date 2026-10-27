@@ -864,7 +864,7 @@ export function retrieveContextualPlannerActions(args: {
           return (
             keys.some((key) => queryTerms.has(key)) &&
             familyTerms.filter((terms) => keys.some((key) => terms.has(key)))
-              .length < familyTerms.length
+              .length === 1
           );
         }),
       );
