@@ -889,7 +889,9 @@ export function collectPluginNames(
 
   // A selective reminder host opts into its declared storage dependencies.
   // Do not install this contribution in every standalone or lean deployment.
-  if (pluginsToLoad.has("@elizaos/plugin-personal-assistant/reminders-plugin")) {
+  if (
+    pluginsToLoad.has("@elizaos/plugin-personal-assistant/reminders-plugin")
+  ) {
     for (const companion of [
       "@elizaos/plugin-scheduling",
       "@elizaos/plugin-reminders",
