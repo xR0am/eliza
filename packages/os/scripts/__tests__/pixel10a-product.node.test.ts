@@ -188,3 +188,13 @@ test("Pixel staging refuses output inside the source tree before any write", asy
     assert.equal(fs.existsSync(output), false);
   }
 });
+
+test("a Makefile without admission never proves native staging", (t) => {
+  const f = fixture(t, "eliza");
+  fs.writeFileSync(
+    path.join(f.output, "Android.mk"),
+    "LOCAL_PRODUCT_MODULE := true\n",
+  );
+  const report = composePixel10aProduct(f);
+  assert.equal(report.nativeLibrariesStaged, false);
+});

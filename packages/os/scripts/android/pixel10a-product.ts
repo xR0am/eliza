@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,12 +79,52 @@ function checkListenerPolicy(output, appId) {
     );
 }
 
+function verifyNativeStaging(output, launcher, evidence) {
+  if (evidence === undefined) return false;
+  if (
+    evidence.schemaVersion !== 1 ||
+    evidence.nativeLibrariesStaged !== true ||
+    evidence.target !== "stallion" ||
+    evidence.moduleName !== launcher.moduleName ||
+    evidence.apkSha256 !== launcher.apkSha256 ||
+    !Array.isArray(evidence.libraries) ||
+    !evidence.libraries.length ||
+    evidence.libraries.length > 256 ||
+    evidence.runtimeVerified !== false ||
+    evidence.deployReady !== false
+  )
+    throw new Error(
+      "Native staging evidence differs from the admitted launcher",
+    );
+  const recorded = JSON.parse(
+    fs.readFileSync(path.join(output, "native-libraries.json"), "utf8"),
+  );
+  if (JSON.stringify(recorded) !== JSON.stringify(evidence))
+    throw new Error("Native staging receipt differs");
+  for (const library of evidence.libraries) {
+    if (
+      !/^native-arm64\/lib[A-Za-z0-9_.+-]+\.so$/.test(library.path) ||
+      !/^[a-f0-9]{64}$/.test(library.sha256)
+    )
+      throw new Error("Invalid native staging entry");
+    const file = path.join(output, library.path);
+    if (
+      !fs.lstatSync(file).isFile() ||
+      createHash("sha256").update(fs.readFileSync(file)).digest("hex") !==
+        library.sha256
+    )
+      throw new Error("Native staged bytes differ");
+  }
+  return true;
+}
+
 /** Compose a previously admitted, nonprivileged launcher overlay. No source or device writes. */
 export function composePixel10aProduct({
   output,
   product,
   launcher,
   sourceEvidence,
+  nativeStagingEvidence,
   production = false,
 }) {
   product = validatePixel10aProduct(product);
@@ -107,6 +148,11 @@ export function composePixel10aProduct({
     throw new Error("Pixel 10a main launcher must remain nonprivileged");
   if (!makefile && blueprint !== renderOverlay(launcher).blueprint)
     throw new Error("Pixel 10a requires an admitted launcher overlay");
+  const nativeLibrariesStaged = verifyNativeStaging(
+    output,
+    launcher,
+    nativeStagingEvidence,
+  );
   checkListenerPolicy(output, launcher.packageName);
   for (const name of [
     "AndroidProducts.mk",
@@ -143,8 +189,7 @@ export function composePixel10aProduct({
     lunch: `${product.productName}-${product.releaseConfig}-${production ? "user" : "userdebug"}`,
     production,
     developmentOnly: !production,
-    // A Makefile is not native runtime admission evidence.
-    nativeLibrariesStaged: false,
+    nativeLibrariesStaged,
     sourceEvidence,
     imageBuilt: false,
     imageSigned: false,

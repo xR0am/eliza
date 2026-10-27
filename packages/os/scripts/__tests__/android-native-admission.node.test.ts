@@ -1,0 +1,190 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  elizaNativeAdmission,
+  stageAndroidNative,
+} from "../android/android-native-admission.mjs";
+import { composePixel10aProduct } from "../android/pixel10a-product.ts";
+import { renderOverlay } from "../android/stage-launcher-overlay.ts";
+
+const fixtureScript = fileURLToPath(
+  new URL("./android-native-admission.test.py", import.meta.url),
+);
+function temporary(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-admission-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+test("Python source, pin, byte-integrity and packaging regressions", () => {
+  execFileSync("python3", [fixtureScript], { stdio: "pipe" });
+});
+
+test("Eliza admission uses the reviewed commit's Bun pin despite local modifications", (t) => {
+  const root = temporary(t);
+  const pinFile = path.join(
+    root,
+    "packages/app/scripts/lib/android-bun-artifacts.lock.json",
+  );
+  fs.mkdirSync(path.dirname(pinFile), { recursive: true });
+  const pin = {
+    version: "1.4.2",
+    revision: "1".repeat(40),
+    artifacts: { aarch64: { binarySha256: "2".repeat(64) } },
+  };
+  fs.writeFileSync(
+    pinFile,
+    JSON.stringify({
+      channels: { stable: pin },
+      targets: { android: { stable: pin } },
+    }),
+  );
+  const git = (...args) =>
+    execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q");
+  git("add", ".");
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "pin",
+  );
+  const sourceCommit = git("rev-parse", "HEAD");
+  fs.writeFileSync(pinFile, "changed checkout bytes");
+  const admission = elizaNativeAdmission({
+    sourceRoot: root,
+    sourceCommit,
+    packageName: "ai.elizaos.app",
+  });
+  assert.deepEqual(admission.bunPin, pin);
+  assert.equal(admission.source.commit, sourceCommit);
+  assert.equal(admission.source.package, "ai.elizaos.app");
+  assert.deepEqual(
+    elizaNativeAdmission({
+      sourceRoot: root,
+      sourceCommit,
+      packageName: "ai.elizaos.app",
+      bunTarget: "android",
+    }).bunPin,
+    pin,
+  );
+  assert.throws(
+    () =>
+      elizaNativeAdmission({
+        sourceRoot: root,
+        sourceCommit: "HEAD",
+        packageName: "ai.elizaos.app",
+      }),
+    /full reviewed/,
+  );
+});
+
+function stagedFixture(t, options = {}) {
+  const output = path.join(temporary(t), "overlay");
+  execFileSync("python3", [fixtureScript, "--fixture", output]);
+  const apk = path.join(output, "launcher.apk");
+  const launcher = {
+    schemaVersion: 1,
+    brand: "eliza",
+    moduleName: "Eliza",
+    packageName: "ai.elizaos.app",
+    apkSha256: createHash("sha256").update(fs.readFileSync(apk)).digest("hex"),
+    certificateSha256: "b".repeat(64),
+    ...options,
+  };
+  fs.writeFileSync(
+    path.join(output, "Android.bp"),
+    renderOverlay(launcher).blueprint,
+  );
+  const admission = JSON.parse(
+    fs.readFileSync(path.join(output, "admission.json"), "utf8"),
+  );
+  const evidence = stageAndroidNative({
+    apk,
+    output,
+    moduleName: "Eliza",
+    launcher,
+    admission,
+  });
+  return { output, launcher, evidence };
+}
+
+test("common native staging preserves admitted companion and revocable permission definitions", (t) => {
+  const { output, evidence } = stagedFixture(t, {
+    defaultPermissions: ["android.permission.RECORD_AUDIO"],
+    companions: [
+      {
+        moduleName: "Companion",
+        packageName: "ai.elizaos.companion",
+        apkSha256: "c".repeat(64),
+      },
+    ],
+  });
+  assert.equal(evidence.nativeLibrariesStaged, true);
+  assert.equal(evidence.residentAgentIncluded, true);
+  const blueprint = fs.readFileSync(path.join(output, "Android.bp"), "utf8");
+  assert.match(blueprint, /name: "Companion"/);
+  assert.match(blueprint, /ElizaDefaultPermissions/);
+  assert.doesNotMatch(blueprint, /privileged: true/);
+});
+
+test("product composition requires bound native evidence and rechecks copied native bytes", (t) => {
+  const f = stagedFixture(t);
+  const product = JSON.parse(
+    fs.readFileSync(
+      new URL("../../android/products/pixel10a-eliza.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.throws(
+    () =>
+      composePixel10aProduct({
+        ...f,
+        product,
+        nativeStagingEvidence: { ...f.evidence, apkSha256: "0".repeat(64) },
+      }),
+    /differs from the admitted launcher/,
+  );
+  fs.appendFileSync(
+    path.join(f.output, "native-arm64/libeliza_bun.so"),
+    "changed",
+  );
+  assert.throws(
+    () =>
+      composePixel10aProduct({
+        ...f,
+        product,
+        nativeStagingEvidence: f.evidence,
+      }),
+    /staged bytes differ/,
+  );
+  assert.equal(fs.existsSync(path.join(f.output, "stallion")), false);
+});
+
+test("verified native receipt admits composition without claiming execution", (t) => {
+  const f = stagedFixture(t);
+  const product = JSON.parse(
+    fs.readFileSync(
+      new URL("../../android/products/pixel10a-eliza.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const report = composePixel10aProduct({
+    ...f,
+    product,
+    nativeStagingEvidence: f.evidence,
+  });
+  assert.equal(report.nativeLibrariesStaged, true);
+  assert.equal(report.imageBuilt, false);
+  assert.equal(report.releaseQualified, false);
+  assert.equal(f.evidence.runtimeVerified, false);
+});

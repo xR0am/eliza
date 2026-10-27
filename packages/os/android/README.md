@@ -209,7 +209,7 @@ The legacy privileged `eliza_common.mk` is not included by this target; existing
 Cuttlefish, grizzly and GSI products keep their current policy.
 
 ```bash
-make -C packages/os/android stage-pixel10a ARGS="--product packages/os/android/products/pixel10a-eliza.json --launcher-descriptor /absolute/launcher.json --apk /absolute/launcher.apk --aosp-root /absolute/aosp --vendor-archive /absolute/factory.zip --output /absolute/new-overlay --development"
+make -C packages/os/android stage-pixel10a ARGS="--product packages/os/android/products/pixel10a-eliza.json --launcher-descriptor /absolute/launcher.json --apk /absolute/launcher.apk --aosp-root /absolute/aosp --vendor-archive /absolute/factory.zip --output /absolute/new-overlay --source-commit REVIEWED_ELIZA_COMMIT --development"
 ```
 
 Use the Alpha product JSON with its matching admitted launcher descriptor for the
@@ -233,12 +233,28 @@ renderer for this policy grants neither network access nor `RECORD_AUDIO`.
 The caller must still authenticate that separate APK, its speech payload and its
 indicator configuration before composition.
 
-This command produces a product-composition candidate. It does not stage resident
-JNI files: the composer records `nativeLibrariesStaged: false` until the shared
-native verifier can provide explicit admission evidence. A Makefile alone is not
-evidence. Alpha retains its
-existing runtime-provenance and speech qualification gates around the composer;
-extracting their common admission is follow-up work. Eliza's separate Sense APK,
+This command also verifies and stages resident JNI through the shared native
+admission module. `--source-commit` is the full reviewed Eliza runtime revision;
+`--runtime-source` optionally selects the Git repository holding that commit.
+The Bun pin is read from the committed object, and the APK build receipt must
+bind that source revision, package, runtime provenance and all final runtime bytes.
+`--bun-target android` selects the separately pinned native Android Bun artifact;
+the default remains `linux-musl`. Alpha supplies its existing exact source stamp,
+view-policy and workflow lock through a thin adapter to the same verifier.
+`nativeLibrariesStaged` is true only with an explicit matching admission receipt
+and unchanged staged native bytes; a Makefile alone is not evidence. Eliza's separate
+Sense APK,
 shared Autofill implementation, full exact-source image build, voice/telephony and
 physical device acceptance remain open. No source or device is written by the
 composer, and the physical target remains installer-ineligible and unqualified.
+
+Native admission is shared by both product consumers in
+`scripts/android/stage-android-native.py`. Callers authenticate the source contract;
+the common module enforces archive uniqueness, ABI/ELF/compression, runtime file
+hashes, asset/JNI parity, the stable Bun binary pin, and source/worker bindings.
+The Eliza source contract checks `META-INF/eliza/aosp-build-provenance.json` and
+its final packaged-file closure. The downstream exact-JSON contract retains its
+preparer, dependency-lock and view-policy checks without putting product-specific
+file paths or source hashes into the shared implementation. These are byte and
+source-admission checks: `runtimeVerified`, `deployReady`, image/boot and device
+qualification remain false.

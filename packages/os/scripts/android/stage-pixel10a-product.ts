@@ -4,6 +4,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveElizaSourceRoot } from "../eliza-source.ts";
+import {
+  elizaNativeAdmission,
+  stageAndroidNative,
+} from "./android-native-admission.mjs";
 import {
   provisioningComponents,
   writeProvisioningOverlay,
@@ -45,6 +50,12 @@ export async function stagePixel10aProduct(options) {
     throw new Error(
       "Pixel staging output must be outside the AOSP source tree",
     );
+  const admission = elizaNativeAdmission({
+    sourceRoot: options.runtimeSource ?? resolveElizaSourceRoot(),
+    sourceCommit: options.sourceCommit,
+    packageName: launcher.packageName,
+    bunTarget: options.bunTarget ?? "linux-musl",
+  });
   const sourceEvidence = await verifyProfileSource(
     loadProfile(product.sourceProfile),
     { aospRoot: options.aospRoot, archivePath: options.archivePath },
@@ -67,11 +78,21 @@ export async function stagePixel10aProduct(options) {
     );
     const components = provisioningComponents(xml, launcher.packageName);
     writeProvisioningOverlay(output, launcher.packageName, components);
+    const nativeStagingEvidence = stageAndroidNative({
+      apk: path.join(output, "Launcher.apk"),
+      output,
+      moduleName: launcher.moduleName,
+      launcher,
+      admission,
+    });
+    if (!nativeStagingEvidence.residentAgentIncluded)
+      throw new Error("Pixel 10a requires the admitted resident runtime");
     const result = composePixel10aProduct({
       output,
       product,
       launcher,
       sourceEvidence,
+      nativeStagingEvidence,
       production: !options.development,
     });
     fs.renameSync(output, options.output);
@@ -84,7 +105,7 @@ export async function stagePixel10aProduct(options) {
 export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === "--help") {
     console.log(
-      "Usage: node stage-pixel10a-product.ts --product PRODUCT_JSON --launcher-descriptor LAUNCHER_JSON --apk APK --aosp-root AOSP --vendor-archive FACTORY --output NEW_DIR [--development] [--aapt TOOL] [--apksigner TOOL]",
+      "Usage: node stage-pixel10a-product.ts --product PRODUCT_JSON --launcher-descriptor LAUNCHER_JSON --apk APK --aosp-root AOSP --vendor-archive FACTORY --output NEW_DIR --source-commit COMMIT [--runtime-source ELIZA_ROOT] [--bun-target linux-musl|android] [--development] [--aapt TOOL] [--apksigner TOOL]",
     );
     return;
   }
@@ -98,6 +119,9 @@ export async function main(argv = process.argv.slice(2)) {
     "--vendor-archive": "archivePath",
     "--aapt": "aapt",
     "--apksigner": "apksigner",
+    "--runtime-source": "runtimeSource",
+    "--source-commit": "sourceCommit",
+    "--bun-target": "bunTarget",
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--development") options.development = true;
@@ -118,6 +142,7 @@ export async function main(argv = process.argv.slice(2)) {
     "output",
     "aospRoot",
     "archivePath",
+    "sourceCommit",
   ])
     if (!options[field]) throw new Error(`Pixel 10a staging requires ${field}`);
   console.log(JSON.stringify(await stagePixel10aProduct(options), null, 2));
