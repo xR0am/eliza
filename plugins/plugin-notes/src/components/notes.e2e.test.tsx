@@ -43,6 +43,9 @@ vi.mock(
   () => import("../../../../packages/ui/src/components/shared/ViewHeader"),
 );
 
+import { createNotesClient } from "../client/notes-api.js";
+import { NotesController } from "../client/notes-controller.js";
+import { NotesEditor } from "../client/notes-editor.js";
 import { interact as interactWithService } from "../interact.js";
 import { NotesService } from "../service.js";
 import { NotesView } from "./NotesView.js";
@@ -109,6 +112,120 @@ afterEach(async () => {
 });
 
 describe("Notes capability-to-UI journey", () => {
+  function editorSession() {
+    let current = true;
+    let reviews = 0;
+    const notes = createNotesClient({
+      fetch: async <T,>(url: string, init?: RequestInit) =>
+        (await transportFetch(url, init)).json() as Promise<T>,
+    });
+    const controller = new NotesController(notes, () => current, {
+      snapshot: () => editor?.reconcile(),
+      phase: () => {},
+    });
+    const editor = new NotesEditor(controller, {
+      changed: () => {},
+      committed: () => {},
+      review: () => {
+        reviews++;
+      },
+    });
+    return {
+      controller,
+      editor,
+      retire: () => {
+        current = false;
+        controller.retire();
+      },
+      reviews: () => reviews,
+    };
+  }
+
+  it("shares canonical editor writes, conflicts and Trash with the real Notes service", async () => {
+    const session = editorSession();
+    try {
+      await session.controller.refresh();
+      session.editor.begin("list");
+      session.editor.edit({
+        title: "Exact title",
+        body: "\nExact body",
+        format: {
+          kind: "list",
+          data: {
+            items: [{ id: "one", text: "Keep rich fields", done: false }],
+            pinned: true,
+          },
+        },
+      });
+      expect(await session.editor.save()).toBe(true);
+      const id = session.editor.draft?.id;
+      expect(id).toBeTruthy();
+      if (!id) throw Error("Expected canonical note identity");
+      expect(activeService().snapshot().notes[0]).toMatchObject({
+        title: "Exact title",
+        body: "\n\nExact body",
+        format: {
+          kind: "list",
+          data: {
+            items: [{ id: "one", text: "Keep rich fields", done: false }],
+            pinned: true,
+          },
+        },
+      });
+      session.editor.edit({ body: "Unsaved owner text" });
+      await interactWithService(
+        "update-note",
+        {
+          id,
+          expectedRevision: activeService().snapshot().revision,
+          content: "Agent edit\nKeep this",
+        },
+        activeService(),
+      );
+      await session.controller.refresh();
+      expect(await session.editor.save()).toBe(false);
+      expect(session.reviews()).toBeGreaterThan(0);
+      expect(session.editor.draft?.body).toBe("Unsaved owner text");
+      expect(activeService().snapshot().notes[0].title).toBe("Agent edit");
+      session.editor.close();
+      session.editor.open(id);
+      expect(await session.editor.remove(id)).toBe(true);
+      expect(activeService().snapshot().notes).toHaveLength(0);
+      expect(await session.editor.restore(id)).toBe(true);
+      expect(activeService().snapshot().notes[0].id).toBe(id);
+    } finally {
+      session.retire();
+    }
+  });
+
+  it("retires a pending canonical read before it can publish into another owner", async () => {
+    await interactWithService(
+      "create-note",
+      { content: "Owner's private note" },
+      activeService(),
+    );
+    const original = transportFetch.getMockImplementation();
+    if (!original) throw Error("Expected Notes service transport");
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    transportFetch.mockImplementationOnce(
+      async (url: string, init?: RequestInit) => {
+        const response = await original(url, init);
+        await waiting;
+        return response;
+      },
+    );
+    const session = editorSession();
+    const read = session.controller.refresh();
+    session.retire();
+    release();
+    await expect(read).rejects.toBeTruthy();
+    expect(session.controller.snapshot).toBeNull();
+    expect(session.editor.draft).toBeNull();
+  });
+
   it("projects note mutations across read-only view remounts", async () => {
     const notes = render(<NotesView />);
     expect(

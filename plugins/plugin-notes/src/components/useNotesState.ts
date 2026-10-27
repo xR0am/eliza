@@ -12,6 +12,7 @@ import {
 } from "@elizaos/ui";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { NotesSnapshotState } from "../client/notes-snapshot-state.js";
 import type { NotesSnapshot } from "../types.js";
 import {
   fetchNotesState,
@@ -67,6 +68,12 @@ export function useNotesState(): NotesState {
     null,
   );
   const mounted = useRef(true);
+  const projection = useRef<NotesSnapshotState | null>(null);
+  if (!projection.current) {
+    projection.current = new NotesSnapshotState(() =>
+      mounted.current ? authorityRef.current : undefined,
+    );
+  }
   const refreshGeneration = useRef(0);
   const refreshAbortController = useRef<AbortController | null>(null);
 
@@ -90,18 +97,10 @@ export function useNotesState(): NotesState {
 
   const acceptSnapshot = useCallback(
     (next: NotesSnapshot, requestAuthority = authority) => {
-      if (!mounted.current || authorityRef.current !== requestAuthority) {
+      if (projection.current?.accept(next, requestAuthority) !== "accepted")
         return;
-      }
-      setSnapshotState((current) => {
-        if (
-          current?.authority === requestAuthority &&
-          current.value.revision > next.revision
-        ) {
-          return current;
-        }
-        return { authority: requestAuthority, value: next };
-      });
+      const value = projection.current.snapshot;
+      if (value) setSnapshotState({ authority: requestAuthority, value });
     },
     [authority],
   );
