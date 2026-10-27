@@ -455,6 +455,26 @@ it("registered CALENDAR cannot substitute backend records for an enrolled phone"
                 timeZone: "UTC",
                 grantId: googleGrant.id,
                 calendarId: "primary",
+                guestIntent: {
+                  state: "none",
+                  guests: [],
+                  evidence: [
+                    {
+                      sourceId: `current:${MESSAGE_ID}`,
+                      quote: input.content.text,
+                    },
+                  ],
+                },
+                noteIntent: {
+                  state: "none",
+                  sourceNote: null,
+                  evidence: [
+                    {
+                      sourceId: `current:${MESSAGE_ID}`,
+                      quote: input.content.text,
+                    },
+                  ],
+                },
               })
             : "Only selected calendar evidence.",
         );
