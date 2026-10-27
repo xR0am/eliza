@@ -74,7 +74,8 @@ beforeAll(async () => {
         );
         return;
       }
-      const text = JSON.stringify(reply);
+      const properties = body.response_format?.json_schema?.schema.properties as Record<string, unknown> | undefined;
+      const text = JSON.stringify(properties?.__eliza_response ? {__eliza_response:reply} : reply);
       const base = { id: "chatcmpl-qwen-fixture", created: 0, model: body.model };
       if (body.stream) {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -987,6 +988,9 @@ describe("Qwen3.8 response-schema wire contract", () => {
     "preserves the complete %s schema across success and provider rejection",
     async (_name, schema, result) => {
       const original = structuredClone(schema);
+      const expectedWire = _name === "root union"
+        ? {type:"object",properties:{__eliza_response:original},required:["__eliza_response"],additionalProperties:false}
+        : original;
       reply = result;
       // The fixture accepts arbitrary JSON to verify transport preservation,
       // not to claim that a live provider supports every schema feature.
@@ -994,7 +998,7 @@ describe("Qwen3.8 response-schema wire contract", () => {
       expect(requests).toHaveLength(1);
       expect(requests[0].response_format).toEqual({
         type: "json_schema",
-        json_schema: { name: "response", strict: true, schema: original },
+        json_schema: { name: "response", strict: true, schema: expectedWire },
       });
       requests.length = 0;
       reasoningEffortSetting = undefined;
@@ -1003,7 +1007,7 @@ describe("Qwen3.8 response-schema wire contract", () => {
       expect(requests).toHaveLength(1);
       expect(requests[0].response_format).toEqual({
         type: "json_schema",
-        json_schema: { name: "response", strict: true, schema: original },
+        json_schema: { name: "response", strict: true, schema: expectedWire },
       });
       expect(schema).toEqual(original);
     }

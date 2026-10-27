@@ -1,3 +1,4 @@
+import {emitNavigationDiagnostic} from "./navigation-diagnostic.ts";
 /** Enforces effect-grounded replies and trusted audience admission at every message egress boundary. */
 
 import { isValidTimeZone } from "@elizaos/contracts";
@@ -454,18 +455,20 @@ function navigationClaimIsUngrounded(args: {
   const evidence = args.providers?.VIEW_NAVIGATION?.data;
   if (!Array.isArray(evidence?.views)) return false;
   const views = evidence.views.filter(
-    (view): view is { id: string; label: string } =>
+    (view): view is { id: string; label: string; aliases?: string[] } =>
       isRecord(view) &&
       typeof view.id === "string" &&
       typeof view.label === "string",
   );
   const claimed = views.find((view) =>
-    [view.id, view.label].some((name) => {
+    [view.id, view.label, ...(Array.isArray(view.aliases)
+      ? view.aliases.filter((alias: unknown): alias is string => typeof alias === "string")
+      : [])].some((name) => {
       if (!name.trim()) return false;
       const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const target = `(?:the\\s+)?${escaped}(?:\\s+(?:view|screen|app))?`;
       return new RegExp(
-        `^(?:Done[.!]?\\s*[-—:]?\\s*)?(?:${target}\\s+(?:(?:is|are)\\s+)?(?:now\\s+)?open|(?:I(?:['’]ve| have)?\\s+)?opened\\s+${target}|you(?:['’]re| are)\\s+(?:now\\s+)?on\\s+${target})(?:[.!]+(?=\\s|$)|$)`,
+        `^(?:Done[.!]?\\s*[-—:]?\\s*)?(?:${target}\\s+(?:(?:is|are)\\s+)?(?:now\\s+)?open|(?:I(?:['’]ve| have)?\\s+)?opened\\s+${target}|you(?:['’]re| are)\\s+(?:now\\s+)?on\\s+${target}|back\\s+on\\s+${target})(?:[.!]+(?=\\s|$)|$)`,
         "iu",
       ).test(args.reply.trim());
     }),
@@ -923,6 +926,7 @@ export async function resolvePlannedReplyEgress(args: {
           context: { roomId: args.message.roomId, messageId: args.message.id },
         },
       );
+      emitNavigationDiagnostic(args.runtime,args.message,"recovery",()=>({validation:"other",replyPresent:false,errorCode:error&&typeof error==="object"&&"code" in error?error.code:"PROVIDER_ERROR"}));
       args.runtime.reportError("MessageService.replyRecovery", recoveryFailure);
       throw recoveryFailure;
     }
@@ -968,6 +972,7 @@ export async function resolvePlannedReplyEgress(args: {
         actions: args.runtime.actions,
       })
     : undefined;
+  emitNavigationDiagnostic(args.runtime,args.message,"recovery",()=>({verdict:rewrittenDecision?.verdict,validation:!reply?"missing_reply":rewritten?.effectReceiptIds.length&&!proof?"unresolved_proof":rewrittenDecision?.verdict==="reject"?rewrittenDecision.kind:undefined,replyPresent:!!reply}));
   if (
     !reply ||
     (rewritten?.effectReceiptIds.length && !proof) ||

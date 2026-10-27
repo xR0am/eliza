@@ -17,6 +17,7 @@ import {
 import { dispatchApiRoute } from "../api/in-process-api.ts";
 import { listViews } from "../api/views-registry.ts";
 import { getViewClientScope } from "../runtime/view-client-context.ts";
+import { resolveViewNavigationTargets, viewNavigationAvailable } from "../runtime/view-navigation-targets.ts";
 
 export const viewsAction: Action = {
   name: "VIEWS",
@@ -108,18 +109,13 @@ export const viewsAction: Action = {
         "Use action=show with a registered view id or label.",
       );
     const target = params.view.trim().toLowerCase();
-    const matches = views.filter(
-      (view) =>
-        view.id.toLowerCase() === target ||
-        view.label.toLowerCase() === target ||
-        (target === "home" && view.id === "chat"),
-    );
+    const matches = resolveViewNavigationTargets(views, target);
     if (matches.length !== 1)
       return fail(
         matches.length ? "ambiguous" : "not-found",
         "No unique registered view matches. Use VIEWS action=list to inspect available views.",
       );
-    const view = matches[0];
+    const { view, resolvedAlias } = matches[0];
     const clientId = readViewInteractionClientId(message);
     if (!clientId)
       return fail(
@@ -130,7 +126,7 @@ export const viewsAction: Action = {
     const completedAction =
       isObjectRecord(message.content.metadata) &&
       message.content.metadata.viewDelivery === "completed-action";
-    if (!completedAction && view.available === false)
+    if (!viewNavigationAvailable(view, completedAction))
       return fail(
         "unavailable",
         "This destination has no available hosted view for the originating renderer.",
@@ -146,6 +142,7 @@ export const viewsAction: Action = {
         delivery,
         completedActionHandoffId: handoffId,
         viewType: "gui",
+        ...(resolvedAlias ? { resolvedAlias } : {}),
         ...(completedAction ? { prepareOnly: true } : {}),
       };
       let status: number;
@@ -238,6 +235,9 @@ export const viewsAction: Action = {
         viewId: view.id,
         path: view.path,
         label: view.label,
+        // Carry only an alias that this action resolved to this authorized
+        // installed view; reply validation must not guess consumer branding.
+        ...(resolvedAlias ? { resolvedAlias } : {}),
         stepId:
           typeof params.navigationStepId === "string"
             ? params.navigationStepId
@@ -266,6 +266,7 @@ export const viewsAction: Action = {
             : {}),
         },
         data: {
+          ...(completedAction ? { awaitingDeviceExecution: true } : {}),
           view,
           navigation: receipt,
         },

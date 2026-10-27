@@ -212,7 +212,7 @@ export function renderMessageHandlerModelInput(
       )
     : priorDialogueSegments;
   const transcript = transcriptSegments
-    .map((segment) => segment.content)
+    .map(segmentBlock)
     .join("\n");
   // Past effects remain complete historical evidence, before the instruction
   // that establishes the current request. They cannot become pending work by

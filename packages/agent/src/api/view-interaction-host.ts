@@ -1,3 +1,4 @@
+import {sendNativeViewFrame,onNativeViewDisconnect} from "./native-view-renderer.ts";
 /** Reply correlation belongs to one runtime, HTTP host, and authenticated client. */
 import { randomUUID } from "node:crypto";
 import {
@@ -90,7 +91,9 @@ export class ViewInteractionHost {
     }
     const caller = { clientId, entry, ...binding };
     this.callers.set(requestId, caller);
+    const detach = onNativeViewDisconnect(this.runtime, clientId, () => this.cancel(requestId, new Error("Native renderer disconnected; outcome unknown")));
     return this.pending.waitFor(requestId, timeoutMs).finally(() => {
+      detach();
       if (this.callers.get(requestId) === caller)
         this.callers.delete(requestId);
     });
@@ -264,7 +267,14 @@ export function getViewsBroadcastWs(
 export function getViewsBroadcastWsToClientId(
   hostKey: object | undefined,
 ): ((clientId: string, payload: object) => number) | null {
-  return hostKey && !closedHosts.has(hostKey)
-    ? (broadcasters.get(hostKey)?.targeted ?? null)
-    : null;
+  if(!hostKey||closedHosts.has(hostKey))return null;
+  const ws=broadcasters.get(hostKey)?.targeted;
+  return (clientId,payload)=>{
+    // Native clients use this same host's runtime and the same claim/result map.
+    // Never broadcast a targeted command onto the general event bus.
+    for(const runtime of hosts.get(hostKey)?.keys()??[]){
+      const sent=sendNativeViewFrame(runtime,hostKey,clientId,payload);if(sent)return sent;
+    }
+    return ws?.(clientId,payload)??0;
+  };
 }
