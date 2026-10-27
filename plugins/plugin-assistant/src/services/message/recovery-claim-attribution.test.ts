@@ -1,7 +1,9 @@
 /**
  * Reply recovery through the real runtime dispatcher with a controlled
- * renderer and grounding judge. The judge attributes each claim; only the
- * assistant's own changes need this turn's receipt.
+ * renderer and grounding judge. The judge gives a whole-reply verdict and
+ * attributes each claim; only the assistant's own changes need this turn's
+ * receipt, and an unsupported claim gets one degrade rewrite before the turn
+ * fails.
  */
 import {
   type ActionResult,
@@ -11,7 +13,7 @@ import {
   stringToUuid,
 } from "@elizaos/core";
 import { createSQLiteTestRuntime } from "@elizaos/testing/runtime";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { resolvePlannedReplyEgress } from "./egress-policy";
 import type { RecoveredReplyClaim } from "./recovery-grounding";
 
@@ -22,6 +24,8 @@ const REVIEW_OF_SENDER_WORK =
   "solid. removed the cap, typed the nulls and wired charged: false. i'd still glance at the fail-closed path.";
 const ASSISTANT_CLAIM =
   "pushed the fix for you: i removed the 25-point cap and it's live on the worker now.";
+const DEGRADED =
+  "your commit removes the 25-point cap; i haven't verified that it's live.";
 
 const runtimes: ReturnType<typeof createSQLiteTestRuntime>[] = [];
 afterEach(async () => {
@@ -78,10 +82,21 @@ function fixture(
         reply: "",
         actionResults,
       }),
+    runtime,
     renderPrompts,
     reviewPrompts,
   };
 }
+
+const evidenceOf = (prompt: string) =>
+  prompt.slice(prompt.indexOf("Complete turn evidence: "));
+const payloadOf = (prompt: string) =>
+  JSON.parse(
+    prompt
+      .split("\n")
+      .find((line) => line.startsWith("Original action payload: "))
+      ?.slice("Original action payload: ".length) ?? "null",
+  );
 
 const senderClaim = (quote: string): RecoveredReplyClaim => ({
   quote,
@@ -119,6 +134,46 @@ it("delivers a review of changes the sender reports without an assistant receipt
   expect(f.reviewPrompts).toHaveLength(1);
 });
 
+it("degrades an assistant change without a receipt once, judging both drafts on identical evidence", async () => {
+  const f = fixture(
+    [{ response: ASSISTANT_CLAIM }, { response: DEGRADED }],
+    // The judge wrongly supports the assistant change; the receipt rule is code-side.
+    [
+      { grounded: true, claims: [assistantChange(true)] },
+      {
+        grounded: true,
+        claims: [senderClaim("your commit removes the 25-point cap")],
+      },
+    ],
+  );
+  const warn = vi.spyOn(f.runtime.logger, "warn");
+  await expect(f.recover()).resolves.toEqual({
+    text: DEGRADED,
+    effectReceiptIds: [],
+  });
+  const unsupportedClaims = [
+    { quote: "i removed the 25-point cap", actor: "assistant", evidence: "" },
+  ];
+  expect(warn).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: "missing_reply", unsupportedClaims }),
+    expect.stringContaining("unsupported claims"),
+  );
+  expect(f.renderPrompts).toHaveLength(2);
+  expect(f.renderPrompts[1]).toContain("failed unsupported_claim");
+  expect(payloadOf(f.renderPrompts[1] ?? "")).toMatchObject({
+    reason: "missing_reply",
+    rejectedReply: "",
+    recoveredDraft: ASSISTANT_CLAIM,
+    unsupportedClaims,
+  });
+  expect(f.reviewPrompts).toHaveLength(2);
+  expect(f.reviewPrompts[1]).toContain(JSON.stringify(DEGRADED));
+  expect(evidenceOf(f.reviewPrompts[1] ?? "")).toBe(
+    evidenceOf(f.reviewPrompts[0] ?? ""),
+  );
+  expect(f.reviewPrompts[0]).not.toContain("unsupportedClaims");
+});
+
 it.each([
   ["an assistant change without a receipt", assistantChange(false)],
   [
@@ -131,18 +186,24 @@ it.each([
       evidence: "",
     } satisfies RecoveredReplyClaim,
   ],
-])("rejects %s", async (_label, claim) => {
-  const f = fixture(
-    [{ response: ASSISTANT_CLAIM }],
-    [{ grounded: false, claims: [claim] }],
-  );
-  await expect(f.recover()).rejects.toMatchObject({
-    code: "REPLY_GROUNDING_FAILED",
-    message: "Recovered reply asserts an unsupported outcome",
-  });
-  expect(f.renderPrompts).toHaveLength(1);
-  expect(f.reviewPrompts).toHaveLength(1);
-});
+])(
+  "fails the turn when the degraded draft still carries %s",
+  async (_label, claim) => {
+    const f = fixture(
+      [{ response: ASSISTANT_CLAIM }, { response: DEGRADED }],
+      [
+        { grounded: false, claims: [claim] },
+        { grounded: false, claims: [claim] },
+      ],
+    );
+    await expect(f.recover()).rejects.toMatchObject({
+      code: "REPLY_GROUNDING_FAILED",
+      message: "Recovered reply asserts an unsupported outcome",
+    });
+    expect(f.renderPrompts).toHaveLength(2);
+    expect(f.reviewPrompts).toHaveLength(2);
+  },
+);
 
 it("delivers an assistant change bound to this turn's applied receipt", async () => {
   const observedAt = "2026-10-25T00:00:00.000Z";
@@ -185,7 +246,7 @@ it("delivers an assistant change bound to this turn's applied receipt", async ()
   expect(f.reviewPrompts).toHaveLength(1);
 });
 
-it("fails an invented receipt selection before review", async () => {
+it("fails an invented receipt selection without a degrade rewrite", async () => {
   const f = fixture(
     [{ response: ASSISTANT_CLAIM, effectReceiptIds: ["invented-receipt"] }],
     [],
@@ -195,4 +256,54 @@ it("fails an invented receipt selection before review", async () => {
   });
   expect(f.renderPrompts).toHaveLength(1);
   expect(f.reviewPrompts).toHaveLength(0);
+});
+
+it.each([
+  [
+    "an ungrounded verdict whose claims all read as supported",
+    { grounded: false, claims: [senderClaim("removed the cap")] },
+    "removed the cap",
+  ],
+  [
+    "a supported claim that does not quote the reply",
+    {
+      grounded: true,
+      claims: [senderClaim("removed the cap and redeployed the worker")],
+    },
+    "removed the cap and redeployed the worker",
+  ],
+])("degrades %s", async (_label, verdict, quote) => {
+  const f = fixture(
+    [{ response: REVIEW_OF_SENDER_WORK }, { response: DEGRADED }],
+    [verdict, { grounded: true, claims: [] }],
+  );
+  await expect(f.recover()).resolves.toEqual({
+    text: DEGRADED,
+    effectReceiptIds: [],
+  });
+  expect(payloadOf(f.renderPrompts[1] ?? "")).toMatchObject({
+    unsupportedClaims: [{ quote }],
+  });
+});
+
+it("accepts a quote that differs from the reply only in case and spacing", async () => {
+  const f = fixture(
+    [{ response: REVIEW_OF_SENDER_WORK }],
+    [{ grounded: true, claims: [senderClaim("Removed  the\nCap")] }],
+  );
+  await expect(f.recover()).resolves.toEqual({
+    text: REVIEW_OF_SENDER_WORK,
+    effectReceiptIds: [],
+  });
+});
+
+it("fails an ungrounded verdict that lists no claims", async () => {
+  const f = fixture(
+    [{ response: REVIEW_OF_SENDER_WORK }],
+    [{ grounded: false, claims: [] }],
+  );
+  await expect(f.recover()).rejects.toMatchObject({
+    code: "REPLY_GROUNDING_REVIEW_FAILED",
+  });
+  expect(f.renderPrompts).toHaveLength(1);
 });
