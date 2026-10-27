@@ -20,6 +20,13 @@ required host-owned fetch transport. It does not load dashboard credentials or
 connection settings. The app's existing internal entry retains its default
 dashboard transport. The packed-consumer check verifies the public client's
 mint, first-frame handshake, interruption and cleanup with injected transports.
+`@elizaos/ui/installed-apps-launcher` renders the shared installed-app list,
+search, favorites and default-phone shortcut. Pass the controller from
+`@elizaos/capacitor-system/launcher`, current query and host callbacks. The host
+provides its product name, builtin key prefix, icons and CSS theme tokens; the
+component does not choose a native adapter or storage namespace. AOSP
+`LauncherSurface` uses the same component for registered views and Android apps.
+
 The app owns renderer composition and native transport selection. Consumers render
 domain DTOs imported from `@elizaos/contracts`; business logic belongs to domain services. Use `bun run --cwd packages/ui storybook` for
 component development. Changes reaching the app require its visual audit.

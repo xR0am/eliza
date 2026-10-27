@@ -77,3 +77,15 @@ also declare an `ACTION_DIAL` query with the `tel` scheme. Default handoffs use
 an explicit eligible activity or a chooser of eligible activities. The host,
 disabled apps and unexported activities cannot be destinations. Web fallback
 reports no handlers and rejects launch requests. Hosts retain user-intent policy.
+
+`@elizaos/capacitor-system/launcher` exposes the browser-safe installed-app controller,
+identity/search helpers, favorites persistence and package/resume observation. Hosts
+inject their native bridge and rerender on the change callback. Use `localFavorites`
+with the existing host storage key and default-policy marker when migrating a
+product; omission uses the Eliza defaults. Builtin view IDs remain distinct from
+Android package/activity/profile IDs. `observeLauncher` does not start the initial
+inventory read; hosts call `load` when their launcher opens. On cleanup, stop the
+observer and call `cancelPending` to discard late reads and handoff responses. The
+controller remains reusable when the host opens again. Observe only while the
+host needs native updates. Run `bun run --cwd
+plugins/plugin-native-system test` for the shared controller and migration cases.
