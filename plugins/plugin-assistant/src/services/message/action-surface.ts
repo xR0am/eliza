@@ -1004,7 +1004,13 @@ export async function collectV5PlannerCandidateActions(args: {
   type Gate = "connector-policy" | "validate";
   const totals: Record<
     Gate,
-    { count: number; totalMs: number; maxMs: number; throws: number }
+    {
+      count: number;
+      totalMs: number;
+      maxMs: number;
+      maxActionName?: string;
+      throws: number;
+    }
   > = {
     "connector-policy": { count: 0, totalMs: 0, maxMs: 0, throws: 0 },
     validate: { count: 0, totalMs: 0, maxMs: 0, throws: 0 },
@@ -1038,6 +1044,8 @@ export async function collectV5PlannerCandidateActions(args: {
       const total = totals[gate];
       total.count++;
       total.totalMs += durationMs;
+      if (gate === "validate" && durationMs > total.maxMs)
+        total.maxActionName = action.name;
       total.maxMs = Math.max(total.maxMs, durationMs);
       if (!returned) total.throws++;
       checks?.push({
