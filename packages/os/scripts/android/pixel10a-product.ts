@@ -1,0 +1,159 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { renderOverlay, validateDescriptor } from "./stage-launcher-overlay.ts";
+
+const hardwareRoot = fileURLToPath(
+  new URL("../../android/devices/pixel10a/", import.meta.url),
+);
+const token = /^[a-z][a-z0-9_]*$/;
+const packageName = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+export const sensePrivileges = [
+  "android.permission.CAPTURE_AUDIO_HOTWORD",
+  "android.permission.START_ACTIVITIES_FROM_BACKGROUND",
+];
+
+export function validatePixel10aProduct(value) {
+  if (
+    value?.schemaVersion !== 1 ||
+    value.target !== "pixel10a" ||
+    value.sourceProfile !== "pixel10a" ||
+    value.vendorDirectory !== "alphaphone" ||
+    value.releaseQualified !== false
+  )
+    throw new Error(
+      "Expected unqualified Pixel 10a product on the shared source and compatibility vendor path",
+    );
+  if (
+    !token.test(value.productName) ||
+    !/^[a-z0-9_]+$/.test(value.releaseConfig) ||
+    !/^[A-Z][A-Za-z0-9]*$/.test(value.launcher?.moduleName) ||
+    !packageName.test(value.launcher?.packageName)
+  )
+    throw new Error("Invalid Pixel 10a product or launcher identity");
+  for (const name of ["model", "brand", "manufacturer"]) {
+    if (
+      typeof value[name] !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$/.test(value[name])
+    )
+      throw new Error(`Invalid Pixel 10a ${name}`);
+  }
+  return value;
+}
+
+/** The only privileged package in this product is its separately admitted listener. */
+export function renderSensePermissions(appId) {
+  if (!packageName.test(appId))
+    throw new Error("Invalid listener application identity");
+  return `<?xml version="1.0" encoding="utf-8"?>\n<permissions>\n    <privapp-permissions package="${appId}.sense">\n${sensePrivileges.map((name) => `        <permission name="${name}" />\n`).join("")}    </privapp-permissions>\n</permissions>\n`;
+}
+
+function checkListenerPolicy(output, appId) {
+  const directory = path.join(output, "listener");
+  if (!fs.existsSync(directory)) return;
+  const files = fs.readdirSync(path.join(directory, "permissions"));
+  const entries = files.filter(
+    (name) => name.startsWith("privapp-permissions-") && name.endsWith(".xml"),
+  );
+  if (entries.length !== 1)
+    throw new Error("Pixel 10a listener must have one exact privapp allowlist");
+  const xml = fs
+    .readFileSync(path.join(directory, "permissions", entries[0]), "utf8")
+    .replace(/<!--[\s\S]*?-->/g, "");
+  const packages = [
+    ...xml.matchAll(/<privapp-permissions\s+package="([^"]+)"/g),
+  ].map((row) => row[1]);
+  const permissions = [...xml.matchAll(/<permission\s+name="([^"]+)"\s*\/>/g)]
+    .map((row) => row[1])
+    .sort();
+  if (
+    packages.length !== 1 ||
+    packages[0] !== `${appId}.sense` ||
+    JSON.stringify(permissions) !==
+      JSON.stringify([...sensePrivileges].sort()) ||
+    /<deny-permission/.test(xml)
+  )
+    throw new Error(
+      "Pixel 10a listener grants must remain the exact minimal Sense permissions",
+    );
+}
+
+/** Compose a previously admitted, nonprivileged launcher overlay. No source or device writes. */
+export function composePixel10aProduct({
+  output,
+  product,
+  launcher,
+  sourceEvidence,
+  production = false,
+}) {
+  product = validatePixel10aProduct(product);
+  launcher = validateDescriptor(launcher);
+  if (
+    launcher.packageName !== product.launcher.packageName ||
+    launcher.moduleName !== product.launcher.moduleName ||
+    launcher.partition === "system"
+  )
+    throw new Error(
+      "Launcher differs from the Pixel 10a product identity or product partition",
+    );
+  const blueprint = fs.readFileSync(path.join(output, "Android.bp"), "utf8");
+  const makefile = fs.existsSync(path.join(output, "Android.mk"))
+    ? fs.readFileSync(path.join(output, "Android.mk"), "utf8")
+    : "";
+  if (
+    /\bprivileged\s*:\s*true\b/.test(blueprint) ||
+    /LOCAL_PRIVILEGED_MODULE\s*:?=\s*true/.test(makefile)
+  )
+    throw new Error("Pixel 10a main launcher must remain nonprivileged");
+  if (!makefile && blueprint !== renderOverlay(launcher).blueprint)
+    throw new Error("Pixel 10a requires an admitted launcher overlay");
+  checkListenerPolicy(output, launcher.packageName);
+  for (const name of [
+    "AndroidProducts.mk",
+    `${product.productName}.mk`,
+    "stallion",
+    "physical-product.json",
+  ])
+    if (fs.existsSync(path.join(output, name)))
+      throw new Error(`Pixel 10a composition already exists: ${name}`);
+  fs.cpSync(hardwareRoot, path.join(output, "stallion"), {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+  });
+  fs.writeFileSync(
+    path.join(output, `${product.productName}.mk`),
+    `# Shared Pixel 10a/stallion hardware; retain the verified compatibility vendor path.\nUSE_STOCK_KERNEL := true\n$(call inherit-product, vendor/google_devices/stallion/stallion.mk)\n$(call inherit-product, vendor/alphaphone/product.mk)\n\nPRODUCT_NAME := ${product.productName}\nPRODUCT_DEVICE := stallion\nPRODUCT_MODEL := ${product.model}\nPRODUCT_BRAND := ${product.brand}\nPRODUCT_MANUFACTURER := ${product.manufacturer}\n`,
+    { flag: "wx" },
+  );
+  fs.writeFileSync(
+    path.join(output, "AndroidProducts.mk"),
+    `PRODUCT_MAKEFILES := $(LOCAL_DIR)/${product.productName}.mk\nCOMMON_LUNCH_CHOICES := \\\n    ${product.productName}-${product.releaseConfig}-userdebug \\\n    ${product.productName}-${product.releaseConfig}-user\n`,
+    { flag: "wx" },
+  );
+  if (makefile)
+    fs.appendFileSync(
+      path.join(output, "product.mk"),
+      "\n# Exact executable modes for admitted bundled JNI.\nTARGET_FS_CONFIG_GEN += vendor/alphaphone/config.fs\n",
+    );
+  const evidence = {
+    schema: 1,
+    target: "pixel10a",
+    product: product.productName,
+    lunch: `${product.productName}-${product.releaseConfig}-${production ? "user" : "userdebug"}`,
+    production,
+    developmentOnly: !production,
+    nativeLibrariesStaged: Boolean(makefile),
+    sourceEvidence,
+    imageBuilt: false,
+    imageSigned: false,
+    releaseQualified: false,
+    deviceAcceptanceVerified: false,
+  };
+  fs.writeFileSync(
+    path.join(output, "physical-product.json"),
+    `${JSON.stringify(evidence, null, 2)}\n`,
+    { flag: "wx" },
+  );
+  return evidence;
+}

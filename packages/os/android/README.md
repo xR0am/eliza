@@ -197,3 +197,47 @@ release, add Treble compatibility patches, or import Eliza's launcher identity.
 The linked community Android 16 package is an unofficial GSI retaining Lenovo's
 `.271` vendor/kernel stack, not a device source port or evidence for Eliza's
 Android 17 target. Read-only stock qualification cannot enable installation.
+
+## Common Pixel 10a product composition
+
+The explicit Pixel 10a path uses the same hardware composition for both launchers:
+`products/pixel10a-eliza.json` and `products/pixel10a-alpha.json` vary the product
+name, model, brand and launcher package/module. Device configuration, the stock
+kernel, eSIM flags provider, source patches and SELinux inputs live once under
+`devices/pixel10a`. Both main APKs are presigned, nonprivileged product apps.
+The legacy privileged `eliza_common.mk` is not included by this target; existing
+Cuttlefish, grizzly and GSI products keep their current policy.
+
+```bash
+make -C packages/os/android stage-pixel10a ARGS="--product packages/os/android/products/pixel10a-eliza.json --launcher-descriptor /absolute/launcher.json --apk /absolute/launcher.apk --aosp-root /absolute/aosp --vendor-archive /absolute/factory.zip --output /absolute/new-overlay --development"
+```
+
+Use the Alpha product JSON with its matching admitted launcher descriptor for the
+other consumer. Full source verification runs before staging. The shared launcher
+stager authenticates APK bytes, signer and HOME activity; provisioning takes the
+HOME and assistant component names from that admitted APK. Autofill is offered
+only when its guarded service is present. The current Eliza manifest has no such
+service. The original stock launcher remains installed.
+
+The output must be installed at `vendor/alphaphone`: the immutable generated
+`stallion.mk` references `vendor/alphaphone/stallion/device.mk`. This compatibility
+path and the retained `AlphaPixelConfig` internal module names are provenance,
+not a different application identity. Do not rename those source references by
+editing the shared source inventory; a future move needs a reviewed patch envelope.
+
+`composePixel10aProduct` also supports an already admitted downstream overlay,
+including Alpha's existing runtime/native staging. If a listener has been staged,
+its allowlist must contain exactly `CAPTURE_AUDIO_HOTWORD` and
+`START_ACTIVITIES_FROM_BACKGROUND` for the matching `.sense` package. The common
+renderer for this policy grants neither network access nor `RECORD_AUDIO`.
+The caller must still authenticate that separate APK, its speech payload and its
+indicator configuration before composition.
+
+This command produces a product-composition candidate. It does not stage resident
+JNI files: the result explicitly records `nativeLibrariesStaged: false` unless an
+upstream caller already provided the admitted native Makefile. Alpha retains its
+existing runtime-provenance and speech qualification gates around the composer;
+extracting their common admission is follow-up work. Eliza's separate Sense APK,
+shared Autofill implementation, full exact-source image build, voice/telephony and
+physical device acceptance remain open. No source or device is written by the
+composer, and the physical target remains installer-ineligible and unqualified.
