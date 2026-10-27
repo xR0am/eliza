@@ -2218,6 +2218,9 @@ export async function runV5MessageRuntimeStage1(
             : {}),
           tools: plannerTools.length > 0 ? plannerTools : undefined,
           requireNonTerminalToolCall,
+          // finalizePlannerReply honours toolless planner silence only on an
+          // ambient turn or after an early reply already reached the user.
+          replyOwed: !ambientTurn && !earlyReplySent,
           // Fallback honesty for required-tool exhaustion: Stage 1's own
           // replyText (when answer-shaped) is surfaced instead of the
           // generic transient-failure apology. Duplicate delivery is safe —
