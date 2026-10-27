@@ -16,6 +16,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const transportFetch = vi.hoisted(() => vi.fn());
@@ -60,7 +61,7 @@ import { NotesEditor } from "../client/notes-editor.js";
 import { interact as interactWithService } from "../interact.js";
 import { NotesService } from "../service.js";
 import { NotesView } from "./NotesView.js";
-import { NotesWorkspace } from "./NotesWorkspace.js";
+import { NotesWorkspace, type NotesWorkspaceHandle } from "./NotesWorkspace.js";
 
 let service: NotesService | null = null;
 let stateDirectory = "";
@@ -455,6 +456,151 @@ describe("Notes capability-to-UI journey", () => {
     expect(screen.getByRole("textbox", { name: "Note" })).toHaveProperty(
       "value",
       "Saved while hidden",
+    );
+  });
+
+  it("saves a Home card before Notes has ever been opened without navigating", async () => {
+    const workspace = createRef<NotesWorkspaceHandle>();
+    let receipt: { id: string; revision: number } | undefined;
+    const client = createNotesClient({
+      fetch: (url: string, init?: RequestInit) =>
+        transportFetch(url, init).then((response: Response) => response.json()),
+    });
+    render(
+      <>
+        <main aria-label="Home">
+          <button
+            type="button"
+            onClick={() =>
+              void workspace.current
+                ?.interact("create-note", {
+                  content: "Before first open\nExact card body",
+                })
+                .then((result) => {
+                  receipt = result.target;
+                })
+            }
+          >
+            Save card to Notes
+          </button>
+        </main>
+        <section hidden>
+          <NotesWorkspace
+            ref={workspace}
+            active={false}
+            client={client}
+            binding={{ key: "cold-home-owner", current: () => true }}
+          />
+        </section>
+      </>,
+    );
+    await waitFor(() => expect(workspace.current?.revision()).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Save card to Notes" }));
+    await waitFor(() => expect(receipt).toBeDefined());
+    const state = activeService().snapshot();
+    expect(state.notes).toHaveLength(1);
+    expect(state.notes[0].body).toBe("\nExact card body");
+    expect(receipt).toEqual({
+      id: state.notes[0].id,
+      revision: state.revision,
+    });
+    expect(
+      transportFetch.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+    expect(screen.getByRole("main", { name: "Home" })).toBeTruthy();
+    expect(screen.queryByRole("main", { name: /^Notes\./ })).toBeNull();
+  });
+
+  it("saves one explicit Home card through the hidden workspace and retains its dirty draft", async () => {
+    await interactWithService(
+      "create-note",
+      { content: "Existing draft\nOriginal" },
+      activeService(),
+    );
+    const original = transportFetch.getMockImplementation();
+    let failUpdate = true;
+    let creates = 0;
+    transportFetch.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          const request = JSON.parse(String(init.body));
+          if (request.capability === "create-note") creates++;
+          if (request.capability === "update-note" && failUpdate)
+            throw new TypeError("Failed to fetch");
+        }
+        return original?.(url, init);
+      },
+    );
+    const workspace = createRef<NotesWorkspaceHandle>();
+    const client = createNotesClient({
+      fetch: (url: string, init?: RequestInit) =>
+        transportFetch(url, init).then((response: Response) => response.json()),
+    });
+    const binding = { key: "home-card-owner", current: () => true };
+    function HomeCardHost({ active }: { active: boolean }) {
+      const [receipt, setReceipt] = useState<{
+        id: string;
+        revision: number;
+      }>();
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              void workspace.current
+                ?.interact("create-note", {
+                  content: "From Home\nExact saved card text",
+                })
+                .then((result) => setReceipt(result.target))
+            }
+          >
+            Save card to Notes
+          </button>
+          <output aria-label="Save receipt">
+            {receipt ? `${receipt.id}:${receipt.revision}` : "Not saved"}
+          </output>
+          <section hidden={!active}>
+            <NotesWorkspace
+              ref={workspace}
+              active={active}
+              client={client}
+              binding={binding}
+            />
+          </section>
+        </>
+      );
+    }
+    const view = render(<HomeCardHost active />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Note Existing draft" }),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Note" }), {
+      target: { value: "Keep my unsaved editor text" },
+    });
+    await screen.findByRole("button", { name: "Discard draft and reload" });
+    expect(workspace.current?.hasUnsavedChanges()).toBe(true);
+    failUpdate = false;
+    view.rerender(<HomeCardHost active={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Save card to Notes" }));
+    await waitFor(() => {
+      const state = activeService().snapshot();
+      const note = state.notes.find((note) => note.title === "From Home");
+      expect(note?.body).toBe("\nExact saved card text");
+      expect(
+        screen.getByRole("status", { name: "Save receipt" }).textContent,
+      ).toBe(`${note?.id}:${state.revision}`);
+    });
+    expect(creates).toBe(1);
+    expect(workspace.current?.hasUnsavedChanges()).toBe(true);
+    expect(
+      activeService()
+        .snapshot()
+        .notes.find((note) => note.title === "Existing draft")?.body,
+    ).toBe("\nOriginal");
+    view.rerender(<HomeCardHost active />);
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveProperty(
+      "value",
+      "Keep my unsaved editor text",
     );
   });
 

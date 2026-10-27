@@ -68,3 +68,6 @@ the workspace owns editor controls and canonical mutations. Keep its binding
 stable across layout changes. `requestLeave()` retains a failed draft and
 returns false; a host must not discard the workspace after that result.
 This component does not open or migrate an older local Notes collection.
+The handle's `interact` method shares that controller for explicit host commands,
+such as saving a chat card before opening Notes. Hidden UI stays inactive; those
+commands still require the same current owner and return the canonical receipt.

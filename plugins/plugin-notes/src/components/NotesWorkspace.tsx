@@ -11,7 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { NotesClient } from "../client/notes-api.js";
+import type { NotesClient, NotesInteractResult } from "../client/notes-api.js";
 import {
   NotesController,
   type NotesPhase,
@@ -65,7 +65,12 @@ export interface NotesWorkspaceHandle {
   snapshot(): NotesSnapshot | null;
   selection(): ReturnType<NotesEditor["selection"]>;
   refresh(): Promise<void>;
-  createNote(content: string): Promise<boolean>;
+  /** Explicit host commands share this controller even while its UI is hidden. */
+  interact(
+    capability: string,
+    params?: Record<string, unknown>,
+  ): Promise<NotesInteractResult>;
+  begin(kind?: "text" | "list"): boolean;
   retire(): void;
 }
 type Session = { controller: NotesController; editor: NotesEditor };
@@ -258,15 +263,13 @@ function WorkspaceSession(
     refresh: async () => {
       await session?.controller.refresh();
     },
-    createNote: async (content) => {
-      if (!session?.controller.current || !isActive()) return false;
-      try {
-        return !!(await session.controller.interact("create-note", { content }))
-          .target;
-      } catch {
-        return false;
+    interact: async (capability, params) => {
+      if (!session?.controller.current) {
+        throw new DOMException("The Notes connection changed.", "AbortError");
       }
+      return session.controller.interact(capability, params);
     },
+    begin: (kind) => begin(kind, true),
     retire: () => {
       action.current?.abort();
       session?.editor.close();
@@ -339,17 +342,19 @@ function WorkspaceSession(
     data: Record<string, NoteJson>,
     kind = draft?.format?.kind ?? "text",
   ) => change({ format: { kind, data: { ...draft?.format?.data, ...data } } });
-  const begin = () => {
-    if (!session?.controller.current || busy || !isActive()) return;
+  const begin = (kind: "text" | "list" = "text", hostCommand = false) => {
+    if (!session?.controller.current || busy || (!hostCommand && !isActive()))
+      return false;
     if (session.editor.draft?.version) {
       setReview(true);
-      return;
+      return false;
     }
-    session.editor.begin();
+    session.editor.begin(kind);
     setTrash(false);
     setReview(false);
     setNewItem("");
     setTranscript(null);
+    return true;
   };
   const reload = async () => {
     if (!session?.controller.current || !isActive()) return;
@@ -783,7 +788,7 @@ function WorkspaceSession(
           agentLabel="New note"
           agentGroup="notes-toolbar"
           disabled={!snapshot || busy}
-          onClick={begin}
+          onClick={() => begin()}
         >
           New note
         </AgentAction>
