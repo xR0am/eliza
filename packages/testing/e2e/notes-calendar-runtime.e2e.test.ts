@@ -357,7 +357,18 @@ async function scenario(label: string, withApprovals = false) {
     // their success-only evaluator with a receipt-aware scenario evaluator.
     harness.fixtures.register(...fixtures.slice(0, 2));
     if (options.extraction) {
-      const extraction = options.extraction;
+      const evidence = [{ sourceId: `current:${inbound.id}`, quote: input }];
+      const sourceNote = record(args.details).sourceNote ?? null;
+      const extraction = {
+        ...options.extraction,
+        guestIntent: { state: "none", guests: [], evidence },
+        noteIntent: {
+          state: sourceNote ? "requested" : "none",
+          sourceNote,
+          descriptionMode: "extracted",
+          evidence,
+        },
+      };
       harness.fixtures.register({
         name: `extract-create-${input}`,
         match: {
