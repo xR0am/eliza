@@ -17,6 +17,12 @@
       "eliza-source": "./src/client/launcher.ts",
       "types": "./dist/esm/client/launcher.d.ts",
       "import": "./dist/esm/client/launcher.js"
+    },
+    "./sense": {
+      "eliza-source": "./src/sense-bridge.ts",
+      "types": "./dist/esm/sense-bridge.d.ts",
+      "import": "./dist/esm/sense-bridge.js",
+      "default": "./dist/esm/sense-bridge.js"
     }
   },
   "files": [
