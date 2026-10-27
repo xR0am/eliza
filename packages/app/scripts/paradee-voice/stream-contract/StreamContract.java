@@ -56,7 +56,9 @@ public final class StreamContract {
         int created = VoiceNative.created, destroyed = VoiceNative.destroyed;
         InferenceSession session = new InferenceSession(root, model, lexicon, null);
         try {
+            check(session.supportsStreaming());
             check(VoiceNative.created == created);
+            check(session.speechSampleRate() == 24000);
             session.synthesize("hello", 1);
             session.transcribe(new float[]{0.1f});
             check(VoiceNative.created == created + 1);
