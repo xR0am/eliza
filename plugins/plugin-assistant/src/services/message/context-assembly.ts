@@ -38,6 +38,7 @@ import {
 import { createContextCatalogReadEvent } from "./context-catalog.ts";
 import {
   appendPriorDialogueEvents,
+  asProviderRecord,
   appendStateProviderEvents,
   currentMessageContentForContext,
   hasStructuredRecentMessagesProvider,
@@ -659,6 +660,10 @@ export async function createV5MessageContextObject(args: {
   const expandedTools: ToolDefinition[] = hasAnyAction
     ? [...CORE_PLANNER_TERMINALS]
     : [];
+  // Clock presentation is not part of an original history source or its binding.
+  const clockData = asProviderRecord(args.state.data?.providers?.CURRENT_TIME)?.data;
+  const displayTimeZone = clockData && typeof clockData === "object" && !Array.isArray(clockData) && typeof (clockData as { timeZone?: unknown }).timeZone === "string"
+    ? (clockData as { timeZone: string }).timeZone : undefined;
   return createContextObject({
     id: String(args.message.id ?? v4()),
     createdAt: Date.now(),
@@ -666,6 +671,7 @@ export async function createV5MessageContextObject(args: {
       roomId: args.message.roomId,
       messageId: args.message.id,
       actorId: args.message.entityId,
+      ...(displayTimeZone ? { displayTimeZone } : {}),
       selectedContexts: [...(args.selectedContexts ?? [])],
       ...(args.actionSurface
         ? { actionSurface: args.actionSurface.summary as JsonValue }
