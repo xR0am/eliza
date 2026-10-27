@@ -377,7 +377,6 @@ function finalizeEvaluatorOutput(
   context: ContextObject,
   trajectory: PlannerTrajectory,
   redactDiagnosticText: ToolDiagnosticTextRedactor,
-  typedRead = false,
 ): EvaluatorOutput {
   let output = sanitizeOutputMessage(
     repairFinishWithUnservedDeclaredIntents(
@@ -1221,7 +1220,6 @@ async function runEvaluatorWithSelectedModel(
       params.context,
       params.trajectory,
       redactDiagnosticText,
-      Boolean(params.typedReadReply),
     ),
     decisionState,
   );
