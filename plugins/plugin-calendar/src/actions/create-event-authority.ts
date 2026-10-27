@@ -9,6 +9,7 @@ import {
   type Memory,
   readTaskExtractionUserSources,
   type State,
+  unwrapUserMessageText,
 } from "@elizaos/core";
 import { basicEmailValid } from "../internal/email.js";
 import { CalendarServiceError } from "../internal/errors.js";
@@ -20,7 +21,7 @@ export function calendarCreateUserSources(
 ): readonly CalendarUserSource[] {
   return [
     ...(readTaskExtractionUserSources(state, message) ?? []),
-    { id: `current:${message.id}`, text: message.content.text ?? "" },
+    { id: `current:${message.id}`, text: unwrapUserMessageText(message) },
   ];
 }
 const evidenceSchema = {
@@ -149,7 +150,6 @@ function readIntent(value: unknown, sources: readonly CalendarUserSource[]) {
 export function validateCalendarCreateAuthority(
   extracted: Record<string, unknown>,
   sources: readonly CalendarUserSource[],
-  proposed: Record<string, unknown> | undefined,
   verifiedNotes: readonly CalendarNoteSourceReference[],
 ): {
   attendees?: CreateLifeOpsCalendarEventAttendee[];
@@ -159,33 +159,8 @@ export function validateCalendarCreateAuthority(
   const guest = readIntent(extracted.guestIntent, sources),
     note = readIntent(extracted.noteIntent, sources);
   if (!Array.isArray(guest.value.guests)) return invalid();
-  const original = sources
-    .map((source) => source.text.toLowerCase())
-    .join("\n");
-  const proposedGuests = Array.isArray(proposed?.attendees)
-    ? proposed.attendees
-    : [];
-  const supportedProposals = proposedGuests.flatMap((item) => {
-    const proposal =
-      typeof item === "string" ? { email: item } : object(item) ? item : {};
-    const email =
-      typeof proposal.email === "string" &&
-      original.includes(proposal.email.trim().toLowerCase())
-        ? proposal.email.trim().toLowerCase()
-        : undefined;
-    const name =
-      typeof proposal.displayName === "string" &&
-      original.includes(proposal.displayName.trim().toLowerCase())
-        ? proposal.displayName.trim().toLowerCase()
-        : undefined;
-    return email || name ? [{ email, name }] : [];
-  });
   if (guest.value.state === "none") {
     if (guest.value.guests.length) return invalid();
-    // An explicit proposed identity present in the originals is a disagreement,
-    // never permission to erase that guest based on a model's `none` label.
-    if (supportedProposals.length)
-      return clarify("CALENDAR_ATTENDEE_IDENTITY_REQUIRED");
   }
   const attendees: CreateLifeOpsCalendarEventAttendee[] = [];
   if (guest.value.state === "requested") {
@@ -217,18 +192,6 @@ export function validateCalendarCreateAuthority(
       });
     }
   }
-  if (
-    supportedProposals.some(
-      (proposal) =>
-        !attendees.some((attendee) =>
-          proposal.email
-            ? attendee.email.toLowerCase() === proposal.email
-            : typeof attendee.displayName === "string" &&
-              attendee.displayName.trim().toLowerCase() === proposal.name,
-        ),
-    )
-  )
-    return clarify();
   if (note.value.state === "none") {
     if (
       note.value.sourceNote !== null ||

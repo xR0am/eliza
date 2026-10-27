@@ -12,24 +12,13 @@ const solo = {
 };
 describe("canonical Calendar create authority", () => {
   it("uses explicit verified solo intent instead of invented outer guests and note", () => {
-    expect(
-      validateCalendarCreateAuthority(
-        solo,
-        [source],
-        {
-          attendees: [{ email: "fake@acme.com" }],
-          sourceNote: { contentHash: "0".repeat(64) },
-        },
-        [],
-      ),
-    ).toEqual({});
+    expect(validateCalendarCreateAuthority(solo, [source], [])).toEqual({});
   });
   it("does not treat omitted guest intent as none", () => {
     expect(() =>
       validateCalendarCreateAuthority(
         { noteIntent: solo.noteIntent },
         [source],
-        {},
         [],
       ),
     ).toThrow("Clarify");
@@ -45,7 +34,6 @@ describe("canonical Calendar create authority", () => {
           },
         },
         [source],
-        {},
         [],
       ),
     ).toThrow("evidence");
@@ -62,36 +50,28 @@ describe("canonical Calendar create authority", () => {
           },
         },
         [source],
-        {},
         [],
       ),
     ).toThrow(
       expect.objectContaining({ code: "CALENDAR_ATTENDEE_IDENTITY_REQUIRED" }),
     );
   });
-  it("does not let none erase an original proposed named guest", () => {
-    const original = { id: source.id, text: "Invite Dana tomorrow at 3pm." };
-    const intent = {
-      ...solo,
-      guestIntent: {
-        ...solo.guestIntent,
-        evidence: [{ sourceId: original.id, quote: original.text }],
-      },
-      noteIntent: {
-        ...solo.noteIntent,
-        evidence: [{ sourceId: original.id, quote: original.text }],
-      },
+  it("honors an explicit no-guest extraction even when the original names an excluded guest", () => {
+    const original = {
+      id: source.id,
+      text: "Create Solo tomorrow at 3pm. Do not invite Dana.",
     };
-    expect(() =>
+    const evidence = [{ sourceId: original.id, quote: original.text }];
+    expect(
       validateCalendarCreateAuthority(
-        intent,
+        {
+          guestIntent: { state: "none", evidence, guests: [] },
+          noteIntent: { state: "none", evidence, sourceNote: null },
+        },
         [original],
-        { attendees: [{ displayName: "Dana", email: "guessed@acme.com" }] },
         [],
       ),
-    ).toThrow(
-      expect.objectContaining({ code: "CALENDAR_ATTENDEE_IDENTITY_REQUIRED" }),
-    );
+    ).toEqual({});
   });
   it("preserves an explicitly sourced email", () => {
     const original = {
@@ -109,7 +89,6 @@ describe("canonical Calendar create authority", () => {
         noteIntent: { state: "none", evidence, sourceNote: null },
       },
       [original],
-      {},
       [],
     );
     expect(result.attendees).toEqual([
@@ -121,7 +100,6 @@ describe("canonical Calendar create authority", () => {
       validateCalendarCreateAuthority(
         { ...solo, guestIntent: { ...solo.guestIntent, state: "unresolved" } },
         [source],
-        {},
         [],
       ),
     ).toThrow("Clarify");
@@ -137,41 +115,37 @@ describe("canonical Calendar create authority", () => {
       noteIntent: { ...none, state: "requested", sourceNote: reference },
     };
     expect(
-      validateCalendarCreateAuthority(intent, [source], {}, [reference])
-        .sourceNote,
+      validateCalendarCreateAuthority(intent, [source], [reference]).sourceNote,
     ).toEqual(reference);
-    expect(() =>
-      validateCalendarCreateAuthority(intent, [source], {}, []),
-    ).toThrow("Read the requested note");
+    expect(() => validateCalendarCreateAuthority(intent, [source], [])).toThrow(
+      "Read the requested note",
+    );
   });
 });
 
-it("does not let an invented label hide an original guest email", () => {
-  const original = {
-    id: source.id,
-    text: "Invite dana@acme.com tomorrow at 3pm.",
-  };
-  const evidence = [{ sourceId: original.id, quote: original.text }];
+it("rejects a requested guest address not present in its cited original", () => {
+  const evidence = [{ sourceId: source.id, quote: source.text }];
   expect(() =>
     validateCalendarCreateAuthority(
       {
-        guestIntent: { state: "none", evidence, guests: [] },
+        guestIntent: {
+          state: "requested",
+          evidence,
+          guests: [{ name: "Dana", email: "dana@acme.com", optional: false }],
+        },
         noteIntent: { state: "none", evidence, sourceNote: null },
       },
-      [original],
-      {
-        attendees: [{ displayName: "invented label", email: "dana@acme.com" }],
-      },
+      [source],
       [],
     ),
   ).toThrow(
-    expect.objectContaining({ code: "CALENDAR_ATTENDEE_IDENTITY_REQUIRED" }),
+    expect.objectContaining({ code: "CALENDAR_CREATE_EVIDENCE_INVALID" }),
   );
 });
-it("does not omit a second originally supported guest from a requested subset", () => {
+it("clarifies when a second requested guest has no address", () => {
   const original = {
     id: source.id,
-    text: "Invite bob@acme.com and eve@acme.com tomorrow at 3pm.",
+    text: "Invite bob@acme.com and Eve tomorrow at 3pm.",
   };
   const evidence = [{ sourceId: original.id, quote: original.text }];
   expect(() =>
@@ -180,15 +154,19 @@ it("does not omit a second originally supported guest from a requested subset", 
         guestIntent: {
           state: "requested",
           evidence,
-          guests: [{ name: "Bob", email: "bob@acme.com", optional: false }],
+          guests: [
+            { name: "Bob", email: "bob@acme.com", optional: false },
+            { name: "Eve", email: null, optional: false },
+          ],
         },
         noteIntent: { state: "none", evidence, sourceNote: null },
       },
       [original],
-      { attendees: [{ email: "bob@acme.com" }, { email: "eve@acme.com" }] },
       [],
     ),
-  ).toThrow("Clarify");
+  ).toThrow(
+    expect.objectContaining({ code: "CALENDAR_ATTENDEE_IDENTITY_REQUIRED" }),
+  );
 });
 
 it("reads only the bound requester originals and rejects cloned or mutated task evidence", async () => {
@@ -249,7 +227,7 @@ it("reads only the bound requester originals and rejects cloned or mutated task 
 it("accepts only omitted boundary whitespace without changing original bytes", () => {
   const original = { id: source.id, text: `  ${source.text}\n` };
   const before = structuredClone(original);
-  expect(validateCalendarCreateAuthority(solo, [original], {}, [])).toEqual({});
+  expect(validateCalendarCreateAuthority(solo, [original], [])).toEqual({});
   expect(original).toEqual(before);
   const changed = {
     ...solo,
@@ -261,7 +239,7 @@ it("accepts only omitted boundary whitespace without changing original bytes", (
     },
   };
   expect(() =>
-    validateCalendarCreateAuthority(changed, [original], {}, []),
+    validateCalendarCreateAuthority(changed, [original], []),
   ).toThrow(
     expect.objectContaining({ code: "CALENDAR_CREATE_EVIDENCE_INVALID" }),
   );

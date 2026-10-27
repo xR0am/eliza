@@ -821,10 +821,18 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
     "native",
     "native-inline",
     "boundary",
+    "solo-missing",
+    "solo-wrong-hint",
+    "wrong-hint",
   ] as const)(
     "grounds the note description in real Notes bytes (%s)",
     async (mode) => {
       const native = mode === "native" || mode === "native-inline";
+      const solo = [
+        "solo-selected",
+        "solo-missing",
+        "solo-wrong-hint",
+      ].includes(mode);
       const inlineDescription = "Bring the green notebook.";
       const description =
         mode === "boundary"
@@ -858,7 +866,7 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
         const savedBody = notes.getNote(note.id).body;
         const source = notes.sourceReference(note);
         const proposed =
-          mode === "wrong-note"
+          mode === "wrong-note" || mode === "wrong-hint"
             ? notes.sourceReference(other)
             : mode === "stale"
               ? { ...source, contentHash: "0".repeat(64) }
@@ -868,9 +876,9 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
         const text =
           mode === "native-inline"
             ? "Create Shaw flow QA Sunday September 20 at 10 AM America/New_York for 15 minutes. Description: Bring the green notebook. No guests."
-            : mode === "solo-selected"
+            : solo
               ? "Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes. No guests."
-              : `Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes using ${mode === "wrong-note" || mode === "named" ? 'the note "Notebook source"' : "the note"}'s ${mode === "extracted" ? "summarized" : "exact"} body as its description. No guests.`;
+              : `Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes using ${(mode === "wrong-note" || mode === "wrong-hint") || mode === "named" ? 'the note "Notebook source"' : "the note"}'s ${mode === "extracted" ? "summarized" : "exact"} body as its description. No guests.`;
         const evidence = [
           {
             sourceId: "current:00000000-0000-0000-0000-000000000450",
@@ -878,8 +886,14 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
           },
         ];
         const runJsonModel = vi.fn(async ({ prompt }: { prompt: string }) => {
-          if (native) expect(prompt).toContain("Verified note references: []");
-          else if (mode !== "unavailable") {
+          if (
+            native ||
+            mode === "unavailable" ||
+            mode === "missing" ||
+            mode === "solo-missing"
+          )
+            expect(prompt).toContain("Verified note references: []");
+          else {
             expect(prompt).toContain('"title":"Notebook source"');
             expect(prompt).not.toContain(description);
           }
@@ -905,25 +919,24 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
             description:
               mode === "native-inline"
                 ? inlineDescription
-                : mode === "solo-selected"
+                : solo
                   ? null
                   : paraphrase,
             location: null,
             guestIntent: { state: "none", evidence, guests: [] },
             noteIntent: {
-              state:
-                mode === "solo-selected" || mode === "native-inline"
-                  ? "none"
-                  : "requested",
+              state: solo || mode === "native-inline" ? "none" : "requested",
               evidence,
               sourceNote:
-                mode === "solo-selected" || mode === "native-inline"
+                solo || mode === "native-inline"
                   ? null
-                  : source,
+                  : mode === "stale" || mode === "foreign"
+                    ? proposed
+                    : mode === "wrong-note"
+                      ? notes.sourceReference(other)
+                      : source,
               descriptionMode:
-                mode === "solo-selected" ||
-                mode === "extracted" ||
-                mode === "native-inline"
+                solo || mode === "extracted" || mode === "native-inline"
                   ? "extracted"
                   : "verbatim",
             },
@@ -951,9 +964,11 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
                   selectedObject: {
                     kind: "canonical-note",
                     id:
-                      mode === "wrong-note" || mode === "named"
+                      mode === "wrong-note" ||
+                      mode === "wrong-hint" ||
+                      mode === "named"
                         ? other.id
-                        : mode === "missing"
+                        : mode === "missing" || mode === "solo-missing"
                           ? "note-missing"
                           : note.id,
                   },
@@ -1001,7 +1016,12 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
                 start: "2026-09-20T16:30:00-04:00",
                 end: "2026-09-20T16:45:00-04:00",
                 description: "Invented planner text",
-                sourceNote: mode === "solo-selected" ? undefined : proposed,
+                sourceNote:
+                  mode === "solo-wrong-hint"
+                    ? notes.sourceReference(other)
+                    : solo
+                      ? undefined
+                      : proposed,
               },
             },
           },
@@ -1013,15 +1033,15 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
           mode === "verbatim" ||
           mode === "extracted" ||
           mode === "named" ||
-          mode === "solo-selected" ||
-          mode === "boundary"
+          solo ||
+          mode === "boundary" ||
+          mode === "wrong-hint"
         ) {
-          const expected =
-            mode === "solo-selected"
-              ? ""
-              : mode === "extracted"
-                ? paraphrase
-                : savedBody;
+          const expected = solo
+            ? ""
+            : mode === "extracted"
+              ? paraphrase
+              : savedBody;
           expect(result?.success, JSON.stringify(result)).toBe(true);
           expect(result?.data?.event).toMatchObject({
             description: expected,

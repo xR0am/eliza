@@ -6,6 +6,7 @@ import {
   buildPlannerToolsFromActions,
   type ContextObject,
   completionContextSources,
+  hardenIncomingUserMessage,
   type IAgentRuntime,
   type Memory,
   type State,
@@ -224,6 +225,7 @@ async function execute(
   text = message.content.text,
   originalContext?: ContextObject,
   originalCall?: PlannerToolCall,
+  secure = false,
 ) {
   currentText = text ?? "";
   const plannerContext = originalContext ?? context(mode);
@@ -235,13 +237,22 @@ async function execute(
     data: {},
     text: "Full provider context",
   };
-  const before = structuredClone({ state, plannerContext });
+  const currentMessage: Memory = {
+    ...message,
+    content: { text, ...(secure ? { source: "imessage" } : {}) },
+  };
+  if (secure) hardenIncomingUserMessage(currentMessage);
+  const before = structuredClone({
+    state,
+    plannerContext,
+    message: currentMessage,
+  });
   const result = await executeV5PlannedToolCall({
     runtime,
     plannerRuntime: runtime as unknown as PlannerRuntime,
     plannerContext,
     executorCtx: buildV5ExecutorContext({
-      message: { ...message, content: { text } },
+      message: currentMessage,
       state,
       selectedContexts: [],
       senderRole: "OWNER",
@@ -265,7 +276,7 @@ async function execute(
     },
     executorOptions: { actions: [action] },
   });
-  expect({ state, plannerContext }).toEqual(before);
+  expect({ state, plannerContext, message: currentMessage }).toEqual(before);
   return result;
 }
 
@@ -371,6 +382,52 @@ describe("Calendar attendee original-source contract", {
       commit.mockRestore();
     }
   });
+  it("accepts the actual retained current user payload without changing its security envelope", async () => {
+    const text =
+      "Create a solo Lunch on 2050-08-04 at 3 PM UTC for an hour. No guests.";
+    guestIntent = {
+      state: "none",
+      evidence: [{ sourceId: `current:${message.id}`, quote: text }],
+      guests: [],
+    };
+    const result = await execute(
+      "empty",
+      undefined,
+      text,
+      undefined,
+      undefined,
+      true,
+    );
+    expect(result.success, JSON.stringify(result)).toBe(true);
+    expect((await service.getCalendarFeed(URL_, WINDOW)).events).toEqual([
+      expect.objectContaining({ attendees: [] }),
+    ]);
+  });
+
+  it.each([
+    "Create a solo Barber appointment on 2050-08-04 at 3 PM UTC for an hour. No guests.",
+    "Create the SAME solo appointment on 2050-08-04 at 3 PM UTC for an hour. No guests.",
+    "Create a solo appointment on 2050-08-04 at 3 PM UTC for an hour. Do not invite Sam.",
+  ])(
+    "does not promote a planner guest hint over the current solo request: %s",
+    async (text) => {
+      guestIntent = {
+        state: "none",
+        evidence: [{ sourceId: `current:${message.id}`, quote: text }],
+        guests: [],
+      };
+      const result = await execute(
+        "missing",
+        { email: "sam.taylor@acme.com", displayName: "Sam" },
+        text,
+      );
+      expect(result.success, JSON.stringify(result)).toBe(true);
+      expect((await service.getCalendarFeed(URL_, WINDOW)).events).toEqual([
+        expect.objectContaining({ attendees: [] }),
+      ]);
+    },
+  );
+
   it.each(["selected", "all", "missing", "stale", "restored"])(
     "retains explicit prior guest address with %s context",
     async (mode) => {

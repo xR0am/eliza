@@ -3924,42 +3924,37 @@ async function inferCreateEventDetails(
       typeof selected.id === "string"
         ? selected.id
         : undefined;
-    let requested = named;
-    if (!requested.length && selectedId) {
+    let candidates = named;
+    if (!candidates.length && selectedId) {
       try {
-        requested = [notes.getNote(selectedId)];
+        candidates = [notes.getNote(selectedId)];
       } catch (error) {
-        // A missing selected source requires reconciliation, not another note.
+        // A foreground candidate is not itself a requested Notes effect.
         if (!(error instanceof ElizaError) || error.code !== "NOTES_NOT_FOUND")
           throw error;
-        throw new ElizaError(
-          "The selected note is unavailable. Read it again before creating the event.",
-          { code: "CALENDAR_NOTE_SOURCE_CONFLICT", cause: error },
-        );
+        runtime.reportError("calendar:note-catalog", error, {
+          diagnosticOnly: true,
+          noteId: selectedId,
+        });
       }
     }
-    for (const note of requested) {
+    for (const note of candidates) {
       const reference = notes.sourceReference(note);
       if (reference.agentId !== String(runtime.agentId)) continue;
-      await notes.assertSourceReference(reference);
-      verifiedNoteReferences.push({ ...reference, title: note.title });
-    }
-    if (requested.length && proposedDetails?.sourceNote !== undefined) {
-      const proposed = parseCalendarNoteSource(proposedDetails.sourceNote);
-      if (
-        !proposed ||
-        !verifiedNoteReferences.some(
-          (reference) =>
-            reference.agentId === proposed.agentId &&
-            reference.noteId === proposed.noteId &&
-            reference.contentHash === proposed.contentHash,
+      try {
+        await notes.assertSourceReference(reference);
+        verifiedNoteReferences.push({ ...reference, title: note.title });
+      } catch (error) {
+        if (
+          !(error instanceof ElizaError) ||
+          error.code !== "CALENDAR_NOTE_SOURCE_CONFLICT"
         )
-      )
-        throw new ElizaError(
-          "Read the requested note again and reconcile the event before creating it.",
-          { code: "CALENDAR_NOTE_SOURCE_CONFLICT" },
-        );
-      await notes.assertSourceReference(proposed);
+          throw error;
+        runtime.reportError("calendar:note-catalog", error, {
+          diagnosticOnly: true,
+          noteId: reference.noteId,
+        });
+      }
     }
   }
   const currentMessage = messageText(message).trim();
@@ -4053,7 +4048,6 @@ async function inferCreateEventDetails(
   const authority = validateCalendarCreateAuthority(
     extracted,
     userSources,
-    proposedDetails,
     verifiedNoteReferences,
   );
   let description = extracted.description;
