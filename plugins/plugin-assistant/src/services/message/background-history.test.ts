@@ -329,9 +329,20 @@ it.each([
       runJsonModel: async ({ actionType, prompt }) => {
         expect(actionType).toBe("lifeops.calendar.extract_create_event");
         prompts.push(prompt);
+        const evidence = [
+          {
+            sourceId: `current:${message.id}`,
+            quote: String(message.content.text),
+          },
+        ];
         return {
           rawResponse: "{}",
-          parsed: { requiresInput: true, clarification: "What time?" },
+          parsed: {
+            requiresInput: true,
+            clarification: "What time?",
+            guestIntent: { state: "none", guests: [], evidence },
+            noteIntent: { state: "none", sourceNote: null, evidence },
+          },
         };
       },
       recentConversationTexts: async () => [],
