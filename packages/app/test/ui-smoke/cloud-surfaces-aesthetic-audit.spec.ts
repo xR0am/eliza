@@ -650,6 +650,47 @@ async function captureTransitionState(options: {
 }
 
 test.describe("cloud-surfaces aesthetic audit (#10725/#11342)", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`configured startup ${viewport.name}`, async ({ page }) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      // Hold the emitted page before React starts, so the real static shell remains visible.
+      await page.route(/\.js(?:\?|$)/, (route) => route.abort());
+      await page.goto("/login", { waitUntil: "domcontentloaded" });
+      const appName = process.env.ELIZA_AUDIT_STARTUP_APP_NAME || "Eliza";
+      const logo =
+        process.env.ELIZA_AUDIT_STARTUP_LOGO ??
+        "/brand/logos/logo_white_nobg.svg";
+      const shell = page.getByRole("status", {
+        name: `Loading ${appName}`,
+        exact: true,
+      });
+      await expect(shell).toBeVisible();
+      await expect(shell.locator(".eliza-preboot-shell__name")).toHaveText(
+        appName,
+      );
+      const mark = shell.locator("img");
+      if (logo) {
+        await expect(mark).toHaveAttribute("src", logo);
+        await expect
+          .poll(() =>
+            mark.evaluate((image: HTMLImageElement) => image.naturalWidth),
+          )
+          .toBeGreaterThan(0);
+      } else {
+        await expect(mark).toHaveCount(0);
+      }
+      const dir = path.join(outputDir, "configured-startup");
+      await mkdir(dir, { recursive: true });
+      await page.screenshot({
+        path: path.join(dir, `${viewport.name}.png`),
+        animations: "disabled",
+      });
+    });
+  }
+
   // Hard gate (#13624): under strict/CI the running renderer bundle MUST contain
   // the test-auth shell. A stale turbo-cached `build:web` (built without
   // VITE_PLAYWRIGHT_TEST_AUTH) leaves the runtime env set but the shell absent —
