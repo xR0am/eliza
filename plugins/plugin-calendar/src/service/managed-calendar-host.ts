@@ -230,7 +230,7 @@ export async function calendarAgentWrite(
         kind: "create",
         selection: selected,
         idempotencyKey: command.idempotencyKey,
-        event: record(command.event) as LinkedCalendarSemanticEvent,
+        event: record(command.event) as unknown as LinkedCalendarSemanticEvent,
       };
     } else {
       if (!exact(command.eventId) || !exact(command.expectedEtag))
@@ -242,7 +242,9 @@ export async function calendarAgentWrite(
               selection: selected,
               eventId: command.eventId,
               expectedEtag: command.expectedEtag,
-              event: record(command.event) as LinkedCalendarSemanticEvent,
+              event: record(
+                command.event,
+              ) as unknown as LinkedCalendarSemanticEvent,
             }
           : {
               kind: "delete",

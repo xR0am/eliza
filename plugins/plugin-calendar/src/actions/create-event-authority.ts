@@ -138,6 +138,7 @@ function readIntent(value: unknown, sources: readonly CalendarUserSource[]) {
       (ref) =>
         object(ref) &&
         ref.sourceId === sources.at(-1)?.id &&
+        typeof ref.quote === "string" &&
         // The quote is already an exact, unique span of this raw source.
         // Only omitted boundary whitespace is compatible; source bytes and
         // their request-bound hashes remain unchanged.
