@@ -1,22 +1,23 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getDirectActionRoutingRules,
-  promoteSubactionsToActions,
   type IAgentRuntime,
   type Memory,
+  promoteSubactionsToActions,
 } from "@elizaos/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  resolveEligibleDirectActionRoutes,
   BUILTIN_RESPONSE_HANDLER_EVALUATORS,
+  resolveEligibleDirectActionRoutes,
 } from "../../../plugins/plugin-assistant/src/services/message/stage1-evaluators.ts";
 import { viewsAction } from "../src/actions/views.ts";
 import {
+  closeRuntimeViewRegistry,
   registerBuiltinViews,
   registerPluginViews,
-  closeRuntimeViewRegistry,
 } from "../src/api/views-registry.ts";
 import { registerViewNavigationRoutingRule } from "../src/runtime/view-navigation.ts";
 import { resolveExplicitRegisteredViewRequest } from "../src/runtime/view-navigation-targets.ts";
+
 const runtimes: IAgentRuntime[] = [];
 afterEach(() => {
   for (const runtime of runtimes.splice(0)) closeRuntimeViewRegistry(runtime);

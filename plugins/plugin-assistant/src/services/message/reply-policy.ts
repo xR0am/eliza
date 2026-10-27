@@ -4,11 +4,13 @@ import {
   replyNamesStructuredEffectDestination,
   structuredEffectFromToolResult,
 } from "./structured-tool-effect.ts";
+
+export type { StructuredToolEffect } from "./structured-tool-effect.ts";
 export {
   replyNamesStructuredEffectDestination,
   structuredEffectFromToolResult,
 } from "./structured-tool-effect.ts";
-export type { StructuredToolEffect } from "./structured-tool-effect.ts";
+
 import type {
   Action,
   ActionResult,
@@ -127,7 +129,6 @@ export function preservedSettledToolResult(
 
 export const NO_REPORTABLE_TOOL_OUTCOME_MESSAGE =
   "I ran that, but it finished without producing a result I can report back.";
-
 
 export function preservedVerifiedFailure(
   settled: ReadonlyArray<{ name: string; result: PlannerToolResult }>,
@@ -554,7 +555,8 @@ export function preparedViewReply(args: {
     (effect.resolvedAlias !== undefined &&
       (!isObjectRecord(step.toolCall.params) ||
         typeof step.toolCall.params.view !== "string" ||
-        step.toolCall.params.view.trim().toLowerCase() !== effect.resolvedAlias))
+        step.toolCall.params.view.trim().toLowerCase() !==
+          effect.resolvedAlias))
   )
     return;
   const reply = args.reply.trim();

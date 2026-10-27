@@ -81,15 +81,26 @@ export async function reviewRecoveredReply(args: {
     let providerStatus: number | undefined;
     try {
       if (cause !== null && typeof cause === "object") {
-        const status = Object.getOwnPropertyDescriptor(cause, "statusCode")?.value ??
+        const status =
+          Object.getOwnPropertyDescriptor(cause, "statusCode")?.value ??
           Object.getOwnPropertyDescriptor(cause, "status")?.value;
-        if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599)
+        if (
+          typeof status === "number" &&
+          Number.isInteger(status) &&
+          status >= 400 &&
+          status <= 599
+        )
           providerStatus = status;
       }
-    } catch { /* Diagnostic reflection must not replace the original cause. */ }
+    } catch {
+      /* Diagnostic reflection must not replace the original cause. */
+    }
     const error = new ElizaError("Recovered reply grounding review failed", {
       code: "REPLY_GROUNDING_REVIEW_FAILED",
-      context: { reviewStage, ...(providerStatus === undefined ? {} : { providerStatus }) },
+      context: {
+        reviewStage,
+        ...(providerStatus === undefined ? {} : { providerStatus }),
+      },
       cause,
     });
     args.runtime.reportError("MessageService.replyRecoveryGrounding", error);

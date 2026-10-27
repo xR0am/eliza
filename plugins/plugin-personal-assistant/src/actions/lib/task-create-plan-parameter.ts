@@ -25,7 +25,8 @@ const properties = {
     ],
   },
   notificationMode: {
-    description: 'Preserve the owner alert choice independently of timing/destination: none for no alert, default for normal notification, null only when unresolved.',
+    description:
+      "Preserve the owner alert choice independently of timing/destination: none for no alert, default for normal notification, null only when unresolved.",
     anyOf: [
       { type: "string" as const, enum: ["default", "none"] },
       { type: "null" as const },
@@ -100,8 +101,7 @@ const properties = {
     ],
   },
   dueInDays: {
-    description:
-      "Whole days from today. Other date selectors must be null.",
+    description: "Whole days from today. Other date selectors must be null.",
     anyOf: [
       { type: "integer" as const, minimum: 0 },
       { type: "null" as const },
@@ -116,8 +116,7 @@ const properties = {
     ],
   },
   dueInMinutes: {
-    description:
-      "Minutes from now. Other date selectors must be null.",
+    description: "Minutes from now. Other date selectors must be null.",
     anyOf: [{ type: "number" as const, minimum: 1 }, { type: "null" as const }],
   },
   multiStep: { type: "boolean" as const },

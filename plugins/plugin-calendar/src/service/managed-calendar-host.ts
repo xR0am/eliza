@@ -2,6 +2,7 @@
  * No credential reads, auth/billing implementation, provider retry, transport or repository. */
 import type {
   LifeOpsCalendarEvent,
+  LinkedCalendarProviderSnapshot,
   LinkedCalendarSemanticEvent,
 } from "@elizaos/contracts";
 export type CalendarSyncSelection = {
@@ -75,10 +76,10 @@ type CloudProtocolError = {
   status?: number;
   data?: unknown;
 };
-const record = (v: unknown): Record<string, any> => {
+const record = (v: unknown): Record<string, unknown> => {
   if (!v || typeof v !== "object" || Array.isArray(v))
     throw Error("Invalid Calendar operation");
-  return v as Record<string, any>;
+  return v as Record<string, unknown>;
 };
 /** Only an explicit rejection of the mutation request itself may cross as retryable. */
 export class CalendarAgentWriteRefused extends Error {
@@ -98,7 +99,7 @@ export async function calendarAgentWrite(
   client: ManagedCalendarHostApi,
   grantId: string,
   scope: string,
-  input: Record<string, any>,
+  input: Record<string, unknown>,
   signal: AbortSignal,
   sourceNamespace = "google",
 ) {
@@ -126,7 +127,8 @@ export async function calendarAgentWrite(
     !input.calendarId
   )
     throw Error("Calendar source changed");
-  const selection = { grantId, calendarId: input.calendarId };
+  const calendarId = input.calendarId;
+  const selection = { grantId, calendarId };
   const caps = record(
     await client.googleCalendarSync(
       { kind: "capabilities", selection },
@@ -145,7 +147,8 @@ export async function calendarAgentWrite(
     throw Error("Calendar write access is unavailable");
   if (input.operation === "write-capabilities")
     return { ...caps, grantId: source };
-  const selected = { ...selection, accountId: caps.accountId };
+  const accountId = caps.accountId;
+  const selected = { ...selection, accountId };
   const write = async (command: CalendarSyncRequest) => {
     try {
       return await client.googleCalendarSync(command, signal);
@@ -168,8 +171,8 @@ export async function calendarAgentWrite(
             code: data.code,
             outcome: data.outcome,
             grantId: source,
-            calendarId: input.calendarId,
-            accountId: caps.accountId,
+            calendarId,
+            accountId,
           });
       }
       throw error;
@@ -197,8 +200,8 @@ export async function calendarAgentWrite(
         signal,
       ),
     );
-  async function materialize(snapshot: Record<string, any>) {
-    const semantic = record(snapshot.event);
+  async function materialize(snapshot: LinkedCalendarProviderSnapshot) {
+    const semantic = snapshot.event;
     if (
       typeof snapshot.eventId !== "string" ||
       typeof snapshot.etag !== "string" ||
@@ -211,7 +214,7 @@ export async function calendarAgentWrite(
       throw Error("Calendar times are invalid");
     const feed = await client.googleCalendarFeed(
       grantId,
-      input.calendarId,
+      calendarId,
       {
         timeMin: new Date(start - 1000).toISOString(),
         timeMax: new Date(end + 1000).toISOString(),
@@ -267,7 +270,11 @@ export async function calendarAgentWrite(
   if (input.operation === "write-target") {
     const data = await get(external(input.eventId));
     if (data.event === null) throw Error("Calendar event is unavailable");
-    return { event: await materialize(record(data.event)) };
+    return {
+      event: await materialize(
+        record(data.event) as unknown as LinkedCalendarProviderSnapshot,
+      ),
+    };
   }
   if (input.operation !== "write-execute" || input.accountId !== caps.accountId)
     throw Error("Calendar account changed");
@@ -284,7 +291,7 @@ export async function calendarAgentWrite(
     throw Error("Review this Calendar change in the Calendar editor");
   if (payload.recurrenceScope && payload.recurrenceScope !== "instance")
     throw Error("Review the entire recurring series in Calendar");
-  let prior: Record<string, any> | null = null;
+  let prior: (LinkedCalendarProviderSnapshot & { etag: string }) | null = null;
   if (payload.action !== "schedule_event") {
     const id = external(payload.eventId);
     if (
@@ -295,7 +302,9 @@ export async function calendarAgentWrite(
       throw Error("Calendar revision changed");
     const data = await get(id);
     if (data.event === null) throw Error("Calendar target disappeared");
-    prior = record(data.event);
+    prior = record(data.event) as unknown as LinkedCalendarProviderSnapshot & {
+      etag: string;
+    };
     if (prior.etag !== preflight.providerVersion)
       throw Error("Calendar revision changed");
   }
@@ -303,7 +312,7 @@ export async function calendarAgentWrite(
     if (
       !prior ||
       !["organizer_cancel", "remove_private_copy"].includes(
-        payload.cancellationMode,
+        String(payload.cancellationMode),
       )
     )
       throw Error("This cancellation needs Calendar review");
@@ -322,11 +331,19 @@ export async function calendarAgentWrite(
       throw Error("Calendar event is still present");
     return { event };
   }
-  const old = prior ? record(prior.event) : null,
-    patch =
-      payload.action === "schedule_event" ? payload : record(payload.patch);
+  const old = prior?.event ?? null,
+    patch = (
+      payload.action === "schedule_event" ? payload : record(payload.patch)
+    ) as Partial<LinkedCalendarSemanticEvent> & {
+      allDay?: { startDate: string; endDateExclusive: string } | null;
+      startsAtMs?: number;
+      endsAtMs?: number;
+    };
   const allDay = patch.allDay ?? null;
-  const changed = (key: string, fallback: unknown) =>
+  const changed = <K extends keyof LinkedCalendarSemanticEvent>(
+    key: K,
+    fallback: LinkedCalendarSemanticEvent[K] | undefined,
+  ) =>
     patch[key] === null || patch[key] === undefined ? fallback : patch[key];
   const attendees = changed("attendees", old?.attendees ?? []);
   if (!Array.isArray(attendees)) throw Error("Invalid attendees");
@@ -358,7 +375,7 @@ export async function calendarAgentWrite(
         : { email: a.email, optional: a.optional === true },
     ),
     recurrence: changed("recurrence", old?.recurrence ?? []),
-  };
+  } as LinkedCalendarSemanticEvent;
   let command: CalendarSyncRequest;
   if (payload.action === "schedule_event") {
     if (
@@ -398,12 +415,16 @@ export async function calendarAgentWrite(
     ["title", "description", "location", "isAllDay", "timeZone"].some(
       (key) => written[key] !== event[key as keyof typeof event],
     ) ||
-    Date.parse(written.startAt) !== Date.parse(event.startAt) ||
-    Date.parse(written.endAt) !== Date.parse(event.endAt) ||
+    Date.parse(String(written.startAt)) !== Date.parse(event.startAt) ||
+    Date.parse(String(written.endAt)) !== Date.parse(event.endAt) ||
     guests(written.attendees) !== guests(event.attendees) ||
     JSON.stringify(list(written.recurrence).sort()) !==
       JSON.stringify(list(event.recurrence).sort())
   )
     throw Error("Calendar result does not match the approved change");
-  return { event: await materialize(snapshot) };
+  return {
+    event: await materialize(
+      snapshot as unknown as LinkedCalendarProviderSnapshot,
+    ),
+  };
 }

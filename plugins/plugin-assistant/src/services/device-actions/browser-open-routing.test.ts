@@ -2,33 +2,34 @@ import {
   AgentRuntime,
   attestAuthenticatedApiDeliveryAudience,
   getDirectActionRoutingRules,
+  type Memory,
   promoteSubactionsToActions,
   runResponseHandlerEvaluators,
-  type Memory,
 } from "@elizaos/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { viewsAction } from "../../../../../packages/agent/src/actions/views.ts";
 import {
-  registerBuiltinViews,
   closeRuntimeViewRegistry,
+  registerBuiltinViews,
 } from "../../../../../packages/agent/src/api/views-registry.ts";
 import {
-  viewNavigationField,
   viewNavigationEvaluator,
+  viewNavigationField,
 } from "../../../../../packages/agent/src/runtime/view-navigation.ts";
 import { DEFAULT_CONTEXT_DEFINITIONS } from "../../runtime/default-contexts.ts";
+import { collectV5PlannerCandidateActions } from "../message/action-surface.ts";
 import { inferDirectCurrentRequestCandidateInference } from "../message/direct-action-heuristics.ts";
 import { BUILTIN_RESPONSE_HANDLER_EVALUATORS } from "../message/stage1-evaluators.ts";
-import { collectV5PlannerCandidateActions } from "../message/action-surface.ts";
+import {
+  DeviceActionService,
+  setDeviceActionRequestMessage,
+  withDeviceActionTurn,
+} from "./service.ts";
 import {
   deviceActionTools,
   registerDeviceBrowserOpenRouting,
 } from "./tools.ts";
-import {
-  DeviceActionService,
-  withDeviceActionTurn,
-  setDeviceActionRequestMessage,
-} from "./service.ts";
+
 const owner = "11111111-1111-4111-8111-111111111111",
   room = "22222222-2222-4222-8222-222222222222";
 const runtimes: AgentRuntime[] = [];
@@ -59,7 +60,8 @@ async function fixture(request = "Open example.com.") {
   ]);
   const browser = deviceActionTools.find(
     (a) => a.name === "DEVICE_BROWSER_OPEN",
-  )!;
+  );
+  if (!browser) throw new Error("Expected browser action");
   for (const action of [browser, ...promoteSubactionsToActions(viewsAction)])
     runtime.registerAction(action);
   registerBuiltinViews(runtime);
@@ -103,7 +105,7 @@ async function fixture(request = "Open example.com.") {
     credential,
     rule: getDirectActionRoutingRules(runtime).find(
       (r) => r.id === "device.browser-open",
-    )!,
+    ),
   };
 }
 it.each([
@@ -135,7 +137,8 @@ it.each([
         };
         const evaluator = BUILTIN_RESPONSE_HANDLER_EVALUATORS.find(
           (e) => e.name === "core.direct_registered_capability_request",
-        )!;
+        );
+        if (!evaluator) throw new Error("Expected capability evaluator");
         const result = await runResponseHandlerEvaluators({
           runtime: f.runtime,
           message: f.message,
@@ -274,7 +277,9 @@ it.each(["Open example.com.", "Open https://example.com."])(
   "prevents a resource from taking the view-only shortcut: %s",
   async (request) => {
     const f = await fixture(request);
-    viewNavigationField.handle!({
+    if (!viewNavigationField.handle)
+      throw new Error("Expected navigation field handler");
+    viewNavigationField.handle({
       runtime: f.runtime,
       message: f.message,
       senderRole: "OWNER",

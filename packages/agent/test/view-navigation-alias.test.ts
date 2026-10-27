@@ -1,23 +1,24 @@
-import { afterEach, expect, it, vi } from "vitest";
 import {
   type IAgentRuntime,
   type Memory,
   runWithStreamingContext,
 } from "@elizaos/core";
+import { afterEach, expect, it, vi } from "vitest";
+import { actionResultToPlannerToolResult } from "../../../plugins/plugin-assistant/src/runtime/planner-loop.ts";
+import { preparedViewReply } from "../../../plugins/plugin-assistant/src/services/message/reply-policy.ts";
 import { viewsAction } from "../src/actions/views.ts";
+import { registerInProcessApi } from "../src/api/in-process-api.ts";
 import {
   closeRuntimeViewRegistry,
   getView,
   registerBuiltinViews,
   registerPluginViews,
 } from "../src/api/views-registry.ts";
-import { registerInProcessApi } from "../src/api/in-process-api.ts";
 import {
   viewNavigationEvaluator,
   viewNavigationField,
 } from "../src/runtime/view-navigation.ts";
-import { actionResultToPlannerToolResult } from "../../../plugins/plugin-assistant/src/runtime/planner-loop.ts";
-import { preparedViewReply } from "../../../plugins/plugin-assistant/src/services/message/reply-policy.ts";
+
 const owner = "11111111-1111-4111-8111-111111111111";
 const runtimes: IAgentRuntime[] = [];
 const unregisters: Array<() => void> = [];
@@ -196,23 +197,21 @@ it("returns an actual top-level native ActionResult that canonical normalization
         for await (const chunk of req) body += chunk;
         const value = JSON.parse(body);
         const view = getView(h.runtime, "automations")!;
-        res
-          .writeHead(200, { "content-type": "application/json" })
-          .end(
-            JSON.stringify({
-              ok: true,
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            ok: true,
+            viewId: view.id,
+            status: "prepared",
+            completedActionHandoffId: value.completedActionHandoffId,
+            navigationBinding: {
+              requestId: value.completedActionHandoffId,
+              clientId: value.clientId,
               viewId: view.id,
-              status: "prepared",
-              completedActionHandoffId: value.completedActionHandoffId,
-              navigationBinding: {
-                requestId: value.completedActionHandoffId,
-                clientId: value.clientId,
-                viewId: view.id,
-                viewType: "gui",
-                installationId: view.installationId,
-              },
-            }),
-          );
+              viewType: "gui",
+              installationId: view.installationId,
+            },
+          }),
+        );
       },
     }),
   );

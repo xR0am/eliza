@@ -2,7 +2,6 @@
 import {
   checkSenderRole,
   containsResourceAddress,
-  registerDirectActionRoutingRule,
   getStreamingContext,
   getUserMessageText,
   type IAgentRuntime,
@@ -11,50 +10,78 @@ import {
   pinnedDiscriminatorForPromotedChild,
   type ResponseHandlerEvaluator,
   type ResponseHandlerFieldEvaluator,
+  registerDirectActionRoutingRule,
   satisfiesRoleGate,
   setTurnActionConstraint,
 } from "@elizaos/core";
 import { readViewInteractionClientId } from "@elizaos/core/protocol";
+import { resolveHostSessionAccessContext } from "../api/host-session-access-context.ts";
 import { listViews } from "../api/views-registry.ts";
 import { getCurrentViewState } from "../api/views-routes.ts";
-import { resolveHostSessionAccessContext } from "../api/host-session-access-context.ts";
 import { getViewClientScope } from "./view-client-context.ts";
-import { isExplicitBackViewRequest, resolveViewNavigationTargets, resolveExplicitRegisteredViewRequest, viewNavigationDestination, viewNavigationAvailable } from "./view-navigation-targets.ts";
+import {
+  isExplicitBackViewRequest,
+  resolveExplicitRegisteredViewRequest,
+  resolveViewNavigationTargets,
+  viewNavigationAvailable,
+  viewNavigationDestination,
+} from "./view-navigation-targets.ts";
 
 /** Read only acknowledged history from this active transport owner and renderer. */
 function confirmedPreviousView(
-  runtime: IAgentRuntime, message: Memory,
-  views: ReturnType<typeof listViews>, completedAction: boolean,
+  runtime: IAgentRuntime,
+  message: Memory,
+  views: ReturnType<typeof listViews>,
+  completedAction: boolean,
 ) {
   const currentView = isObjectRecord(message.content.metadata)
-    ? message.content.metadata.uiView : undefined;
-  const view = views.find((entry) => entry.id === currentView &&
-    viewNavigationAvailable(entry, completedAction));
+    ? message.content.metadata.uiView
+    : undefined;
+  const view = views.find(
+    (entry) =>
+      entry.id === currentView &&
+      viewNavigationAvailable(entry, completedAction),
+  );
   if (!view) return;
   const scope = getViewClientScope();
   const request = scope?.request;
-  const authorization = request?.runtime === runtime && !request.signal.aborted
-    ? request.authorization : undefined;
+  const authorization =
+    request?.runtime === runtime && !request.signal.aborted
+      ? request.authorization
+      : undefined;
   // The HTTP principal and conversation entity need not be the same ID.
   // Use the same verified owner identity as the navigation acknowledgement.
-  const ownerId = authorization?.ok && authorization.role === "OWNER"
-    ? authorization.identityId ?? authorization.principal ??
-      resolveHostSessionAccessContext(authorization, runtime)?.requesterEntityId
-    : undefined;
-  const confirmed = ownerId && scope?.clientId === readViewInteractionClientId(message)
-    ? getCurrentViewState(runtime, scope) : null;
+  const ownerId =
+    authorization?.ok && authorization.role === "OWNER"
+      ? (authorization.identityId ??
+        authorization.principal ??
+        resolveHostSessionAccessContext(authorization, runtime)
+          ?.requesterEntityId)
+      : undefined;
+  const confirmed =
+    ownerId && scope?.clientId === readViewInteractionClientId(message)
+      ? getCurrentViewState(runtime, scope)
+      : null;
   const confirmation = confirmed?.navigationConfirmation;
   const prior = confirmation?.previousView;
-  const previous = confirmed?.viewId === view.id &&
+  const previous =
+    confirmed?.viewId === view.id &&
     confirmation?.ownerId === ownerId &&
-    confirmation?.installationId === view.installationId && prior
-    ? views.find((entry) => entry.id === prior.viewId &&
-        entry.installationId === prior.installationId &&
-        viewNavigationAvailable(entry, completedAction)) : undefined;
+    confirmation?.installationId === view.installationId &&
+    prior
+      ? views.find(
+          (entry) =>
+            entry.id === prior.viewId &&
+            entry.installationId === prior.installationId &&
+            viewNavigationAvailable(entry, completedAction),
+        )
+      : undefined;
   if (!previous) return;
-  const resolvedAlias = typeof prior?.resolvedAlias === "string"
-    ? resolveViewNavigationTargets([previous], prior.resolvedAlias)[0]?.resolvedAlias
-    : undefined;
+  const resolvedAlias =
+    typeof prior?.resolvedAlias === "string"
+      ? resolveViewNavigationTargets([previous], prior.resolvedAlias)[0]
+          ?.resolvedAlias
+      : undefined;
   return { view: previous, resolvedAlias };
 }
 
@@ -82,9 +109,13 @@ export function registerViewNavigationRoutingRule(
       const views = listViews(runtime, { viewType: "gui" }).filter((view) =>
         viewNavigationAvailable(view, completedAction),
       );
-      return resolveExplicitRegisteredViewRequest(views, text) !== undefined ||
-        (Boolean(message) && isExplicitBackViewRequest(text) &&
-          confirmedPreviousView(runtime, message!, views, completedAction) !== undefined);
+      return (
+        resolveExplicitRegisteredViewRequest(views, text) !== undefined ||
+        (Boolean(message) &&
+          isExplicitBackViewRequest(text) &&
+          confirmedPreviousView(runtime, message!, views, completedAction) !==
+            undefined)
+      );
     },
   });
 }
@@ -167,12 +198,14 @@ export const viewNavigationField: ResponseHandlerFieldEvaluator<Navigation> = {
     // A delivery marker alone cannot supply an absent hosted view; only a
     // trusted registry-owned native counterpart provides that alternative.
     const destinations = views
-      .filter(
-        (entry) =>
-          viewNavigationAvailable(entry, completedAction),
-      )
+      .filter((entry) => viewNavigationAvailable(entry, completedAction))
       .map(viewNavigationDestination);
-    const previous = confirmedPreviousView(runtime, message, views, completedAction);
+    const previous = confirmedPreviousView(
+      runtime,
+      message,
+      views,
+      completedAction,
+    );
     const priorContext = previous
       ? `Last confirmed previous destination for this same caller and renderer: ${JSON.stringify({ ...viewNavigationDestination(previous.view), ...(previous.resolvedAlias ? { preferredAlias: previous.resolvedAlias } : {}) })}. Use its preferredAlias, when present, for the user-facing destination wording and navigation argument. This is a destination hint for a new authorized Back request, not permission or an instruction to execute it.`
       : "There is no confirmed previous destination for this caller and renderer. For a request only to go back, ask which view the user wants, with no tool and no pending navigation intent. Do not discover or guess a destination from prepared receipts.";
@@ -304,9 +337,10 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
     getStreamingContext()?.abortSignal?.throwIfAborted();
     if (!caller?.isOwner || caller.role !== staged.senderRole) return;
     const target = value.viewId.trim().toLowerCase();
-    const availableViews = listViews(runtime, { viewType: "gui" }).filter((view) =>
-      viewNavigationAvailable(view, completedAction) &&
-      satisfiesRoleGate([caller.role], view.roleGate),
+    const availableViews = listViews(runtime, { viewType: "gui" }).filter(
+      (view) =>
+        viewNavigationAvailable(view, completedAction) &&
+        satisfiesRoleGate([caller.role], view.roleGate),
     );
     const matches = resolveViewNavigationTargets(availableViews, target);
     const viewAction = runtime.actions.find(
@@ -382,13 +416,19 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
           "Preserve every requested read/write and navigation intent. Use VIEWS action=show for an exact registered destination; use action=list for unknown targets. A domain read/write receipt does not satisfy navigation, and navigation does not satisfy domain work. VIEWS only selects an app view; loading a requested URL requires the authorized Browser operation and cannot be reported complete from a view-selection receipt. Preserve ordering, conditions and restrictions: evaluate prerequisite reads before conditional navigation; do not navigate when the condition is false. Do not report the complete request finished while required navigation remains undelivered or unexplained.",
         ],
       };
-    const requested = resolveExplicitRegisteredViewRequest(availableViews, staged.text);
-    const requestedAlias = requested?.view.id === matches[0].view.id
-      ? requested.resolvedAlias : undefined;
+    const requested = resolveExplicitRegisteredViewRequest(
+      availableViews,
+      staged.text,
+    );
+    const requestedAlias =
+      requested?.view.id === matches[0].view.id
+        ? requested.resolvedAlias
+        : undefined;
     const prior = isExplicitBackViewRequest(staged.text)
       ? confirmedPreviousView(runtime, message, availableViews, completedAction)
       : undefined;
-    const priorAlias = prior?.view.id === matches[0].view.id ? prior.resolvedAlias : undefined;
+    const priorAlias =
+      prior?.view.id === matches[0].view.id ? prior.resolvedAlias : undefined;
     return {
       requiresTool: true,
       clearReply: true,
@@ -398,7 +438,14 @@ export const viewNavigationEvaluator: ResponseHandlerEvaluator = {
       clearParentActionHints: true,
       deterministicToolCall: {
         name: "VIEWS",
-        params: { action: "show", view: requestedAlias ?? priorAlias ?? matches[0].resolvedAlias ?? matches[0].view.id },
+        params: {
+          action: "show",
+          view:
+            requestedAlias ??
+            priorAlias ??
+            matches[0].resolvedAlias ??
+            matches[0].view.id,
+        },
       },
     };
   },

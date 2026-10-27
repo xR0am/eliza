@@ -37,11 +37,11 @@ import type {
   BrowserWorkspaceCommandResult,
 } from "./workspace/browser-workspace-types.js";
 
-export * from "./contracts.js";
 export { createBrowserBridgeCompanionStatus } from "./bridge-records.js";
-export { FRAME_FILE } from "./workspace/frame-path.js";
+export * from "./contracts.js";
 export { BrowserDispatchFailure } from "./dispatch-types.js";
 export { decodeNativeBrowserCommandResult } from "./native-page-reader.js";
+export { FRAME_FILE } from "./workspace/frame-path.js";
 
 const commands = [
   "open",
@@ -326,7 +326,22 @@ export const browserPlugin: HttpPlugin = {
   name: "@elizaos/plugin-browser",
   description: "Authenticated native device browser control",
   services: [BrowserService],
-  views: [{id:"browser",label:"Browser",path:"/browser",modalities:["gui"],roleGate:{minRole:"OWNER"},capabilities:[{id:"browser-command",description:"Control the authenticated mounted native Browser",authority:"agent"}]}],
+  views: [
+    {
+      id: "browser",
+      label: "Browser",
+      path: "/browser",
+      modalities: ["gui"],
+      roleGate: { minRole: "OWNER" },
+      capabilities: [
+        {
+          id: "browser-command",
+          description: "Control the authenticated mounted native Browser",
+          authority: "agent",
+        },
+      ],
+    },
+  ],
   routes: [
     nativeDeviceBrowserRoute,
     nativeDeviceBrowserStatusRoute,
@@ -355,4 +370,4 @@ export function isBrowserWorkspaceBridgeConfigured(): boolean {
   return false;
 }
 
-export {parseNativeHistoryCommand} from "./native-client-command.ts";
+export { parseNativeHistoryCommand } from "./native-client-command.ts";

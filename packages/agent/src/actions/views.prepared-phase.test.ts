@@ -5,6 +5,7 @@ import {
   actionResultToPlannerToolResult,
   runPlannerLoop,
 } from "../../../../plugins/plugin-assistant/src/runtime/planner-loop.ts";
+
 function fixture({ prepared = true, owner = true, badBinding = false } = {}) {
   const source = readFileSync(new URL("./views.ts", import.meta.url), "utf8");
   const code = stripTypeScriptTypes(

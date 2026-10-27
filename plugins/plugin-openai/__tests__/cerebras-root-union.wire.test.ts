@@ -1,6 +1,6 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { runWithTrajectoryContext, type IAgentRuntime } from "@elizaos/core";
+import { type IAgentRuntime, runWithTrajectoryContext } from "@elizaos/core";
 import { createSQLiteTestRuntime } from "@elizaos/testing/runtime";
+import { afterEach, expect, it, vi } from "vitest";
 import { reviewRecoveredReply } from "../../plugin-assistant/src/services/message/recovery-grounding.ts";
 import { handleTextSmall } from "../models/text.ts";
 
@@ -45,73 +45,51 @@ function runtime() {
   });
 }
 function transport(value: unknown, bodies: any[], wrapped = true) {
-  vi.stubGlobal(
-    "fetch",
-    async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url;
-      if (!url.startsWith("https://provider.invalid/"))
-        throw Error("External request forbidden");
-      const body = JSON.parse(String(init?.body));
-      bodies.push(body);
-      if (body.response_format?.json_schema?.schema.anyOf)
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: "Extra top level keys found in JSON schema: {'anyOf'}.",
-              type: "invalid_request_error",
-              param: "response_format",
-              code: "wrong_api_format",
-            },
-          }),
-          { status: 400, headers: { "content-type": "application/json" } },
-        );
-      const content = JSON.stringify(
-        wrapped ? { __eliza_response: value } : value,
-      );
-      const event = {
-        id: "fixture",
-        object: body.stream ? "chat.completion.chunk" : "chat.completion",
-        created: 1,
-        model: body.model,
-        choices: [
-          {
-            index: 0,
-            ...(body.stream
-              ? { delta: { content } }
-              : { message: { role: "assistant", content } }),
-            finish_reason: "stop",
-          },
-        ],
-        usage: { prompt_tokens: 100, completion_tokens: 12, total_tokens: 112 },
-      };
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!url.startsWith("https://provider.invalid/")) throw Error("External request forbidden");
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    if (body.response_format?.json_schema?.schema.anyOf)
       return new Response(
-        body.stream
-          ? `data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`
-          : JSON.stringify(event),
-        {
-          headers: {
-            "content-type": body.stream
-              ? "text/event-stream"
-              : "application/json",
+        JSON.stringify({
+          error: {
+            message: "Extra top level keys found in JSON schema: {'anyOf'}.",
+            type: "invalid_request_error",
+            param: "response_format",
+            code: "wrong_api_format",
           },
-        },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } }
       );
-    },
-  );
+    const content = JSON.stringify(wrapped ? { __eliza_response: value } : value);
+    const event = {
+      id: "fixture",
+      object: body.stream ? "chat.completion.chunk" : "chat.completion",
+      created: 1,
+      model: body.model,
+      choices: [
+        {
+          index: 0,
+          ...(body.stream ? { delta: { content } } : { message: { role: "assistant", content } }),
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 100, completion_tokens: 12, total_tokens: 112 },
+    };
+    return new Response(
+      body.stream ? `data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n` : JSON.stringify(event),
+      {
+        headers: {
+          "content-type": body.stream ? "text/event-stream" : "application/json",
+        },
+      }
+    );
+  });
 }
 function textOf(value: unknown): string {
   if (typeof value === "string") return value;
-  if (
-    value &&
-    typeof value === "object" &&
-    "text" in value &&
-    typeof value.text === "string"
-  )
+  if (value && typeof value === "object" && "text" in value && typeof value.text === "string")
     return value.text;
   throw Error("Missing text");
 }
@@ -134,15 +112,13 @@ it.each([false, true])(
       transport(value, bodies);
       const r = runtime();
       const chunks: string[] = [];
-      const result = await runWithTrajectoryContext(
-        { trajectoryStepId: "union-wire" },
-        () =>
-          handleTextSmall(r, {
-            prompt: "Return the supplied schema.",
-            responseSchema: schema,
-            stream,
-            onStreamChunk: (x: string) => chunks.push(x),
-          } as never),
+      const result = await runWithTrajectoryContext({ trajectoryStepId: "union-wire" }, () =>
+        handleTextSmall(r, {
+          prompt: "Return the supplied schema.",
+          responseSchema: schema,
+          stream,
+          onStreamChunk: (x: string) => chunks.push(x),
+        } as never)
       );
       const text = stream ? await (result as any).text : textOf(result);
       if (stream)
@@ -159,7 +135,7 @@ it.each([false, true])(
       expect(JSON.stringify(schema)).toBe(before);
       await r.adapter.close();
     }
-  },
+  }
 );
 it("retains the original recovered-reply validation after unwrapping", async () => {
   const bodies: any[] = [];
@@ -169,7 +145,7 @@ it("retains the original recovered-reply validation after unwrapping", async () 
       completedChangeClaim: false,
       reason: "Fixture evidence.",
     },
-    bodies,
+    bodies
   );
   const r = runtime();
   r.registerModel("TEXT_SMALL", handleTextSmall, "openai", 100);
@@ -181,8 +157,8 @@ it("retains the original recovered-reply validation after unwrapping", async () 
         evidenceJson: "{}",
         effectReceiptIds: [],
         allowFullContextRequest: true,
-      }),
-    ),
+      })
+    )
   ).rejects.toThrow();
   expect(bodies).toHaveLength(1);
   await r.adapter.close();
@@ -191,11 +167,7 @@ it.each([false, true])(
   "rejects a malformed provider wrapper before delivery (stream=%s)",
   async (stream) => {
     const bodies: any[] = [];
-    transport(
-      { grounded: true, completedChangeClaim: false, reason: "Fixture" },
-      bodies,
-      false,
-    );
+    transport({ grounded: true, completedChangeClaim: false, reason: "Fixture" }, bodies, false);
     const r = runtime();
     const chunks: string[] = [];
     const schema = await capturedSchema();
@@ -206,13 +178,13 @@ it.each([false, true])(
           responseSchema: schema,
           stream,
           onStreamChunk: (x: string) => chunks.push(x),
-        } as never),
-      ),
+        } as never)
+      )
     ).rejects.toThrow();
     expect(chunks).toEqual([]);
     expect(bodies).toHaveLength(1);
     await r.adapter.close();
-  },
+  }
 );
 it.each([
   { grounded: "yes", completedChangeClaim: false, reason: "Fixture evidence." },
@@ -236,8 +208,8 @@ it.each([
         responseSchema: schema,
         stream: true,
         onStreamChunk: (x: string) => chunks.push(x),
-      } as never),
-    ),
+      } as never)
+    )
   ).rejects.toThrow();
   expect(chunks).toEqual([]);
   expect(bodies).toHaveLength(1);
@@ -261,13 +233,13 @@ it("does not relocate schemas with root-relative references", async () => {
       handleTextSmall(r, {
         prompt: "Return schema",
         responseSchema: schema,
-      } as never),
-    ),
+      } as never)
+    )
   ).rejects.toThrow();
   expect(bodies).toHaveLength(1);
   expect(bodies[0].response_format.json_schema.schema).toHaveProperty("anyOf");
   expect(bodies[0].response_format.json_schema.schema).not.toHaveProperty(
-    "properties.__eliza_response",
+    "properties.__eliza_response"
   );
   await r.adapter.close();
 });
@@ -293,13 +265,11 @@ it("preserves nested union branches and strict properties", async () => {
     const bodies: any[] = [];
     transport(value, bodies);
     const r = runtime();
-    const result = await runWithTrajectoryContext(
-      { trajectoryStepId: "nested-union" },
-      () =>
-        handleTextSmall(r, {
-          prompt: "Return schema",
-          responseSchema: schema,
-        } as never),
+    const result = await runWithTrajectoryContext({ trajectoryStepId: "nested-union" }, () =>
+      handleTextSmall(r, {
+        prompt: "Return schema",
+        responseSchema: schema,
+      } as never)
     );
     expect(JSON.parse(textOf(result))).toEqual(value);
     expect(bodies).toHaveLength(1);

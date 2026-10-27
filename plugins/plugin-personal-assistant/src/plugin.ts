@@ -32,7 +32,10 @@ import {
   MEETING_TRANSCRIPT_FINALIZED_EVENT,
   type MeetingTranscriptFinalizedPayload,
 } from "@elizaos/core/protocol";
-import { isMobilePlatform, type HttpPlugin as Plugin } from "@elizaos/host/protocol";
+import {
+  isMobilePlatform,
+  type HttpPlugin as Plugin,
+} from "@elizaos/host/protocol";
 import {
   getDefaultTriageService,
   messagingTriageActions,

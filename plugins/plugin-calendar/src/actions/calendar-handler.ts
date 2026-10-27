@@ -5541,7 +5541,13 @@ export function createCalendarActionRunner(
             "Calendar range is incomplete",
             "CALENDAR_READ_DATE_INVALID",
           );
-        return hostDeps.requestLocalAgenda!({
+        if (!hostDeps.requestLocalAgenda)
+          throw new CalendarServiceError(
+            400,
+            "Local Calendar is unavailable",
+            "CALENDAR_NATIVE_RESOURCE_REQUIRED",
+          );
+        return hostDeps.requestLocalAgenda({
           runtime,
           message,
           window: {

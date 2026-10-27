@@ -146,7 +146,7 @@ async function run(
       { name: "NOTES_LIST", parameters: { type: "object", properties: {} } },
     ],
     runtime: {
-      useModel: async (_type: unknown, args: any) => {
+      useModel: async (_type: unknown, args: { messages?: unknown }) => {
         const i = planners++;
         if (i < turns.length)
           return {

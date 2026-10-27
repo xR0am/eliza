@@ -9,7 +9,11 @@
  */
 
 import type { Action } from "@elizaos/core";
-import { containsResourceAddress, isReservedNonToolActionName, trimEndCharacters } from "@elizaos/core";
+import {
+  containsResourceAddress,
+  isReservedNonToolActionName,
+  trimEndCharacters,
+} from "@elizaos/core";
 
 export interface DirectActionInferenceHooks {
   looksLikeCodingWorkRequest?: (text: string) => boolean;

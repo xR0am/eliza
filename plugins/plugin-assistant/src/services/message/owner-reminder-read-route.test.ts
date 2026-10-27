@@ -1,10 +1,10 @@
 import {
   AgentRuntime,
-  ContextRegistry,
   attestAuthenticatedApiDeliveryAudience,
+  ContextRegistry,
+  type Memory,
   promoteSubactionsToActions,
   runResponseHandlerEvaluators,
-  type Memory,
 } from "@elizaos/core";
 import { expect, it, vi } from "vitest";
 import { triggerAction } from "../../../../../packages/agent/src/actions/trigger.ts";
@@ -16,7 +16,6 @@ import {
   registerOwnerReminderDirectRouting,
 } from "../../../../plugin-personal-assistant/src/lifeops/reminders/direct-routing.ts";
 import { DEFAULT_CONTEXT_DEFINITIONS } from "../../runtime/default-contexts.ts";
-import { BUILTIN_RESPONSE_HANDLER_EVALUATORS } from "./stage1-evaluators.ts";
 import {
   collectV5PlannerCandidateActions,
   retrieveContextualPlannerActions,
@@ -25,7 +24,9 @@ import {
   collectBudgetedStageOneCandidateActions,
   collectPlannerTools,
 } from "./planned-tool.ts";
+import { BUILTIN_RESPONSE_HANDLER_EVALUATORS } from "./stage1-evaluators.ts";
 import { collectDiscoveryCatalogActions } from "./tool-discovery.ts";
+
 const owner = "11111111-1111-4111-8111-111111111111",
   agent = "22222222-2222-4222-8222-222222222222",
   room = "33333333-3333-4333-8333-333333333333";
@@ -106,7 +107,8 @@ async function replay({
   };
   const evaluator = BUILTIN_RESPONSE_HANDLER_EVALUATORS.find(
     (e) => e.name === "core.direct_registered_capability_request",
-  )!;
+  );
+  if (!evaluator) throw new Error("Expected direct capability evaluator");
   await runResponseHandlerEvaluators({
     runtime,
     message,
@@ -187,11 +189,15 @@ it.each([
       ]),
     );
     const review = after.tools.find((t) => t.name === "OWNER_REMINDERS_REVIEW");
+    const reviewAction = after.runtime.actions.find(
+      (a) => a.name === "OWNER_REMINDERS_REVIEW",
+    );
+    if (!reviewAction) throw new Error("Expected reminders review action");
     const baselineReview = collectPlannerTools(
       {
         events: [{ type: "tool", tool: { name: "OWNER_REMINDERS" } }],
       } as never,
-      [after.runtime.actions.find((a) => a.name === "OWNER_REMINDERS_REVIEW")!],
+      [reviewAction],
       {
         canonicalFamilies: true,
         directActionNames: new Set(["OWNER_REMINDERS_REVIEW"]),
@@ -199,7 +205,11 @@ it.each([
     ).find((t) => t.name === "OWNER_REMINDERS_REVIEW");
     expect(review).toEqual(baselineReview);
     expect(before.tools.map((tool) => tool.name)).toContain("TRIGGER_LIST");
-    expect(before.admitted.some((action) => action.name === "OWNER_REMINDERS_REVIEW")).toBe(true);
+    expect(
+      before.admitted.some(
+        (action) => action.name === "OWNER_REMINDERS_REVIEW",
+      ),
+    ).toBe(true);
   },
 );
 it.each([

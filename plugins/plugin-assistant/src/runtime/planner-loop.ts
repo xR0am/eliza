@@ -1,10 +1,10 @@
+import { findViewActionHandoff } from "@elizaos/core/protocol";
 import { evaluatePlannedReplyEgress } from "../services/message/egress-policy.ts";
+import { projectBackgroundHistory } from "../services/message/history-discovery.ts";
 import {
   replyNamesStructuredEffectDestination,
   structuredEffectFromToolResult,
 } from "../services/message/structured-tool-effect.ts";
-import { findViewActionHandoff } from "@elizaos/core/protocol";
-import { projectBackgroundHistory } from "../services/message/history-discovery.ts";
 import {
   contextDiagnosticOptions,
   describePlannerSourceReview,
@@ -597,11 +597,13 @@ async function runPlannerLoopIterations(
         source: "planner-loop",
         createdAt: Date.now(),
         content: hasAwaitingDeviceExecutionMarker(postToolReplySeed.result)
-          ? findViewActionHandoff([{
-              success: postToolReplySeed.result.success,
-              actionName: postToolReplySeed.toolCall.name,
-              values: postToolReplySeed.result.data?.values,
-            }])?.navigationPrepared === true
+          ? findViewActionHandoff([
+              {
+                success: postToolReplySeed.result.success,
+                actionName: postToolReplySeed.toolCall.name,
+                values: postToolReplySeed.result.data?.values,
+              },
+            ])?.navigationPrepared === true
             ? "This app-view navigation is prepared for the originating renderer. The reply carries its bound handoff; the renderer can execute and acknowledge it only after receiving that reply. Use brief prospective navigation wording. Preparation is not failure or proof of nondelivery: do not say the view failed to open, ask the user to retry, or claim delivery already completed. Do not call or repeat any tool."
             : "The durable request is still pending on the external device. Write an honest partial reply; do not claim it applied or ask for manual confirmation without a native request. Do not call or repeat any tool."
           : "The tool result in this turn is already settled and complete. Write the final user-facing reply in the agent's natural voice from that result. Do not describe the work as starting, opening now, pending, or still in progress. If the result provides a link object, include it as a Markdown link using its label and href. Include internal IDs or raw tool data only when explicitly requested and safe to disclose; never expose secrets or internal reasoning.",
@@ -8625,7 +8627,9 @@ function pendingNavigationSynthesisReply(
     .reverse()
     .find(
       (event): event is ContextProviderEvent =>
-        event.type === "provider" && "name" in event && event.name === "VIEW_NAVIGATION",
+        event.type === "provider" &&
+        "name" in event &&
+        event.name === "VIEW_NAVIGATION",
     );
   // The current full destination registry is needed to reject completion
   // claims about any other view, not only the prepared destination.
@@ -8743,7 +8747,8 @@ async function ensureToolTurnFinalMessage(
     !latestUnresolvedFailedNonTerminalToolStep(result.trajectory)
   ) {
     const steps = result.trajectory.steps.filter(
-      (step) => !step.terminalOnly || step.toolCall != null || step.result != null,
+      (step) =>
+        !step.terminalOnly || step.toolCall != null || step.result != null,
     );
     const step = steps.length === 1 ? steps[0] : undefined;
     const handoff =
@@ -8805,7 +8810,11 @@ async function ensureToolTurnFinalMessage(
     if (preparedNavigation) {
       // An invalid pending-navigation draft must pass the host's existing
       // grounded recovery, not an unqualified completed-tool rescue.
-      return { ...result, finalMessage: undefined, replyRecoveryRequired: true };
+      return {
+        ...result,
+        finalMessage: undefined,
+        replyRecoveryRequired: true,
+      };
     }
     const rescued = await rescueReplyFromSuccessfulResults(
       params,

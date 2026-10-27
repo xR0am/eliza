@@ -3,7 +3,12 @@ import {
   reminderDeliveryLabel,
   reminderDue,
 } from "../../utils/reminder-presentation";
-export {canSnoozeReminder,reminderDeliveryLabel} from "../../utils/reminder-presentation";
+
+export {
+  canSnoozeReminder,
+  reminderDeliveryLabel,
+} from "../../utils/reminder-presentation";
+
 import type {
   CreateLifeOpsDefinitionRequest,
   LifeOpsDefinitionCreationResult,

@@ -3,7 +3,6 @@ import {
   type Memory,
   ResponseHandlerFieldRegistry,
 } from "@elizaos/core";
-import { viewNavigationField } from "../src/runtime/view-navigation.ts";
 import { afterEach, expect, it, vi } from "vitest";
 import { mapsPlugin } from "../../../plugins/plugin-maps/src/plugin.ts";
 import { BUILTIN_VIEWS } from "../src/api/builtin-views.ts";
@@ -16,6 +15,7 @@ import {
   registerPluginViews,
   unregisterPluginViews,
 } from "../src/api/views-registry.ts";
+import { viewNavigationField } from "../src/runtime/view-navigation.ts";
 
 const policy = [
   { id: "photos", label: "Photos", path: "/photos" },

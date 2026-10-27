@@ -1,4 +1,3 @@
-import {emitNavigationDiagnostic} from "./navigation-diagnostic.ts";
 import type {
   Action,
   ActionResult,
@@ -131,6 +130,7 @@ import {
   withBackgroundHistory,
   withHistoryReadEvidence,
 } from "./history-discovery.js";
+import { emitNavigationDiagnostic } from "./navigation-diagnostic.ts";
 import {
   buildV5ExecutorContext,
   collectBudgetedStageOneCandidateActions,
@@ -839,7 +839,12 @@ export async function runV5MessageRuntimeStage1(
     // instead of the unaddressed-turn suppression — evaluator-demoted
     // IGNOREs and the injection-gate return above never reach this.
     args.onStage1RespondDecision?.();
-    emitNavigationDiagnostic(args.runtime,args.message,"stage1",()=>({visualContinuation:fieldRunResult?.parsed.visualContinuation,intents:fieldRunResult?.parsed.intents,replyEffectStatus:prePatchStageOneReplyEffectStatus,replyText:parsedResponseHandlerReply||fieldRunResult?.parsed.replyText}));
+    emitNavigationDiagnostic(args.runtime, args.message, "stage1", () => ({
+      visualContinuation: fieldRunResult?.parsed.visualContinuation,
+      intents: fieldRunResult?.parsed.intents,
+      replyEffectStatus: prePatchStageOneReplyEffectStatus,
+      replyText: parsedResponseHandlerReply || fieldRunResult?.parsed.replyText,
+    }));
 
     if (route.type === "final_reply" && !resumedPlanner) {
       // The simple-context reply IS the answer: Stage 1 emits `replyText` (→
@@ -2109,7 +2114,36 @@ export async function runV5MessageRuntimeStage1(
                 actions: args.runtime.actions,
               })
             : undefined;
-          if(effectReceipt?.effect==="view_navigation")emitNavigationDiagnostic(args.runtime,args.message,"prepared",()=>({actionName:toolCall.name,success:result.success,status:effectReceipt.status,navigationBinding:findViewActionHandoff([{success:result.success,actionName:toolCall.name,values:result.data?.values}])?.navigationBinding,checks:{pending:prePatchStageOneReplyEffectStatus==="pending",prosePresent:!!groundedModelReply,preparedBindingValid:preparedNavigation,destinationMatched:!!groundedModelReply&&replyNamesStructuredEffectDestination(groundedModelReply,effectReceipt),egressAllowed:groundedModelReplyEgress?.verdict==="allow"}}));
+          if (effectReceipt?.effect === "view_navigation")
+            emitNavigationDiagnostic(
+              args.runtime,
+              args.message,
+              "prepared",
+              () => ({
+                actionName: toolCall.name,
+                success: result.success,
+                status: effectReceipt.status,
+                navigationBinding: findViewActionHandoff([
+                  {
+                    success: result.success,
+                    actionName: toolCall.name,
+                    values: result.data?.values,
+                  },
+                ])?.navigationBinding,
+                checks: {
+                  pending: prePatchStageOneReplyEffectStatus === "pending",
+                  prosePresent: !!groundedModelReply,
+                  preparedBindingValid: preparedNavigation,
+                  destinationMatched:
+                    !!groundedModelReply &&
+                    replyNamesStructuredEffectDestination(
+                      groundedModelReply,
+                      effectReceipt,
+                    ),
+                  egressAllowed: groundedModelReplyEgress?.verdict === "allow",
+                },
+              }),
+            );
           if (
             (effectReceipt?.status === "accepted" ||
               (effectReceipt?.effect === "view_navigation" &&
@@ -2381,7 +2415,11 @@ export async function runV5MessageRuntimeStage1(
       );
 
     let plannerResult: Awaited<ReturnType<typeof invokePlannerLoop>>;
-    let plannerFailurePhase: "execution" | "continuation_persistence" | "release_facts" | "post_execution_abort_check" = "execution";
+    let plannerFailurePhase:
+      | "execution"
+      | "continuation_persistence"
+      | "release_facts"
+      | "post_execution_abort_check" = "execution";
     try {
       plannerResult =
         messageHandler.plan.deterministicToolCall && !resumedPlanner
@@ -2697,7 +2735,14 @@ export async function runV5MessageRuntimeStage1(
       }
     }
 
-    emitNavigationDiagnostic(args.runtime,args.message,"egress",()=>({verdict:plannedReplyEgressDecision.verdict,validation:plannedReplyEgressDecision.verdict==="reject"?plannedReplyEgressDecision.kind:undefined,replyPresent:!!plannerResult.finalMessage?.trim()}));
+    emitNavigationDiagnostic(args.runtime, args.message, "egress", () => ({
+      verdict: plannedReplyEgressDecision.verdict,
+      validation:
+        plannedReplyEgressDecision.verdict === "reject"
+          ? plannedReplyEgressDecision.kind
+          : undefined,
+      replyPresent: !!plannerResult.finalMessage?.trim(),
+    }));
 
     // A reply an action callback already delivered this turn (verbatim or as
     // a strict superset) is a planner echo: the suppression below drops it, so
@@ -2787,7 +2832,10 @@ export async function runV5MessageRuntimeStage1(
       deliveredVisibleTexts,
     });
   } catch (err) {
-    emitNavigationDiagnostic(args.runtime,args.message,"failure",()=>({errorCode:err&&typeof err==="object"&&"code" in err?err.code:undefined}));
+    emitNavigationDiagnostic(args.runtime, args.message, "failure", () => ({
+      errorCode:
+        err && typeof err === "object" && "code" in err ? err.code : undefined,
+    }));
     // error-policy:J2 Preserve the failing status for trajectory diagnostics,
     // then rethrow the original failure to the message boundary. A provider
     // context-overflow rejection classified by the planner boundary is the

@@ -84,6 +84,7 @@ export * from "./api/memory-routes.ts";
 export * from "./api/model-catalog.ts";
 export * from "./api/model-config-routes.ts";
 export * from "./api/models-routes.ts";
+export { registerNativeViewRenderer } from "./api/native-view-renderer.ts";
 export { setOwnerContact } from "./api/owner-contact-helpers.ts";
 export * from "./api/parse-action-block.ts";
 export * from "./api/permissions-routes.ts";
@@ -801,5 +802,3 @@ export * from "./triggers/runtime.ts";
 export * from "./triggers/scheduling.ts";
 export * from "./triggers/types.ts";
 export * from "./version-resolver.ts";
-
-export { registerNativeViewRenderer } from "./api/native-view-renderer.ts";

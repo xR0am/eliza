@@ -1,4 +1,4 @@
-import {emitNavigationDiagnostic} from "./navigation-diagnostic.ts";
+import { emitNavigationDiagnostic } from "./navigation-diagnostic.ts";
 /** Enforces effect-grounded replies and trusted audience admission at every message egress boundary. */
 
 import { isValidTimeZone } from "@elizaos/contracts";
@@ -462,9 +462,15 @@ function navigationClaimIsUngrounded(args: {
       typeof view.label === "string",
   );
   const claimed = views.find((view) =>
-    [view.id, view.label, ...(Array.isArray(view.aliases)
-      ? view.aliases.filter((alias: unknown): alias is string => typeof alias === "string")
-      : [])].some((name) => {
+    [
+      view.id,
+      view.label,
+      ...(Array.isArray(view.aliases)
+        ? view.aliases.filter(
+            (alias: unknown): alias is string => typeof alias === "string",
+          )
+        : []),
+    ].some((name) => {
       if (!name.trim()) return false;
       const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const target = `(?:the\\s+)?${escaped}(?:\\s+(?:view|screen|app))?`;
@@ -933,7 +939,14 @@ export async function resolvePlannedReplyEgress(args: {
           context: { roomId: args.message.roomId, messageId: args.message.id },
         },
       );
-      emitNavigationDiagnostic(args.runtime,args.message,"recovery",()=>({validation:"other",replyPresent:false,errorCode:error&&typeof error==="object"&&"code" in error?error.code:"PROVIDER_ERROR"}));
+      emitNavigationDiagnostic(args.runtime, args.message, "recovery", () => ({
+        validation: "other",
+        replyPresent: false,
+        errorCode:
+          error && typeof error === "object" && "code" in error
+            ? error.code
+            : "PROVIDER_ERROR",
+      }));
       args.runtime.reportError("MessageService.replyRecovery", recoveryFailure);
       throw recoveryFailure;
     }
@@ -980,7 +993,17 @@ export async function resolvePlannedReplyEgress(args: {
         actions: args.runtime.actions,
       })
     : undefined;
-  emitNavigationDiagnostic(args.runtime,args.message,"recovery",()=>({verdict:rewrittenDecision?.verdict,validation:!reply?"missing_reply":rewritten?.effectReceiptIds.length&&!proof?"unresolved_proof":rewrittenDecision?.verdict==="reject"?rewrittenDecision.kind:undefined,replyPresent:!!reply}));
+  emitNavigationDiagnostic(args.runtime, args.message, "recovery", () => ({
+    verdict: rewrittenDecision?.verdict,
+    validation: !reply
+      ? "missing_reply"
+      : rewritten?.effectReceiptIds.length && !proof
+        ? "unresolved_proof"
+        : rewrittenDecision?.verdict === "reject"
+          ? rewrittenDecision.kind
+          : undefined,
+    replyPresent: !!reply,
+  }));
   if (
     !reply ||
     (rewritten?.effectReceiptIds.length && !proof) ||

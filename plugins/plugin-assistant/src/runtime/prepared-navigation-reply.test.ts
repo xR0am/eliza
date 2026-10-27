@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { preparedViewReply } from "../services/message/reply-policy.ts";
 import { evaluatePlannedReplyEgress } from "../services/message/egress-policy.ts";
+import { preparedViewReply } from "../services/message/reply-policy.ts";
 import { runPlannerLoop } from "./planner-loop.ts";
+
 function navigation() {
   const id = "11111111-1111-4111-8111-111111111111";
   return {

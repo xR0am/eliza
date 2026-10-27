@@ -8,11 +8,11 @@ import {
 } from "./runtime/assistant-reasoning.ts";
 import { BUILTIN_RESPONSE_HANDLER_FIELD_EVALUATORS } from "./runtime/builtin-field-evaluators.ts";
 import { DEFAULT_CONTEXT_DEFINITIONS } from "./runtime/default-contexts.ts";
+import { registerDeviceBrowserOpenRouting } from "./services/device-actions/tools.ts";
 import {
   PLANNER_CONTINUATION_TASK,
   registerPlannerContinuationWorker,
 } from "./services/message/planner-continuation.ts";
-import { registerDeviceBrowserOpenRouting } from "./services/device-actions/tools.ts";
 import { DefaultMessageService } from "./services/message.ts";
 
 export function createAssistantPlugin(): Plugin {

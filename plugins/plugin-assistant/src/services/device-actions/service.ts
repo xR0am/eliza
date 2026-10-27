@@ -243,6 +243,7 @@ export function deviceActionToolGuidance(
       ? [{ name: action.name, operation: types[0] }]
       : [];
   });
+  const deviceActionTurn = getDeviceActionTurn();
   const current = specialized
     .filter(
       (item) =>
@@ -267,8 +268,8 @@ export function deviceActionToolGuidance(
           !runtime.actions.some(
             (action) => action.name === "OWNER_REMINDERS",
           ) ||
-          (getDeviceActionTurn()?.runtime === runtime &&
-            currentReminderRecordSource(getDeviceActionTurn()!.runtime) ===
+          (deviceActionTurn?.runtime === runtime &&
+            currentReminderRecordSource(deviceActionTurn.runtime) ===
               "device")) &&
         (item.operation !== "reminder_create" ||
           capabilities?.includes(REMINDER_CREATE_CAPABILITY)) &&

@@ -124,14 +124,20 @@ export function createOwnerReminderReadRoutingRule(): DirectActionRoutingRule {
     ],
     contexts: ["tasks", "productivity"],
     matches(text, message) {
-      if (message && !["DM", "VOICE_DM"].includes(String(message.content.channelType)))
+      if (
+        message &&
+        !["DM", "VOICE_DM"].includes(String(message.content.channelType))
+      )
         return false;
-      let request = extractUserText(text).trim()
+      let request = extractUserText(text)
+        .trim()
         .replace(DIRECT_REQUEST_LEAD_IN, "")
-        .replace(/[.!?]+$/u, "").trim();
+        .replace(/[.!?]+$/u, "")
+        .trim();
       // The typed intent describes this already matched owner's request in
       // third person. Do not reinterpret a human's third-party request.
-      if (!message) request = request.replace(/\b(?:the\s+)?(?:user|owner)['’]s\b/iu, "my");
+      if (!message)
+        request = request.replace(/\b(?:the\s+)?(?:user|owner)['’]s\b/iu, "my");
       return [
         /^(?:list|read|review|show)(?:\s+me)?\s+(?:(?:all|my|saved|existing|current)\s+)*reminders$/iu,
         /^(?:what|which)\s+(?:(?:saved|existing|current)\s+)*reminders\s+do\s+i\s+have$/iu,
@@ -225,7 +231,10 @@ export function registerOwnerReminderDirectRouting(
     runtime,
     createOwnerReminderDirectRoutingRule(),
   );
-  registerDirectActionRoutingRule(runtime, createOwnerReminderReadRoutingRule());
+  registerDirectActionRoutingRule(
+    runtime,
+    createOwnerReminderReadRoutingRule(),
+  );
   for (const rule of ownerReminderChoiceDirectRoutingRules) {
     registerDirectActionRoutingRule(runtime, rule);
   }

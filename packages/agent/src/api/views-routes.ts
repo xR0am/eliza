@@ -51,6 +51,7 @@ import {
   getViewClientScope,
   type ViewClientScope,
 } from "../runtime/view-client-context.ts";
+import { resolveViewNavigationTargets } from "../runtime/view-navigation-targets.ts";
 import { resolveHostSessionAccessContext } from "./host-session-access-context.ts";
 import type { ViewInteractResult } from "./pending-request-map.ts";
 import {
@@ -72,8 +73,6 @@ import {
   listViews,
 } from "./views-registry.ts";
 import { getViewSearchIndex } from "./views-search-index.ts";
-
-import { resolveViewNavigationTargets } from "../runtime/view-navigation-targets.ts";
 
 const VIEW_TYPE_ERROR = "viewType must be one of: gui, tui, xr";
 /**
@@ -778,7 +777,11 @@ export async function handleViewsRoutes(
     const commitCurrentViewState = (
       committedViewPath: string | null,
       announceSwitch = true,
-      confirmation?: { ownerId: string; handoffId: string; resolvedAlias?: string },
+      confirmation?: {
+        ownerId: string;
+        handoffId: string;
+        resolvedAlias?: string;
+      },
     ) => {
       if (isCloseNavigation) {
         clearCurrentViewState(viewRuntime, scope);
@@ -788,7 +791,8 @@ export async function handleViewsRoutes(
       currentViewState = getCurrentViewState(viewRuntime, scope);
       const priorConfirmation = currentViewState?.navigationConfirmation;
       const previousConfirmed =
-        confirmation && priorConfirmation &&
+        confirmation &&
+        priorConfirmation &&
         priorConfirmation.ownerId === confirmation.ownerId &&
         currentViewState &&
         getView(viewRuntime, currentViewState.viewId, { viewType: "gui" })
@@ -798,7 +802,9 @@ export async function handleViewsRoutes(
             : {
                 viewId: currentViewState.viewId,
                 installationId: priorConfirmation.installationId,
-                ...(priorConfirmation.resolvedAlias ? { resolvedAlias: priorConfirmation.resolvedAlias } : {}),
+                ...(priorConfirmation.resolvedAlias
+                  ? { resolvedAlias: priorConfirmation.resolvedAlias }
+                  : {}),
               }
           : undefined;
       const now = new Date().toISOString();
@@ -816,7 +822,9 @@ export async function handleViewsRoutes(
               navigationConfirmation: {
                 ...confirmation,
                 installationId: entry.installationId,
-                ...(previousConfirmed ? { previousView: previousConfirmed } : {}),
+                ...(previousConfirmed
+                  ? { previousView: previousConfirmed }
+                  : {}),
               },
             }
           : {}),
@@ -927,9 +935,11 @@ export async function handleViewsRoutes(
       }
       // The action may carry its already resolved alias. Re-resolve it against
       // this exact installed destination; arbitrary presentation text is ignored.
-      const requestedAlias = typeof body.resolvedAlias === "string"
-        ? resolveViewNavigationTargets([entry], body.resolvedAlias)[0]?.resolvedAlias
-        : undefined;
+      const requestedAlias =
+        typeof body.resolvedAlias === "string"
+          ? resolveViewNavigationTargets([entry], body.resolvedAlias)[0]
+              ?.resolvedAlias
+          : undefined;
       const preparedBase = currentViewState;
       let settled: Promise<ViewInteractResult>;
       try {
@@ -958,7 +968,9 @@ export async function handleViewsRoutes(
           // A manual or newer switch after preparation wins over this acknowledgment.
           if (getCurrentViewState(viewRuntime, scope) !== preparedBase) return;
           // Explicit native navigation is not an invitation to a proactive greeting.
-          commitCurrentViewState(entry.path ?? null, false, { ownerId, handoffId,
+          commitCurrentViewState(entry.path ?? null, false, {
+            ownerId,
+            handoffId,
             ...(requestedAlias ? { resolvedAlias: requestedAlias } : {}),
           });
         })
@@ -1534,7 +1546,7 @@ export async function dispatchViewInteract(
       transport.clientId,
       entry,
       timeoutMs,
-      {ownerId:transport.ownerId},
+      { ownerId: transport.ownerId },
     );
     const frame = {
       type: "view:interact",

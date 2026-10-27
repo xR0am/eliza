@@ -523,8 +523,8 @@ export function retrieveContextualPlannerActions(args: {
           // its declared domains: payload nouns must not add sibling schemas.
           // Other explicit contexts remain authoritative.
           if (
-            [domain, ...(args.contextAliases?.(domain) ?? [])].some(
-              (context) => covered.has(normalizeContextId(context)),
+            [domain, ...(args.contextAliases?.(domain) ?? [])].some((context) =>
+              covered.has(normalizeContextId(context)),
             ) ||
             (requestedOperationsCovered(domain) &&
               !declaredDomains.has(domain) &&
@@ -818,15 +818,23 @@ export function retrieveContextualPlannerActions(args: {
       // requested instead of selecting a sibling by singular/plural spelling.
       const familyTerms = args.actions
         .filter((action) => childNames.has(action.name))
-        .map((action) => new Set(
-          operationWords(action.name, parentWords).flatMap(inflectionTermKeys),
-        ));
+        .map(
+          (action) =>
+            new Set(
+              operationWords(action.name, parentWords).flatMap(
+                inflectionTermKeys,
+              ),
+            ),
+        );
       const queryTerms = new Set([...queryWords].flatMap(inflectionTermKeys));
       const explicitChildren = children.filter((action) =>
         operationWords(action.name, parentWords).some((word) => {
           const keys = inflectionTermKeys(word);
-          return keys.some((key) => queryTerms.has(key)) &&
-            familyTerms.filter((terms) => keys.some((key) => terms.has(key))).length === 1;
+          return (
+            keys.some((key) => queryTerms.has(key)) &&
+            familyTerms.filter((terms) => keys.some((key) => terms.has(key)))
+              .length === 1
+          );
         }),
       );
       if (explicitChildren.length === 0 && typeof parent.handler !== "function")

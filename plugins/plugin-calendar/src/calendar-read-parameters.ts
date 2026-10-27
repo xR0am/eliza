@@ -217,7 +217,9 @@ export function calendarOperationActions(
     return {
       ...action,
       async handler(...args: Parameters<NonNullable<typeof action.handler>>) {
-        const result = await action.handler!(...args);
+        if (!action.handler)
+          throw new Error("Calendar action handler is unavailable");
+        const result = await action.handler(...args);
         return result
           ? { ...result, ...calendarReadPromptProjection(result.data) }
           : result;

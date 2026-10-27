@@ -383,7 +383,8 @@ export function buildTaskCreatePlan(
         : null,
     requestKind,
     notificationMode:
-      parsed.notificationMode === "default" || parsed.notificationMode === "none"
+      parsed.notificationMode === "default" ||
+      parsed.notificationMode === "none"
         ? parsed.notificationMode
         : null,
     nativeProjection:

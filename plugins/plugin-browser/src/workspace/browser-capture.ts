@@ -17,11 +17,11 @@
  */
 
 import { existsSync } from "node:fs";
-import { FRAME_FILE } from "./frame-path.js";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { logger } from "@elizaos/core";
 import type { Browser } from "puppeteer-core";
+import { FRAME_FILE } from "./frame-path.js";
 
 function resolveChromePath(): string {
   if (process.platform === "darwin") {

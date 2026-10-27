@@ -160,12 +160,14 @@ export async function originalAvailabilityWindow(args: {
       !/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value)
     )
       throw Error("Availability absolute time was not supplied by the owner");
-    return normalizeCalendarDateTimeInTimeZone(
+    const normalized = normalizeCalendarDateTimeInTimeZone(
       value,
       "availability",
       args.timeZone,
       "reject",
-    )!;
+    );
+    if (!normalized) throw new Error("Availability absolute time is invalid");
+    return normalized;
   };
   let start: string, end: string | undefined;
   try {
@@ -179,12 +181,14 @@ export async function originalAvailabilityWindow(args: {
               minute: clock.start.minute,
             })
           : local(fields.startLocal);
-      start = normalizeCalendarDateTimeInTimeZone(
+      const normalized = normalizeCalendarDateTimeInTimeZone(
         chosen,
         "availability.start",
         args.timeZone,
         "reject",
-      )!;
+      );
+      if (!normalized) throw new Error("Availability start is invalid");
+      start = normalized;
     }
     if (fields.absoluteEnd !== null) end = absolute(fields.absoluteEnd);
     else if (originalDate && clock.kind === "one" && clock.end) {

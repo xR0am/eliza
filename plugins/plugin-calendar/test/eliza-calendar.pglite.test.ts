@@ -23,12 +23,12 @@ import {
   vi,
 } from "vitest";
 import { createCalendarActionRunner } from "../src/actions/calendar-handler.js";
-import { calendarPlugin } from "../src/plugin.js";
 import { __testing } from "../src/apple-calendar.js";
 import {
   ELIZA_CALENDAR_GRANT_ID,
   ELIZA_CALENDAR_ID,
 } from "../src/internal/eliza-calendar.js";
+import { calendarPlugin } from "../src/plugin.js";
 import {
   type CalendarHostGate,
   CalendarService,

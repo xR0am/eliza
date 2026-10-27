@@ -4,14 +4,17 @@ import type {
   ActionParameterSchema,
   HandlerOptions,
 } from "@elizaos/core";
-import { parseWebResourceAddress, registerDirectActionRoutingRule } from "@elizaos/core";
-import { deviceOperationSupportedByCapabilities } from "./contract.ts";
+import {
+  parseWebResourceAddress,
+  registerDirectActionRoutingRule,
+} from "@elizaos/core";
 import { proposeDeviceAction } from "./action.ts";
 import {
   CALENDAR_CAPABILITY,
   CALENDAR_CREATE_CAPABILITY,
   CALENDAR_NEXT_CAPABILITY,
 } from "./calendar-contract.ts";
+import { deviceOperationSupportedByCapabilities } from "./contract.ts";
 import { MAPS_CAPABILITY } from "./maps-contract.ts";
 import { NOTES_CAPABILITY, notesSelectionTarget } from "./notes-contract.ts";
 import { deviceReadHostContextRevision } from "./read-completion.ts";
@@ -252,32 +255,37 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
         : undefined,
     tags:
       type === "browser_navigate"
-        ? ["domain:browser", "capability:navigate", "effect:receipt-required", "target:selected-device"]
-        : type === "notes_update"
         ? [
-            ...(proposeDeviceAction.tags || []),
-            "domain:notes",
-            "capability:write",
+            "domain:browser",
+            "capability:navigate",
             "effect:receipt-required",
             "target:selected-device",
-            "selection-kind:note",
           ]
-        : type === "notes_read_selected"
+        : type === "notes_update"
           ? [
               ...(proposeDeviceAction.tags || []),
               "domain:notes",
+              "capability:write",
+              "effect:receipt-required",
+              "target:selected-device",
               "selection-kind:note",
             ]
-          : type === "calendar_update"
+          : type === "notes_read_selected"
             ? [
                 ...(proposeDeviceAction.tags || []),
-                "domain:calendar",
-                "capability:write",
-                "effect:receipt-required",
-                "target:selected-device",
-                "selection-kind:calendar-event",
+                "domain:notes",
+                "selection-kind:note",
               ]
-            : proposeDeviceAction.tags,
+            : type === "calendar_update"
+              ? [
+                  ...(proposeDeviceAction.tags || []),
+                  "domain:calendar",
+                  "capability:write",
+                  "effect:receipt-required",
+                  "target:selected-device",
+                  "selection-kind:calendar-event",
+                ]
+              : proposeDeviceAction.tags,
     roleGate:
       type === "calendar_update" || type === "notes_update"
         ? { minRole: "OWNER" as const }
@@ -329,7 +337,15 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
               if (!capabilityAvailable(type, runtime)) return false;
               try {
                 const metadata = message?.content?.metadata as
-                    | Record<string, any>
+                    | {
+                        clientDevice?: {
+                          context?: {
+                            view?: unknown;
+                            sensitive?: unknown;
+                            selectedObject?: unknown;
+                          };
+                        };
+                      }
                     | undefined,
                   context = metadata?.clientDevice?.context;
                 return (
@@ -493,9 +509,13 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
             operation: resolved,
           } as HandlerOptions["parameters"],
         };
-        return proposeDeviceAction.handler!(...next);
+        if (!proposeDeviceAction.handler)
+          throw new Error("Device action handler is unavailable");
+        return proposeDeviceAction.handler(...next);
       }
-      return proposeDeviceAction.handler!(...args);
+      if (!proposeDeviceAction.handler)
+        throw new Error("Device action handler is unavailable");
+      return proposeDeviceAction.handler(...args);
     },
   })),
 );
@@ -503,18 +523,35 @@ export const deviceActionTools: readonly Action[] = Object.freeze(
 /** Availability for a complete URL-open request; the existing tool still creates
  * a reviewed proposal and the phone's typed receipt owns completion.
  */
-export function registerDeviceBrowserOpenRouting(runtime: Parameters<typeof registerDirectActionRoutingRule>[0]): void {
-  const matches = (text: string, message?: Parameters<NonNullable<Action["validate"]>>[1]): boolean => {
+export function registerDeviceBrowserOpenRouting(
+  runtime: Parameters<typeof registerDirectActionRoutingRule>[0],
+): void {
+  const matches = (
+    text: string,
+    message?: Parameters<NonNullable<Action["validate"]>>[1],
+  ): boolean => {
     const current = getDeviceActionTurn();
     const caller = current?.requestCaller;
-    if (!message || current?.runtime !== runtime || !current.isCurrent() ||
-      current.requestMessage?.message !== message || caller?.role !== "OWNER" ||
-      caller.entityId !== message.entityId || caller.subjectUserId !== current.credential.subjectUserId ||
+    if (
+      !message ||
+      current?.runtime !== runtime ||
+      !current.isCurrent() ||
+      current.requestMessage?.message !== message ||
+      caller?.role !== "OWNER" ||
+      caller.entityId !== message.entityId ||
+      caller.subjectUserId !== current.credential.subjectUserId ||
       message.content.source !== "client_chat" ||
       !["DM", "VOICE_DM"].includes(String(message.content.channelType)) ||
-      !deviceOperationSupportedByCapabilities("browser_navigate", current.credential.capabilities))
+      !deviceOperationSupportedByCapabilities(
+        "browser_navigate",
+        current.credential.capabilities,
+      )
+    )
       return false;
-    const command = /^(?:please\s+)?(?:open|visit|navigate\s+to|go\s+to)\s+([^\s]+)[.!]?$/iu.exec(text.trim());
+    const command =
+      /^(?:please\s+)?(?:open|visit|navigate\s+to|go\s+to)\s+([^\s]+)[.!]?$/iu.exec(
+        text.trim(),
+      );
     if (!command) return false;
     const address = parseWebResourceAddress(command[1].replace(/[.!]$/u, ""));
     return address?.protocol === "https:";
@@ -522,8 +559,19 @@ export function registerDeviceBrowserOpenRouting(runtime: Parameters<typeof regi
   registerDirectActionRoutingRule(runtime, {
     id: "device.browser-open",
     actionNames: ["DEVICE_BROWSER_OPEN"],
-    replacesActionNames: ["VIEWS", "VIEWS_SHOW", "BROWSER", "BROWSER_OPEN", "BROWSER_NAVIGATE"],
-    requiredActionTags: ["domain:browser", "capability:navigate", "effect:receipt-required", "target:selected-device"],
+    replacesActionNames: [
+      "VIEWS",
+      "VIEWS_SHOW",
+      "BROWSER",
+      "BROWSER_OPEN",
+      "BROWSER_NAVIGATE",
+    ],
+    requiredActionTags: [
+      "domain:browser",
+      "capability:navigate",
+      "effect:receipt-required",
+      "target:selected-device",
+    ],
     contexts: ["browser", "web", "general"],
     matches,
     wholeRequest: { matches, invalidateFields: ["visualContinuation"] },

@@ -4,8 +4,6 @@
  * Provides text generation using OpenAI's language models.
  */
 
-import { z } from "zod";
-
 import type {
   GenerateTextContentPart,
   GenerateTextParams,
@@ -56,6 +54,7 @@ import {
   type ToolSet,
   type UserContent,
 } from "ai";
+import { z } from "zod";
 import { createOpenAIClient } from "../providers";
 import type { TextStreamResult, TokenUsage } from "../types";
 import {
@@ -593,7 +592,7 @@ function resolveProviderOptions(
 function buildStructuredOutput(
   responseSchema: unknown,
   modelType: ModelTypeName,
-  cerebrasMode = false,
+  cerebrasMode = false
 ): PreparedStructuredOutput {
   if (
     responseSchema &&
@@ -605,26 +604,17 @@ function buildStructuredOutput(
   }
 
   const schemaOptions =
-    responseSchema &&
-    typeof responseSchema === "object" &&
-    "schema" in responseSchema
+    responseSchema && typeof responseSchema === "object" && "schema" in responseSchema
       ? (responseSchema as {
           schema: unknown;
           name?: string;
           description?: string;
         })
       : { schema: responseSchema };
-  const preparedSchema = prepareResponseFormatSchema(
-    schemaOptions.schema,
-    modelType,
-  );
-  const rootUnion = cerebrasMode
-    ? wrapCerebrasRootUnion(preparedSchema.schema)
-    : undefined;
+  const preparedSchema = prepareResponseFormatSchema(schemaOptions.schema, modelType);
+  const rootUnion = cerebrasMode ? wrapCerebrasRootUnion(preparedSchema.schema) : undefined;
   const wireInput = rootUnion?.schema ?? preparedSchema.schema;
-  const cerebrasSchema = cerebrasMode
-    ? factorResponseSchema(wireInput as JSONSchema7)
-    : undefined;
+  const cerebrasSchema = cerebrasMode ? factorResponseSchema(wireInput as JSONSchema7) : undefined;
 
   const wireSchema = sanitizeJsonSchema(
     cerebrasSchema ?? preparedSchema.schema,
@@ -633,7 +623,7 @@ function buildStructuredOutput(
     undefined,
     {
       preserveStructure: cerebrasMode,
-    },
+    }
   );
   return {
     ...(cerebrasSchema !== undefined && cerebrasSchema !== preparedSchema.schema
@@ -642,26 +632,20 @@ function buildStructuredOutput(
     output: Output.object({
       schema: jsonSchema(wireSchema),
       ...(schemaOptions.name ? { name: schemaOptions.name } : {}),
-      ...(schemaOptions.description
-        ? { description: schemaOptions.description }
-        : {}),
+      ...(schemaOptions.description ? { description: schemaOptions.description } : {}),
     }) as NativeOutput,
     requestDescriptor: {
       type: "json_schema",
       schema: sanitizeJsonSchema(preparedSchema.schema, true),
       ...(schemaOptions.name ? { name: schemaOptions.name } : {}),
-      ...(schemaOptions.description
-        ? { description: schemaOptions.description }
-        : {}),
+      ...(schemaOptions.description ? { description: schemaOptions.description } : {}),
     },
     ...(rootUnion
       ? {
           transform: {
             restoreText(text: string) {
               const restored = rootUnion.restoreText(text);
-              return (
-                preparedSchema.transform?.restoreText(restored) ?? restored
-              );
+              return preparedSchema.transform?.restoreText(restored) ?? restored;
             },
           },
         }
@@ -673,14 +657,11 @@ function buildStructuredOutput(
 
 /** Reversible provider envelope for root unions rejected by Cerebras. */
 function wrapCerebrasRootUnion(
-  schema: unknown,
+  schema: unknown
 ): { schema: JSONSchema7; restoreText(text: string): string } | undefined {
   const root = asOptionalRecord(schema);
   if (!root || !Array.isArray(root.anyOf) || root.anyOf.length === 0) return;
-  if (
-    root.$schema !== undefined &&
-    root.$schema !== "https://json-schema.org/draft/2020-12/schema"
-  )
+  if (root.$schema !== undefined && root.$schema !== "https://json-schema.org/draft/2020-12/schema")
     return;
   // Validate only a known round-trippable vocabulary. References/resource
   // IDs and other keywords keep their original provider-visible behavior.
@@ -722,9 +703,7 @@ function wrapCerebrasRootUnion(
   }
   let validator: z.ZodType;
   try {
-    validator = z.fromJSONSchema(
-      root as Parameters<typeof z.fromJSONSchema>[0],
-    );
+    validator = z.fromJSONSchema(root as Parameters<typeof z.fromJSONSchema>[0]);
   } catch {
     // An unsupported conversion is not permission to weaken the schema.
     return;
@@ -754,10 +733,10 @@ function wrapCerebrasRootUnion(
         });
       const restored = (value as Record<string, unknown>)[key];
       if (!validator.safeParse(restored).success)
-        throw new ElizaError(
-          "Structured response failed its original union schema",
-          { code: "OPENAI_RESPONSE_UNION_INVALID", severity: "ephemeral" },
-        );
+        throw new ElizaError("Structured response failed its original union schema", {
+          code: "OPENAI_RESPONSE_UNION_INVALID",
+          severity: "ephemeral",
+        });
       return JSON.stringify(restored);
     },
   };

@@ -146,22 +146,17 @@ it.each(cases)(
     const accepted = validator.safeParse(valid);
     expect(accepted.success).toBe(true);
     if (accepted.success) expect(accepted.data).toEqual(valid);
-  },
+  }
 );
 it("keeps every eligible validation keyword covered by a negative control", () => {
-  const text = readFileSync(
-    new URL("../models/text.ts", import.meta.url),
-    "utf8",
-  );
+  const text = readFileSync(new URL("../models/text.ts", import.meta.url), "utf8");
   const start = text.indexOf(
     "  const allowed = new Set([",
-    text.indexOf("function wrapCerebrasRootUnion"),
+    text.indexOf("function wrapCerebrasRootUnion")
   );
   const end = text.indexOf("]);", start);
   expect(start).toBeGreaterThan(0);
-  const keys = [...text.slice(start, end).matchAll(/"([^"]+)"/g)].map(
-    (x) => x[1],
-  );
+  const keys = [...text.slice(start, end).matchAll(/"([^"]+)"/g)].map((x) => x[1]);
   const covered = new Set(cases.map((x) => x.name.split(":")[0]));
   for (const key of keys)
     if (!["$schema", "title", "description"].includes(key))

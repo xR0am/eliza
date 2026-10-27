@@ -15,8 +15,8 @@ import {
 import {
   __testables,
   selectAndroidRuntimeTargets,
-  stageSeccompShimForAbi,
   stageAndroidAgentRuntime,
+  stageSeccompShimForAbi,
 } from "./lib/stage-android-agent.ts";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));

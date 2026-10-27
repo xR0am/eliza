@@ -1,12 +1,22 @@
 /** Shared reminder presentation only. The canonical service owns all state and mutations. */
 export interface ReminderPresentationRow {
   definition: { status: string; cadence?: { kind: string; dueAt?: string } };
-  occurrence: { state: string; dueAt?: string; snoozedUntil?: string | null; metadata?: Record<string, unknown> | null } | null;
+  occurrence: {
+    state: string;
+    dueAt?: string | null;
+    snoozedUntil?: string | null;
+    metadata?: Record<string, unknown> | null;
+  } | null;
   latestAttempt: { outcome: string } | null;
 }
 export function reminderDue(row: ReminderPresentationRow): string | null {
-  return row.occurrence?.snoozedUntil ?? row.occurrence?.dueAt ??
-    (row.definition.cadence?.kind === "once" ? row.definition.cadence.dueAt ?? null : null);
+  return (
+    row.occurrence?.snoozedUntil ??
+    row.occurrence?.dueAt ??
+    (row.definition.cadence?.kind === "once"
+      ? (row.definition.cadence.dueAt ?? null)
+      : null)
+  );
 }
 export function reminderDeliveryLabel(row: ReminderPresentationRow): string {
   if (row.definition.status === "archived") return "cancelled";

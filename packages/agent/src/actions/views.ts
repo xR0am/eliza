@@ -17,7 +17,10 @@ import {
 import { dispatchApiRoute } from "../api/in-process-api.ts";
 import { listViews } from "../api/views-registry.ts";
 import { getViewClientScope } from "../runtime/view-client-context.ts";
-import { resolveViewNavigationTargets, viewNavigationAvailable } from "../runtime/view-navigation-targets.ts";
+import {
+  resolveViewNavigationTargets,
+  viewNavigationAvailable,
+} from "../runtime/view-navigation-targets.ts";
 
 export const viewsAction: Action = {
   name: "VIEWS",

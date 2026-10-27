@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
 const modulePath = fileURLToPath(
   new URL("../src/runtime/mobile-dns.ts", import.meta.url),
 );

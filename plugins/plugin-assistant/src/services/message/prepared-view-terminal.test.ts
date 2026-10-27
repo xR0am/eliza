@@ -101,10 +101,16 @@ it("rejects another real action, including terminal-marked actions/results", () 
 });
 it("retains binding, pending-state and egress approval boundaries", () => {
   for (const mutate of [
-    (a: any) => (a.steps[0].result.data.navigation.handoffId = "changed"),
-    (a: any) => (a.stageOne.visualContinuation.viewId = "notes"),
-    (a: any) => (a.effectStatus = "delivered"),
-    (a: any) => (a.allow = () => false),
+    (a: ReturnType<typeof fixture>) =>
+      ((
+        a.steps[0] as {
+          result: { data: { navigation: { handoffId: string } } };
+        }
+      ).result.data.navigation.handoffId = "changed"),
+    (a: ReturnType<typeof fixture>) =>
+      (a.stageOne.visualContinuation.viewId = "notes"),
+    (a: ReturnType<typeof fixture>) => (a.effectStatus = "delivered"),
+    (a: ReturnType<typeof fixture>) => (a.allow = () => false),
   ]) {
     const a = fixture();
     a.steps.push({ terminalOnly: true });

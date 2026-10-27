@@ -606,14 +606,13 @@ export class NotesService extends Service {
     const revision = parseNoteEditRevision(expectedRevision, true);
     const transaction = await this.store.transact((draft) => {
       assertEditRevision(draft.revision, revision);
-      const index = (draft.trash ?? []).findIndex(
-        (entry) => entry.note.id === id,
-      );
-      const entry = draft.trash?.[index];
+      const trash = draft.trash ?? [];
+      const index = trash.findIndex((entry) => entry.note.id === id);
+      const entry = trash[index];
       if (!entry || draft.notes.some((note) => note.id === id))
         throw notFound(id);
       draft.notes.unshift(structuredClone(entry.note));
-      draft.trash!.splice(index, 1);
+      trash.splice(index, 1);
       return entry.note;
     });
     await this.emitStateUpdated(transaction.snapshot, "note:restored");

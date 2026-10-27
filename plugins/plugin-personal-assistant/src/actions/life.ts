@@ -4948,7 +4948,8 @@ async function runLifeOperationHandlerInner(
         params.createPlan &&
         typeof params.createPlan === "object" &&
         !Array.isArray(params.createPlan) &&
-        (params.createPlan as Record<string, unknown>).notificationMode == null &&
+        (params.createPlan as Record<string, unknown>).notificationMode ==
+          null &&
         explicitNoAlert !== undefined
           ? {
               ...params.createPlan,

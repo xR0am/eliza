@@ -99,7 +99,9 @@ async function loadAgentModule(): Promise<AndroidAgentModule> {
     saveElizaConfig: AndroidCoreRouteDeps["saveElizaConfig"];
     hasPersistedFirstRunState: AndroidCoreRouteDeps["hasPersistedFirstRunState"];
     EPHEMERAL_AGENT_EVENT_STREAMS?: ReadonlySet<string>;
-    registerNativeViewRenderer: NonNullable<AndroidCoreRouteDeps["registerNativeViewRenderer"]>;
+    registerNativeViewRenderer: NonNullable<
+      AndroidCoreRouteDeps["registerNativeViewRenderer"]
+    >;
   };
   return {
     startEliza: mod.startEliza,
