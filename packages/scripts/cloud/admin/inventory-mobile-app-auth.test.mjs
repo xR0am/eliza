@@ -1,14 +1,15 @@
-import { after, before, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { after, before, beforeEach, test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { readDatabaseIdentityReceipt } from "../../../cloud/scripts/admin/database-identity-receipt.ts";
 import {
   compareClientAuthority,
   planClientRegistryUpdate,
   requireMobileAuthInventoryOperation,
 } from "./inventory-mobile-app-auth.ts";
-import { readDatabaseIdentityReceipt } from "../../../cloud/scripts/admin/database-identity-receipt.ts";
-import { resolveMobileAppAuthRegistrationSelection } from "./verify-mobile-app-auth-registration.ts";
 import { resolveTargetRegistration } from "./repair-mobile-app-auth-registration.ts";
+import { resolveMobileAppAuthRegistrationSelection } from "./verify-mobile-app-auth-registration.ts";
+
 const PRIMARY = "11111111-1111-4111-8111-111111111111",
   ALPHA = "22222222-2222-4222-8222-222222222222",
   ORG = "33333333-3333-4333-8333-333333333333",

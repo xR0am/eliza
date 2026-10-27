@@ -315,11 +315,19 @@ describe("Shared Eliza runtime in Workerd", () => {
                 index: 0,
                 message: {
                   role: "assistant",
+                  // The selected durable todos.create receipt identifies the
+                  // pending Buy milk item in this turn's real action result.
                   content: JSON.stringify({
                     grounded: true,
-                    completedChangeClaim: true,
-                    reason:
-                      "The selected durable todos.create receipt identifies the pending Buy milk item in this turn's real action result.",
+                    claims: [
+                      {
+                        quote: "I added Buy milk to your todo list.",
+                        actor: "assistant",
+                        change: true,
+                        supported: true,
+                        evidence: selected[0],
+                      },
+                    ],
                   }),
                 },
                 finish_reason: "stop",

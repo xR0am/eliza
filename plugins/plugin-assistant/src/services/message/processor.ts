@@ -706,6 +706,7 @@ export class MessageProcessor {
         },
         providers: state.data.providers,
         request: getUserMessageText(message),
+        contexts: event.messageHandler.plan.contexts,
         reply: proposedText,
         actionResults: [],
         actions: runtime.actions,
