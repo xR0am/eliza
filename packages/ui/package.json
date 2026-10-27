@@ -171,6 +171,12 @@
       "import": "./dist/voice/segmented-speech-playback.js",
       "default": "./dist/voice/segmented-speech-playback.js"
     },
+    "./api/transport": {
+      "eliza-source": "./src/api/transport.ts",
+      "types": "./dist/api/transport.d.ts",
+      "import": "./dist/api/transport.js",
+      "default": "./dist/api/transport.js"
+    },
     "./installed-apps-launcher": {
       "eliza-source": "./src/components/pages/InstalledAppsLauncher.tsx",
       "types": "./dist/components/pages/InstalledAppsLauncher.d.ts",
