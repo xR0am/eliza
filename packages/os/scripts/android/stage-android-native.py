@@ -65,8 +65,10 @@ def unique_object(pairs):
     return result
 
 
-def read_json(archive, path):
-    if archive.getinfo(path).file_size > 1024 * 1024:
+def read_json(archive, path, max_bytes=1024 * 1024):
+    if type(max_bytes) is not int or not 1 <= max_bytes <= 16 * 1024 * 1024:
+        raise ValueError('Invalid runtime manifest size bound')
+    if archive.getinfo(path).file_size > max_bytes:
         raise ValueError('Oversized runtime manifest: ' + path)
     return json.loads(archive.read(path), object_pairs_hook=unique_object)
 
@@ -111,7 +113,7 @@ def verify_source_receipt(archive, provenance, source):
     commit = source.get('commit')
     if not isinstance(commit, str) or not re.fullmatch(r'[a-f0-9]{40}', commit):
         raise ValueError('Runtime requires a full reviewed source commit')
-    receipt = read_json(archive, source['entry'])
+    receipt = read_json(archive, source['entry'], source.get('maxBytes', 1024 * 1024))
     if source.get('kind') == 'exact-json':
         if receipt != source['expected'] or receipt.get(source.get('commitField', 'commit')) != commit:
             raise ValueError('Runtime source stamp differs from admitted source')
@@ -158,7 +160,7 @@ def verify_runtime(archive, runtime_names, profile='native', target='stallion', 
     abi, modes, assets = config['abi'], config['modes'], config['assets']
     if runtime_names != set(modes):
         raise ValueError('Incomplete or unknown ' + abi + ' resident runtime')
-    provenance = read_json(archive, 'assets/agent/android-agent-runtime-provenance.json')
+    provenance = read_json(archive, 'assets/agent/android-agent-runtime-provenance.json', admission.get('maxManifestBytes', 1024 * 1024))
     if provenance.get('schema') != 'eliza.android_agent_runtime_provenance.v1':
         raise ValueError('Unknown runtime provenance schema')
     records = provenance.get('files')
@@ -190,6 +192,8 @@ def verify_runtime(archive, runtime_names, profile='native', target='stallion', 
     if not required <= seen:
         raise ValueError('Runtime provenance omits required files')
     indexed = {item['path']: item for item in records}
+    if any(indexed[name]['size_bytes'] == 0 for name in required):
+        raise ValueError('Required runtime payload must be nonempty')
     counterparts = {n: 'assets/agent/' + abi + '/' + p for n, p in assets.items()}
     if admission.get('bunTarget', 'linux-musl') == 'linux-musl':
         stdcpp = [n for n in seen if re.fullmatch(rf'assets/agent/{re.escape(abi)}/libstdc\+\+\.so\.6\.[0-9.]+', n)]

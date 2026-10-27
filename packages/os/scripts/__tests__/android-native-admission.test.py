@@ -102,6 +102,50 @@ class NativeAdmission(unittest.TestCase):
                 self.assertEqual((self.output / 'Android.bp').read_text(), self.bp)
                 self.assertEqual(len(list(self.output.iterdir())), 1)
 
+    def rebind_build_receipt(self, entries, admission):
+        entry = 'assets/agent/android-agent-runtime-provenance.json'
+        provenance = json.loads(entries[entry])
+        for row in provenance['files']:
+            row.update(size_bytes=len(entries[row['path']]), sha256=sha(entries[row['path']]))
+        entries[entry] = encode(provenance)
+        receipt_entry = admission['source']['entry']
+        receipt = json.loads(entries[receipt_entry])
+        receipt.update(runtime_provenance_sha256=sha(entries[entry]), runtime_provenance=provenance)
+        receipt['packaged_runtime_files'] = [{'path': name, 'size_bytes': len(data), 'sha256': sha(data)} for name, data in entries.items() if name.startswith(('assets/agent/', 'lib/'))]
+        entries[receipt_entry] = encode(receipt)
+
+    def test_self_consistent_empty_required_runtime_files_are_rejected(self):
+        for name in native.REQUIRED_AGENT_ASSETS:
+            entries, admission = self.fixture()
+            entries['assets/agent/' + name] = b''
+            self.rebind_build_receipt(entries, admission)
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, 'Required runtime payload must be nonempty'):
+                    self.run_stage(entries, admission)
+                self.assertEqual(len(list(self.output.iterdir())), 1)
+
+    def test_nonessential_empty_files_remain_bound_to_the_build_receipt(self):
+        entries, admission = self.fixture()
+        name = 'assets/agent/optional.txt'
+        entries[name] = b''
+        entry = 'assets/agent/android-agent-runtime-provenance.json'
+        provenance = json.loads(entries[entry])
+        provenance['files'].append({'path': name, 'size_bytes': 0, 'sha256': sha(b'')})
+        entries[entry] = encode(provenance)
+        self.rebind_build_receipt(entries, admission)
+        self.run_stage(entries, admission)
+
+    def test_manifest_bounds_preserve_small_contracts_and_allow_bounded_full_build_receipts(self):
+        entries, admission = self.fixture()
+        receipt_entry = admission['source']['entry']
+        receipt = json.loads(entries[receipt_entry])
+        receipt['padding'] = 'x' * (1024 * 1024)
+        entries[receipt_entry] = encode(receipt)
+        with self.assertRaisesRegex(ValueError, 'Oversized runtime manifest'):
+            self.run_stage(entries, admission)
+        admission['source']['maxBytes'] = 16 * 1024 * 1024
+        self.run_stage(entries, admission)
+
     def test_self_consistent_binary_substitution_cannot_override_the_pin(self):
         entries, admission = self.fixture()
         changed = ELF + b'replacement'

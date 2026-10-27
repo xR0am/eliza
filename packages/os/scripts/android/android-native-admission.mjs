@@ -42,11 +42,13 @@ export function elizaNativeAdmission({
     bunTarget,
     bunPin,
     maxRuntimeFiles: 10000,
+    maxManifestBytes: 16 * 1024 * 1024,
     source: {
       kind: "aosp-build",
       entry: "META-INF/eliza/aosp-build-provenance.json",
       commit: sourceCommit,
       package: packageName,
+      maxBytes: 16 * 1024 * 1024,
     },
   };
 }
