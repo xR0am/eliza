@@ -231,7 +231,7 @@ describe("promoted Notes execution", () => {
         ?.description,
     ).toMatch(/unique literal match atomically/);
   });
-  it("requires an update selector on the provider wire and preserves unrelated text through real admission", async () => {
+  it("requires an update selector at admission and preserves unrelated text", async () => {
     const runtime = await executorHarness();
     const action = notesPlugin.actions?.find(
       (entry) => entry.name === "NOTES_UPDATE",
@@ -257,9 +257,9 @@ describe("promoted Notes execution", () => {
     const missing = { replacementContent: "Packing\nBring spare cable." };
     const errors: string[] = [];
     validateSchema(schema, missing, "", errors);
-    expect(errors).toEqual(
-      expect.arrayContaining([expect.stringContaining("content")]),
-    );
+    // The provider wire permits either selector. Admission below requires one
+    // before writing; an unconditional content requirement would reject noteId.
+    expect(errors).toEqual([]);
     const service = getNotesService(runtime);
     const original = await service.createNote({
       title: "Packing",
@@ -2341,8 +2341,11 @@ describe("structured Notes field patches", () => {
       awaitingUserInput: true,
       requiresInput: true,
       candidates: expect.arrayContaining([
-        expect.objectContaining({ body: "\nSilver folder" }),
-        expect.objectContaining({ body: "\nBring it tomorrow" }),
+        expect.objectContaining({ body: "Silver folder", bodySeparator: "\n" }),
+        expect.objectContaining({
+          body: "Bring it tomorrow",
+          bodySeparator: "\n",
+        }),
       ]),
     });
     expect(result.effectReceipts).toBeUndefined();

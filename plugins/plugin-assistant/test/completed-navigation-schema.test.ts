@@ -4,6 +4,7 @@ import { validateCameraCaptureResult } from "../src/services/device-actions/came
 const state = vi.hoisted(() => ({ turn: undefined as any }));
 vi.mock("../src/services/device-actions/service.ts", () => ({
   getDeviceActionTurn: () => state.turn,
+  deviceAppRecordOperationAvailable: () => true,
   DeviceActionService: class {},
 }));
 
