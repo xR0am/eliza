@@ -2,6 +2,7 @@ import {
   type IAgentRuntime,
   type Memory,
   ResponseHandlerFieldRegistry,
+  stringToUuid,
 } from "@elizaos/core";
 import { afterEach, expect, it, vi } from "vitest";
 import { mapsPlugin } from "../../../plugins/plugin-maps/src/plugin.ts";
@@ -136,6 +137,7 @@ it.each(["plugin-first", "builtin-first"])(
     const owner = runtime();
     const plugin = {
       name: "notes",
+      description: "Native Notes test plugin",
       packageName: "@elizaos/plugin-notes",
       views: [
         {
@@ -167,6 +169,9 @@ it.each(["plugin-first", "builtin-first"])(
     fields.register(viewNavigationField);
     for (const completed of [false, true]) {
       const input = {
+        id: stringToUuid("native-view-message"),
+        entityId: stringToUuid("native-view-owner"),
+        roomId: stringToUuid("native-view-room"),
         content: {
           text: "Open Notes",
           source: "client_chat",
@@ -236,6 +241,7 @@ it.each([
       owner,
       {
         name: "notes",
+        description: "Native Notes test plugin",
         packageName: candidate.packageName,
         views: [
           {
@@ -274,6 +280,7 @@ it("pins absent native policy before later environment changes", async () => {
     owner,
     {
       name: "notes",
+      description: "Native Notes test plugin",
       packageName: "@elizaos/plugin-notes",
       views: [
         {
