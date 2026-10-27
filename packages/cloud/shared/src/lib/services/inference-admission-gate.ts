@@ -1003,8 +1003,7 @@ export async function markInferenceAdmissionLeaseDispatched(
         });
       }
       if (
-        (attempt === DISPATCH_GATE_MAX_ATTEMPTS ||
-          performance.now() >= deadline) &&
+        (attempt === DISPATCH_GATE_MAX_ATTEMPTS || performance.now() >= deadline) &&
         code === "inference_admission_gate_uninitialized" &&
         prepared.executionCtx
       ) {

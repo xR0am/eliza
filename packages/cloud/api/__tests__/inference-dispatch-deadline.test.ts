@@ -1,9 +1,10 @@
 /** Exercises the production dispatch client with deterministic binding delay; no database, provider or account changes are performed. */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
-  markInferenceAdmissionLeaseDispatched,
   type InferenceAdmissionLease,
-} from "@/lib/services/inference-admission-gate";
+  markInferenceAdmissionLeaseDispatched,
+} from "@elizaos/cloud-shared/lib/services/inference-admission-gate";
+
 let now = 0;
 let budgets: number[] = [];
 let latestBudget = 0;

@@ -5,11 +5,11 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { Miniflare } from "miniflare";
 import {
-  markInferenceAdmissionLeaseDispatched,
   type InferenceAdmissionLease,
-} from "@/lib/services/inference-admission-gate";
+  markInferenceAdmissionLeaseDispatched,
+} from "@elizaos/cloud-shared/lib/services/inference-admission-gate";
+import { Miniflare } from "miniflare";
 
 const ADMISSION_RUNTIME_BOUNDARY_FILTERS = {
   dbClient:
@@ -1055,8 +1055,13 @@ describe("Miniflare Durable Object integration", () => {
   test("lost dispatch acknowledgment replays one real durable lease without a second hold", async () => {
     const gateName = "deadline-replay";
     expect(
-      (await post("/hydrate", { balanceUsd: 10, balanceRevision: "1" }, gateName))
-        .status,
+      (
+        await post(
+          "/hydrate",
+          { balanceUsd: 10, balanceRevision: "1" },
+          gateName,
+        )
+      ).status,
     ).toBe(200);
     const recovery = {
       version: 1,
