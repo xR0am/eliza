@@ -3129,3 +3129,233 @@ describe("canonical nonretryable receipt repair", () => {
     );
   });
 }
+
+describe("final effective verdict retains unresolved effect authority", () => {
+  it.each([
+    "different",
+    "same",
+    "exploratory",
+    "pending",
+    "verified-sibling",
+  ] as const)(
+    "projects the authoritative terminal result to its parent (%s)",
+    async (mode) => {
+      const { subPlannerResultToPlannerToolResult } = await import(
+        "../services/message/planned-tool.ts"
+      );
+      let plans = 0,
+        attempts = 0;
+      const claim = "Your original reminder is set.";
+      const body = "Original reminder body";
+      const result = await runPlannerLoop({
+        context: { id: `effective-verdict-${mode}`, events: [] },
+        codingMode: false,
+        runtime: {
+          useModel: async () => {
+            if (++plans > 2)
+              throw Error("No extra synthesized result in this fixture");
+            return {
+              text: "",
+              toolCalls: [
+                {
+                  id: `attempt-${plans}`,
+                  name: "TRIGGER_CREATE",
+                  arguments: {
+                    displayName: "Reminder",
+                    instructions:
+                      plans === 1 || mode === "same"
+                        ? body
+                        : "Different reminder body",
+                    ...(plans === 2 ? { delayMinutes: 2 } : {}),
+                    eliza_turn_scope: "final",
+                  },
+                },
+              ],
+            };
+          },
+        },
+        executeToolCall: async () => {
+          if (++attempts === 1)
+            return mode === "exploratory"
+              ? {
+                  success: false,
+                  text: "Optional lookup unavailable.",
+                  data: { readOnlyOperation: true },
+                }
+              : {
+                  success: false,
+                  error: "MISSING_SCHEDULE",
+                  data: {
+                    acceptance: "rejected",
+                    executionStatus: "not_started",
+                  },
+                  failureProvenance: {
+                    kind: "handler_error",
+                    boundary: "handler",
+                    code: "MISSING_SCHEDULE",
+                    retryable: true,
+                  },
+                };
+          if (mode === "pending")
+            return {
+              success: false,
+              data: {
+                requiresInput: true,
+                awaitingUserInput: true,
+                retryable: false,
+              },
+              text: "Which time should I use?",
+            };
+          return {
+            success: true,
+            transcriptVisibility: "internal",
+            modelReplyRequired: true,
+            ...(mode === "verified-sibling"
+              ? {
+                  userFacingText: "Created the separate reminder.",
+                  verifiedUserFacing: true,
+                  userFacingEffectReceiptIds: ["new-reminder"],
+                }
+              : {}),
+            effectReceipts: [
+              {
+                receiptId: "new-reminder",
+                operation: "trigger.create",
+                resource: { kind: "trigger", id: "new-reminder", version: "1" },
+                outcome: "applied",
+                commit: {
+                  kind: "durable",
+                  id: "new-reminder",
+                  committedAt: "2026-10-27T13:00:00.000Z",
+                },
+                observedAt: "2026-10-27T13:00:00.000Z",
+                artifacts: [],
+                idempotency: { key: "new", replayed: false },
+              },
+            ],
+          };
+        },
+        evaluate: async () =>
+          mode === "exploratory" && attempts === 1
+            ? {
+                decision: "CONTINUE",
+                success: false,
+                thought: "Continue after optional lookup.",
+              }
+            : {
+                decision: "FINISH",
+                success: true,
+                thought: "Raw model verdict.",
+                messageToUser: claim,
+                requestFullyCovered: true,
+                replyEffectStatus: "applied",
+                effectReceiptIds: ["new-reminder"],
+              },
+      });
+      const mapped = subPlannerResultToPlannerToolResult(result);
+      const complete = mode === "same" || mode === "exploratory";
+      expect(attempts).toBe(2);
+      expect(result.trajectory.steps[0].result?.success).toBe(false);
+      if (
+        mode === "same" ||
+        mode === "different" ||
+        mode === "verified-sibling"
+      ) {
+        const parentEvaluate = vi.fn(async () => ({
+          decision: "FINISH" as const,
+          success: complete,
+          thought: "Parent checked the actual effective child result.",
+          messageToUser: complete
+            ? claim
+            : "The original reminder remains incomplete; the separate reminder receipt is preserved.",
+        }));
+        let parentPlans = 0;
+        const parent = await runPlannerLoop({
+          context: { id: `parent-${mode}`, events: [] },
+          codingMode: false,
+          runtime: {
+            useModel: async () => {
+              if (++parentPlans > 1)
+                throw Error(
+                  "No duplicate parent execution or synthetic success.",
+                );
+              return {
+                text: "",
+                toolCalls: [
+                  {
+                    id: "umbrella",
+                    name: "TRIGGER",
+                    arguments: { action: "create", eliza_turn_scope: "final" },
+                  },
+                ],
+              };
+            },
+          },
+          executeToolCall: async () => mapped,
+          evaluate: parentEvaluate,
+        });
+        if (complete) {
+          expect(parentEvaluate).not.toHaveBeenCalled();
+          expect(parent.finalMessage).toBe(claim);
+          expect(parentPlans).toBe(1);
+        } else {
+          expect(parentEvaluate).toHaveBeenCalledTimes(1);
+          expect(parent.finalMessage).not.toBe(claim);
+          expect(parent.evaluator?.success).not.toBe(true);
+        }
+      }
+      if (complete) {
+        expect(result.evaluator?.success).toBe(true);
+        expect(mapped.success).toBe(true);
+      } else {
+        expect(result.finalMessage).not.toBe(claim);
+        expect(result.evaluator?.success).not.toBe(true);
+        expect(mapped.success).toBe(false);
+        expect(mapped.subPlannerEvaluation?.success).not.toBe(true);
+        expect(mapped.subPlannerEvaluation?.messageToUser).not.toBe(claim);
+      }
+      const raw = result.trajectory.evaluatorOutputs.at(-1);
+      if (raw)
+        expect(raw).toMatchObject({ success: true, messageToUser: claim });
+      if (mode !== "pending")
+        expect(mapped.effectReceipts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              receiptId: "new-reminder",
+              outcome: "applied",
+            }),
+          ]),
+        );
+    },
+  );
+});
+
+it("parent projection cannot promote an explicit failed terminal with a raw success verdict", async () => {
+  const { subPlannerResultToPlannerToolResult } = await import(
+    "../services/message/planned-tool.ts"
+  );
+  const raw = {
+    decision: "FINISH" as const,
+    success: true,
+    thought: "Raw model output",
+    messageToUser: "Created it.",
+  };
+  const projected = subPlannerResultToPlannerToolResult({
+    status: "finished",
+    trajectory: { steps: [], archivedSteps: [], evaluatorOutputs: [raw] },
+    evaluator: raw,
+    terminalFailure: {
+      kind: "resource_limit",
+      transient: false,
+      code: "PLANNER_RESOURCE_LIMIT",
+      message: "Incomplete.",
+    },
+    finalMessage: "The work remains incomplete.",
+  } as Parameters<typeof subPlannerResultToPlannerToolResult>[0]);
+  expect(projected.success).toBe(false);
+  expect(projected.subPlannerEvaluation).toMatchObject({
+    success: false,
+    messageToUser: "The work remains incomplete.",
+  });
+  expect(raw).toMatchObject({ success: true, messageToUser: "Created it." });
+});
