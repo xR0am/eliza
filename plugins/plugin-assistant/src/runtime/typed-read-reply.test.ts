@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { EvaluatorOutput, TypedReadReplyBinding } from "@elizaos/core";
+import { describe, expect, test } from "vitest";
 import {
   applyTypedReadReply,
   createTypedReadEgressReceipt,

@@ -196,7 +196,11 @@ function pendingActionContexts(
     ),
   );
   const domains = new Set<string>();
-  for (const intent of (intents ?? []).map(positiveIntentText)) {
+  for (const intent of (intents ?? []).flatMap((text) =>
+    intentClauses(positiveIntentText(text)).flatMap((clause) =>
+      clause.split(/\band\b/iu),
+    ),
+  )) {
     const words = tokenizeActionSearchText(intent);
     const claimed = words.some((word) => claimWords.has(word));
     if (
@@ -375,11 +379,27 @@ export function retrieveContextualPlannerActions(args: {
     // the remaining slots by rank. Exact hints may exceed this automatic budget.
     for (const domain of domains) {
       if (chosen.size >= available) break;
-      const representative = candidates.find((action) =>
-        actionDiscoveryContexts(action).some(
-          (context) => normalizeContextId(context) === domain,
-        ),
-      );
+      if (
+        required.some((action) =>
+          actionDiscoveryContexts(action).some(
+            (context) => normalizeContextId(context) === domain,
+          ),
+        )
+      )
+        continue;
+      const representative = candidates
+        .filter((action) =>
+          actionDiscoveryContexts(action).some(
+            (context) => normalizeContextId(context) === domain,
+          ),
+        )
+        .sort(
+          (left, right) =>
+            plannerDomainOwnership(right, domain) -
+              plannerDomainOwnership(left, domain) ||
+            actionDiscoveryContexts(left).length -
+              actionDiscoveryContexts(right).length,
+        )[0];
       if (representative) chosen.add(representative.name);
     }
     for (const action of candidates) {
