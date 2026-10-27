@@ -134,6 +134,183 @@ test("renderer rejects an invocation after authority changes during its native r
   }
 });
 
+test("same-owner remount fences delayed old bind, take and cleanup", async () => {
+  const { createSenseInvocationController } = await import("../src/sense.ts");
+  const savedWindow = globalThis.window,
+    savedDocument = globalThis.document;
+  const until = async (check) => {
+    for (let i = 0; i < 100 && !check(); i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(check());
+  };
+  try {
+    for (const delayed of ["bind", "take", "clear"]) {
+      globalThis.window = new EventTarget();
+      globalThis.document = new EventTarget();
+      globalThis.document.hidden = false;
+      globalThis.document.querySelector = () => null;
+      let owner,
+        generation = 0,
+        held,
+        delayedOnce = false,
+        receipt = false,
+        oldStarts = 0,
+        newStarts = 0;
+      const native = {
+        async bindInvocationSession(input) {
+          const apply = () => {
+            if (input.generation < generation) return;
+            if (input.sessionKey === null) {
+              if (owner === input.bindingId) owner = undefined;
+              return;
+            }
+            generation = input.generation;
+            owner = input.bindingId;
+          };
+          if (
+            !delayedOnce &&
+            delayed === (input.sessionKey === null ? "clear" : "bind")
+          ) {
+            delayedOnce = true;
+            await new Promise((resolve) => {
+              held = () => {
+                apply();
+                resolve();
+              };
+            });
+          } else apply();
+        },
+        async takeInvocation(input) {
+          if (!delayedOnce && delayed === "take") {
+            delayedOnce = true;
+            await new Promise((resolve) => {
+              held = resolve;
+            });
+          }
+          const accepted =
+            receipt &&
+            input.bindingId === owner &&
+            input.generation === generation;
+          if (accepted) receipt = false;
+          return {
+            assistant: accepted,
+            invocation: accepted ? "listener" : null,
+            locked: false,
+          };
+        },
+      };
+      const host = (startVoice) => ({
+        authority: () => "same-owner/same-session",
+        ready: () => true,
+        voiceActive: () => false,
+        startVoice,
+      });
+      const old = createSenseInvocationController(
+        native,
+        host(() => oldStarts++),
+      );
+      if (delayed === "clear") {
+        await until(() => owner);
+        old.dispose();
+      }
+      await until(() => held);
+      const oldOwner = owner;
+      const current = createSenseInvocationController(
+        native,
+        host(() => newStarts++),
+      );
+      if (delayed !== "clear") old.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      assert.equal(
+        owner,
+        oldOwner,
+        "new binding waits for old native operation completion",
+      );
+      held();
+      await until(() => owner && owner !== oldOwner);
+      receipt = true;
+      current.check();
+      await until(() => newStarts === 1);
+      assert.equal(oldStarts, 0);
+      current.dispose();
+      await until(() => !owner);
+    }
+  } finally {
+    globalThis.window = savedWindow;
+    globalThis.document = savedDocument;
+  }
+});
+
+test("an abandoned bridge request cannot hold the next mount indefinitely", async (t) => {
+  const { createSenseInvocationController, SENSE_BRIDGE_TIMEOUT_MS } =
+    await import("../src/sense.ts");
+  const savedWindow = globalThis.window,
+    savedDocument = globalThis.document;
+  globalThis.window = new EventTarget();
+  globalThis.document = new EventTarget();
+  globalThis.document.hidden = false;
+  globalThis.document.querySelector = () => null;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flush = async () => {
+    for (let i = 0; i < 10; i++) await new Promise(setImmediate);
+  };
+  let release,
+    first = true,
+    generation = 0,
+    owner;
+  const native = {
+    async bindInvocationSession(input) {
+      if (first) {
+        first = false;
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+      }
+      if (input.generation < generation) return;
+      generation = input.generation;
+      if (input.sessionKey !== null) owner = input.bindingId;
+      else if (input.bindingId === owner) owner = undefined;
+    },
+    async takeInvocation() {
+      return { assistant: false, locked: false };
+    },
+  };
+  const host = {
+    authority: () => "same-owner",
+    ready: () => true,
+    voiceActive: () => false,
+    startVoice() {
+      throw Error("Unexpected voice start");
+    },
+  };
+  const old = createSenseInvocationController(native, host);
+  let current;
+  try {
+    await flush();
+    assert.ok(release);
+    current = createSenseInvocationController(native, host);
+    old.dispose();
+    t.mock.timers.tick(SENSE_BRIDGE_TIMEOUT_MS);
+    await flush();
+    assert.ok(owner, "replacement progresses when abandoned request times out");
+    const currentOwner = owner;
+    release();
+    await flush();
+    assert.equal(
+      owner,
+      currentOwner,
+      "late older-generation mutation remains fenced",
+    );
+  } finally {
+    old.dispose();
+    current?.dispose();
+    await flush();
+    t.mock.timers.reset();
+    globalThis.window = savedWindow;
+    globalThis.document = savedDocument;
+  }
+});
+
 test("native client and plugin compile against the Android 36 APIs", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "sense-control-android-"));
   const java = (name) =>
@@ -143,9 +320,9 @@ test("native client and plugin compile against the Android 36 APIs", () => {
   try {
     const stubs = {
       "Plugin.java":
-        "package com.getcapacitor; public class Plugin { public android.content.Context getContext(){return null;} public android.app.Activity getActivity(){return null;} }",
+        "package com.getcapacitor; public class Plugin { protected void handleOnDestroy(){} public android.content.Context getContext(){return null;} public android.app.Activity getActivity(){return null;} }",
       "PluginCall.java":
-        "package com.getcapacitor; public class PluginCall { public void resolve(JSObject value){} public void resolve(){} public void reject(String value){} public String getString(String value){return null;} }",
+        "package com.getcapacitor; public class PluginCall { public void resolve(JSObject value){} public void resolve(){} public void reject(String value){} public String getString(String value){return null;} public Integer getInt(String value){return null;} }",
       "JSObject.java":
         "package com.getcapacitor; public class JSObject extends java.util.HashMap<String,Object> {}",
       "PluginMethod.java":

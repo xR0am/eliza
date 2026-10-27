@@ -12,11 +12,14 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Nonprivileged access to the same-signer image listener. No enable/resume surface exists. */
 public final class SenseListenerClient {
     public static final String SETTINGS_ACTIVITY = "ai.eliza.sense.SETTINGS_ACTIVITY";
     private static final Map<String, SenseInvocation> invocations = new HashMap<>();
+    private static final AtomicLong bridgeGenerations = new AtomicLong();
+    public static long nextInvocationBridge() { return bridgeGenerations.incrementAndGet(); }
     private final Context context;
     private final String packageName;
 
@@ -46,7 +49,7 @@ public final class SenseListenerClient {
 
     /** Absent is safe to reset; an installed unacknowledged listener must stop the reset. */
     public boolean resetForData() {
-        invocation().bind(null);
+        invocation().reset();
         try { context.getPackageManager().getApplicationInfo(packageName, 0); }
         catch (PackageManager.NameNotFoundException absent) { return true; }
         catch (RuntimeException unavailable) { return false; }
@@ -75,7 +78,8 @@ public final class SenseListenerClient {
         synchronized (invocations) { return invocations.computeIfAbsent(context.getPackageName(), ignored -> new SenseInvocation()); }
     }
 
-    public void bindInvocationSession(String session) { invocation().bind(session); }
+    public void bindInvocationSession(long bridge, int generation, String bindingId, String session) { invocation().bind(bridge, generation, bindingId, session); }
+    public void releaseInvocationBridge(long bridge) { invocation().release(bridge); }
 
     /** Caller package must come from Android's Activity caller API, never an extra or deep link. */
     public void recordInvocation(String callerPackage) {
@@ -85,11 +89,11 @@ public final class SenseListenerClient {
         invocation().record(context.getPackageName(), callerPackage, sameSigner, SystemClock.elapsedRealtime(), keyguard == null || keyguard.isKeyguardLocked());
     }
 
-    public Bundle takeInvocation(String session, boolean foreground) {
+    public Bundle takeInvocation(long bridge, int generation, String bindingId, String session, boolean foreground) {
         if (!foreground) { Bundle unavailable=new Bundle();unavailable.putBoolean("assistant",false);unavailable.putBoolean("locked",true);return unavailable; }
         KeyguardManager keyguard = context.getSystemService(KeyguardManager.class);
         boolean locked = keyguard == null || keyguard.isKeyguardLocked();
-        String origin = invocation().take(session, SystemClock.elapsedRealtime(), locked || !foreground);
+        String origin = invocation().take(bridge, generation, bindingId, session, SystemClock.elapsedRealtime(), locked || !foreground);
         Bundle out = new Bundle();
         out.putBoolean("assistant", origin != null); out.putString("invocation", origin); out.putBoolean("locked", locked);
         return out;

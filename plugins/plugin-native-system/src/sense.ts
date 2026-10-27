@@ -36,8 +36,16 @@ export interface SensePlugin {
   pause(): Promise<ListenerStatus>;
   turnOff(): Promise<ListenerStatus>;
   openSettings(): Promise<{ opened: boolean }>;
-  bindInvocationSession(options: { sessionKey: string | null }): Promise<void>;
-  takeInvocation(options: { sessionKey: string }): Promise<unknown>;
+  bindInvocationSession(options: {
+    generation: number;
+    bindingId: string;
+    sessionKey: string | null;
+  }): Promise<void>;
+  takeInvocation(options: {
+    generation: number;
+    bindingId: string;
+    sessionKey: string;
+  }): Promise<unknown>;
 }
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -112,11 +120,46 @@ export async function invocationSessionKey(authority: string): Promise<string> {
   ).join("");
 }
 
+// All instances in this renderer share the bridge completion order. In particular,
+// an old in-flight bind must finish before a replacement posts its new binding.
+// Native methods resolve only after applying their mutation; no dispatch FIFO is assumed.
+let invocationOperation = Promise.resolve();
+let activeInvocationBinding: string | null = null;
+let nextInvocationGeneration = 0;
+export const SENSE_BRIDGE_TIMEOUT_MS = 10_000;
+function serializeInvocation<T>(run: () => Promise<T>): Promise<T> {
+  const bounded = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        run(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Sense bridge did not complete")),
+            SENSE_BRIDGE_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const result = invocationOperation.then(bounded, bounded);
+  invocationOperation = result.then(
+    () => {},
+    () => {},
+  );
+  return result;
+}
+
 /** Bind before consuming. Cold-start, changed-owner and stale async results cannot open the mic. */
 export function createSenseInvocationController(
   native: Pick<SensePlugin, "bindInvocationSession" | "takeInvocation">,
   host: SenseInvocationHost,
 ) {
+  const bindingId = crypto.randomUUID();
+  const generation = ++nextInvocationGeneration;
+  activeInvocationBinding = bindingId;
   let digestAuthority: string | null | undefined;
   let digestKey: string | null = null;
   let disposed = false,
@@ -125,7 +168,9 @@ export function createSenseInvocationController(
     initialized = false,
     bound: string | null = null;
   const current = (authority: string | null) =>
-    !disposed && host.authority() === authority;
+    !disposed &&
+    activeInvocationBinding === bindingId &&
+    host.authority() === authority;
   const check = async () => {
     if (disposed) return;
     if (checking) {
@@ -145,7 +190,14 @@ export function createSenseInvocationController(
       digestAuthority = authority;
       digestKey = key;
       if (!initialized || bound !== key) {
-        await native.bindInvocationSession({ sessionKey: key });
+        await serializeInvocation(async () => {
+          if (current(authority))
+            await native.bindInvocationSession({
+              generation,
+              bindingId,
+              sessionKey: key,
+            });
+        });
         if (!current(authority)) return;
         bound = key;
         initialized = true;
@@ -158,7 +210,11 @@ export function createSenseInvocationController(
         document.querySelector(SENSE_MODAL_SELECTOR)
       )
         return;
-      const receipt = await native.takeInvocation({ sessionKey: key });
+      const receipt = await serializeInvocation(async () =>
+        current(authority)
+          ? native.takeInvocation({ generation, bindingId, sessionKey: key })
+          : undefined,
+      );
       if (!current(authority) || !host.ready() || host.voiceActive()) return;
       if (
         listenerStartsVoice({
@@ -198,11 +254,18 @@ export function createSenseInvocationController(
     check: changed,
     dispose() {
       disposed = true;
+      if (activeInvocationBinding === bindingId) activeInvocationBinding = null;
       clearInterval(initial);
       unsubscribe?.();
       for (const event of events) window.removeEventListener(event, changed);
       document.removeEventListener("visibilitychange", changed);
-      void native.bindInvocationSession({ sessionKey: null }).catch(() => {});
+      void serializeInvocation(() =>
+        native.bindInvocationSession({
+          generation,
+          bindingId,
+          sessionKey: null,
+        }),
+      ).catch(() => {});
     },
   };
 }

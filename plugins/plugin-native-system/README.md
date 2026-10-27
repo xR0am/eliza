@@ -96,6 +96,16 @@ background state or owner change. A cold process has no bound owner: the wake
 opens the assistant but does not start a voice turn automatically. Once an
 authenticated session is bound, a warm wake can start the existing shell voice
 controller. Hosts must supply live authority reads and re-check readiness.
+Cold-start automatic voice remains a parity gap until the native owner can bind
+an authenticated session before launch; renderer extras must never fill that gap.
+
+Each renderer mount has an opaque binding ID and monotonic generation. Native
+plugin instances also have a process-local monotonic generation. Old mount or
+WebView bind/read/cleanup calls cannot change a newer binding, even for the same
+owner. The renderer serializes bridge operations and bounds each wait to ten
+seconds; a timed-out late native operation remains subject to those generation
+checks. Failure to complete never authorizes capture. A later focus/invocation
+check can retry; a WebView recreation receives a new native plugin lifetime.
 
 `node --test plugins/plugin-native-system/test/sense.test.mjs` exercises the
 shared native policy, client refusal rules, Android API compilation and renderer

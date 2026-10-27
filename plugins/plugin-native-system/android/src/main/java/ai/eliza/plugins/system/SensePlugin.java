@@ -11,7 +11,14 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 /** Common image-listener bridge; a product may retain a legacy plugin-name alias. */
 @CapacitorPlugin(name="ElizaSense")
 public class SensePlugin extends Plugin {
+    private final long bridgeGeneration = SenseListenerClient.nextInvocationBridge();
+    private volatile boolean destroyed;
     private SenseListenerClient client() { return new SenseListenerClient(getContext()); }
+    @Override protected void handleOnDestroy() {
+        destroyed = true;
+        client().releaseInvocationBridge(bridgeGeneration);
+        super.handleOnDestroy();
+    }
     private void resolve(PluginCall call, Bundle result) {
         JSObject out = new JSObject(); out.put("available", result != null);
         if (result != null) {
@@ -30,11 +37,16 @@ public class SensePlugin extends Plugin {
         JSObject out = new JSObject(); out.put("opened", opened); call.resolve(out);
     }
     @PluginMethod public void bindInvocationSession(PluginCall call) {
-        try { client().bindInvocationSession(call.getString("sessionKey")); call.resolve(); }
+        try {
+            Integer generation = call.getInt("generation");
+            if (!destroyed) client().bindInvocationSession(bridgeGeneration, generation == null ? 0 : generation, call.getString("bindingId"), call.getString("sessionKey"));
+            call.resolve();
+        }
         catch (IllegalArgumentException invalid) { call.reject(invalid.getMessage()); }
     }
     @PluginMethod public void takeInvocation(PluginCall call) {
-        Bundle result=client().takeInvocation(call.getString("sessionKey"), getActivity()!=null && getActivity().hasWindowFocus() && !getActivity().isFinishing() && !getActivity().isDestroyed());
+        Integer generation = call.getInt("generation");
+        Bundle result=client().takeInvocation(bridgeGeneration, generation == null ? 0 : generation, call.getString("bindingId"), call.getString("sessionKey"), !destroyed && getActivity()!=null && getActivity().hasWindowFocus() && !getActivity().isFinishing() && !getActivity().isDestroyed());
         JSObject out=new JSObject();out.put("assistant",result.getBoolean("assistant"));out.put("invocation",result.getString("invocation"));out.put("locked",result.getBoolean("locked"));call.resolve(out);
     }
 }
