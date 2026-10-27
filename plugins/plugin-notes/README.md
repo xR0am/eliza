@@ -46,3 +46,17 @@ or start a background service.
 Capacity limits apply when adding to Trash. Existing documents remain readable and
 can be restored or purged after a host lowers its limits. A full Trash refuses new
 additions; hosts must explain that the user can empty Trash to free space.
+
+
+`NotesSnapshotState` shares owner-bound, monotonic snapshot publication across the
+React view and embedded hosts. The host supplies an opaque current authority;
+retired owners cannot publish or expose their cached notes. It does not choose
+request scheduling or change the server's revision contract.
+
+`NotesController` and `NotesEditor` provide the embedded-host lifecycle and editor
+over `createNotesClient`: coalesced reads, serialized explicit mutations, stale
+revision review, rich authored content, and Trash restoration. Hosts supply the
+current-owner check and view callbacks. The editor keeps unsaved text in memory;
+these clients do not migrate older local stores, acquire credentials, or replay
+an uncertain write. Forward only authenticated invalidation events to `invalidate(revision)`;
+omit the revision when an authenticated event requires a fresh snapshot.
