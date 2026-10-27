@@ -494,7 +494,7 @@ describe("Notes capability-to-UI journey", () => {
         </section>
       </>,
     );
-    await waitFor(() => expect(workspace.current?.revision()).not.toBeNull());
+    await waitFor(() => expect(workspace.current?.current()).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "Save card to Notes" }));
     await waitFor(() => expect(receipt).toBeDefined());
     const state = activeService().snapshot();

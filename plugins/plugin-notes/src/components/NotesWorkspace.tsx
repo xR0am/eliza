@@ -57,6 +57,7 @@ export interface NotesWorkspaceProps {
   onOperationError?(cause: unknown): void;
 }
 export interface NotesWorkspaceHandle {
+  current(): boolean;
   requestLeave(): Promise<boolean>;
   hasUnsavedChanges(): boolean;
   isEditing(): boolean;
@@ -250,6 +251,7 @@ function WorkspaceSession(
     return true;
   }, [session]);
   useImperativeHandle(props.workspaceRef, () => ({
+    current: () => !!session?.controller.current,
     requestLeave: leave,
     hasUnsavedChanges: () => !!session?.editor.draft?.version,
     isEditing: () => !!session?.editor.draft,
