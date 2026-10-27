@@ -4,6 +4,7 @@ import { isValidTimeZone } from "@elizaos/contracts";
 import type {
   Action,
   ActionResult,
+  AgentContext,
   Content,
   ContextObject,
   IAgentRuntime,
@@ -669,6 +670,8 @@ export function evaluatePlannedReplyEgress(args: {
   /** Early progress for a turn whose work has not settled. */
   pendingWork?: boolean;
   request?: string;
+  /** Stage 1's selected contexts for this turn. */
+  contexts?: readonly AgentContext[];
   providers?: StateData["providers"];
   actionResults: readonly ActionResult[];
   actions: readonly Action[];
@@ -755,6 +758,8 @@ export async function resolvePlannedReplyEgress(args: {
   runtime: IAgentRuntime;
   message: Memory;
   reply: string;
+  /** Stage 1's selected contexts for this turn. */
+  contexts?: readonly AgentContext[];
   providers?: StateData["providers"];
   actionResults: readonly ActionResult[];
   evaluator?: EvaluatorOutput;
@@ -772,6 +777,7 @@ export async function resolvePlannedReplyEgress(args: {
     },
     reply: args.reply,
     request: getUserMessageText(args.message),
+    contexts: args.contexts,
     providers: args.providers,
     actionResults: args.actionResults,
     actions: args.runtime.actions,
@@ -837,6 +843,7 @@ export async function resolvePlannedReplyEgress(args: {
       },
       reply: args.reply,
       request: getUserMessageText(args.message),
+      contexts: args.contexts,
       providers: args.providers,
       actionResults: actionResults(),
       actions: args.runtime.actions,
@@ -963,6 +970,7 @@ export async function resolvePlannedReplyEgress(args: {
         },
         reply,
         request: getUserMessageText(args.message),
+        contexts: args.contexts,
         providers: args.providers,
         actionResults: actionResults(),
         actions: args.runtime.actions,
