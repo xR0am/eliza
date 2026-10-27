@@ -21,6 +21,7 @@ import {
   BILLING_AUDIT_RESOURCE_EXPECTATIONS,
   CLOUD_AUDIT_DEDICATED_AGENT_ID,
   installCloudApiStubs,
+  PUBLIC_SERVICE_DOCUMENT_FIXTURE,
   seedStewardToken,
 } from "./helpers/cloud-audit-fixtures";
 import {
@@ -1066,6 +1067,64 @@ test.describe("cloud-surfaces aesthetic audit (#10725/#11342)", () => {
           qualityIssues: [],
         }),
       ).toBe("broken");
+    });
+  }
+
+  for (const vp of VIEWPORTS) {
+    test(`configured legal documents and retry ${vp.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await installCloudApiStubs(page);
+      let attempts = 0;
+      await page.route("**/api/public/service", async (route) => {
+        expect(route.request().headers().authorization).toBeUndefined();
+        attempts++;
+        await route.fulfill({
+          status: attempts === 1 ? 503 : 200,
+          contentType: "application/json",
+          body: JSON.stringify(
+            attempts === 1
+              ? { success: false }
+              : PUBLIC_SERVICE_DOCUMENT_FIXTURE,
+          ),
+        });
+      });
+      await page.goto("/terms-of-service", { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("alert")).toContainText(
+        "could not provide this document",
+      );
+      await expect(
+        page.getByText("Service terms", { exact: true }),
+      ).toHaveCount(0);
+      await page
+        .getByRole("button", { name: "Try again", exact: true })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "Nebula Terms", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("Terms revision 2026-10-25", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("<strong>Legal text stays plain text.</strong>", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(page.locator("main strong")).toHaveCount(0);
+      await page
+        .getByRole("link", { name: "Privacy Policy", exact: true })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "Nebula Privacy", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("Privacy revision 2026-10-25", { exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole("link", { name: "Back to login", exact: true })
+        .click();
+      await expect(page).toHaveURL(/\/login(?:[?#]|$)/);
     });
   }
 
