@@ -51,8 +51,8 @@ import {
   financialHoldingIsUngrounded,
   financialObservationProviders,
 } from "./financial-observations.ts";
-import { referenceRepeatedHistory } from "./history-wire.ts";
 import { projectBackgroundHistory } from "./history-discovery.ts";
+import { referenceRepeatedHistory } from "./history-wire.ts";
 import {
   type RecoveredReplyClaim,
   reviewRecoveredReply,
@@ -154,7 +154,7 @@ export function capturePlannerReplyRecovery(
   const fullContext = render(context);
   // Source hashes were formed before redaction. A planner restoration clears
   // the model-base selector even if the original trajectory still retains it.
-  const original = {
+  const original: ContextObject = {
     ...trajectory.context,
     metadata: {
       ...trajectory.context.metadata,

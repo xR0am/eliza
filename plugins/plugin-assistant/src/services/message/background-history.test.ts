@@ -16,16 +16,16 @@ import {
   runPlannerLoop,
 } from "../../runtime/planner-loop.ts";
 import {
+  capturePlannerReplyRecovery,
+  parseReplyRecoveryHistorySelection,
+} from "./egress-policy.ts";
+import {
   loadHistoryReferences,
   projectBackgroundHistory,
   projectReviewedHistory,
   requestedHistory,
   withBackgroundHistory,
 } from "./history-discovery.ts";
-import {
-  capturePlannerReplyRecovery,
-  parseReplyRecoveryHistorySelection,
-} from "./egress-policy.ts";
 import { executeV5PlannedToolCall } from "./planned-tool.ts";
 import { renderMessageHandlerModelInput } from "./stage1-input.ts";
 
@@ -348,7 +348,10 @@ it.each([
             clarification: "What time?",
             guestIntent: { state: "none", guests: [], evidence },
             noteIntent: {
-              state: "none", sourceNote: null, descriptionMode: "extracted", evidence,
+              state: "none",
+              sourceNote: null,
+              descriptionMode: "extracted",
+              evidence,
             },
           },
         };
