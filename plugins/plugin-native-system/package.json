@@ -35,7 +35,7 @@
     "lint:check": "bunx @biomejs/biome check .",
     "format": "bunx @biomejs/biome format --write .",
     "format:check": "bunx @biomejs/biome format .",
-    "test": "node --test test/launcher.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "license": "MIT",
   "capacitor": {

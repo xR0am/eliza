@@ -7,6 +7,9 @@ export type NotesPhase = "loading" | "ready" | "saving" | "review" | "retired";
 export interface NotesControllerHooks {
   snapshot(snapshot: NotesSnapshot, reason: "read" | "interact"): void;
   phase(phase: NotesPhase): void;
+  /** Preserve transport classification for recovery UI. Retired owners and
+   * deliberate request cancellation do not report failures. */
+  failed?(cause: unknown, operation: "read" | "interact"): void;
 }
 export class NotesController {
   private readonly state: NotesSnapshotState;
@@ -68,7 +71,10 @@ export class NotesController {
         return structuredClone(value);
       })
       .catch((error) => {
-        if (this.current && !abort.signal.aborted) this.hooks.phase("review");
+        if (this.current && !abort.signal.aborted) {
+          this.hooks.failed?.(error, "read");
+          this.hooks.phase("review");
+        }
         throw error;
       });
     this.read = pending;
@@ -129,7 +135,10 @@ export class NotesController {
       this.hooks.phase("ready");
       return result;
     } catch (error) {
-      if (this.current) this.hooks.phase("review");
+      if (this.current) {
+        this.hooks.failed?.(error, "interact");
+        this.hooks.phase("review");
+      }
       throw error;
     } finally {
       this.writing = false;

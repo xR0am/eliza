@@ -174,6 +174,20 @@ test("exact shared SystemUI patch stages only into a new overlay and retains all
   assert.equal(result.systemUiCompiled, false);
   assert.equal(result.imageBuilt, false);
   assert.equal(verifyListenerSystemui(output, "after", "chip").files.length, 9);
+  const generated = path.join(
+    output,
+    "frameworks/base",
+    envelope.manifest.files[0].path,
+  );
+  const saved = `${generated}.saved`;
+  fs.renameSync(generated, saved);
+  fs.symlinkSync(saved, generated);
+  assert.throws(
+    () => verifyListenerSystemui(output, "after", "chip"),
+    /regular, non-symlink/,
+  );
+  fs.unlinkSync(generated);
+  fs.renameSync(saved, generated);
   assert.throws(
     () => prepareListenerSystemui(source, path.join(source, "unsafe"), "chip"),
     /outside/,
