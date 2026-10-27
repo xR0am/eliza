@@ -141,6 +141,8 @@ rules ported from them.
 
 Set `elizaParadeeAssetsOnly=true` when applying `consumer.gradle` to package only the pinned models and `VoiceBundleAssets` installer. This mode includes no inference session classes, JNI bridge or native library. The Eliza Android app uses this mode through `:voice-assets`; `ELIZA_VOICE_NATIVE_DIR` selects its generated native input directory. Explicit cloud and host-test builds omit these assets.
 
+Admission checks the complete asset inventory against the build record and rejects duplicate paths, extra files and symlinks. Required speech models must also match `inputs.json`; a matching record cannot substitute a different model.
+
 `VoiceAssets.install(context)` delegates to the same installer. The default private directory remains `paradee-voice-v1`. A host may set application manifest metadata `ai.eliza.voice.BUNDLE_DIRECTORY` to a relative private directory; Eliza uses `eliza-1/bundle` for its existing bionic server. The installer validates that directory beneath `filesDir`. It copies and verifies model files but never opens a native context.
 
 Run `bun run test:android-assets` from this package to exercise the installer with real JVM file operations and synthetic model bytes. It requires JDK 17 or newer and `org.json:json:20250517` in the Gradle cache (or `ELIZA_JSON_JAR`). This test does not qualify models or a device.

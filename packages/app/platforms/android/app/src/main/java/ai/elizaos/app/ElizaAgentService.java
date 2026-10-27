@@ -1852,9 +1852,6 @@ public class ElizaAgentService extends Service {
      */
     private void extractAuxRuntimeAssets(AssetManager assets, File filesDir, File stateDir,
             boolean forceRefreshTarballs) throws IOException {
-        if (ai.eliza.voice.VoiceBundleAssets.isPackaged(this)) {
-            ai.eliza.voice.VoiceBundleAssets.install(this);
-        }
         // vector.tar.gz / fuzzystrmatch.tar.gz must live one directory ABOVE the
         // bundle (PGlite resolves them via `new URL("../X.tar.gz", ...)`), so
         // they sit in files/ rather than the agent root. aapt2 strips the `.gz`
@@ -2194,6 +2191,11 @@ public class ElizaAgentService extends Service {
             return;
         }
         try {
+            // This worker runs before the live-runtime adoption check as well
+            // as a fresh spawn. No model copying runs on the service main thread.
+            if (ai.eliza.voice.VoiceBundleAssets.isPackaged(this)) {
+                ai.eliza.voice.VoiceBundleAssets.install(this);
+            }
             File bundleRoot = ai.eliza.voice.VoiceBundleAssets.bundleRoot(this);
             File paradeeModel = new File(bundleRoot,
                 ElizaBionicInferenceServer.PARADEE_DIR + "/" + ElizaBionicInferenceServer.PARADEE_MODEL);
@@ -2794,11 +2796,6 @@ public class ElizaAgentService extends Service {
                 // Stand up the in-process GPU inference server BEFORE the agent
                 // spawns so the abstract socket is already bound when the agent's
                 // BionicHostLoader first connects. Idempotent across restarts.
-                if (bionicInferenceServer == null) {
-                    String defaultBundleDir =
-                        ai.eliza.voice.VoiceBundleAssets.bundleRoot(this).getAbsolutePath();
-                    bionicInferenceServer = newBionicInferenceServer(defaultBundleDir);
-                }
                 // Guard the start: a failure here (e.g. the fused-voice native
                 // libs failing to dlopen) must NOT leave the delegation env set,
                 // or the musl agent registers dead "(via bionic-host)" handlers
@@ -2807,6 +2804,11 @@ public class ElizaAgentService extends Service {
                 // the non-delegated inference path below. UnsatisfiedLinkError is
                 // an Error, not an Exception, so catch Throwable here.
                 try {
+                    if (bionicInferenceServer == null) {
+                        String defaultBundleDir =
+                            ai.eliza.voice.VoiceBundleAssets.bundleRoot(this).getAbsolutePath();
+                        bionicInferenceServer = newBionicInferenceServer(defaultBundleDir);
+                    }
                     bionicInferenceServer.start();
                 } catch (Throwable startError) {
                     Log.e(TAG, "ElizaBionicInferenceServer.start() failed; disabling "
