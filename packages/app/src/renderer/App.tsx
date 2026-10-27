@@ -2409,6 +2409,7 @@ function ChatOverlayMount({
         const current = senseHost.current.controller;
         if (current && ready()) {
           current.open();
+          window.dispatchEvent(new CustomEvent(CHAT_OPEN_EVENT));
           current.toggleHandsFree();
         }
       },
