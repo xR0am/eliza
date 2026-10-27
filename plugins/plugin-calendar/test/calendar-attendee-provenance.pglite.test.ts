@@ -54,11 +54,37 @@ const message: Memory = {
 let pg: PGlite;
 let runtime: IAgentRuntime;
 let service: CalendarService;
+const priorGuestIntent = {
+  state: "requested",
+  evidence: [
+    { sourceId: "history:0", quote: "Invite sam.taylor@acme.com to lunch." },
+  ],
+  guests: [
+    {
+      name: "Sam Taylor",
+      email: "sam.taylor@acme.com" as string | null,
+      optional: false,
+    },
+  ],
+};
+let guestIntent = structuredClone(priorGuestIntent);
+let currentText = message.content.text ?? "";
 const action = createCalendarActionRunner({
   runTextModel: async () => null,
   runJsonModel: async () => ({
     rawResponse: "{}",
     parsed: {
+      title: "Lunch",
+      requiresInput: false,
+      clarification: null,
+      description: null,
+      location: null,
+      guestIntent,
+      noteIntent: {
+        state: "none",
+        sourceNote: null,
+        evidence: [{ sourceId: `current:${message.id}`, quote: currentText }],
+      },
       grantId: ELIZA_CALENDAR_GRANT_ID,
       calendarId: "primary",
       startAt: "2050-08-04T15:00:00Z",
@@ -123,6 +149,7 @@ beforeAll(async () => {
   __testing.setNativeCalendarBridgeForTest(null);
 }, 30_000);
 beforeEach(async () => {
+  guestIntent = structuredClone(priorGuestIntent);
   await pg.query("DELETE FROM app_calendar.life_calendar_events");
   await pg.query("DELETE FROM app_calendar.life_calendar_sync_states");
   await pg.query("DELETE FROM app_calendar.life_calendar_feed_preferences");
@@ -198,6 +225,7 @@ async function execute(
   originalContext?: ContextObject,
   originalCall?: PlannerToolCall,
 ) {
+  currentText = text ?? "";
   const plannerContext = originalContext ?? context(mode);
   const state: State = {
     values: {
@@ -365,25 +393,40 @@ describe("Calendar attendee original-source contract", {
     "assistant",
     "wrong-turn",
     "missing-binding",
-  ])("clarifies without a write for %s evidence", async (mode) => {
-    const prepare = vi.spyOn(service, "prepareCalendarEventCreate");
-    const commit = vi.spyOn(service, "createCalendarEvent");
-    try {
-      const result = await execute(mode);
-      expect(result.success, JSON.stringify(result)).toBe(false);
-      expect(JSON.stringify(result)).toContain(
-        "CALENDAR_ATTENDEE_IDENTITY_REQUIRED",
-      );
-      expect(JSON.stringify(result)).toContain('"awaitingUserInput":true');
-      expect(prepare).not.toHaveBeenCalled();
-      expect(commit).not.toHaveBeenCalled();
-      expect((await service.getCalendarFeed(URL_, WINDOW)).events).toEqual([]);
-    } finally {
-      prepare.mockRestore();
-      commit.mockRestore();
-    }
-  });
+  ])(
+    "rejects generated evidence outside the admitted %s sources without a write",
+    async (mode) => {
+      const prepare = vi.spyOn(service, "prepareCalendarEventCreate");
+      const commit = vi.spyOn(service, "createCalendarEvent");
+      try {
+        const result = await execute(mode);
+        expect(result.success, JSON.stringify(result)).toBe(false);
+        expect(JSON.stringify(result)).toContain(
+          "CALENDAR_CREATE_EVIDENCE_INVALID",
+        );
+        expect(JSON.stringify(result)).toContain('"acceptance":"rejected"');
+        expect(prepare).not.toHaveBeenCalled();
+        expect(commit).not.toHaveBeenCalled();
+        expect((await service.getCalendarFeed(URL_, WINDOW)).events).toEqual(
+          [],
+        );
+      } finally {
+        prepare.mockRestore();
+        commit.mockRestore();
+      }
+    },
+  );
   it("retains the current explicit request despite a reviewed empty history", async () => {
+    guestIntent = {
+      ...priorGuestIntent,
+      evidence: [
+        {
+          sourceId: `current:${message.id}`,
+          quote:
+            "Invite sam.taylor@acme.com on 2050-08-04 at 3 PM UTC for an hour.",
+        },
+      ],
+    };
     expect(
       (
         await execute(
@@ -421,16 +464,37 @@ describe("Calendar attendee original-source contract", {
       "Add a barber appointment",
     ],
   ])(
-    "does not omit %s before the actual Calendar write",
+    "preserves the original request instead of planner %s hints",
     async (_label, attendee, request) => {
       const prepare = vi.spyOn(service, "prepareCalendarEventCreate");
       const commit = vi.spyOn(service, "createCalendarEvent");
       try {
-        const result = await execute(
-          "empty",
-          attendee,
-          `${request} on 2050-08-04 at 3 PM UTC for an hour.`,
-        );
+        const text = `${request} on 2050-08-04 at 3 PM UTC for an hour.`;
+        const evidence = [{ sourceId: `current:${message.id}`, quote: text }];
+        guestIntent = {
+          state: _label === "invented attendee" ? "none" : "requested",
+          evidence,
+          guests:
+            _label === "invented attendee"
+              ? []
+              : [
+                  {
+                    name: "Sam",
+                    email:
+                      _label === "reserved explicit" ? "sam@example.com" : null,
+                    optional: false,
+                  },
+                ],
+        };
+        const result = await execute("empty", attendee, text);
+        if (_label === "invented attendee") {
+          expect(result.success, JSON.stringify(result)).toBe(true);
+          expect(commit).toHaveBeenCalledOnce();
+          expect((await service.getCalendarFeed(URL_, WINDOW)).events).toEqual([
+            expect.objectContaining({ attendees: [] }),
+          ]);
+          return;
+        }
         expect(result.success, JSON.stringify(result)).toBe(false);
         if (_label === "missing mailbox")
           expect(result.data).toMatchObject({
