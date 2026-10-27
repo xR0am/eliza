@@ -6964,7 +6964,11 @@ function latestUnresolvedFailedNonTerminalToolStep(
       ) {
         unresolvedByOperation.delete(operationKey);
       }
-      resolveRejectedCallsSupersededBy(step, unresolvedByOperation);
+      resolveRejectedCallsSupersededBy(
+        step,
+        unresolvedByOperation,
+        trajectory.outcomeIntents?.length ?? 0,
+      );
       resolveShellFailuresSubsumedBy(step, unresolvedByOperation);
       resolveMalformedCallsSupersededBy(step, unresolvedByOperation);
       resolveFailedEffectsSupersededBy(step, unresolvedByOperation);
@@ -6987,23 +6991,29 @@ function isRetryablePreExecutionRejection(
 }
 
 /** Registered dispatch metadata correlates child and umbrella calls without guessing names. */
-function rejectedCallOperation(step: PlannerStep): string | undefined {
+function rejectedRetryCall(step: PlannerStep): PlannerToolCall | undefined {
   const call = step.toolCall;
   if (!call) return undefined;
   const dispatch =
     step.result?.inferredSubaction ?? step.result?.registeredSubaction;
   return dispatch
-    ? `${dispatch.child.toUpperCase()}|${dispatch.value.toLowerCase()}`
-    : `${call.name.toUpperCase()}|${plannerToolDiscriminatorValue(call)}`;
+    ? {
+        ...call,
+        name: dispatch.child,
+        params: { ...call.params, [dispatch.discriminator]: dispatch.value },
+      }
+    : call;
 }
 
 function resolveRejectedCallsSupersededBy(
   step: PlannerStep,
   unresolvedByOperation: Map<string, PlannerStep>,
+  declaredIntentCount: number,
 ): void {
-  const result = step.result;
+  const result = step.result,
+    call = rejectedRetryCall(step);
   if (
-    !step.toolCall ||
+    !call ||
     !result ||
     result.success !== true ||
     result.error != null ||
@@ -7012,11 +7022,103 @@ function resolveRejectedCallsSupersededBy(
     result.effectReceipts?.some((receipt) => receipt.outcome === "failed")
   )
     return;
-  const operation = rejectedCallOperation(step);
   for (const [key, rejected] of unresolvedByOperation) {
+    if (!isRetryablePreExecutionRejection(rejected.result)) continue;
+    const failedCall = rejectedRetryCall(rejected);
     if (
-      isRetryablePreExecutionRejection(rejected.result) &&
-      operation === rejectedCallOperation(rejected)
+      !failedCall ||
+      failedCall.name.toUpperCase() !== call.name.toUpperCase() ||
+      plannerToolDiscriminatorValue(failedCall) !==
+        plannerToolDiscriminatorValue(call)
+    )
+      continue;
+    const params = { ...failedCall.params };
+    const invalidNames = rejected.result?.data?.invalidParameterNames;
+    if (Array.isArray(invalidNames))
+      for (const name of invalidNames) {
+        if (typeof name !== "string" || TARGET_PARAMETER_KEY_PATTERN.test(name))
+          continue;
+        const value = params[name];
+        // A rejected composite can still carry an explicit target. Retain those
+        // bindings while omitting the rejected non-target representation hints.
+        const targets = isObjectRecord(value)
+          ? Object.fromEntries(
+              Object.entries(value).filter(
+                ([field, value]) =>
+                  TARGET_PARAMETER_KEY_PATTERN.test(field) &&
+                  isSuppliedParameterValue(value),
+              ),
+            )
+          : {};
+        if (Object.keys(targets).length) params[name] = targets;
+        else delete params[name];
+      }
+    const targets = Object.entries(params).flatMap(([name, value]) => {
+      if (
+        TARGET_PARAMETER_KEY_PATTERN.test(name) &&
+        isSuppliedParameterValue(value)
+      )
+        return [
+          {
+            path: [name],
+            value,
+            mayMove: Array.isArray(invalidNames) && invalidNames.includes(name),
+          },
+        ];
+      return isObjectRecord(value)
+        ? Object.entries(value)
+            .filter(
+              ([field, target]) =>
+                TARGET_PARAMETER_KEY_PATTERN.test(field) &&
+                isSuppliedParameterValue(target),
+            )
+            .map(([field, value]) => ({
+              path: [name, field],
+              value,
+              mayMove: false,
+            }))
+        : [];
+    });
+    const completedTargets = Object.entries(call.params ?? {}).flatMap(
+      ([name, value]) =>
+        TARGET_PARAMETER_KEY_PATTERN.test(name)
+          ? [value]
+          : isObjectRecord(value)
+            ? Object.entries(value)
+                .filter(([field]) => TARGET_PARAMETER_KEY_PATTERN.test(field))
+                .map(([, value]) => value)
+            : [],
+    );
+    if (
+      targets.some((target) => {
+        let current: unknown = call.params;
+        for (const field of target.path)
+          current =
+            isObjectRecord(current) && Object.hasOwn(current, field)
+              ? current[field]
+              : undefined;
+        return (
+          !correlationValuesEqual(target.value, current) &&
+          !(
+            target.mayMove &&
+            completedTargets.some((value) =>
+              correlationValuesEqual(target.value, value),
+            )
+          )
+        );
+      })
+    )
+      continue;
+    const hasTarget = targets.length > 0;
+    // A malformed envelope with no machine-stable target cannot discharge
+    // several declared outcomes merely because another call used the same tool.
+    if (!hasTarget && declaredIntentCount > 1) continue;
+    if (
+      malformedCallSupersededBy(
+        { ...failedCall, params },
+        rejected.result,
+        call,
+      )
     )
       unresolvedByOperation.delete(key);
   }
