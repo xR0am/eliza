@@ -589,6 +589,7 @@ function RegisteredAppShellPage({
   // equivalent: controls registered with useAgentElement are live immediately.
   return (
     <ShellViewAgentSurface
+      active={viewProps?.active !== false}
       viewId={bridge.viewId}
       surfaceKind={bridge.kind}
       capabilities={registration.capabilities}
@@ -2009,7 +2010,7 @@ function ShellContent(props: ShellContentProps): ReactNode {
           aria-hidden={!showNotes || undefined}
           style={{ display: showNotes ? "flex" : "none" }}
         >
-          {props.desktopTabBar}
+          {showNotes ? props.desktopTabBar : null}
           <main className={routedShellMainClass("notes")}>
             <ViewSurfaceFrame declaration={retainedNotes.current.registration}>
               <RegisteredAppShellPage

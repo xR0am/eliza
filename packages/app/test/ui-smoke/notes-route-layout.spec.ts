@@ -9,6 +9,7 @@ import {
   openAppPath,
   seedAppStorage,
 } from "./helpers";
+import { installDesktopBridgeFixture } from "./helpers/desktop-bridge";
 
 async function installCloudSession(page: Page): Promise<void> {
   await page.route("**/api/cloud/login", async (route) => {
@@ -67,7 +68,42 @@ function rectanglesOverlap(
 test("Notes retains an in-flight edit and failed draft across app navigation", async ({
   page,
 }) => {
+  await installDesktopBridgeFixture(page);
+  await seedAppStorage(page, {
+    "eliza:permissions-primed": "1",
+    "elizaos.desktop.pinned-tabs": JSON.stringify([
+      { viewId: "notes", label: "Notes", path: "/notes", pinned: true },
+    ]),
+  });
+  let elementReports = 0;
+  await page.route("**/api/views", (route) =>
+    route.fulfill({
+      json: {
+        views: [
+          {
+            id: "notes",
+            label: "Notes",
+            path: "/notes",
+            viewType: "gui",
+            pluginName: "@elizaos/plugin-notes",
+            available: true,
+            installationId: "notes-navigation-fixture",
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/views/notes/elements", (route) => {
+    elementReports++;
+    return route.fulfill({ json: { ok: true } });
+  });
   await openNotes(page);
+  const tabBars = page.getByRole("toolbar", {
+    name: "Desktop view tabs",
+    includeHidden: true,
+  });
+  await expect(tabBars).toHaveCount(1);
+  await expect.poll(() => elementReports).toBeGreaterThan(0);
   const snapshot = await page.evaluate(
     async () => (await (await fetch("/api/notes/state")).json()).data,
   );
@@ -131,11 +167,36 @@ test("Notes retains an in-flight edit and failed draft across app navigation", a
     "",
   );
   await expect(page.locator("[data-retained-notes]")).toBeHidden();
+  await expect(tabBars).toHaveCount(1);
+  await expect(
+    page.locator('[data-retained-notes] [aria-label="Desktop view tabs"]'),
+  ).toHaveCount(0);
+  const hiddenReports = elementReports;
+  expect(
+    await page.evaluate(async () => {
+      try {
+        await window.__ELIZA_BRIDGE__?.viewInteract?.(
+          "notes",
+          "gui",
+          "get-state",
+        );
+        return false;
+      } catch {
+        return true;
+      }
+    }),
+  ).toBe(true);
   release();
   await expect
     .poll(() => snapshot.notes[0].body)
     .toBe("\nLater owner input must survive navigation");
+  // The reporter debounces for 400 ms. Let that window pass after the hidden
+  // save so a retained reporter cannot silently send the edited note text.
+  await page.waitForTimeout(650);
+  expect(elementReports).toBe(hiddenReports);
   await navigate("/notes");
+  await expect(tabBars).toHaveCount(1);
+  await expect.poll(() => elementReports).toBeGreaterThan(hiddenReports);
   await expect(body).toHaveValue("Later owner input must survive navigation");
   expect(
     await body.evaluate((element, prior) => element === prior, original),
