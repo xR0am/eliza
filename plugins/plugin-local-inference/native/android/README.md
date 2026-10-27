@@ -111,8 +111,12 @@ A consumer Gradle library sets `ext.elizaParadeeSourceDir` to this directory
 and applies `consumer.gradle`. Optional properties: `elizaParadeeNativeDir`,
 `elizaParadeeFfiIncludeDir`, `elizaParadeeInferenceLibDir`, and
 `elizaParadeePackageInference=false` when the app already packages
-`libelizainference.so`. The build fails if a generated file differs from
-`native/build-record.json`.
+`libelizainference.so` and its admitted `libc++_shared.so`. In that mode the
+library packages only its JNI bridge; both runtime libraries remain the host's
+responsibility. This also excludes CMake's implicit copies, avoiding duplicate
+runtime selection during APK merging. The default still packages both runtime
+libraries for standalone consumers such as Sense. The build fails if a generated
+file differs from `native/build-record.json`.
 
 Store the model uncompressed in the APK (`androidResources { noCompress 'gguf', 'lex' }`).
 A host made by `scripts/mobile/android/consumer-host.mjs` sets this in its profile:
