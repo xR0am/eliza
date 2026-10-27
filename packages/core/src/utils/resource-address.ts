@@ -2,7 +2,7 @@
 export function parseWebResourceAddress(value: string): URL | undefined {
   const text = value.trim();
   if (!text || /[\s<>"'`]/u.test(text)) return;
-  const explicit = /^[a-z][a-z0-9+.-]*:/iu.test(text);
+  const explicit = /^[a-z][a-z0-9+.-]*:\/\//iu.test(text);
   if (explicit && !/^https?:\/\//iu.test(text)) return;
   let url: URL;
   try {

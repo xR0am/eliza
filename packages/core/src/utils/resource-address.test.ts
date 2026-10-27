@@ -5,6 +5,7 @@ import {
 } from "./resource-address.ts";
 it.each([
   "example.com",
+  "example.com:8443/path",
   "www.example.com/path?q=1",
   "https://example.com/path",
   "https://xn--bcher-kva.de/",
