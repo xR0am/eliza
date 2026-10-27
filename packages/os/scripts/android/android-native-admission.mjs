@@ -61,6 +61,7 @@ export function stageAndroidNative({
   target = "stallion",
   admission,
   launcher,
+  finalizeSoong = false,
 }) {
   if (admission?.schemaVersion !== 1)
     throw new Error("Authenticated runtime admission is required");
@@ -102,6 +103,7 @@ export function stageAndroidNative({
           target,
           "--admission",
           contract,
+          ...(finalizeSoong ? ["--finalize-soong"] : []),
         ],
         { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
       ),
@@ -109,4 +111,9 @@ export function stageAndroidNative({
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+}
+
+/** Convert already admitted native staging after product composition. */
+export function finalizeAndroidNative(options) {
+  return stageAndroidNative({ ...options, finalizeSoong: true });
 }

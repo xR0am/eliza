@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,7 @@ import {
   renderSensePermissions,
   validatePixel10aProduct,
 } from "../android/pixel10a-product.ts";
+import { soongAppNativePatch } from "../android/soong-app-native.mjs";
 import { renderOverlay } from "../android/stage-launcher-overlay.ts";
 import {
   main as stageMain,
@@ -197,4 +199,32 @@ test("a Makefile without admission never proves native staging", (t) => {
   );
   const report = composePixel10aProduct(f);
   assert.equal(report.nativeLibrariesStaged, false);
+});
+
+test("Soong native installation uses the pinned source patch without ELF check overrides", () => {
+  const envelope = soongAppNativePatch();
+  const lock = fs.readFileSync(
+    new URL("../../android/sources/pixel10a-stallion.json", import.meta.url),
+  );
+  assert.equal(envelope.name, "soong-app-native");
+  assert.equal(
+    envelope.manifest.baselineLockSha256,
+    createHash("sha256").update(lock).digest("hex"),
+  );
+  assert.equal(
+    envelope.manifest.revision,
+    JSON.parse(lock).projects.find((entry) => entry.path === "build/soong")
+      .commit,
+  );
+  const patch = fs.readFileSync(
+    new URL(
+      `../../android/patches/soong-app-native/${envelope.manifest.patch}`,
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    patch,
+    /BUILD_BROKEN|Check_elf_files|check_elf_files|prebuilt_any/,
+  );
 });

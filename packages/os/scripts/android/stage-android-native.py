@@ -338,6 +338,42 @@ def stage(apk, output, module, target='stallion', admission=None):
     return report
 
 
+def finalize_soong(output, module, report, remaining_blueprint=""):
+    # Shared admission remains authoritative. Adapt only its legacy install rules
+    # for image products that ignore Android.mk; never alter admitted payloads.
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', module) or report.get('moduleName') != module:
+        raise ValueError('Native module identity changed')
+    arch = TARGETS[report['target']]['arch']
+    if (output / 'Android.bp').read_text() != '// The launcher is defined in Android.mk for bundled JNI installation.\n' + remaining_blueprint:
+        raise ValueError('Unexpected shared launcher blueprint')
+    if hashlib.sha256((output / 'Launcher.apk').read_bytes()).hexdigest() != report['apkSha256']:
+        raise ValueError('Admitted launcher bytes changed')
+    for record in report['libraries']:
+        name = Path(record['path']).name
+        if not re.fullmatch(r'lib[A-Za-z0-9_.+-]+\.so', name) or record['path'] != f'native-{arch}/{name}' or record['installPath'] != f'/product/app/{module}/lib/{arch}/{name}':
+            raise ValueError('Native installation path changed')
+        source = output / record['path']
+        if source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest() != record['sha256']:
+            raise ValueError('Admitted native bytes changed')
+    records = report['libraries']
+    native_modules = [f'{module}_native_{index}' for index in range(len(records))]
+    blueprint = ('// Generated from a hash- and signer-verified downstream launcher.\n'
+        'android_app_import {\n' + f'    name: "{module}",\n' +
+        '    apk: "Launcher.apk",\n    presigned: true,\n'
+        '    preprocessed: true,\n    product_specific: true,\n' +
+        '    required: ' + json.dumps(native_modules) + ',\n' +
+        '    dex_preopt: { enabled: false },\n}\n')
+    for name, record in zip(native_modules, records):
+        relative = Path(record['installPath']).relative_to('/product/app')
+        blueprint += ('\nprebuilt_app_native {\n' + f'    name: "{name}",\n' +
+            f'    src: "{record["path"]}",\n    filename: "{relative.name}",\n' +
+            f'    relative_install_path: "{relative.parent}",\n' +
+            '    product_specific: true,\n}\n')
+    (output / 'Android.mk').unlink()
+    (output / 'Android.bp').write_text(blueprint + remaining_blueprint)
+    return report
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apk', type=Path, required=True)
@@ -345,6 +381,12 @@ if __name__ == '__main__':
     parser.add_argument('--module', required=True)
     parser.add_argument('--target', choices=tuple(TARGETS), default='stallion')
     parser.add_argument('--admission', type=Path, help='Caller-authenticated runtime admission contract')
+    parser.add_argument('--finalize-soong', action='store_true', help='Convert admitted native staging to Soong installation rules')
     args = parser.parse_args()
     admission = json.loads(args.admission.read_text(), object_pairs_hook=unique_object) if args.admission else None
-    print(json.dumps(stage(args.apk, args.output, args.module, args.target, admission), indent=2))
+    if args.finalize_soong:
+        report = json.loads((args.output / 'native-libraries.json').read_text(), object_pairs_hook=unique_object)
+        result = finalize_soong(args.output, args.module, report, (admission or {}).get('remainingBlueprint', ''))
+    else:
+        result = stage(args.apk, args.output, args.module, args.target, admission)
+    print(json.dumps(result, indent=2))

@@ -39,6 +39,15 @@ source overrides, 6,360 generated files, and recorded ignored inputs. The invent
 is copied byte-for-byte from Alpha's reviewed source contract (SHA-256
 `760a7184c62c93aeac40595cf5733f8089aa16ccd28eb7a5f5ce41d4dae741d3`).
 Alpha names inside that immutable inventory identify provenance, not launcher branding.
+Pixel staging uses the reviewed `patches/soong-app-native` extension because
+Android 17 image products can omit legacy Android.mk application modules. Apply
+that exact patch in the prepared AOSP checkout and pass `--applied-app-native-patch`
+to `stage-pixel10a-product.ts`. Source verification checks its original and patched
+file hashes. The shared native stager then converts its admitted APK/JNI payloads
+to Soong rules after product composition, preserving companion definitions,
+nonprivileged launcher policy, executable modes and payload bytes. Conversion
+alone does not prove that an image built or booted.
+
 An API consumer can pass independently authenticated, reviewed patch envelopes to
 `verifyProfileSource` or `verifyDeviceSource`; exact baseline preimages and postimages
 are checked, and every other source fence remains in force.
