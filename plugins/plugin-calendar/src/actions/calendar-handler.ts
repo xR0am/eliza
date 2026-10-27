@@ -3788,7 +3788,10 @@ export function buildCreateEventRequest(
       // Planner hints are not user-provided content. The strict path uses
       // original-source extraction; structured non-strict callers keep precedence.
       description: sourceBoundCreation
-        ? detailString(args.extractedDetails, "description")
+        ? args.extractedDetails.sourceNote != null &&
+          typeof args.extractedDetails.description === "string"
+          ? args.extractedDetails.description
+          : detailString(args.extractedDetails, "description")
         : (detailString(args.details, "description") ??
           detailString(args.extractedDetails, "description") ??
           args.fallbackRequest?.description),

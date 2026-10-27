@@ -820,13 +820,16 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
     "solo-selected",
     "native",
     "native-inline",
+    "boundary",
   ] as const)(
     "grounds the note description in real Notes bytes (%s)",
     async (mode) => {
       const native = mode === "native" || mode === "native-inline";
       const inlineDescription = "Bring the green notebook.";
       const description =
-        "Bring the green notebook at 4:30.\nKeep  two spaces.";
+        mode === "boundary"
+          ? " \nBring the green notebook at 4:30.\nKeep  two spaces.  \n"
+          : "Bring the green notebook at 4:30.\nKeep  two spaces.";
       const paraphrase = "Bring the green notebook at 4:30. Keep two spaces";
       const stateDir = await mkdtemp(join(tmpdir(), "calendar-note-source-"));
       const notes = new NotesService(runtime, { stateDir });
@@ -850,6 +853,9 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
           title: "Other source",
           body: "Wrong body",
         });
+        // Notes owns its canonical body/separator representation. The event
+        // must copy these actual persisted bytes, not reconstruct the input.
+        const savedBody = notes.getNote(note.id).body;
         const source = notes.sourceReference(note);
         const proposed =
           mode === "wrong-note"
@@ -1007,14 +1013,15 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
           mode === "verbatim" ||
           mode === "extracted" ||
           mode === "named" ||
-          mode === "solo-selected"
+          mode === "solo-selected" ||
+          mode === "boundary"
         ) {
           const expected =
             mode === "solo-selected"
               ? ""
               : mode === "extracted"
                 ? paraphrase
-                : description;
+                : savedBody;
           expect(result?.success, JSON.stringify(result)).toBe(true);
           expect(result?.data?.event).toMatchObject({
             description: expected,
