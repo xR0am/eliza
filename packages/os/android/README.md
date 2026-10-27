@@ -234,8 +234,9 @@ The caller must still authenticate that separate APK, its speech payload and its
 indicator configuration before composition.
 
 This command produces a product-composition candidate. It does not stage resident
-JNI files: the result explicitly records `nativeLibrariesStaged: false` unless an
-upstream caller already provided the admitted native Makefile. Alpha retains its
+JNI files: the composer records `nativeLibrariesStaged: false` until the shared
+native verifier can provide explicit admission evidence. A Makefile alone is not
+evidence. Alpha retains its
 existing runtime-provenance and speech qualification gates around the composer;
 extracting their common admission is follow-up work. Eliza's separate Sense APK,
 shared Autofill implementation, full exact-source image build, voice/telephony and

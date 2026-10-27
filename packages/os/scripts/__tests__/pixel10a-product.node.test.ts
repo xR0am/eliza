@@ -148,6 +148,7 @@ test("shared provisioning takes actual component names and leaves absent Autofil
     ];
   assert.match(config, /ai.elizaos.app/);
   assert.doesNotMatch(config, /config_defaultAutofillService/);
+  assert.doesNotMatch(files["provisioning/README.md"], /Autofill offer|\/null/);
   assert.throws(
     () =>
       renderProvisioningOverlay("ai.elizaos.app", {

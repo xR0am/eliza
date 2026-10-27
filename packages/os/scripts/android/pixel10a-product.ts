@@ -143,7 +143,8 @@ export function composePixel10aProduct({
     lunch: `${product.productName}-${product.releaseConfig}-${production ? "user" : "userdebug"}`,
     production,
     developmentOnly: !production,
-    nativeLibrariesStaged: Boolean(makefile),
+    // A Makefile is not native runtime admission evidence.
+    nativeLibrariesStaged: false,
     sourceEvidence,
     imageBuilt: false,
     imageSigned: false,

@@ -27,6 +27,9 @@ const filter = (indent, action, categories = []) => [
 ];
 function tree({
   homes = 1,
+  homeExported = "(type 0x12)0xffffffff",
+  assistantExported = "(type 0x12)0xffffffff",
+  autofillExported = "(type 0x12)0xffffffff",
   autofillPermission = "android.permission.BIND_AUTOFILL_SERVICE",
 } = {}) {
   return [
@@ -36,7 +39,7 @@ function tree({
     ...Array.from({ length: homes }, (_, i) => [
       ...element(6, "activity", {
         name: `${PKG}.${i ? "Other" : "Main"}Activity`,
-        exported: "(type 0x12)0xffffffff",
+        exported: homeExported,
       }),
       ...filter(8, "android.intent.action.MAIN", [
         "android.intent.category.LAUNCHER",
@@ -46,13 +49,17 @@ function tree({
         "android.intent.category.DEFAULT",
       ]),
     ]).flat(),
-    ...element(6, "activity", { name: `${PKG}.AlphaAssistActivity` }),
+    ...element(6, "activity", {
+      name: `${PKG}.AlphaAssistActivity`,
+      exported: assistantExported,
+    }),
     ...filter(8, "android.intent.action.ASSIST", [
       "android.intent.category.DEFAULT",
     ]),
     ...element(6, "service", {
       name: "ai.eliza.plugins.passwords.ElizaPasswordAutofillService",
       permission: autofillPermission,
+      exported: autofillExported,
     }),
     ...filter(8, "android.service.autofill.AutofillService"),
     ...element(6, "service", { name: `${PKG}.ElizaAgentService` }),
@@ -127,5 +134,23 @@ test("the overlay sets default HOME, assistant and Autofill offer additively", (
     () =>
       writeProvisioningOverlay(out, PKG, provisioningComponents(tree(), PKG)),
     /EEXIST/,
+  );
+});
+
+test("provisioning requires each selected component to be explicitly exported", () => {
+  for (const field of [
+    "homeExported",
+    "assistantExported",
+    "autofillExported",
+  ]) {
+    assert.throws(
+      () => provisioningComponents(tree({ [field]: "(type 0x12)0x0" }), PKG),
+      /explicitly exported/,
+    );
+  }
+  const implicit = tree().replace(/\s*A: android:exported[^\n]*/g, "");
+  assert.throws(
+    () => provisioningComponents(implicit, PKG),
+    /explicitly exported/,
   );
 });
