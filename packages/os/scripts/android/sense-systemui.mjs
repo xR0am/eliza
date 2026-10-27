@@ -46,7 +46,7 @@ export function verifyListenerSystemui(
     manifest.baselineLockSha256
   )
     throw Error("Baseline source lock changed; re-review SystemUI patch");
-  const project = path.join(path.resolve(source), manifest.project);
+  const project = path.join(fs.realpathSync(source), manifest.project);
   const files = manifest.files.map((entry) => {
     const file = path.join(project, entry.path);
     let digest;
