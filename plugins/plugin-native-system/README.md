@@ -77,3 +77,26 @@ also declare an `ACTION_DIAL` query with the `tel` scheme. Default handoffs use
 an explicit eligible activity or a chooser of eligible activities. The host,
 disabled apps and unexported activities cannot be destinations. Web fallback
 reports no handlers and rejects launch requests. Hosts retain user-intent policy.
+
+## Shared image listener
+
+`Sense` is the `ElizaSense` bridge for the separately installed image listener.
+It reports status, pauses, turns off and opens the listener's own settings. It
+cannot enable or resume capture. The native `SenseListenerClient` verifies the
+listener package, matching signer and control permission. Settings metadata is
+read only from that admitted APK; the target must be an enabled exported
+activity in the same package and UID. Hosts may keep a legacy bridge-name alias.
+
+`createSenseInvocationController` binds an opaque digest of the current
+authenticated owner/agent/session tuple before consuming native invocations.
+Native origin comes only from Android's caller identity and a same-signer check;
+caller extras and deep-link parameters never authorize a microphone. A pending
+wake expires after five seconds, is consumed once, and cannot cross a lock,
+background state or owner change. A cold process has no bound owner: the wake
+opens the assistant but does not start a voice turn automatically. Once an
+authenticated session is bound, a warm wake can start the existing shell voice
+controller. Hosts must supply live authority reads and re-check readiness.
+
+`node --test plugins/plugin-native-system/test/sense.test.mjs` exercises the
+shared native policy, client refusal rules, Android API compilation and renderer
+authority race. These tests do not prove installed-device microphone handoff.

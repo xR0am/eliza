@@ -37,6 +37,7 @@
      android:hasFragileUserData="true"
      android:usesCleartextTraffic="false"
      tools:ignore="DataExtractionRules">
+  <meta-data android:name="ai.eliza.sense.SETTINGS_ACTIVITY" android:value="${senseComponentPackage}.ConsentActivity" />
   <service android:name="${senseComponentPackage}.ListeningService" android:exported="false"
       android:foregroundServiceType="microphone" android:directBootAware="true" />
   <service android:name="${senseComponentPackage}.ListenerTileService" android:exported="true"

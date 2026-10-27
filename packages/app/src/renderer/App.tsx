@@ -1,3 +1,8 @@
+import { Capacitor } from "@capacitor/core";
+import {
+  createSenseInvocationController,
+  Sense,
+} from "@elizaos/capacitor-system";
 import { loadSecretsManagerSection } from "@elizaos/ui";
 /**
  * Root App component and the dashboard routing shell mounted by every elizaOS
@@ -70,8 +75,10 @@ import {
   firstRunOwnsLoginSurface,
   GameViewOverlay,
   GlassStyles,
+  getActiveAgentAuthority,
   getAppShellPageRegistrySnapshot,
   getAppSlugFromPath,
+  getAuthStatusSnapshot,
   getCloudAuthToken,
   getCloudPairTokenFromLocation,
   getOverlayApp,
@@ -153,6 +160,7 @@ import {
   shouldShowRemoteAgentPairingGate,
   shouldUseHashNavigation,
   subscribeAppShellPages,
+  subscribeAuthStatus,
   subscribeDesktopBridgeEvent,
   TAB_PATHS,
   TrayLauncher,
@@ -2354,6 +2362,68 @@ function ChatOverlayMount({
   const firstRunOpen =
     isAuthoritativeFirstRunOpen(firstRunComplete, startupPhase) ||
     (firstRunComplete === false && retainMountedFirstRunOpen);
+  const senseHost = useRef({ controller, firstRunOpen });
+  senseHost.current = { controller, firstRunOpen };
+  const senseInvocation = useRef<ReturnType<
+    typeof createSenseInvocationController
+  > | null>(null);
+  const senseAuthority = useActiveAgentAuthority();
+  useEffect(() => {
+    if (
+      Capacitor.getPlatform() !== "android" ||
+      !Capacitor.isPluginAvailable("ElizaSense")
+    )
+      return;
+    const ready = () => {
+      const current = senseHost.current;
+      return (
+        !!current.controller &&
+        !current.firstRunOpen &&
+        !current.controller.authGate.gated &&
+        current.controller.canSend &&
+        !current.controller.responding
+      );
+    };
+    const binding = createSenseInvocationController(Sense, {
+      authority: () => {
+        const auth = getAuthStatusSnapshot();
+        if (auth.phase !== "authenticated") return null;
+        return JSON.stringify([
+          getActiveAgentAuthority(),
+          auth.identity.id,
+          auth.session.id,
+          auth.session.kind,
+        ]);
+      },
+      ready,
+      voiceActive: () => {
+        const current = senseHost.current.controller;
+        return !!(
+          current?.recording ||
+          current?.handsFree ||
+          current?.realtimeVoice?.active ||
+          current?.realtimeVoice?.connecting
+        );
+      },
+      startVoice: () => {
+        const current = senseHost.current.controller;
+        if (current && ready()) {
+          current.open();
+          current.toggleHandsFree();
+        }
+      },
+      subscribe: (changed) => subscribeAuthStatus(changed),
+    });
+    senseInvocation.current = binding;
+    return () => {
+      senseInvocation.current = null;
+      binding.dispose();
+    };
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: These observations invalidate the ref-backed native authority check.
+  useEffect(() => {
+    senseInvocation.current?.check();
+  }, [senseAuthority, controller, firstRunOpen]);
   useLayoutEffect(() => {
     if (controller && firstRunOpen && firstRunMountEpoch !== null) {
       onFirstRunChatMounted?.(firstRunMountEpoch);
