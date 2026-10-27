@@ -331,7 +331,31 @@ it.each([
         prompts.push(prompt);
         return {
           rawResponse: "{}",
-          parsed: { requiresInput: true, clarification: "What time?" },
+          parsed: {
+            requiresInput: true,
+            clarification: "What time?",
+            guestIntent: {
+              state: "none",
+              evidence: [
+                {
+                  sourceId: `current:${message.id}`,
+                  quote: message.content.text,
+                },
+              ],
+              guests: [],
+            },
+            noteIntent: {
+              state: "none",
+              evidence: [
+                {
+                  sourceId: `current:${message.id}`,
+                  quote: message.content.text,
+                },
+              ],
+              descriptionMode: "extracted",
+              sourceNote: null,
+            },
+          },
         };
       },
       recentConversationTexts: async () => [],
