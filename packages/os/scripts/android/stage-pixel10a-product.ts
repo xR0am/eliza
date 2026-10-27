@@ -17,6 +17,8 @@ import {
   composePixel10aProduct,
   validatePixel10aProduct,
 } from "./pixel10a-product.ts";
+import { stageSenseApk, validateSenseProduct } from "./sense-listener.mjs";
+import { senseSystemuiPatch } from "./sense-systemui.mjs";
 import { stageLauncher, validateDescriptor } from "./stage-launcher-overlay.ts";
 import { loadProfile, verifyProfileSource } from "./verify-source-lock.ts";
 
@@ -24,6 +26,7 @@ export async function stagePixel10aProduct(options) {
   const product = validatePixel10aProduct(
     JSON.parse(fs.readFileSync(options.product, "utf8")),
   );
+  validateSenseProduct(product);
   const launcher = validateDescriptor(
     JSON.parse(fs.readFileSync(options.descriptor, "utf8")),
   );
@@ -50,6 +53,15 @@ export async function stagePixel10aProduct(options) {
     throw new Error(
       "Pixel staging output must be outside the AOSP source tree",
     );
+  if (
+    !options.development &&
+    (!options.listenerApk || !options.listenerDescriptor || !options.voiceHost)
+  )
+    throw new Error(
+      "Pixel 10a production requires Sense APK, reviewed listener descriptor and voice-host record",
+    );
+  if (options.listenerApk && !options.voiceHost)
+    throw new Error("Sense staging requires a voice-host record");
   const admission = elizaNativeAdmission({
     sourceRoot: options.runtimeSource ?? resolveElizaSourceRoot(),
     sourceCommit: options.sourceCommit,
@@ -58,7 +70,11 @@ export async function stagePixel10aProduct(options) {
   });
   const sourceEvidence = await verifyProfileSource(
     loadProfile(product.sourceProfile),
-    { aospRoot: options.aospRoot, archivePath: options.archivePath },
+    {
+      aospRoot: options.aospRoot,
+      archivePath: options.archivePath,
+      appliedPatches: options.appliedSensePatch ? [senseSystemuiPatch()] : [],
+    },
   );
   const parent = path.dirname(path.resolve(options.output));
   fs.mkdirSync(parent, { recursive: true });
@@ -87,6 +103,21 @@ export async function stagePixel10aProduct(options) {
     });
     if (!nativeStagingEvidence.residentAgentIncluded)
       throw new Error("Pixel 10a requires the admitted resident runtime");
+    if (options.listenerApk)
+      stageSenseApk({
+        apk: options.listenerApk,
+        output,
+        product,
+        launcherSigner: launcher.certificateSha256,
+        descriptor: options.listenerDescriptor
+          ? JSON.parse(fs.readFileSync(options.listenerDescriptor, "utf8"))
+          : undefined,
+        voiceHost: JSON.parse(fs.readFileSync(options.voiceHost, "utf8")),
+        production: !options.development,
+        aapt: options.aapt,
+        apksigner: options.apksigner,
+        env: options.env,
+      });
     const result = composePixel10aProduct({
       output,
       product,
@@ -105,12 +136,20 @@ export async function stagePixel10aProduct(options) {
 export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === "--help") {
     console.log(
-      "Usage: node stage-pixel10a-product.ts --product PRODUCT_JSON --launcher-descriptor LAUNCHER_JSON --apk APK --aosp-root AOSP --vendor-archive FACTORY --output NEW_DIR --source-commit COMMIT [--runtime-source ELIZA_ROOT] [--bun-target linux-musl|android] [--development] [--aapt TOOL] [--apksigner TOOL]",
+      "Usage: node stage-pixel10a-product.ts --product PRODUCT_JSON --launcher-descriptor LAUNCHER_JSON --apk APK --aosp-root AOSP --vendor-archive FACTORY --output NEW_DIR --source-commit COMMIT [--runtime-source ELIZA_ROOT] [--bun-target linux-musl|android] [--listener-apk APK --listener-descriptor JSON --voice-host JSON] [--applied-sense-patch] [--development] [--aapt TOOL] [--apksigner TOOL]",
     );
     return;
   }
-  const options = { aapt: "aapt", apksigner: "apksigner", development: false };
+  const options = {
+    appliedSensePatch: false,
+    aapt: "aapt",
+    apksigner: "apksigner",
+    development: false,
+  };
   const fields = {
+    "--listener-apk": "listenerApk",
+    "--listener-descriptor": "listenerDescriptor",
+    "--voice-host": "voiceHost",
     "--product": "product",
     "--launcher-descriptor": "descriptor",
     "--apk": "apk",
@@ -124,7 +163,8 @@ export async function main(argv = process.argv.slice(2)) {
     "--bun-target": "bunTarget",
   };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--development") options.development = true;
+    if (argv[i] === "--applied-sense-patch") options.appliedSensePatch = true;
+    else if (argv[i] === "--development") options.development = true;
     else {
       const field = fields[argv[i]],
         value = argv[++i];

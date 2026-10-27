@@ -12,5 +12,13 @@
     "moduleName": "AlphaPhone",
     "packageName": "ai.elizaresearch.alphaphone"
   },
-  "releaseQualified": false
+  "releaseQualified": false,
+  "sense": {
+    "moduleName": "AlphaSense",
+    "appName": "Alpha",
+    "wakeNames": ["alpha"],
+    "componentPackage": "ai.elizaresearch.alphaphone.sense",
+    "assistActivity": "ai.elizaresearch.alphaphone.AlphaAssistActivity",
+    "storageName": "listener-settings"
+  }
 }
