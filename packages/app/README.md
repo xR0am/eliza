@@ -557,3 +557,9 @@ The host gateway callback receives `{targetAbi}` as its third argument so it can
 stage ABI-specific dependencies. Hosts must also select that ABI for runtime
 inventory, native document assets and APK packaging. This is bundle integrity
 support; installed execution, live services and image boot remain separate tests.
+
+### Packaged Android native speech assets
+
+Native sideload and AOSP builds package the hash-pinned Paradee, Phonon-2, Silero VAD, lexicon and notice files through `:voice-assets`. Generate inputs with `packages/app/scripts/paradee-voice/build-native.ts`; its default output is `plugins/plugin-local-inference/native/android/native`. To use another generated directory, pass `ELIZA_VOICE_NATIVE_DIR=/absolute/path/to/native` to the Android build. A missing or changed bundle fails the native build. Cloud and host-E2E packages omit these assets.
+
+The app installs this bundle into its existing `filesDir/eliza-1/bundle` before starting the bionic inference server. That server remains the model owner; the asset module adds no native library or second inference session. The legacy downstream `VoiceAssets` API uses the same installer and keeps its existing private directory unless the host declares the storage metadata. APK integrity and presence do not establish physical speech quality or device acceptance.

@@ -1852,6 +1852,9 @@ public class ElizaAgentService extends Service {
      */
     private void extractAuxRuntimeAssets(AssetManager assets, File filesDir, File stateDir,
             boolean forceRefreshTarballs) throws IOException {
+        if (ai.eliza.voice.VoiceBundleAssets.isPackaged(this)) {
+            ai.eliza.voice.VoiceBundleAssets.install(this);
+        }
         // vector.tar.gz / fuzzystrmatch.tar.gz must live one directory ABOVE the
         // bundle (PGlite resolves them via `new URL("../X.tar.gz", ...)`), so
         // they sit in files/ rather than the agent root. aapt2 strips the `.gz`
@@ -2190,14 +2193,12 @@ public class ElizaAgentService extends Service {
         if (!fusedLib.isFile() && !hasPackagedNativeLibrary("elizainference")) {
             return;
         }
-        File paradeeModel = new File(getFilesDir(), "eliza-1/bundle/"
-            + ElizaBionicInferenceServer.PARADEE_DIR + "/" + ElizaBionicInferenceServer.PARADEE_MODEL);
-        if (!paradeeModel.isFile()) {
-            return;
-        }
         try {
-            String defaultBundleDir =
-                new File(getFilesDir(), "eliza-1/bundle").getAbsolutePath();
+            File bundleRoot = ai.eliza.voice.VoiceBundleAssets.bundleRoot(this);
+            File paradeeModel = new File(bundleRoot,
+                ElizaBionicInferenceServer.PARADEE_DIR + "/" + ElizaBionicInferenceServer.PARADEE_MODEL);
+            if (!paradeeModel.isFile()) return;
+            String defaultBundleDir = bundleRoot.getAbsolutePath();
             ElizaBionicInferenceServer host = newBionicInferenceServer(defaultBundleDir);
             host.start();
             bionicInferenceServer = host;
@@ -2795,7 +2796,7 @@ public class ElizaAgentService extends Service {
                 // BionicHostLoader first connects. Idempotent across restarts.
                 if (bionicInferenceServer == null) {
                     String defaultBundleDir =
-                        new File(getFilesDir(), "eliza-1/bundle").getAbsolutePath();
+                        ai.eliza.voice.VoiceBundleAssets.bundleRoot(this).getAbsolutePath();
                     bionicInferenceServer = newBionicInferenceServer(defaultBundleDir);
                 }
                 // Guard the start: a failure here (e.g. the fused-voice native
