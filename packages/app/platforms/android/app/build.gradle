@@ -230,7 +230,7 @@ android {
     // writing them to disk as `.tar.gz` so PGlite's runtime loader
     // (`new URL("../vector.tar.gz", import.meta.url)`) finds them.
     androidResources {
-        noCompress += ['gguf', 'so']
+        noCompress += ['gguf', 'lex', 'so']
     }
 
     compileOptions {
@@ -586,6 +586,7 @@ repositories {
 }
 
 dependencies {
+    implementation project(':voice-assets')
     implementation "com.squareup.okhttp3:okhttp:5.3.2"
     implementation "com.google.code.gson:gson:2.13.2"
     implementation fileTree(include: ['*.jar'], dir: 'libs')
