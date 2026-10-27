@@ -2,7 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import {
   createSenseInvocationController,
   Sense,
-} from "@elizaos/capacitor-system";
+} from "@elizaos/capacitor-system/sense";
 import { loadSecretsManagerSection } from "@elizaos/ui";
 /**
  * Root App component and the dashboard routing shell mounted by every elizaOS

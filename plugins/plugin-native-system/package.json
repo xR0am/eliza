@@ -12,7 +12,13 @@
       "import": "./dist/esm/index.js",
       "require": "./dist/plugin.cjs.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./sense": {
+      "eliza-source": "./src/sense-bridge.ts",
+      "types": "./dist/esm/sense-bridge.d.ts",
+      "import": "./dist/esm/sense-bridge.js",
+      "default": "./dist/esm/sense-bridge.js"
+    }
   },
   "files": [
     "android/src/main/",
