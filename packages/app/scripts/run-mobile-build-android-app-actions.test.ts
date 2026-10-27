@@ -303,6 +303,27 @@ android {
   );
 });
 
+test("Android JNI staging honors selected app ABIs in fresh and existing templates", () => {
+  const generated = injectCopyForkLlamaLibTask("android {}\n");
+  const legacy = generated
+    .replace(
+      "        def selectedAbis = android.defaultConfig.ndk.abiFilters\n",
+      "",
+    )
+    .replace(
+      "project.ext.elizaRequiredJniAbis.findAll { selectedAbis.isEmpty() || selectedAbis.contains(it) }",
+      "project.ext.elizaRequiredJniAbis",
+    )
+    .replace(
+      "project.ext.elizaForkLlamaAbis.findAll { selectedAbis.isEmpty() || selectedAbis.contains(it) }.each",
+      "project.ext.elizaForkLlamaAbis.each",
+    );
+  const upgraded = injectCopyForkLlamaLibTask(legacy);
+  assert.equal(upgraded, generated);
+  assert.equal(injectCopyForkLlamaLibTask(upgraded), upgraded);
+  assert.equal(upgraded.split("def selectedAbis =").length, 2);
+});
+
 test("Android App Actions shortcuts are rewritten to the configured package and URL scheme", () => {
   const shortcuts = `<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <capability android:name="actions.intent.OPEN_APP_FEATURE">
