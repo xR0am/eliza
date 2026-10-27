@@ -10,10 +10,4 @@ export const System = registerPlugin<SystemPlugin>("ElizaSystem", {
   web: loadWeb,
 });
 
-export * from "./sense";
-export const Sense = registerPlugin<import("./sense").SensePlugin>(
-  "ElizaSense",
-  {
-    web: () => import("./sense-web").then((module) => new module.SenseWeb()),
-  },
-);
+export * from "./sense-bridge";
