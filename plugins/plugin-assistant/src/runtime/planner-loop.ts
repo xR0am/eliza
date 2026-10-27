@@ -2974,11 +2974,8 @@ async function runPlannerLoopIterations(
     }
 
     if (
-      latestResult?.success === false &&
-      latestResult.failureProvenance?.retryable === true &&
-      latestResult.data?.acceptance === "rejected" &&
-      latestResult.data?.executionStatus === "not_started" &&
-      !latestResult.effectReceipts?.length &&
+      latestResult !== undefined &&
+      isRetryablePreExecutionRejection(latestResult) &&
       !hasExecutionPrerequisite(latestResult)
     ) {
       // A typed pre-execution rejection is safe to repair, not proof that an
@@ -6935,7 +6932,8 @@ function latestUnresolvedFailedNonTerminalToolStep(
     if (
       step.result.success === false &&
       (step.result.data as { readOnlyOperation?: unknown } | undefined)
-        ?.readOnlyOperation === true
+        ?.readOnlyOperation === true &&
+      !isRetryablePreExecutionRejection(step.result)
     ) {
       continue;
     }
@@ -6944,22 +6942,13 @@ function latestUnresolvedFailedNonTerminalToolStep(
     if (
       step.result.success === false &&
       (step.result.data as { coachingFailure?: unknown } | undefined)
-        ?.coachingFailure === true
+        ?.coachingFailure === true &&
+      !isRetryablePreExecutionRejection(step.result)
     ) {
       continue;
     }
-    // Typed retryable validation rejections prove no operation started. Like
-    // read-before-write coaching, they remain full evidence for replanning but
-    // cannot turn a later verified completed outcome into a failed mutation.
-    if (
-      step.result.success === false &&
-      step.result.failureProvenance?.retryable === true &&
-      step.result.data?.acceptance === "rejected" &&
-      step.result.data?.executionStatus === "not_started" &&
-      !step.result.effectReceipts?.length
-    ) {
-      continue;
-    }
+    // Rejected drafts remain unresolved until the same operation succeeds.
+    // The absence of an effect is not proof that the user request completed.
     const operationKey = plannerToolOperationKey(step.toolCall, step.result);
     if (step.result.success === false || step.result.error != null) {
       unresolvedByOperation.delete(operationKey);
@@ -6968,18 +6957,69 @@ function latestUnresolvedFailedNonTerminalToolStep(
       // Identical arguments do not prove every failed effect succeeded.
       const previous = unresolvedByOperation.get(operationKey);
       if (
+        !isRetryablePreExecutionRejection(previous?.result) &&
         !previous?.result?.effectReceipts?.some(
           (receipt) => receipt.outcome === "failed",
         )
       ) {
         unresolvedByOperation.delete(operationKey);
       }
+      resolveRejectedCallsSupersededBy(step, unresolvedByOperation);
       resolveShellFailuresSubsumedBy(step, unresolvedByOperation);
       resolveMalformedCallsSupersededBy(step, unresolvedByOperation);
       resolveFailedEffectsSupersededBy(step, unresolvedByOperation);
     }
   }
   return [...unresolvedByOperation.values()].at(-1);
+}
+
+/** A schema/validation refusal with explicit proof that dispatch did not start. */
+function isRetryablePreExecutionRejection(
+  result: PlannerToolResult | undefined,
+): boolean {
+  return (
+    result?.success === false &&
+    result.failureProvenance?.retryable === true &&
+    result.data?.acceptance === "rejected" &&
+    result.data?.executionStatus === "not_started" &&
+    !result.effectReceipts?.length
+  );
+}
+
+/** Registered dispatch metadata correlates child and umbrella calls without guessing names. */
+function rejectedCallOperation(step: PlannerStep): string | undefined {
+  const call = step.toolCall;
+  if (!call) return undefined;
+  const dispatch =
+    step.result?.inferredSubaction ?? step.result?.registeredSubaction;
+  return dispatch
+    ? `${dispatch.child.toUpperCase()}|${dispatch.value.toLowerCase()}`
+    : `${call.name.toUpperCase()}|${plannerToolDiscriminatorValue(call)}`;
+}
+
+function resolveRejectedCallsSupersededBy(
+  step: PlannerStep,
+  unresolvedByOperation: Map<string, PlannerStep>,
+): void {
+  const result = step.result;
+  if (
+    !step.toolCall ||
+    !result ||
+    result.success !== true ||
+    result.error != null ||
+    hasExecutionPrerequisite(result) ||
+    result.data?.requiresInput === true ||
+    result.effectReceipts?.some((receipt) => receipt.outcome === "failed")
+  )
+    return;
+  const operation = rejectedCallOperation(step);
+  for (const [key, rejected] of unresolvedByOperation) {
+    if (
+      isRetryablePreExecutionRejection(rejected.result) &&
+      operation === rejectedCallOperation(rejected)
+    )
+      unresolvedByOperation.delete(key);
+  }
 }
 
 /** Canonicalizes the calendar wrapper's explicitly supported operation aliases. */
@@ -7151,6 +7191,9 @@ function resolveMalformedCallsSupersededBy(
     ) {
       continue;
     }
+    // Typed no-dispatch refusals require a successful exact operation, not a
+    // merely similar constructive subaction accepted by legacy correlation.
+    if (isRetryablePreExecutionRejection(failed.result)) continue;
     if (!isMalformedCallFailure(failed.result)) continue;
     if (!malformedCallSupersededBy(failedCall, failed.result, call)) continue;
     unresolvedByOperation.delete(key);
