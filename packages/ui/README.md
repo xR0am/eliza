@@ -27,6 +27,11 @@ provides its product name, builtin key prefix, icons and CSS theme tokens; the
 component does not choose a native adapter or storage namespace. AOSP
 `LauncherSurface` uses the same component for registered views and Android apps.
 
+`@elizaos/ui/api/transport` exposes the browser-safe request helpers and
+`SseEventFramer`. It preserves event lines across fragmented network reads;
+hosts retain UTF-8 decoding policy, limits, cancellation, validation and receipts.
+The Eliza chat client uses it without a pending-event rescan on each chunk.
+
 The app owns renderer composition and native transport selection. Consumers render
 domain DTOs imported from `@elizaos/contracts`; business logic belongs to domain services. Use `bun run --cwd packages/ui storybook` for
 component development. Changes reaching the app require its visual audit.
