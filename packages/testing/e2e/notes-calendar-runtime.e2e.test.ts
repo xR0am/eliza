@@ -357,22 +357,16 @@ async function scenario(label: string, withApprovals = false) {
     // their success-only evaluator with a receipt-aware scenario evaluator.
     harness.fixtures.register(...fixtures.slice(0, 2));
     if (options.extraction) {
-      // Script the current authority contract from this exact persisted request.
-      // The real Notes read supplied the content-bound source reference above;
-      // invented provenance or a stale case reference still fails production checks.
-      const details = record(args.details);
-      const sourceNote = details.sourceNote ?? null;
       const evidence = [{ sourceId: `current:${inbound.id}`, quote: input }];
-      const extraction: Args = {
+      const sourceNote = record(args.details).sourceNote ?? null;
+      const extraction = {
         ...options.extraction,
-        guestIntent: { state: "none", evidence, guests: [] },
+        guestIntent: { state: "none", guests: [], evidence },
         noteIntent: {
-          state: sourceNote === null ? "none" : "requested",
-          evidence,
-          sourceNote: sourceNote as JsonValue,
-          // These cases provide their desired literal description in the request;
-          // they do not ask Calendar to replace it with just the note body.
+          state: sourceNote ? "requested" : "none",
+          sourceNote,
           descriptionMode: "extracted",
+          evidence,
         },
       };
       harness.fixtures.register({

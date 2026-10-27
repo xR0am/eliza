@@ -66,7 +66,11 @@ beforeAll(async () => {
     }),
     getEntityById: async (id: string) => ({ id, metadata: {} }),
     getSetting: (key: string) =>
-      key === "ELIZA_ADMIN_ENTITY_ID" ? OWNER.entityId : undefined,
+      key === "ELIZA_ADMIN_ENTITY_ID"
+        ? OWNER.entityId
+        : key === "TIMEZONE"
+          ? "UTC"
+          : undefined,
     getService: (name: string) =>
       name === CalendarService.serviceType ? service : null,
     reportError: vi.fn(),
