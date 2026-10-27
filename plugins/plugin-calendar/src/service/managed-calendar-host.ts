@@ -1,9 +1,10 @@
 /** Existing managed Cloud Calendar write/readback adapter, composed with host-owned API admission.
  * No credential reads, auth/billing implementation, provider retry, transport or repository. */
-import type {
-  LifeOpsCalendarEvent,
-  LinkedCalendarProviderSnapshot,
-  LinkedCalendarSemanticEvent,
+import {
+  isLinkedCalendarSemanticEvent,
+  type LifeOpsCalendarEvent,
+  type LinkedCalendarProviderSnapshot,
+  type LinkedCalendarSemanticEvent,
 } from "@elizaos/contracts";
 export type CalendarSyncSelection = {
   grantId: string;
@@ -224,32 +225,37 @@ export async function calendarAgentWrite(
       );
     }
     if (command.kind === "create") {
+      if (!isLinkedCalendarSemanticEvent(command.event))
+        throw Error("Invalid linked Calendar semantic event");
       if (!exact(command.idempotencyKey))
         throw Error("Stable linked Calendar operation key required");
       bound = {
         kind: "create",
         selection: selected,
         idempotencyKey: command.idempotencyKey,
-        event: record(command.event) as LinkedCalendarSemanticEvent,
+        event: command.event,
       };
     } else {
       if (!exact(command.eventId) || !exact(command.expectedEtag))
         throw Error("Exact linked Calendar revision required");
-      bound =
-        command.kind === "update"
-          ? {
-              kind: "update",
-              selection: selected,
-              eventId: command.eventId,
-              expectedEtag: command.expectedEtag,
-              event: record(command.event) as LinkedCalendarSemanticEvent,
-            }
-          : {
-              kind: "delete",
-              selection: selected,
-              eventId: command.eventId,
-              expectedEtag: command.expectedEtag,
-            };
+      if (command.kind === "update") {
+        if (!isLinkedCalendarSemanticEvent(command.event))
+          throw Error("Invalid linked Calendar semantic event");
+        bound = {
+          kind: "update",
+          selection: selected,
+          eventId: command.eventId,
+          expectedEtag: command.expectedEtag,
+          event: command.event,
+        };
+      } else {
+        bound = {
+          kind: "delete",
+          selection: selected,
+          eventId: command.eventId,
+          expectedEtag: command.expectedEtag,
+        };
+      }
     }
     return write(bound);
   }
