@@ -129,7 +129,7 @@ public class NativeProviderAdmission {
   return status;
  }
  /** The credential store and identity lookup a Cloud binding needs; AlphaCredentialStore in the app. */
- interface CloudBindingStore {
+ public interface CloudBindingStore {
   String readProvider()throws Exception;
   String readCloud()throws Exception;
   void assertCurrent()throws Exception;
