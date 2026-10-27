@@ -5,8 +5,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type Action,
   type EffectReceipt,
   ElizaError,
+  executePlannedToolCall,
+  type IAgentRuntime,
+  type Memory,
   type PlannerRuntime,
   type PlannerToolResult,
   type PlannerTrajectory,
@@ -2412,3 +2416,716 @@ describe("canonical nonretryable receipt repair", () => {
     ]);
   });
 });
+
+{
+  const added = "Added Calendar check tomorrow at 3 PM.";
+  const refused = {
+    success: false,
+    text: "Invalid generated source reference.",
+    error: "Invalid generated source reference.",
+    data: {
+      actionName: "CALENDAR_CREATE_EVENT",
+      acceptance: "rejected",
+      executionStatus: "not_started",
+      parameterErrors: ["Invalid generated source reference."],
+      invalidParameterNames: ["details"],
+    },
+    failureProvenance: {
+      kind: "handler_error" as const,
+      boundary: "handler" as const,
+      code: "ACTION_ARGUMENTS_INVALID",
+      retryable: true,
+    },
+  };
+  const context = {
+    id: "schema-rejection-give-up",
+    events: [
+      {
+        id: "stage1-declared-intents",
+        type: "instruction",
+        content: "- Create Calendar check tomorrow at 3 PM",
+      },
+    ],
+  };
+  const call = (name: string, action: string) => ({
+    text: "",
+    toolCalls: [
+      { id: name, name, arguments: { action, eliza_turn_scope: "final" } },
+    ],
+  });
+  const gaveUp = () => ({
+    text: "",
+    toolCalls: [
+      {
+        id: "give-up-reply",
+        name: "REPLY",
+        arguments: { text: added, eliza_turn_scope: "final" },
+      },
+    ],
+  });
+  describe("typed rejection remains pending until matching successful execution", () => {
+    it("never claims creation after one rejected draft and give-up prose", async () => {
+      let plans = 0,
+        attempts = 0;
+      const result = await runPlannerLoop({
+        context: { id: "rejected-giveup-no-declared-intents" },
+        codingMode: false,
+        runtime: {
+          useModel: async () =>
+            ++plans === 1
+              ? call("CALENDAR_CREATE_EVENT", "create_event")
+              : gaveUp(),
+        },
+        executeToolCall: async () => {
+          attempts++;
+          return refused;
+        },
+      });
+      expect(attempts).toBe(1);
+      expect(result.finalMessage).not.toBe(added);
+    });
+    it("does not clear a rejected create after a successful different operation", async () => {
+      let plans = 0,
+        attempts = 0;
+      const receipt: EffectReceipt = {
+        receiptId: "deleted-event",
+        operation: "calendar.event.delete",
+        resource: {
+          kind: "calendar.event",
+          id: "different-event",
+          version: "2",
+        },
+        artifacts: [],
+        idempotency: { key: "delete-different-event", replayed: false },
+        observedAt: "2026-10-27T10:00:00.000Z",
+        outcome: "applied",
+        commit: {
+          kind: "durable",
+          id: "different-event",
+          committedAt: "2026-10-27T10:00:00.000Z",
+        },
+      };
+      const result = await runPlannerLoop({
+        context,
+        codingMode: false,
+        runtime: {
+          useModel: async () =>
+            ++plans === 1
+              ? call("CALENDAR_CREATE_EVENT", "create_event")
+              : plans === 2
+                ? call("CALENDAR_DELETE_EVENT", "delete_event")
+                : gaveUp(),
+        },
+        executeToolCall: async () =>
+          ++attempts === 1
+            ? refused
+            : {
+                success: true,
+                turnComplete: false,
+                modelReplyRequired: true,
+                transcriptVisibility: "internal",
+                effectReceipts: [receipt],
+              },
+        evaluate: async () => ({
+          decision: "FINISH",
+          success: true,
+          thought: "Fixture adversarial completion verdict.",
+          messageToUser: added,
+          replyEffectStatus: "applied",
+          effectReceiptIds: [receipt.receiptId],
+          requestFullyCovered: true,
+          outcomeCoverage: [
+            {
+              intentId: "intent:1",
+              status: "completed",
+              evidenceStepIds: ["step:2"],
+            },
+          ],
+        }),
+      });
+      expect(attempts).toBe(2);
+      expect(result.finalMessage).not.toBe(added);
+    });
+  });
+
+  describe("registered rejected-operation recovery", () => {
+    it.each([
+      {
+        first: "CALENDAR_CREATE_EVENT",
+        second: "CALENDAR_CREATE_EVENT",
+        firstKey: "registeredSubaction",
+        secondKey: "registeredSubaction",
+      },
+      {
+        first: "CALENDAR_CREATE_EVENT",
+        second: "CALENDAR",
+        firstKey: "registeredSubaction",
+        secondKey: "inferredSubaction",
+      },
+      {
+        first: "CALENDAR",
+        second: "CALENDAR_CREATE_EVENT",
+        firstKey: "inferredSubaction",
+        secondKey: "registeredSubaction",
+      },
+    ])(
+      "clears only a successful matching registered operation: $first -> $second",
+      async (row) => {
+        let plans = 0,
+          attempts = 0;
+        const pin = {
+          child: "CALENDAR_CREATE_EVENT",
+          discriminator: "action",
+          value: "create_event",
+        };
+        const applied = {
+          ...receipt,
+          receiptId: "created-calendar",
+          operation: "calendar.event.create",
+          resource: {
+            kind: "calendar.event",
+            id: "calendar-check",
+            version: "1",
+          },
+        };
+        const result = await runPlannerLoop({
+          context,
+          codingMode: false,
+          runtime: {
+            useModel: async () =>
+              ++plans <= 2
+                ? call(plans === 1 ? row.first : row.second, "create_event")
+                : gaveUp(),
+          },
+          executeToolCall: async () =>
+            ++attempts === 1
+              ? { ...refused, [row.firstKey]: pin }
+              : {
+                  success: true,
+                  turnComplete: false,
+                  modelReplyRequired: true,
+                  transcriptVisibility: "internal",
+                  effectReceipts: [applied],
+                  [row.secondKey]: pin,
+                },
+          evaluate: async () => ({
+            decision: "FINISH",
+            success: true,
+            thought: "Fixture committed matching operation.",
+            messageToUser: added,
+            replyEffectStatus: "applied",
+            effectReceiptIds: [applied.receiptId],
+            requestFullyCovered: true,
+            outcomeCoverage: [
+              {
+                intentId: "intent:1",
+                status: "completed",
+                evidenceStepIds: ["step:2"],
+              },
+            ],
+          }),
+        });
+        expect(attempts).toBe(2);
+        expect(result.finalMessage).toBe(added);
+        expect(plans).toBe(2);
+      },
+    );
+    it("does not clear a create refusal for a different subaction of the same umbrella", async () => {
+      let plans = 0,
+        attempts = 0;
+      const result = await runPlannerLoop({
+        context,
+        codingMode: false,
+        runtime: {
+          useModel: async () =>
+            ++plans <= 2
+              ? call("CALENDAR", plans === 1 ? "create_event" : "update_event")
+              : gaveUp(),
+        },
+        executeToolCall: async () =>
+          ++attempts === 1
+            ? {
+                ...refused,
+                inferredSubaction: {
+                  child: "CALENDAR_CREATE_EVENT",
+                  discriminator: "action",
+                  value: "create_event",
+                },
+              }
+            : {
+                success: true,
+                turnComplete: false,
+                modelReplyRequired: true,
+                transcriptVisibility: "internal",
+                effectReceipts: [receipt],
+                inferredSubaction: {
+                  child: "CALENDAR_UPDATE_EVENT",
+                  discriminator: "action",
+                  value: "update_event",
+                },
+              },
+        evaluate: async () => ({
+          decision: "FINISH",
+          success: true,
+          thought: "Fixture adversarial verdict.",
+          messageToUser: added,
+          replyEffectStatus: "applied",
+          effectReceiptIds: [receipt.receiptId],
+          requestFullyCovered: true,
+          outcomeCoverage: [
+            {
+              intentId: "intent:1",
+              status: "completed",
+              evidenceStepIds: ["step:2"],
+            },
+          ],
+        }),
+      });
+      expect(attempts).toBe(2);
+      expect(result.finalMessage).not.toBe(added);
+    });
+    it("marks malformed plain-object envelopes as rejected before invoking a handler", async () => {
+      const handler = vi.fn(async () => ({ success: true }));
+      const action = {
+        name: "WRITE_FIXTURE",
+        description: "Write fixture",
+        similes: [],
+        examples: [],
+        handler,
+      } as Action;
+      const runtime = {
+        actions: [action],
+        getSetting: () => undefined,
+        logger: {
+          warn: vi.fn(),
+          error: vi.fn(),
+          debug: vi.fn(),
+          info: vi.fn(),
+        },
+      } as unknown as IAgentRuntime;
+      const message = {
+        id: "11111111-1111-4111-8111-111111111111",
+        entityId: "22222222-2222-4222-8222-222222222222",
+        roomId: "33333333-3333-4333-8333-333333333333",
+        content: { text: "Write fixture." },
+      } as Memory;
+      const result = await executePlannedToolCall(
+        runtime,
+        { message, userRoles: ["OWNER"], entityAliases: {} },
+        { name: action.name, params: [] as unknown as Record<string, unknown> },
+      );
+      expect(handler).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+      expect(result.data).toMatchObject({
+        acceptance: "rejected",
+        executionStatus: "not_started",
+      });
+      expect(result.failureProvenance).toMatchObject({
+        code: "ACTION_ARGUMENTS_INVALID",
+        retryable: true,
+      });
+    });
+  });
+
+  describe("rejected-operation partial and exploratory outcomes", () => {
+    it.each(["requiresInput", "requiresConfirmation"] as const)(
+      "does not clear rejection for a matching %s preview",
+      async (marker) => {
+        let plans = 0,
+          attempts = 0;
+        const result = await runPlannerLoop({
+          context,
+          codingMode: false,
+          runtime: {
+            useModel: async () =>
+              ++plans <= 2
+                ? call("CALENDAR_CREATE_EVENT", "create_event")
+                : gaveUp(),
+          },
+          executeToolCall: async () =>
+            ++attempts === 1
+              ? refused
+              : {
+                  success: true,
+                  text: "Which calendar should I use?",
+                  turnComplete: false,
+                  modelReplyRequired: true,
+                  data: { [marker]: true },
+                },
+          evaluate: async () => ({
+            decision: "FINISH",
+            success: true,
+            thought: "Fixture adversarial preview completion.",
+            messageToUser: added,
+            replyEffectStatus: "applied",
+            effectReceiptIds: [],
+            requestFullyCovered: true,
+            outcomeCoverage: [
+              {
+                intentId: "intent:1",
+                status: "completed",
+                evidenceStepIds: ["step:2"],
+              },
+            ],
+          }),
+        });
+        expect(attempts).toBe(2);
+        expect(result.finalMessage).not.toBe(added);
+      },
+    );
+    it.each(["readOnlyOperation", "coachingFailure"] as const)(
+      "preserves ordinary exploratory %s failure before a verified write",
+      async (flag) => {
+        let plans = 0,
+          attempts = 0;
+        const result = await runPlannerLoop({
+          context,
+          codingMode: false,
+          runtime: {
+            useModel: async () =>
+              ++plans <= 2
+                ? call(
+                    plans === 1 ? "MEMORY_SEARCH" : "CALENDAR_CREATE_EVENT",
+                    plans === 1 ? "search" : "create_event",
+                  )
+                : gaveUp(),
+          },
+          executeToolCall: async () =>
+            ++attempts === 1
+              ? {
+                  success: false,
+                  text: "Exploratory source unavailable.",
+                  data: { [flag]: true },
+                }
+              : {
+                  success: true,
+                  turnComplete: false,
+                  modelReplyRequired: true,
+                  transcriptVisibility: "internal",
+                  effectReceipts: [receipt],
+                },
+          evaluate: async ({ trajectory }) =>
+            trajectory.steps.at(-1)?.result?.success === false
+              ? {
+                  decision: "CONTINUE",
+                  success: false,
+                  thought: "Continue requested work.",
+                }
+              : {
+                  decision: "FINISH",
+                  success: true,
+                  thought: "Requested write verified.",
+                  messageToUser: added,
+                  replyEffectStatus: "applied",
+                  effectReceiptIds: [receipt.receiptId],
+                  requestFullyCovered: true,
+                  outcomeCoverage: [
+                    {
+                      intentId: "intent:1",
+                      status: "completed",
+                      evidenceStepIds: ["step:2"],
+                    },
+                  ],
+                },
+        });
+        expect(attempts).toBe(2);
+        expect(result.finalMessage).toBe(added);
+        expect(plans).toBe(2);
+      },
+    );
+  });
+  describe("rejected target identity is not another outcome", () => {
+    it.each(["create_event", "update_event"] as const)(
+      "keeps the rejected known target when %s succeeds for another target",
+      async (operation) => {
+        let plans = 0,
+          attempts = 0;
+        const name =
+          operation === "create_event"
+            ? "CALENDAR_CREATE_EVENT"
+            : "CALENDAR_UPDATE_EVENT";
+        const requestContext = {
+          id: "two-target-outcomes",
+          events: [
+            {
+              id: "stage1-declared-intents",
+              type: "instruction",
+              content: "- Complete target A\n- Complete target B",
+            },
+          ],
+        };
+        const targetArgs = (a: boolean) =>
+          operation === "create_event"
+            ? {
+                title: a ? "Title A" : "Title B",
+                details: a ? { sourceNote: { contentHash: "invalid" } } : {},
+              }
+            : {
+                targetKind: "eventId",
+                target: a ? "event-A" : "event-B",
+                details: a ? { sourceNote: { contentHash: "invalid" } } : {},
+              };
+        const falseReply = "Completed target A and target B.";
+        const applied = {
+          ...receipt,
+          receiptId: "target-B-applied",
+          operation:
+            operation === "create_event"
+              ? "calendar.event.create"
+              : "calendar.event.update",
+          resource: { kind: "calendar.event", id: "event-B", version: "2" },
+        };
+        const result = await runPlannerLoop({
+          context: requestContext,
+          codingMode: false,
+          runtime: {
+            useModel: async () => {
+              plans++;
+              return plans <= 2
+                ? {
+                    text: "",
+                    toolCalls: [
+                      {
+                        id: `target-${plans}`,
+                        name,
+                        arguments: {
+                          action: operation,
+                          ...targetArgs(plans === 1),
+                          eliza_turn_scope: "final",
+                        },
+                      },
+                    ],
+                  }
+                : {
+                    text: "",
+                    toolCalls: [
+                      {
+                        id: "claimed-complete",
+                        name: "REPLY",
+                        arguments: {
+                          text: falseReply,
+                          eliza_turn_scope: "final",
+                        },
+                      },
+                    ],
+                  };
+            },
+          },
+          executeToolCall: async () =>
+            ++attempts === 1
+              ? { ...refused, data: { ...refused.data, actionName: name } }
+              : {
+                  success: true,
+                  turnComplete: false,
+                  modelReplyRequired: true,
+                  transcriptVisibility: "internal",
+                  effectReceipts: [applied],
+                },
+          evaluate: async () => ({
+            decision: "FINISH",
+            success: true,
+            thought: "Fixture adversarial two-target coverage.",
+            messageToUser: falseReply,
+            replyEffectStatus: "applied",
+            effectReceiptIds: [applied.receiptId],
+            requestFullyCovered: true,
+            outcomeCoverage: [
+              {
+                intentId: "intent:1",
+                status: "completed",
+                evidenceStepIds: ["step:2"],
+              },
+              {
+                intentId: "intent:2",
+                status: "completed",
+                evidenceStepIds: ["step:2"],
+              },
+            ],
+          }),
+        });
+        expect(attempts).toBe(2);
+        expect(result.finalMessage).not.toBe(falseReply);
+      },
+    );
+  });
+
+  describe("Core-emitted rejected nested container targets", () => {
+    it.each([false, true])(
+      "preserves nested title identity while repairing only invalid sourceNote (different=%s)",
+      async (different) => {
+        const handler = vi.fn(async () => ({ success: true }));
+        const action = {
+          name: "CALENDAR_CREATE_EVENT",
+          description: "Create event",
+          similes: [],
+          examples: [],
+          handler,
+          parameters: [
+            {
+              name: "action",
+              description: "Operation",
+              schema: { type: "string", enum: ["create_event"] },
+            },
+            {
+              name: "details",
+              description: "Fields",
+              schema: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  sourceNote: {
+                    type: "object",
+                    properties: {
+                      agentId: { type: "string" },
+                      noteId: { type: "string" },
+                      contentHash: {
+                        type: "string",
+                        pattern: "^[a-f0-9]{64}$",
+                      },
+                    },
+                    required: ["agentId", "noteId", "contentHash"],
+                  },
+                },
+              },
+            },
+          ],
+        } as Action;
+        const runtime = {
+          actions: [action],
+          getSetting: () => undefined,
+          logger: {
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+            info: vi.fn(),
+          },
+        } as unknown as IAgentRuntime;
+        const message = {
+          id: "11111111-1111-4111-8111-111111111111",
+          entityId: "22222222-2222-4222-8222-222222222222",
+          roomId: "33333333-3333-4333-8333-333333333333",
+          content: { text: "Create Title A and set its time." },
+        } as Memory;
+        const original = {
+          action: "create_event",
+          details: {
+            title: "Title A",
+            sourceNote: {
+              agentId: "agent",
+              noteId: "note",
+              contentHash: "invalid",
+            },
+          },
+        };
+        const rejection = await executePlannedToolCall(
+          runtime,
+          { message, userRoles: ["OWNER"], entityAliases: {} },
+          { name: action.name, params: original },
+        );
+        expect(handler).not.toHaveBeenCalled();
+        expect(rejection.data?.invalidParameterNames).toEqual(["details"]);
+        expect(rejection.data?.parameterErrors).toHaveLength(1);
+        expect(String(rejection.data?.parameterErrors?.[0])).toContain(
+          "details.sourceNote.contentHash",
+        );
+        let plans = 0,
+          attempts = 0;
+        const confirmation = "Created Title A and set its time.";
+        const applied = {
+          ...receipt,
+          receiptId: "nested-create",
+          operation: "calendar.event.create",
+          resource: {
+            kind: "calendar.event",
+            id: different ? "event-B" : "event-A",
+            version: "1",
+          },
+        };
+        const result = await runPlannerLoop({
+          context: {
+            id: "nested-two-outcomes",
+            events: [
+              {
+                id: "stage1-declared-intents",
+                type: "instruction",
+                content: "- Create Title A\n- Set its time",
+              },
+            ],
+          },
+          codingMode: false,
+          runtime: {
+            useModel: async () =>
+              ++plans <= 2
+                ? {
+                    text: "",
+                    toolCalls: [
+                      {
+                        id: `nested-${plans}`,
+                        name: action.name,
+                        arguments: {
+                          ...(plans === 1
+                            ? original
+                            : {
+                                action: "create_event",
+                                details: {
+                                  title: different ? "Title B" : "Title A",
+                                },
+                              }),
+                          eliza_turn_scope: "final",
+                        },
+                      },
+                    ],
+                  }
+                : {
+                    text: "",
+                    toolCalls: [
+                      {
+                        id: "nested-claim",
+                        name: "REPLY",
+                        arguments: {
+                          text: confirmation,
+                          eliza_turn_scope: "final",
+                        },
+                      },
+                    ],
+                  },
+          },
+          executeToolCall: async () =>
+            ++attempts === 1
+              ? rejection
+              : {
+                  success: true,
+                  turnComplete: false,
+                  modelReplyRequired: true,
+                  transcriptVisibility: "internal",
+                  effectReceipts: [applied],
+                },
+          evaluate: async () => ({
+            decision: "FINISH",
+            success: true,
+            thought: "Fixture two-outcome verdict.",
+            messageToUser: confirmation,
+            replyEffectStatus: "applied",
+            effectReceiptIds: [applied.receiptId],
+            requestFullyCovered: true,
+            outcomeCoverage: [
+              {
+                intentId: "intent:1",
+                status: "completed",
+                evidenceStepIds: ["step:2"],
+              },
+              {
+                intentId: "intent:2",
+                status: "completed",
+                evidenceStepIds: ["step:2"],
+              },
+            ],
+          }),
+        });
+        expect(attempts).toBe(2);
+        if (different) expect(result.finalMessage).not.toBe(confirmation);
+        else expect(result.finalMessage).toBe(confirmation);
+      },
+    );
+  });
+}
