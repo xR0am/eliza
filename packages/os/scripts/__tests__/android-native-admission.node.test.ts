@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   elizaNativeAdmission,
+  finalizeAndroidNative,
   stageAndroidNative,
 } from "../android/android-native-admission.mjs";
 import { composePixel10aProduct } from "../android/pixel10a-product.ts";
@@ -91,7 +92,8 @@ test("Eliza admission uses the reviewed commit's Bun pin despite local modificat
 function stagedFixture(t, options = {}) {
   const output = path.join(temporary(t), "overlay");
   execFileSync("python3", [fixtureScript, "--fixture", output]);
-  const apk = path.join(output, "launcher.apk");
+  const apk = path.join(output, "Launcher.apk");
+  fs.renameSync(path.join(output, "launcher.apk"), apk);
   const launcher = {
     schemaVersion: 1,
     brand: "eliza",
@@ -111,11 +113,11 @@ function stagedFixture(t, options = {}) {
   const evidence = stageAndroidNative({
     apk,
     output,
-    moduleName: "Eliza",
+    moduleName: launcher.moduleName,
     launcher,
     admission,
   });
-  return { output, launcher, evidence };
+  return { output, launcher, evidence, admission, apk };
 }
 
 test("common native staging preserves admitted companion and revocable permission definitions", (t) => {
@@ -170,21 +172,87 @@ test("product composition requires bound native evidence and rechecks copied nat
   assert.equal(fs.existsSync(path.join(f.output, "stallion")), false);
 });
 
-test("verified native receipt admits composition without claiming execution", (t) => {
-  const f = stagedFixture(t);
-  const product = JSON.parse(
-    fs.readFileSync(
-      new URL("../../android/products/pixel10a-eliza.json", import.meta.url),
+for (const brand of ["alpha", "eliza"]) {
+  test(`${brand} composes native payloads and converts to Soong without changing admitted bytes`, (t) => {
+    const product = JSON.parse(
+      fs.readFileSync(
+        new URL(
+          `../../android/products/pixel10a-${brand}.json`,
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const f = stagedFixture(t, {
+      brand,
+      ...product.launcher,
+      defaultPermissions: ["android.permission.RECORD_AUDIO"],
+      companions: [
+        {
+          moduleName: "Companion",
+          packageName: "ai.elizaos.companion",
+          apkSha256: "c".repeat(64),
+        },
+      ],
+    });
+    const report = composePixel10aProduct({
+      ...f,
+      product,
+      nativeStagingEvidence: f.evidence,
+    });
+    const final = finalizeAndroidNative({
+      ...f,
+      moduleName: f.launcher.moduleName,
+    });
+    assert.deepEqual(final, f.evidence);
+    assert.equal(report.nativeLibrariesStaged, true);
+    assert.equal(report.imageBuilt, false);
+    assert.equal(report.releaseQualified, false);
+    assert.equal(final.runtimeVerified, false);
+    assert.equal(fs.existsSync(path.join(f.output, "Android.mk")), false);
+    const blueprint = fs.readFileSync(
+      path.join(f.output, "Android.bp"),
       "utf8",
-    ),
-  );
-  const report = composePixel10aProduct({
-    ...f,
-    product,
-    nativeStagingEvidence: f.evidence,
+    );
+    assert.equal(
+      blueprint.match(/prebuilt_app_native \{/g)?.length,
+      final.libraries.length,
+    );
+    assert.match(blueprint, /name: "Companion"/);
+    assert.match(blueprint, /DefaultPermissions/);
+    assert.doesNotMatch(blueprint, /privileged: true/);
+    for (const entry of final.libraries) {
+      assert.equal(
+        createHash("sha256")
+          .update(fs.readFileSync(path.join(f.output, entry.path)))
+          .digest("hex"),
+        entry.sha256,
+      );
+      assert.ok(
+        blueprint.includes(
+          `relative_install_path: "${f.launcher.moduleName}/lib/arm64"`,
+        ),
+      );
+    }
+    assert.ok(
+      fs
+        .readFileSync(path.join(f.output, "product.mk"), "utf8")
+        .includes("config.fs"),
+    );
   });
-  assert.equal(report.nativeLibrariesStaged, true);
-  assert.equal(report.imageBuilt, false);
-  assert.equal(report.releaseQualified, false);
-  assert.equal(f.evidence.runtimeVerified, false);
+}
+
+test("Soong conversion refuses changed APK, library or launcher definitions before replacing the Makefile", (t) => {
+  for (const changed of [
+    "Launcher.apk",
+    "native-arm64/libeliza_bun.so",
+    "Android.bp",
+  ]) {
+    const f = stagedFixture(t);
+    fs.appendFileSync(path.join(f.output, changed), "changed");
+    assert.throws(() =>
+      finalizeAndroidNative({ ...f, moduleName: f.launcher.moduleName }),
+    );
+    assert.equal(fs.existsSync(path.join(f.output, "Android.mk")), true);
+  }
 });
