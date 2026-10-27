@@ -3,6 +3,10 @@
 Shared React UI library for elizaOS apps: primitives, composites, layouts, the typed HTTP/WS API client, agent-surface view
 instrumentation, GenUI, voice, and host capability interfaces.
 
+`@elizaos/ui/view-primitives` provides the shared page frame, button, compact
+skeleton, agent-element hook and API error predicate for embedded domain views.
+It does not import the application, account or provider client barrels.
+
 Public JavaScript APIs use the package root; UI internals import owner files directly.
 Batch voice hosts use `@elizaos/ui/voice/batch-conversation` to load the coordinator
 without the React UI root. This public entry owns no credentials, media or provider
