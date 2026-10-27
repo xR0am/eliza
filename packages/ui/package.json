@@ -170,6 +170,12 @@
       "types": "./dist/voice/segmented-speech-playback.d.ts",
       "import": "./dist/voice/segmented-speech-playback.js",
       "default": "./dist/voice/segmented-speech-playback.js"
+    },
+    "./installed-apps-launcher": {
+      "eliza-source": "./src/components/pages/InstalledAppsLauncher.tsx",
+      "types": "./dist/components/pages/InstalledAppsLauncher.d.ts",
+      "import": "./dist/components/pages/InstalledAppsLauncher.js",
+      "default": "./dist/components/pages/InstalledAppsLauncher.js"
     }
   },
   "peerDependencies": {
@@ -268,7 +274,8 @@
     "@elizaos/host": "workspace:*",
     "@elizaos/contracts": "workspace:*",
     "@elizaos/voice": "workspace:*",
-    "@elizaos/plugin-assistant": "workspace:*"
+    "@elizaos/plugin-assistant": "workspace:*",
+    "@elizaos/capacitor-system": "workspace:*"
   },
   "devDependencies": {
     "@capacitor/haptics": "8.0.2",

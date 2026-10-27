@@ -12,7 +12,12 @@
       "import": "./dist/esm/index.js",
       "require": "./dist/plugin.cjs.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./launcher": {
+      "eliza-source": "./src/client/launcher.ts",
+      "types": "./dist/esm/client/launcher.d.ts",
+      "import": "./dist/esm/client/launcher.js"
+    }
   },
   "files": [
     "android/src/main/",
@@ -29,7 +34,8 @@
     "lint": "bunx @biomejs/biome check --write --unsafe .",
     "lint:check": "bunx @biomejs/biome check .",
     "format": "bunx @biomejs/biome format --write .",
-    "format:check": "bunx @biomejs/biome format ."
+    "format:check": "bunx @biomejs/biome format .",
+    "test": "node --test test/launcher.test.mjs"
   },
   "license": "MIT",
   "capacitor": {
