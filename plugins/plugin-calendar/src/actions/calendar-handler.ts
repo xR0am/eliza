@@ -3895,7 +3895,12 @@ async function inferCreateEventDetails(
   const verifiedNoteReferences: (CalendarNoteSourceReference & {
     title: string;
   })[] = [];
-  if (notes?.assertSourceReference && notes.getNote && notes.sourceReference) {
+  if (
+    !nativeConstraints &&
+    notes?.assertSourceReference &&
+    notes.getNote &&
+    notes.sourceReference
+  ) {
     // A valid planner reference alone does not establish which note the user meant.
     // Reuse Notes' named lookup and the actual foreground canonical selection.
     const named = notes.findNotesNamedInText?.(messageText(message)) ?? [];
@@ -3976,7 +3981,7 @@ async function inferCreateEventDetails(
     "Set requiresInput:true and ask for the missing detail in clarification when the user has not supplied or accepted an exact time and has not explicitly asked you to choose one. Morning, afternoon, and evening alone require a clock-time question. Set requiresInput:false only when the creation request is sufficiently specified.",
     ...(nativeConstraints
       ? [
-          "The destination is selected and confirmed separately on the native phone. Leave grantId and calendarId null; no managed account or provider source catalog is available to this capability.",
+          "The destination is selected and confirmed separately on the native phone. Leave grantId and calendarId null; no managed account, provider or managed Notes source catalog is available to this capability. A requested managed source note requires clarification, not a draft that drops its source reference.",
         ]
       : [
           "Resolve grantId and calendarId from the calendar source identities using the user's requested provider/account and calendar. Copy both identifiers from the same source key; these extracted identifiers determine the write destination. The proposed destination below is only a planner hint, not user authorization. If the user selected an account in this turn, use that account even when the planner omitted its grant. Only an unqualified calendar request may default to eliza-calendar/primary. If the requested destination cannot be uniquely resolved, return null identifiers and requiresInput:true with a clarification. Never substitute the built-in calendar for a named provider, or select an account based on the event's personal/work subject.",

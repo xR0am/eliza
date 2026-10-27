@@ -32,7 +32,11 @@ import {
   vi,
 } from "vitest";
 import { NotesService } from "../../plugin-notes/src/service.js";
-import { createCalendarActionRunner } from "../src/actions/calendar-handler.js";
+import {
+  createCalendarActionRunner,
+  inferNativeCalendarCreate,
+  registerCalendarActionHostAdapter,
+} from "../src/actions/calendar-handler.js";
 import { __testing } from "../src/apple-calendar.js";
 import {
   ELIZA_CALENDAR_GRANT_ID,
@@ -814,9 +818,13 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
     "missing",
     "changed",
     "solo-selected",
+    "native",
+    "native-inline",
   ] as const)(
     "grounds the note description in real Notes bytes (%s)",
     async (mode) => {
+      const native = mode === "native" || mode === "native-inline";
+      const inlineDescription = "Bring the green notebook.";
       const description =
         "Bring the green notebook at 4:30.\nKeep  two spaces.";
       const paraphrase = "Bring the green notebook at 4:30. Keep two spaces";
@@ -852,9 +860,11 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
                 ? { ...source, agentId: "another-agent" }
                 : source;
         const text =
-          mode === "solo-selected"
-            ? "Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes. No guests."
-            : `Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes using ${mode === "wrong-note" || mode === "named" ? 'the note "Notebook source"' : "the note"}'s ${mode === "extracted" ? "summarized" : "exact"} body as its description. No guests.`;
+          mode === "native-inline"
+            ? "Create Shaw flow QA Sunday September 20 at 10 AM America/New_York for 15 minutes. Description: Bring the green notebook. No guests."
+            : mode === "solo-selected"
+              ? "Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes. No guests."
+              : `Create a local event Sunday September 20 at 10 AM America/New_York for 15 minutes using ${mode === "wrong-note" || mode === "named" ? 'the note "Notebook source"' : "the note"}'s ${mode === "extracted" ? "summarized" : "exact"} body as its description. No guests.`;
         const evidence = [
           {
             sourceId: "current:00000000-0000-0000-0000-000000000450",
@@ -862,7 +872,8 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
           },
         ];
         const runJsonModel = vi.fn(async ({ prompt }: { prompt: string }) => {
-          if (mode !== "unavailable") {
+          if (native) expect(prompt).toContain("Verified note references: []");
+          else if (mode !== "unavailable") {
             expect(prompt).toContain('"title":"Notebook source"');
             expect(prompt).not.toContain(description);
           }
@@ -876,22 +887,37 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
             );
           const parsed = {
             title: "Shaw flow QA",
-            grantId: "eliza-calendar",
-            calendarId: "primary",
+            grantId: native ? null : "eliza-calendar",
+            calendarId: native ? null : "primary",
             requiresInput: false,
             clarification: null,
-            startAt: "2026-09-20T10:00:00-04:00",
-            endAt: "2026-09-20T10:15:00-04:00",
+            startAt: native
+              ? "2026-09-20T10:00:00"
+              : "2026-09-20T10:00:00-04:00",
+            endAt: native ? "2026-09-20T10:15:00" : "2026-09-20T10:15:00-04:00",
             timeZone: "America/New_York",
-            description: mode === "solo-selected" ? null : paraphrase,
+            description:
+              mode === "native-inline"
+                ? inlineDescription
+                : mode === "solo-selected"
+                  ? null
+                  : paraphrase,
             location: null,
             guestIntent: { state: "none", evidence, guests: [] },
             noteIntent: {
-              state: mode === "solo-selected" ? "none" : "requested",
+              state:
+                mode === "solo-selected" || mode === "native-inline"
+                  ? "none"
+                  : "requested",
               evidence,
-              sourceNote: mode === "solo-selected" ? null : source,
+              sourceNote:
+                mode === "solo-selected" || mode === "native-inline"
+                  ? null
+                  : source,
               descriptionMode:
-                mode === "solo-selected" || mode === "extracted"
+                mode === "solo-selected" ||
+                mode === "extracted" ||
+                mode === "native-inline"
                   ? "extracted"
                   : "verbatim",
             },
@@ -903,35 +929,60 @@ describe("built-in Eliza calendar (real PGlite)", { timeout: 30_000 }, () => {
           runJsonModel,
           recentConversationTexts: vi.fn(async () => []),
         });
-        const result = await action.handler(
-          runtime,
-          {
-            id: "00000000-0000-0000-0000-000000000450",
-            entityId: "00000000-0000-0000-0000-000000000102",
-            roomId: "00000000-0000-0000-0000-000000000103",
-            createdAt: Date.parse("2026-09-18T12:00:00.000Z"),
-            content: {
-              text,
-              metadata: {
-                clientDevice: {
-                  context: {
-                    view: "notes",
-                    sensitive: false,
-                    // Explicitly named source A must beat selected source B.
-                    selectedObject: {
-                      kind: "canonical-note",
-                      id:
-                        mode === "wrong-note" || mode === "named"
-                          ? other.id
-                          : mode === "missing"
-                            ? "note-missing"
-                            : note.id,
-                    },
+        const requestMessage = {
+          id: "00000000-0000-0000-0000-000000000450",
+          entityId: "00000000-0000-0000-0000-000000000102",
+          roomId: "00000000-0000-0000-0000-000000000103",
+          createdAt: Date.parse("2026-09-18T12:00:00.000Z"),
+          content: {
+            text,
+            metadata: {
+              clientDevice: {
+                context: {
+                  view: "notes",
+                  sensitive: false,
+                  // Explicitly named source A must beat selected source B.
+                  selectedObject: {
+                    kind: "canonical-note",
+                    id:
+                      mode === "wrong-note" || mode === "named"
+                        ? other.id
+                        : mode === "missing"
+                          ? "note-missing"
+                          : note.id,
                   },
                 },
               },
             },
-          } as Memory,
+          },
+        } as Memory;
+        if (native) {
+          const nativeRuntime = Object.create(runtime) as IAgentRuntime;
+          registerCalendarActionHostAdapter(nativeRuntime, { runJsonModel });
+          const draft = await inferNativeCalendarCreate({
+            runtime: nativeRuntime,
+            message: requestMessage,
+            timeZone: "America/New_York",
+            signal: new AbortController().signal,
+          });
+          if (mode === "native") expect(draft.fields).toBeUndefined();
+          else
+            expect(draft.fields).toMatchObject({
+              title: "Shaw flow QA",
+              description: inlineDescription,
+              start: "2026-09-20T14:00:00.000Z",
+              end: "2026-09-20T14:15:00.000Z",
+              timeZone: "America/New_York",
+            });
+          expect(
+            (await pg.query("SELECT id FROM app_calendar.life_calendar_events"))
+              .rows,
+          ).toEqual([]);
+          return;
+        }
+        const result = await action.handler(
+          runtime,
+          requestMessage,
           undefined,
           {
             parameters: {
