@@ -83,6 +83,7 @@ import {
 } from "../src/runtime/view-action-affinity.ts";
 import { runWithViewClient } from "../src/runtime/view-client-context.ts";
 import {
+  registerViewNavigationRoutingRule,
   viewNavigationEvaluator,
   viewNavigationField,
 } from "../src/runtime/view-navigation.ts";
@@ -107,6 +108,19 @@ async function fixture(
   inProcess = false,
   missingNotesBundle = false,
 ) {
+  if (missingNotesBundle && inProcess) {
+    vi.stubEnv(
+      "ELIZA_NATIVE_VIEW_DECLARATIONS",
+      JSON.stringify([
+        {
+          id: "notes",
+          label: "Notes",
+          path: "/notes",
+          fallbackFor: "test-nav-views",
+        },
+      ]),
+    );
+  }
   const frames: Array<{ client: string; frame: object }> = [];
   let requests = 0;
   let kernelRequests = 0;
@@ -141,6 +155,7 @@ async function fixture(
           id: "notes",
           label: "Notes",
           path: "/notes",
+          roleGate: { minRole: "OWNER" },
           ...(missingNotesBundle
             ? { bundlePath: "missing-native-counterpart-bundle.js" }
             : { bundleUrl: "/notes.js" }),
@@ -1609,6 +1624,8 @@ describe("model-selected host navigation", () => {
           composeState: async () => state,
         }),
       );
+      f.runtime.actions = [...promoteSubactionsToActions(viewsAction)];
+      registerViewNavigationRoutingRule(f.runtime);
       const resultPromise = runWithStreamingContext(
         { messageId: String(input.id), onStreamChunk: () => {} },
         () =>

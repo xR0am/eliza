@@ -1334,6 +1334,17 @@ export class DeviceActionService {
       const calendarMutation =
         binding.purpose === "original_calendar_time_update_after_read" ||
         binding.purpose === "original_calendar_update_after_read";
+      if (notesMutation || calendarMutation) {
+        await recheck?.();
+        const current = await this.assertReadReplyCurrent(
+          c,
+          hint,
+          signal,
+          assertHostCurrent,
+          ["claimed"],
+        );
+        current();
+      }
       const mutationPlan = notesMutation
         ? await withDeviceReadModelUsage(this.runtime, binding, () =>
             notesUpdateAfterReadPlan(
@@ -1745,7 +1756,6 @@ export class DeviceActionService {
           CLOCK_REPEAT_CAPABILITY,
           CLOCK_ALARMS_CAPABILITY,
           MAPS_CAPABILITY,
-          CAMERA_CAPTURE_CAPABILITY,
           SMS_SEND_CAPABILITY,
         ],
       };
