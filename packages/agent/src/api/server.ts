@@ -1090,6 +1090,13 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     // with no check at any layer, so the whole prefix is owner-only.
     under("/api/discord") ||
     pathname === "/api/restore" ||
+    // Voice identity reads: the speaker-centroid list, the preset
+    // list, and preset sample audio. The writes on these prefixes
+    // are already write-gated; the GETs were left open, and plugin
+    // dispatch alone only rejects unauthenticated sessions, so a
+    // paired guest session reads them. All-method, not write-only.
+    under("/api/voice/profiles") ||
+    under("/v1/voice/speaker-profiles") ||
     under("/api/backups") ||
     under("/api/agent/export") ||
     (write &&
