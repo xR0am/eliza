@@ -1124,6 +1124,12 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     // webhook secrets — reads disclose them, writes plant persistent
     // actions the owner's agent later invokes.
     under("/api/custom-actions") ||
+    // Character experiences: distilled episodic records learned
+    // from the owner's conversations (context, outcome, learning,
+    // source rooms/messages). The write section gates /api/character
+    // for writes, but the experience GETs were left open — the same
+    // stored-content class as the owner-gated memory reads.
+    under("/api/character/experiences") ||
     (write &&
       [
         "import",
