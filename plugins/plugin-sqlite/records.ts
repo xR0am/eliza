@@ -1723,6 +1723,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const memories = await this.storage.getWhere<StoredMemory>(
       COLLECTIONS.MEMORIES,
       (m) => {
+        // plugin-sql scopes the same query with `agent_id = this.agentId`.
+        // Rows stored without an agentId belong to this database, as in the
+        // other tenant checks.
+        if ((m.agentId ?? this.agentId) !== this.agentId) return false;
         if (!roomSet.has(m.roomId as UUID)) return false;
         if (params.tableName && storedMemoryTableName(m) !== params.tableName)
           return false;
@@ -2229,6 +2233,10 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
         (memory) =>
           (!params.tableName ||
             storedMemoryTableName(memory) === params.tableName) &&
+          // plugin-sql scopes this read with `agent_id = this.agentId`.
+          // Rows stored without an agentId belong to this database, as in
+          // the other tenant checks.
+          (memory.agentId ?? this.agentId) === this.agentId &&
           (!params.roomId || memory.roomId === params.roomId) &&
           !excludedRooms.has(memory.roomId) &&
           (!params.worldId || memory.worldId === params.worldId) &&
