@@ -1134,6 +1134,9 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
     (write && pathname === "/api/restart") ||
     (write &&
       (pathname.startsWith("/api/wallet/") ||
+        // Release-channel policy: a silent flip to nightly changes what
+        // the owner's next update installs. Status stays a GET read.
+        under("/api/update") ||
         // MCP config writes can point the agent at an attacker-controlled
         // remote server; stdio writes are terminal-gated but not role-gated.
         under("/api/mcp") ||
