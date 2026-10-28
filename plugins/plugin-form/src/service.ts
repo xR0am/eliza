@@ -1345,8 +1345,22 @@ export class FormService extends Service {
     // Save submission
     await saveSubmission(this.runtime, submission);
 
-    // Update autofill data
-    await saveAutofillData(this.runtime, entityId, session.formId, values);
+    // Update autofill data. A sensitive answer (password, token) is not a
+    // prefill value: the autofill record is replayed into the next session of
+    // this form, so storing it there kept the secret in a second record and
+    // silently answered the field again on the next run.
+    const autofillValues = createValueMap<JsonValue>();
+    for (const control of form.controls) {
+      if (control.sensitive) continue;
+      const value = values[control.key];
+      if (value !== undefined) autofillValues[control.key] = value;
+    }
+    await saveAutofillData(
+      this.runtime,
+      entityId,
+      session.formId,
+      autofillValues,
+    );
 
     // Update session status
     session.status = "submitted";
