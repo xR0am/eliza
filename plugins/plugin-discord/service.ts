@@ -4977,7 +4977,7 @@ export class DiscordService extends Service implements IDiscordService {
 		const worldId = createUniqueUuid(this.runtime, guild.id);
 		const entityId = this.resolveDiscordEntityId(member.id);
 
-		this.runtime.emitEvent(
+		await this.runtime.emitEvent(
 			[DiscordEventTypes.ENTITY_JOINED] as string[],
 			{
 				runtime: this.runtime,
