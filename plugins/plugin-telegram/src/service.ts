@@ -1076,8 +1076,27 @@ export class TelegramService extends Service {
     // command messages (no double-processing).
     const commandMessageManager = activeState.messageManager;
     // #8902: the live, edited-in-place orchestrator task board (`/tasks`).
+    // Commands registered here run before the authorization middleware is
+    // installed, and a matched command handler never calls next() — so
+    // gate the board command at registration, or any stranger who can
+    // message the bot reads the owner's task board. The task-board
+    // module itself is untouched: only its bot handle is wrapped.
+    const gatedTaskBoardBot = {
+      command: (
+        name: string,
+        handler: (ctx: {
+          chat?: { id: number };
+          message?: { message_thread_id?: number };
+        }) => Promise<void>,
+      ) => {
+        bot.command(name, (ctx) =>
+          this.authorizationMiddleware(ctx, () => handler(ctx), accountId),
+        );
+      },
+      telegram: bot.telegram,
+    };
     registerTelegramTaskBoardCommand(
-      bot,
+      gatedTaskBoardBot,
       this.runtime,
       commandMessageManager,
       accountId,
