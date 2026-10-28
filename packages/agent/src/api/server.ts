@@ -1162,7 +1162,11 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
         // account, or changing the provider strategy, re-routes the
         // owner's model traffic (prompts included) under another key.
         under("/api/accounts") ||
-        under("/api/providers")))
+        under("/api/providers") ||
+        // iMessage connector setup: a guest session could enable or
+        // wipe the owner's iMessage connector config. Write-only, so
+        // GET /api/setup/imessage/status stays open.
+        under("/api/setup/imessage")))
   );
 }
 
