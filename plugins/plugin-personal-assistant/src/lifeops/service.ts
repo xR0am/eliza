@@ -2329,6 +2329,7 @@ export class LifeOpsService extends LifeOpsServiceBase {
       passengers: ReadonlyArray<TravelBookingPassenger>;
       calendarSync?: TravelCalendarSyncPlan | null;
       calendarGrantId?: string;
+      approvedTotal?: { cents: number; currency: string } | null;
     },
   ): Promise<FlightBookingExecutionResult> {
     const result = await this.travelDomain.bookFlightItinerary(
