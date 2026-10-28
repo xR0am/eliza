@@ -25,6 +25,8 @@ public final class SenseInvocation {
     public static final String LISTENER = "listener";
     /** An assistant gesture launched by the platform-signed system UI with its identity shared. */
     public static final String SYSTEM = "system";
+    /** A warm press on the host's permission-protected Power activity (native hook only). */
+    public static final String POWER = "power";
     /** Any other launch: the assistant opens and no voice turn starts. */
     public static final String ASSIST = "assist";
 
@@ -100,12 +102,36 @@ public final class SenseInvocation {
         coldOwner = startsVoice(origin) && session == null && !lockedAtArrival ? admittedOwner() : null;
     }
 
+    public synchronized boolean isCurrentRenderer(long bridge, int generation) {
+        return bridge == bridgeGeneration && generation == rendererGeneration;
+    }
+
+    public synchronized boolean boundTo(long bridge, int generation, String owner, String expectedSession) {
+        return bridge == bridgeGeneration && generation == rendererGeneration && owner != null && owner.equals(bindingId)
+                && session != null && session.equals(expectedSession);
+    }
+
+    /** Native protected-activity hook. A cold or replaced bridge cannot inherit a Power gesture. */
+    public synchronized boolean recordProtectedPower(long bridge, long now, boolean lockedAtArrival) {
+        if (bridge != bridgeGeneration || bridgeGeneration <= 0 || rendererGeneration <= 0 || bindingId == null || session == null) return false;
+        clear();
+        origin = POWER; invocationSession = session; arrivedAt = now; locked = lockedAtArrival;
+        return true;
+    }
+
+    /** Renderer may drop only its own pending Power receipt, never listener delivery or another owner. */
+    public synchronized void discardProtectedPower(long bridge, int generation, String owner, String expectedSession) {
+        if (bridge == bridgeGeneration && generation == rendererGeneration && owner != null
+                && owner.equals(bindingId) && session != null && session.equals(expectedSession)
+                && POWER.equals(origin) && session.equals(invocationSession)) clear();
+    }
+
     /** The origins that may start a voice turn. */
-    private static boolean startsVoice(String origin) { return LISTENER.equals(origin) || SYSTEM.equals(origin); }
+    private static boolean startsVoice(String origin) { return LISTENER.equals(origin) || SYSTEM.equals(origin) || POWER.equals(origin); }
 
     /**
      * Returns null after consumption. Unknown or changed ownership never returns a voice origin
-     * ({@link #LISTENER} or {@link #SYSTEM}); it returns {@link #ASSIST}.
+     * ({@link #LISTENER}, {@link #SYSTEM} or {@link #POWER}); it returns {@link #ASSIST}.
      */
     public synchronized String take(long bridge, int generation, String owner, String expectedSession, long now, boolean lockedNow) {
         if (bridge != bridgeGeneration || generation != rendererGeneration) return null;
