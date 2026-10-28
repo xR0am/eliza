@@ -8055,6 +8055,14 @@ export class CalendarService extends Service {
       { externalId: event.externalId },
       "calendar_event_updated",
     );
+    if (request.responseStatus === "declined") {
+      // A decline must stop auto-join at once, not at the next feed sync.
+      await reconcileMeetingAutoJoin({
+        runtime: this.runtime,
+        agentId: this.agentId(),
+        events: [event],
+      });
+    }
     return event;
   }
 
