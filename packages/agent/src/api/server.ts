@@ -1140,6 +1140,9 @@ function isOwnerOnlyApiRequest(method: string, pathname: string): boolean {
         // MCP config writes can point the agent at an attacker-controlled
         // remote server; stdio writes are terminal-gated but not role-gated.
         under("/api/mcp") ||
+        // Connector setup (Telegram, Discord, iMessage): saves, replaces or
+        // clears the owner's connector credentials and sessions.
+        under("/api/setup") ||
         under("/api/config") ||
         under("/api/character") ||
         // Model selection writes into the same config the owner gate protects.
