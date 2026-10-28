@@ -326,6 +326,10 @@ export class GoogleDomain {
       grant.id,
       grant.side,
     );
+    await this.ctx.repository.deleteCachedInboxMessagesForGmailAccount(
+      this.ctx.agentId(),
+      grant.id,
+    );
   }
   public async deleteCalendarReminderPlansForEvents(
     eventIds: string[],
