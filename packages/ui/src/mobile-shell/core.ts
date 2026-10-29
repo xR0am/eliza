@@ -1,8 +1,8 @@
 /**
  * The mobile shell without its React components: product registration and
  * theme, canonical view ids and routes, the view registry, the navigation
- * reducer (views, Back, the drawer and the assistant detent) and the one
- * launcher favorites migration. Runtime and background code (agent
+ * reducer (views, Back, the drawer and the assistant detent), the gesture
+ * zones and the one launcher favorites migration. Runtime and background code (agent
  * navigation, voice, capture) import this entry so they never load Home,
  * All apps or a domain view. The feature manifest and the Eliza reference
  * registration are here too, so a branded build's parity gate needs no React.
@@ -24,6 +24,17 @@ export {
   mobileFeatureDifferenceKey,
   mobileFeatureManifest,
 } from "./feature-manifest";
+export {
+  MOBILE_SHELL_CANVAS_WIDTH,
+  MOBILE_SHELL_EDGE,
+  MOBILE_SHELL_HOME_BAR_TOP,
+  MOBILE_SHELL_SWIPE_THRESHOLD,
+  type MobileShellSwipeAction,
+  type MobileShellSwipeOptions,
+  type MobileShellSwipeStart,
+  type MobileShellSwipeState,
+  resolveMobileShellSwipe,
+} from "./gestures";
 export {
   MOBILE_SHELL_HOME,
   MOBILE_SHELL_STACK_LIMIT,
@@ -51,6 +62,7 @@ export {
   type MobileProductViews,
   type MobileShellAppearance,
   type MobileShellChromeColors,
+  type MobileShellPaletteColor,
   type MobileShellThemeToken,
   mobileShellIconUrl,
   mobileShellThemeVariables,
