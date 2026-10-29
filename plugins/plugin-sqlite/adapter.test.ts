@@ -2014,6 +2014,24 @@ it("reports an existing entity id as created without overwriting another agent's
   });
 });
 
+it("reports no id for a duplicate agent create and keeps the stored row", async () => {
+  const adapter = await open();
+  expect(
+    await adapter.createAgents([
+      { id: agentId, name: "Original", settings: { keep: "yes" } },
+    ]),
+  ).toEqual([agentId]);
+
+  // plugin-sql returns false for a duplicate agent id, so createAgents
+  // reports no id for it and the stored row is not overwritten.
+  expect(
+    await adapter.createAgents([{ id: agentId, name: "Rewritten" }]),
+  ).toEqual([]);
+  const stored = (await adapter.getAgentsByIds([agentId]))[0];
+  expect(stored?.name).toBe("Original");
+  expect(stored?.settings).toEqual({ keep: "yes" });
+});
+
 it("keeps an existing memory when a create reuses its id, like plugin-sql", async () => {
   const adapter = await open();
   const memoryId = id();

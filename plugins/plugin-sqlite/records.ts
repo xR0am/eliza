@@ -3632,6 +3632,16 @@ export abstract class SQLiteRecordAdapter extends DatabaseAdapter<IStorage> {
     const ids: UUID[] = [];
     for (const agent of agents) {
       const id = (agent.id ?? randomUUID()) as UUID;
+      // plugin-sql returns false for an existing agent id, so createAgents
+      // reports no id and never overwrites the stored row; a sparse re-create
+      // would drop the stored name and settings. upsertAgents merges.
+      if (await this.storage.get<Agent>(COLLECTIONS.AGENTS, id)) {
+        logger.warn(
+          { src: "plugin:sqlite", agentId: id },
+          "Attempted to create agent with duplicate ID",
+        );
+        continue;
+      }
       await this.storage.set(COLLECTIONS.AGENTS, id, { ...agent, id });
       ids.push(id);
     }
