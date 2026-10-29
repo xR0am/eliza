@@ -117,6 +117,31 @@ function controlKind(element) {
   return "button";
 }
 
+/** A page's address without its fragment. */
+const pageAddress = (url) => {
+  try {
+    const address = new URL(url);
+    address.hash = "";
+    return address.href;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Where the person's press on a pointed control takes her: `true` for any
+ * page of the site (a button, or a field whose form she sends), the one
+ * address a link names, or `false` (a choice changes no page).
+ */
+function stepLeads(element) {
+  const kind = controlKind(element);
+  if (kind === "button") return true;
+  if (kind === "field") return element.form != null;
+  if (kind === "link" && typeof element.href === "string")
+    return pageAddress(element.href) ?? false;
+  return false;
+}
+
 /**
  * Every control of one complete observation, with a stable ref for each. A
  * ref is made from the facts that locate the control (role, name, label,
@@ -437,6 +462,34 @@ export class GuidedWebsiteWorkflow {
     this.lastStep = null;
     this.offer = null;
     this.grant = null;
+    // The step the person was last pointed at, and the document whose
+    // capture gap her own step explained.
+    this.pointed = null;
+    this.explainedGap = null;
+  }
+  /** A capture gap on this page that no step of hers explains yet. */
+  openGap(snapshot, task) {
+    return (
+      snapshot.manualActivity?.captureGap === true &&
+      !(
+        typeof snapshot.documentId === "string" &&
+        this.explainedGap?.epoch === task.epoch &&
+        this.explainedGap.documentId === snapshot.documentId
+      )
+    );
+  }
+  /** Records the step the person presses herself, and where it leads. */
+  pointFor(snapshot, task, leads) {
+    let origin = null;
+    try {
+      origin = new URL(snapshot.url).origin;
+    } catch {}
+    this.pointed = {
+      epoch: task.epoch,
+      origin,
+      leads,
+      gap: this.openGap(snapshot, task),
+    };
   }
   /**
    * The one fill target the person agreed to, for the host's browser policy
@@ -658,10 +711,30 @@ export class GuidedWebsiteWorkflow {
     // restarted may have changed something. She checks it first.
     const activity = await this.manualActivity(read.snapshot);
     const origin = new URL(read.snapshot.url).origin;
+    const address = pageAddress(read.snapshot.url);
+    // A gap with no event is her own pointed step when the page is where
+    // that step leads: the submit opened this page and its record was lost.
+    // The step must be from this epoch, on this site, and shown with no
+    // gap open, so it cannot explain a gap that was there before it.
+    const pointed = this.pointed;
+    let gap = activity ? this.openGap(read.snapshot, task) : false;
+    if (
+      gap &&
+      pointed?.epoch === task.epoch &&
+      pointed.gap === false &&
+      pointed.origin === origin &&
+      (pointed.leads === true || pointed.leads === address)
+    ) {
+      this.explainedGap = {
+        epoch: task.epoch,
+        documentId: read.snapshot.documentId,
+      };
+      gap = false;
+    }
     if (
       activity &&
       (activity.overflow ||
-        activity.captureGap ||
+        gap ||
         activity.events.some(
           (event) =>
             event.credential !== true &&
@@ -669,7 +742,12 @@ export class GuidedWebsiteWorkflow {
             event.epoch < task.epoch,
         ))
     ) {
-      const key = `manual-activity:${digest(activity)}`;
+      // An answer about a gap covers that gap only: this epoch and address.
+      const key = `manual-activity:${digest({
+        events: activity.events,
+        overflow: activity.overflow,
+        captureGap: gap ? { epoch: task.epoch, address } : false,
+      })}`;
       if (!this.acknowledged.has(key)) {
         await this.clearGuidance();
         return {
@@ -699,6 +777,8 @@ export class GuidedWebsiteWorkflow {
       )
     ) {
       this.offer = null;
+      // Her sign-in or code step ends with her own submit.
+      this.pointFor(read.snapshot, task, true);
       const step = {
         kind: PROTECTED_KIND[secret.category] ?? "human-review",
         category: secret.category,
@@ -744,7 +824,10 @@ export class GuidedWebsiteWorkflow {
     if (typeof plan.step === "string")
       this.lastStep = { fingerprint, step: plan.step };
     this.offer = null;
+    this.pointed = null;
     if (plan.status !== "act") {
+      // A wait step waits for the next page.
+      if (plan.status === "wait") this.pointFor(snapshot, task, true);
       await this.clearGuidance();
       return {
         kind: {
@@ -836,6 +919,7 @@ export class GuidedWebsiteWorkflow {
           step: plan.step,
           message: plan.message,
         };
+    if (!offer) this.pointFor(snapshot, task, stepLeads(control.element));
     if (offer)
       this.offer = {
         key: decision.offerKey,

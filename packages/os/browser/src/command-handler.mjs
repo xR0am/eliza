@@ -90,8 +90,15 @@ export function createCommandHandler(api) {
           });
           if (!isCurrent()) throw blocked();
           const manualActivity = await activity.read(binding);
+          // A submit whose reply was lost is a gap only when the journal
+          // does not hold its event.
+          const recorded = new Set(
+            manualActivity.events.map((event) => event.eventId),
+          );
           manualActivity.captureGap = installed.some(
-            (frame) => frame.result?.captureGap === true,
+            (frame) =>
+              frame.result?.captureGap === true ||
+              (frame.result?.unconfirmed ?? []).some((id) => !recorded.has(id)),
           );
           if (!isCurrent()) throw blocked();
           for (const frame of result.frames || [])

@@ -193,3 +193,133 @@ test("a host words the outcome of a planned browser action", async () => {
     message: "unverified",
   });
 });
+
+test("a lost record of her own pointed submit is asked about only off its page", async () => {
+  const task = {
+    id: "task-1",
+    revision: 1,
+    epoch: 1,
+    status: "active",
+    operations: [],
+    observation: { id: "observed" },
+  };
+  const runtime = {
+    owner: { actorId: "owner" },
+    get: () => task,
+    observe: async () => {},
+  };
+  const activity = (captureGap, extra = {}) => ({
+    events: [],
+    overflow: false,
+    captureGap,
+    ...extra,
+  });
+  const at = (name, documentId, manualActivity, elements = []) => ({
+    ...page(name),
+    documentId,
+    manualActivity,
+    elements,
+  });
+  const search = { tag: "button", label: "Search", selector: "snap:0:0" };
+  const link = {
+    tag: "a",
+    label: "Invoices",
+    href: "https://site.example/invoices#top",
+    selector: "snap:0:0",
+  };
+  let current;
+  const workflow = new GuidedWebsiteWorkflow({
+    runtime,
+    actuator: {
+      readObservation: () => ({
+        observation: task.observation,
+        snapshot: current,
+      }),
+      quiesce: async () => {},
+    },
+    taskId: task.id,
+    planStep: async ({ page: view }) =>
+      view.controls.length
+        ? {
+            status: "act",
+            ref: view.controls[0].ref,
+            step: "Press it",
+            message: "",
+          }
+        : { status: "wait", step: "Wait", message: "" },
+  });
+  const show = async (snapshot) => {
+    current = snapshot;
+    return workflow.refresh();
+  };
+  // She presses the Search button she was shown; the page it opens lost the
+  // record of that submit. That is her step, not something to check.
+  assert.equal(
+    (await show(at("search", "doc-1", activity(false), [search]))).kind,
+    "human-review",
+  );
+  assert.equal(
+    (await show(at("results", "doc-1", activity(true), [link]))).kind,
+    "human-review",
+  );
+  // The same document's gap is explained; her next pointed link lands on the
+  // address it names, without a question.
+  assert.equal(
+    (await show(at("invoices", "doc-1", activity(true), [search]))).kind,
+    "human-review",
+  );
+  // Overflow, and a form sent before this epoch, are still asked about there.
+  assert.equal(
+    (
+      await show(
+        at("next", "doc-2", activity(false, { overflow: true }), [search]),
+      )
+    ).reason,
+    "manual-activity",
+  );
+  task.epoch = 2;
+  const earlier = {
+    kind: "form-submit",
+    origin: "https://site.example",
+    documentId: "doc-2",
+    epoch: 1,
+    observedAt: 1,
+  };
+  assert.equal(
+    (await show(at("next", "doc-2", activity(false, { events: [earlier] }))))
+      .reason,
+    "manual-activity",
+  );
+  // A pointed link that lands elsewhere: the gap is asked about.
+  workflow.acknowledge(
+    (await show(at("next", "doc-2", activity(false, { events: [earlier] }))))
+      .key,
+  );
+  assert.equal(
+    (await show(at("list", "doc-3", activity(false), [link]))).kind,
+    "human-review",
+  );
+  const elsewhere = await show(at("other", "doc-3", activity(true)));
+  assert.equal(elsewhere.reason, "manual-activity");
+  // Her answer covers that gap at that address in that epoch, never a later
+  // gap on another page or in another epoch.
+  workflow.acknowledge(elsewhere.key);
+  // A choice she ticks opens no page.
+  const choice = {
+    tag: "input",
+    type: "checkbox",
+    label: "Paperless",
+    selector: "snap:0:0",
+  };
+  assert.equal(
+    (await show(at("other", "doc-3", activity(true), [choice]))).kind,
+    "human-review",
+  );
+  const later = await show(at("another", "doc-4", activity(true)));
+  assert.equal(later.reason, "manual-activity");
+  assert.notEqual(later.key, elsewhere.key);
+  task.epoch = 3;
+  const nextEpoch = await show(at("other", "doc-5", activity(true)));
+  assert.equal(nextEpoch.reason, "manual-activity");
+  assert.notEqual(nextEpoch.key, elsewhere.key);
+});

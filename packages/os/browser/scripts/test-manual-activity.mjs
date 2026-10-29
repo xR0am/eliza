@@ -79,33 +79,37 @@ try {
   await install(4, Date.now() + 60000);
   await page.getByRole("button", { name: "Submit test" }).click();
   await page.waitForTimeout(100);
-  assert.equal(
-    (await install(5, Date.now() + 60000)).captureGap,
-    true,
-    "failed transport remains an explicit capture gap",
+  // A lost reply (the channel a submit's new page closes) is not a refusal:
+  // the event ID stays unconfirmed until the worker finds it in its journal.
+  const lost = await install(5, Date.now() + 60000);
+  assert.equal(lost.captureGap, false, "a lost reply is not a refusal");
+  assert.equal(lost.unconfirmed.length, 1);
+  assert.match(lost.unconfirmed[0], /^[a-f0-9-]{36}$/);
+  assert.deepEqual(
+    (await install(6, Date.now() + 60000)).unconfirmed,
+    lost.unconfirmed,
+    "a rebind keeps unconfirmed submits",
   );
-  for (const failure of ["unrecorded", "rejected", "thrown"]) {
+  for (const failure of ["unrecorded", "thrown"]) {
     await page.evaluate((mode) => {
       globalThis.__elizaManualActivityV1.abort();
       delete globalThis.__elizaManualActivityV1;
       chrome.runtime.sendMessage = () => {
         if (mode === "thrown") throw new Error("test transport lost");
-        if (mode === "rejected")
-          return Promise.reject(new Error("test transport lost"));
         return Promise.resolve({ recorded: false });
       };
     }, failure);
-    await install(6, Date.now() + 60000);
+    await install(7, Date.now() + 60000);
     await page.getByRole("button", { name: "Next" }).click();
     await page.waitForTimeout(100);
     assert.equal(
-      (await install(7, Date.now() + 60000)).captureGap,
+      (await install(8, Date.now() + 60000)).captureGap,
       true,
       `a credential field cannot erase a ${failure} activity delivery`,
     );
   }
   console.log(
-    "PASS: Chromium trusted activation, script-only refusal, value exclusion, sign-in form marking, rebind, expiry and failed transport gap; simulated message transport only.",
+    "PASS: Chromium trusted activation, script-only refusal, value exclusion, sign-in form marking, rebind, expiry, unconfirmed lost reply and refused or failed transport gap; simulated message transport only.",
   );
 } finally {
   await browser.close();

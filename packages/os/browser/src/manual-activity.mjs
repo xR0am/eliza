@@ -14,8 +14,12 @@ export function createManualActivity(api, getBinding) {
   };
   return {
     record(message, sender) {
+      // The binding when the submit arrives. A submit that opens a page can
+      // lead the host to bind the next page before this queued write runs;
+      // the event still belongs to the epoch the person submitted under.
+      const binding = getBinding(String(sender?.tab?.id));
+      const receivedAt = Date.now();
       const work = queue.then(async () => {
-        const binding = getBinding(String(sender?.tab?.id));
         let origin;
         try {
           origin = new URL(sender?.url).origin;
@@ -25,7 +29,7 @@ export function createManualActivity(api, getBinding) {
         if (
           !binding ||
           binding.revoked ||
-          binding.expiresAt <= Date.now() ||
+          binding.expiresAt <= receivedAt ||
           sender.id !== api.runtime.id ||
           sender.frameId !== 0 ||
           typeof sender.documentId !== "string" ||
@@ -54,9 +58,13 @@ export function createManualActivity(api, getBinding) {
           events: [],
           overflow: false,
         };
+        // A rebind of the same task (a renewal or a new epoch) keeps the
+        // event; another task on the tab, or a revocation, refuses it.
+        const current = getBinding(binding.tabId);
         if (
-          getBinding(binding.tabId) !== binding ||
-          binding.expiresAt <= Date.now()
+          !current ||
+          current.revoked ||
+          identity(current) !== identity(binding)
         )
           fail();
         if (saved.events.some((event) => event.eventId === message.eventId))
@@ -94,9 +102,14 @@ export function createManualActivity(api, getBinding) {
 export function installManualActivity(bindingRevision, expiresAt) {
   const key = "__elizaManualActivityV1";
   const captureGap = globalThis[key]?.failed === true;
+  // Submits whose reply was lost. A submit that opens a page closes the
+  // message channel before the reply arrives, though the worker received and
+  // recorded the event. The worker checks each ID against its journal.
+  const unconfirmed = [...(globalThis[key]?.unconfirmed ?? [])];
   if (globalThis[key]) globalThis[key].abort();
   const controller = new AbortController();
   controller.failed = captureGap;
+  controller.unconfirmed = new Set(unconfirmed);
   globalThis[key] = controller;
   let activatedAt = -Infinity;
   const activated = (event) => {
@@ -135,30 +148,34 @@ export function installManualActivity(bindingRevision, expiresAt) {
                 field.autocomplete || field.getAttribute("autocomplete") || "",
               )),
         );
+      const eventId = crypto.randomUUID();
       try {
-        void chrome.runtime
-          .sendMessage({
-            type: "task-manual-activity",
-            kind: "form-submit",
-            eventId: crypto.randomUUID(),
-            bindingRevision,
-            ...(credential ? { credential: true } : {}),
-          })
-          .then(
-            (reply) => {
-              // A credential field describes the form, not its effects.
-              // Failed delivery remains a gap in the observed activity.
-              if (!reply?.recorded) controller.failed = true;
-            },
-            () => {
-              controller.failed = true;
-            },
-          );
+        // Sent while the document is still current, so the worker records it
+        // with this binding's epoch even when the submit replaces the page.
+        const sent = chrome.runtime.sendMessage({
+          type: "task-manual-activity",
+          kind: "form-submit",
+          eventId,
+          bindingRevision,
+          ...(credential ? { credential: true } : {}),
+        });
+        controller.unconfirmed.add(eventId);
+        void sent.then(
+          (reply) => {
+            controller.unconfirmed.delete(eventId);
+            // A credential field describes the form, not its effects.
+            // A refused event remains a gap in the observed activity.
+            if (!reply?.recorded) controller.failed = true;
+          },
+          // A lost reply stays unconfirmed: only the journal can say whether
+          // the event arrived. A missing event is reported as a gap.
+          () => {},
+        );
       } catch {
         controller.failed = true;
       }
     },
     options,
   );
-  return { installed: true, captureGap };
+  return { installed: true, captureGap, unconfirmed };
 }

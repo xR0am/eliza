@@ -510,3 +510,71 @@ test("incomplete snapshot replies carry a stable reason beside the kind", async 
   assert.equal(f.replies[0].error.kind, "POLICY_BLOCKED");
   assert.equal("reason" in f.replies[0].error, false);
 });
+
+test("a submit whose reply was lost is a capture gap only when the journal lacks it", async () => {
+  const f = fixture();
+  f.api.runtime = { id: "extension" };
+  f.api.tabs = {
+    get: async () => ({ url: `${binding.origin}/form`, status: "complete" }),
+  };
+  f.api.webNavigation = {
+    getAllFrames: async () => [{ frameId: 0, documentId: "doc" }],
+  };
+  let unconfirmed = [];
+  f.api.scripting = {
+    executeScript: async ({ func }) => [
+      {
+        frameId: 0,
+        documentId: "doc",
+        result:
+          func.name === "installManualActivity"
+            ? { installed: true, captureGap: false, unconfirmed }
+            : { complete: true, elements: [], blockers: [] },
+      },
+    ],
+  };
+  const handler = createCommandHandler(f.api);
+  await handler(
+    { type: "task-bind", id: "bind", binding },
+    f.sender,
+    () => true,
+  );
+  const recorded = "11111111-1111-4111-8111-111111111111";
+  await handler.recordManualActivity(
+    {
+      type: "task-manual-activity",
+      kind: "form-submit",
+      eventId: recorded,
+      bindingRevision: binding.bindingRevision,
+    },
+    {
+      id: "extension",
+      tab: { id: 1 },
+      frameId: 0,
+      documentId: "doc",
+      url: `${binding.origin}/form`,
+    },
+  );
+  const gap = async (id, ids) => {
+    unconfirmed = ids;
+    await handler(
+      {
+        type: "command",
+        id,
+        command: {
+          subaction: "snapshot",
+          id: "1",
+          taskContext: context(binding),
+        },
+      },
+      f.sender,
+      () => true,
+    );
+    return f.replies.at(-1).result.frames[0].manualActivity.captureGap;
+  };
+  assert.equal(await gap("recorded", [recorded]), false);
+  assert.equal(
+    await gap("lost", [recorded, "22222222-2222-4222-8222-222222222222"]),
+    true,
+  );
+});

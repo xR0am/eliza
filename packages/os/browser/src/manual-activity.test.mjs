@@ -131,3 +131,26 @@ test("an extended task records a sign-in on each of its origins, and only those"
     [["https://secure.login.test", true]],
   );
 });
+test("a submit keeps the epoch it arrived under when the task rebinds before it is written", async () => {
+  const f = fixture();
+  // The host binds the page the submit opened (a new epoch) while the event
+  // waits for storage; the event is still recorded, under the old epoch.
+  const pending = f.journal.record(message, sender);
+  f.set({ ...binding, bindingRevision: 2, epoch: 1 });
+  assert.deepEqual(await pending, { recorded: true, overflow: false });
+  const [event] = (await f.journal.read(binding)).events;
+  assert.equal(event.epoch, 0);
+  // Another task on the tab, or a revoked binding, still refuses it.
+  for (const next of [
+    { ...binding, bindingRevision: 3, taskId: "other" },
+    { ...binding, bindingRevision: 3, revoked: true },
+  ]) {
+    f.set(binding);
+    const refused = f.journal.record(
+      { ...message, eventId: "33333333-3333-4333-8333-333333333333" },
+      sender,
+    );
+    f.set(next);
+    await assert.rejects(refused);
+  }
+});
