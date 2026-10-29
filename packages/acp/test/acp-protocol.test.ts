@@ -116,4 +116,54 @@ describe("eliza ACP protocol (light mode)", () => {
     input.end();
     await serverDone;
   });
+
+  it("session/cancel completes in-flight prompt with stopReason cancelled", async () => {
+    process.env.ELIZA_ACP_LIGHT = "1";
+    process.env.ELIZA_ACP_TEST_PROMPT_DELAY_MS = "200";
+    const input = new PassThrough();
+    const output = new PassThrough();
+
+    const serverDone = runElizaAcpServer({ input, output });
+
+    writeJson(input, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: 2 },
+    });
+    await readJsonLines(output, 1);
+
+    writeJson(input, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/new",
+      params: { cwd: "/tmp", mcpServers: [] },
+    });
+    const newLine = (await readJsonLines(output, 1))[0];
+    const sessionId = (newLine?.result as { sessionId?: string })?.sessionId;
+
+    writeJson(input, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: {
+        sessionId,
+        prompt: [{ type: "text", text: "slow" }],
+      },
+    });
+
+    writeJson(input, {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId },
+    });
+
+    const promptLines = await readJsonLines(output, 1, 15_000);
+    const result = promptLines.find((l) => l.id === 3);
+    expect(result?.result).toEqual({ stopReason: "cancelled" });
+
+    input.end();
+    await serverDone;
+    delete process.env.ELIZA_ACP_TEST_PROMPT_DELAY_MS;
+  });
 });

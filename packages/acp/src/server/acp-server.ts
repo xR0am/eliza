@@ -115,18 +115,17 @@ function lightModeAck(promptText: string): string {
   return `ELIZA-ACP-LIGHT:${digest}`;
 }
 
-async function ensureRuntime(abortSignal: AbortSignal): Promise<AgentRuntime> {
+async function ensureRuntime(): Promise<AgentRuntime> {
   if (!runtimePromise) {
     applyElizaAcpProfileEnv();
     process.env.ELIZA_HEADLESS = "1";
     process.env.ELIZA_BLOCK_DEFERRED_PLUGIN_IMPORTS = "1";
     runtimeAbort = new AbortController();
-    const linked = AbortSignal.any([abortSignal, runtimeAbort.signal]);
     runtimePromise = (async () => {
       const { bootElizaRuntime } = await import("@elizaos/agent/runtime/eliza.ts");
       return bootElizaRuntime({
         requireConfig: false,
-        abortSignal: linked,
+        abortSignal: runtimeAbort.signal,
       });
     })();
   }
@@ -146,6 +145,24 @@ async function handleSessionPrompt(
 
   try {
     if (process.env.ELIZA_ACP_LIGHT?.trim() === "1") {
+      const delayMs = Number.parseInt(
+        process.env.ELIZA_ACP_TEST_PROMPT_DELAY_MS ?? "0",
+        10,
+      );
+      if (Number.isFinite(delayMs) && delayMs > 0) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, delayMs);
+          promptAbort.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              reject(new DOMException("Aborted", "AbortError"));
+            },
+            { once: true },
+          );
+        });
+      }
+      promptAbort.signal.throwIfAborted();
       const text = lightModeAck(promptText);
       notifySessionUpdate(output, sessionId, {
         sessionUpdate: "agent_message_chunk",
@@ -159,7 +176,7 @@ async function handleSessionPrompt(
       return;
     }
 
-    const runtime = await ensureRuntime(promptAbort.signal);
+    const runtime = await ensureRuntime();
     const task: BenchmarkTask = {
       id: `acp-${sessionId}-${crypto.randomUUID()}`,
       prompt: promptText,
@@ -189,13 +206,20 @@ async function handleSessionPrompt(
       });
     }
 
-    const stopReason = result.success ? "end_turn" : "end_turn";
     writeLine(output, {
       jsonrpc: "2.0",
       id: requestId,
-      result: { stopReason },
+      result: { stopReason: "end_turn" },
     });
   } catch (err) {
+    if (promptAbort.signal.aborted) {
+      writeLine(output, {
+        jsonrpc: "2.0",
+        id: requestId,
+        result: { stopReason: "cancelled" },
+      });
+      return;
+    }
     writeLine(output, {
       jsonrpc: "2.0",
       id: requestId,
@@ -282,10 +306,13 @@ async function runBenchmarkTaskWithStreaming(
     },
   );
 
+  const joined = result.responseMessages
+    .map((m) => m.content?.text ?? "")
+    .join("\n");
   const responseText =
-    result.responseContent?.text ??
-    result.responseMessages.map((m) => m.content?.text ?? "").join("\n") ??
-    streamText ??
+    result.responseContent?.text?.trim() ||
+    joined.trim() ||
+    streamText ||
     callbackText;
 
   // Buzz turns often publish via MCP tools with little/no streamed text.
@@ -376,7 +403,7 @@ export async function runElizaAcpServer(
           });
           break;
         }
-        await handleSessionPrompt(output, session, paramRecord, id);
+        void handleSessionPrompt(output, session, paramRecord, id);
         break;
       }
       case "session/cancel": {
@@ -385,11 +412,13 @@ export async function runElizaAcpServer(
             ? paramRecord.sessionId
             : "";
         sessionPromptAbort.get(sessionId)?.abort();
-        writeLine(output, {
-          jsonrpc: "2.0",
-          id,
-          result: {},
-        });
+        if (id !== undefined) {
+          writeLine(output, {
+            jsonrpc: "2.0",
+            id,
+            result: {},
+          });
+        }
         break;
       }
       default:
