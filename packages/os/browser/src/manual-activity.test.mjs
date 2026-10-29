@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createManualActivity } from "./manual-activity.mjs";
+import { createTaskBindings } from "./task-bindings.mjs";
 
 const binding = {
   tabId: "1",
@@ -153,4 +154,104 @@ test("a submit keeps the epoch it arrived under when the task rebinds before it 
     f.set(next);
     await assert.rejects(refused);
   }
+});
+
+test("a submit is decided after a rebind of its tab lands, never against its fence", async () => {
+  const records = {};
+  const api = {
+    runtime: { id: "extension" },
+    storage: {
+      local: {
+        get: async (key) => ({ [key]: records[key] }),
+        set: async (value) => Object.assign(records, structuredClone(value)),
+      },
+    },
+  };
+  // The bind waits in its guidance cleanup, between its fence (a revoked
+  // copy of the next binding) and the live binding, until released.
+  let release = () => {};
+  let failWrite = false;
+  const bindings = new Map();
+  const authority = createTaskBindings({
+    bindings,
+    read: async (key) => records[key],
+    write: async (key, value) => {
+      if (failWrite) throw new Error("storage full");
+      records[key] = structuredClone(value);
+    },
+    clearGuidance: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    getUrl: async () => `${binding.origin}/form`,
+    validTabId: (id) => id === "1",
+  });
+  const journal = createManualActivity(
+    api,
+    authority.liveBinding,
+    authority.settled,
+  );
+  const { tabId, ...fields } = binding;
+  let revision = 0;
+  const bind = (extra = {}) =>
+    authority.bind(
+      {
+        type: "task-bind",
+        id: "bind",
+        binding: {
+          ...fields,
+          tabId,
+          bindingRevision: ++revision,
+          targets: [],
+          ...extra,
+        },
+      },
+      () => true,
+    );
+  const settle = async (promise) => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    return promise;
+  };
+  await settle(bind());
+  const eventId = (n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`;
+  // Received while the binding was live, decided while the next epoch's
+  // fence stands: it waits for the rebind and is recorded under epoch 0.
+  const live = journal.record({ ...message, eventId: eventId(1) }, sender);
+  const nextEpoch = bind({ epoch: 1 });
+  assert.equal(bindings.get("1").revoked, true, "the fence is in place");
+  await settle(nextEpoch);
+  assert.deepEqual(await live, { recorded: true, overflow: false });
+  // Received during the fence: it belongs to the binding being replaced.
+  const fenced = bind({ epoch: 2 });
+  const during = journal.record(
+    { ...message, eventId: eventId(2), bindingRevision: 2 },
+    sender,
+  );
+  await settle(fenced);
+  assert.deepEqual(await during, { recorded: true, overflow: false });
+  assert.deepEqual(
+    (await journal.read(binding)).events.map((event) => event.epoch),
+    [0, 1],
+  );
+  // A rebind that revokes the task, or that fails, still refuses it.
+  const revoked = journal.record(
+    { ...message, eventId: eventId(3), bindingRevision: 3 },
+    sender,
+  );
+  const revoking = bind({ epoch: 3, revoked: true });
+  await settle(revoking);
+  await assert.rejects(revoked);
+  for (const key of Object.keys(records))
+    if (key.startsWith("task-binding:")) delete records[key];
+  bindings.clear();
+  await settle(bind({ epoch: 4 }));
+  failWrite = true;
+  const lost = journal.record(
+    { ...message, eventId: eventId(4), bindingRevision: 5 },
+    sender,
+  );
+  const failing = bind({ epoch: 5 });
+  await assert.rejects(settle(failing));
+  await assert.rejects(lost);
 });

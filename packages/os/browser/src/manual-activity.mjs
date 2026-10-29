@@ -1,7 +1,16 @@
 /** Durable, value-free form-submission attempts from the bound main frame. */
 import { BridgeError } from "./protocol.mjs";
 
-export function createManualActivity(api, getBinding) {
+/**
+ * `getBinding(tabId)` is the tab's live binding; while a rebind of the tab is
+ * in flight it is the binding being replaced. `settled(tabId)` resolves once
+ * no rebind of the tab is in flight.
+ */
+export function createManualActivity(
+  api,
+  getBinding,
+  settled = async () => {},
+) {
   let queue = Promise.resolve();
   const identity = (b) =>
     JSON.stringify([b.actorId, b.accountId, b.agentId, b.taskId]);
@@ -59,7 +68,9 @@ export function createManualActivity(api, getBinding) {
           overflow: false,
         };
         // A rebind of the same task (a renewal or a new epoch) keeps the
-        // event; another task on the tab, or a revocation, refuses it.
+        // event; another task on the tab, or a revocation, refuses it. A
+        // rebind still in flight is decided once it lands.
+        await settled(binding.tabId);
         const current = getBinding(binding.tabId);
         if (
           !current ||
@@ -101,14 +112,16 @@ export function createManualActivity(api, getBinding) {
 /** Fixed isolated-world listener. No form values, labels, URLs or target selectors. */
 export function installManualActivity(bindingRevision, expiresAt) {
   const key = "__elizaManualActivityV1";
-  const captureGap = globalThis[key]?.failed === true;
+  // Submits the worker refused or that could not be sent, by event ID, so
+  // each new failure is told apart from one already reported.
+  const refused = [...(globalThis[key]?.refused ?? [])];
   // Submits whose reply was lost. A submit that opens a page closes the
   // message channel before the reply arrives, though the worker received and
   // recorded the event. The worker checks each ID against its journal.
   const unconfirmed = [...(globalThis[key]?.unconfirmed ?? [])];
   if (globalThis[key]) globalThis[key].abort();
   const controller = new AbortController();
-  controller.failed = captureGap;
+  controller.refused = new Set(refused);
   controller.unconfirmed = new Set(unconfirmed);
   globalThis[key] = controller;
   let activatedAt = -Infinity;
@@ -165,17 +178,23 @@ export function installManualActivity(bindingRevision, expiresAt) {
             controller.unconfirmed.delete(eventId);
             // A credential field describes the form, not its effects.
             // A refused event remains a gap in the observed activity.
-            if (!reply?.recorded) controller.failed = true;
+            if (!reply?.recorded) controller.refused.add(eventId);
           },
           // A lost reply stays unconfirmed: only the journal can say whether
           // the event arrived. A missing event is reported as a gap.
           () => {},
         );
       } catch {
-        controller.failed = true;
+        controller.unconfirmed.delete(eventId);
+        controller.refused.add(eventId);
       }
     },
     options,
   );
-  return { installed: true, captureGap, unconfirmed };
+  return {
+    installed: true,
+    captureGap: refused.length > 0,
+    refused,
+    unconfirmed,
+  };
 }

@@ -521,6 +521,7 @@ test("a submit whose reply was lost is a capture gap only when the journal lacks
     getAllFrames: async () => [{ frameId: 0, documentId: "doc" }],
   };
   let unconfirmed = [];
+  let refused = [];
   f.api.scripting = {
     executeScript: async ({ func }) => [
       {
@@ -528,7 +529,12 @@ test("a submit whose reply was lost is a capture gap only when the journal lacks
         documentId: "doc",
         result:
           func.name === "installManualActivity"
-            ? { installed: true, captureGap: false, unconfirmed }
+            ? {
+                installed: true,
+                captureGap: refused.length > 0,
+                refused,
+                unconfirmed,
+              }
             : { complete: true, elements: [], blockers: [] },
       },
     ],
@@ -555,8 +561,9 @@ test("a submit whose reply was lost is a capture gap only when the journal lacks
       url: `${binding.origin}/form`,
     },
   );
-  const gap = async (id, ids) => {
+  const gap = async (id, ids, refusedIds = []) => {
     unconfirmed = ids;
+    refused = refusedIds;
     await handler(
       {
         type: "command",
@@ -570,11 +577,24 @@ test("a submit whose reply was lost is a capture gap only when the journal lacks
       f.sender,
       () => true,
     );
-    return f.replies.at(-1).result.frames[0].manualActivity.captureGap;
+    const { captureGap, captureGapEvents } =
+      f.replies.at(-1).result.frames[0].manualActivity;
+    return { captureGap, captureGapEvents };
   };
-  assert.equal(await gap("recorded", [recorded]), false);
-  assert.equal(
-    await gap("lost", [recorded, "22222222-2222-4222-8222-222222222222"]),
-    true,
-  );
+  const lost = "22222222-2222-4222-8222-222222222222";
+  const denied = "33333333-3333-4333-8333-333333333333";
+  assert.deepEqual(await gap("recorded", [recorded]), {
+    captureGap: false,
+    captureGapEvents: [],
+  });
+  assert.deepEqual(await gap("lost", [recorded, lost]), {
+    captureGap: true,
+    captureGapEvents: [lost],
+  });
+  // Each refused submit is named too, so a second failure in the same
+  // document is a new gap; malformed IDs are dropped.
+  assert.deepEqual(await gap("refused", [lost], [denied, "x"]), {
+    captureGap: true,
+    captureGapEvents: [denied, lost],
+  });
 });
