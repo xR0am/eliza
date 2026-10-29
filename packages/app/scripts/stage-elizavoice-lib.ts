@@ -35,6 +35,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_LLAMA_CPP_CACHE_DIR } from "./aosp/compile-libllama.ts";
 import { androidArm64SimdCmakeFlags } from "./build-helpers/arm64-simd.ts";
 import {
   assertAndroidVoiceLibrary,
@@ -103,12 +104,7 @@ function resolveVulkanHostTooling(ndk, abi) {
 
   const vulkanIncludeDir =
     process.env.ELIZA_VULKAN_INCLUDE_DIR ||
-    firstExisting([
-      path.join(
-        process.env.HOME || "",
-        ".cache/eliza-android-agent/llama-cpp-v1.2.0-eliza/vulkan-headers",
-      ),
-    ]);
+    firstExisting([path.join(DEFAULT_LLAMA_CPP_CACHE_DIR, "vulkan-headers")]);
   if (!vulkanIncludeDir) {
     die(
       "Vulkan headers dir not found (set ELIZA_VULKAN_INCLUDE_DIR) — provide a " +
