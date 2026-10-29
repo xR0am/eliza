@@ -206,9 +206,10 @@ function espeakCmakeFlags() {
  * Builds eSpeak NG at the fork's pinned version (tools/misaki-g2p/pins.json)
  * into `dir`: the static phonemizer for `abi` under <abi>/{include,lib}
  * (libespeak-ng.a with libucd folded in), the
- * compiled English data under data/espeak-ng-data and the GPL notice as
- * COPYING. misaki G2P uses it only for words outside its lexicon. A build
- * that matches the pin is reused.
+ * compiled data the pin lists (English, and Spanish for the Delibes voice)
+ * under data/espeak-ng-data and the GPL notice as COPYING. misaki G2P uses the
+ * English data only for words outside its lexicon; the Spanish voice's G2P is
+ * eSpeak NG itself. A build that matches the pin is reused.
  */
 async function ensureEspeakNg({ dir, abi, ndk, forkSrc }) {
   const pins = JSON.parse(
@@ -263,7 +264,10 @@ async function ensureEspeakNg({ dir, abi, ndk, forkSrc }) {
       hostBuild,
       "espeak-ng-data/intonations",
       "espeak-ng-data/phondata",
-      "espeak-ng-data/en_dict",
+      // every compiled dictionary the pin lists (en_dict, es_dict)
+      ...pin.data
+        .filter((relative) => relative.endsWith("_dict"))
+        .map((relative) => `espeak-ng-data/${relative}`),
     ]);
     for (const relative of pin.data) {
       mkdirSync(path.dirname(path.join(dataOut, relative)), {
