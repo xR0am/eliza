@@ -2,7 +2,10 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { runElizaAcpServer } from "../src/server/acp-server.ts";
 
-function writeJson(lineStream: PassThrough, obj: Record<string, unknown>): void {
+function writeJson(
+  lineStream: PassThrough,
+  obj: Record<string, unknown>,
+): void {
   lineStream.write(`${JSON.stringify(obj)}\n`);
 }
 
@@ -95,7 +98,10 @@ describe("eliza ACP protocol (light mode)", () => {
       sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: expect.stringMatching(/^ELIZA-ACP-LIGHT:/) },
+        content: {
+          type: "text",
+          text: expect.stringMatching(/^ELIZA-ACP-LIGHT:/),
+        },
       },
     });
     const result = promptLines.find((l) => l.id === 3);

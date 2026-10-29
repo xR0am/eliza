@@ -3,8 +3,8 @@
  */
 import crypto from "node:crypto";
 import { createInterface } from "node:readline";
-import type { AgentRuntime } from "@elizaos/core";
 import type { BenchmarkTask } from "@elizaos/agent/cli/benchmark.ts";
+import type { AgentRuntime } from "@elizaos/core";
 import { applyElizaAcpProfileEnv } from "../profile-env.ts";
 
 const ACP_PROTOCOL_VERSION = 2;
@@ -69,7 +69,9 @@ function notifySessionUpdate(
   });
 }
 
-export function extractPromptText(params: Record<string, unknown> | undefined): string {
+export function extractPromptText(
+  params: Record<string, unknown> | undefined,
+): string {
   const prompt = params?.prompt;
   if (!Array.isArray(prompt)) return "";
   const parts: string[] = [];
@@ -122,7 +124,9 @@ async function ensureRuntime(): Promise<AgentRuntime> {
     process.env.ELIZA_BLOCK_DEFERRED_PLUGIN_IMPORTS = "1";
     runtimeAbort = new AbortController();
     runtimePromise = (async () => {
-      const { bootElizaRuntime } = await import("@elizaos/agent/runtime/eliza.ts");
+      const { bootElizaRuntime } = await import(
+        "@elizaos/agent/runtime/eliza.ts"
+      );
       return bootElizaRuntime({
         requireConfig: false,
         abortSignal: runtimeAbort.signal,
