@@ -37,12 +37,23 @@ Other boot-related vars (`LOG_LEVEL`, `ELIZA_DISABLE_TELEMETRY`, `ELIZA_DISABLE_
 {
   "id": "eliza",
   "label": "elizaOS",
-  "command": "eliza-acp",
-  "binary_path": "/path/to/eliza-acp",
-  "install_hint": "Install elizaOS and run `eliza acp` or the `eliza-acp` binary.",
-  "mcp_command": "buzz-dev-mcp",
-  "availability": "available"
+  "command": "eliza",
+  "args": ["acp"],
+  "env": {
+    "ELIZA_ACP_SKIP_CONNECTORS": "1"
+  },
+  "installInstructionsUrl": "https://github.com/elizaOS/eliza",
+  "installHint": "Install elizaOS so `eliza acp` or `eliza-acp` is on PATH. Buzz injects buzz-dev-mcp on session/new."
 }
+```
+
+Headless `buzz-acp` env file:
+
+```bash
+BUZZ_ACP_AGENT_COMMAND=eliza-acp
+BUZZ_ACP_AGENT_ARGS=
+BUZZ_ACP_MCP_COMMAND=buzz-dev-mcp
+ELIZA_ACP_SKIP_CONNECTORS=1
 ```
 
 Buzz sends `mcpServers` on `session/new` so the harness MCP (`buzz-dev-mcp`) is available for tool use. Full MCP stdio client spawning from eliza is not required for harness handshake; servers are recorded in `ELIZA_ACP_SESSION_MCP` for downstream runtime integration.

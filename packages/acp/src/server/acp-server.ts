@@ -225,8 +225,6 @@ async function runBenchmarkTaskWithStreaming(
   } = core;
   type UUID = import("@elizaos/core").UUID;
 
-  const start = performance.now();
-  const taskType = task.type ?? "research";
   const userId = cryptoMod.randomUUID() as UUID;
   const roomId = stringToUuid(`benchmark-${task.id}`);
   const worldId = stringToUuid(`benchmark-world-${task.id}`);
@@ -257,13 +255,8 @@ async function runBenchmarkTaskWithStreaming(
 
   if (!runtime.messageService) {
     return {
-      id: task.id,
       response: "",
-      task_type: taskType,
-      actions_taken: [],
-      duration_ms: Math.round(performance.now() - start),
       success: false,
-      error: "runtime.messageService is not available",
     };
   }
 
@@ -295,17 +288,13 @@ async function runBenchmarkTaskWithStreaming(
     streamText ??
     callbackText;
 
+  // Buzz turns often publish via MCP tools with little/no streamed text.
+  const success =
+    result.outcome.status !== "failed" && result.requestFulfilled !== false;
+
   return {
-    id: task.id,
     response: responseText,
-    task_type: taskType,
-    actions_taken: [],
-    duration_ms: Math.round(performance.now() - start),
-    success:
-      result.requestFulfilled !== false &&
-      result.outcome.status === "completed" &&
-      result.didRespond &&
-      responseText.trim().length > 0,
+    success,
   };
 }
 

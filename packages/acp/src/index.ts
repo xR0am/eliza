@@ -1,6 +1,6 @@
 export { applyElizaAcpProfileEnv } from "./profile-env.ts";
 export {
+  type RunElizaAcpServerOptions,
   extractPromptText,
   runElizaAcpServer,
-  type RunElizaAcpServerOptions,
 } from "./server/acp-server.ts";

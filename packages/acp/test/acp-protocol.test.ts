@@ -101,6 +101,18 @@ describe("eliza ACP protocol (light mode)", () => {
     const result = promptLines.find((l) => l.id === 3);
     expect(result?.result).toEqual({ stopReason: "end_turn" });
 
+    writeJson(input, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "session/prompt",
+      params: {
+        sessionId: "ses_missing",
+        prompt: [{ type: "text", text: "nope" }],
+      },
+    });
+    const errLine = await readJsonLines(output, 1);
+    expect(errLine[0]?.error).toMatchObject({ code: -32602 });
+
     input.end();
     await serverDone;
   });

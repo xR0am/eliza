@@ -24,6 +24,14 @@
   "engines": {
     "node": ">=24.0.0"
   },
+  "peerDependencies": {
+    "@elizaos/acp": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@elizaos/acp": {
+      "optional": true
+    }
+  },
   "bin": {
     "eliza-autonomous": "./src/bin.ts"
   },
@@ -267,7 +275,6 @@
     "@elizaos/plugin-native-contacts": "workspace:*",
     "@elizaos/plugin-native-phone": "workspace:*",
     "@elizaos/plugin-native-wifi": "workspace:*",
-    "@elizaos/acp": "workspace:*",
     "@elizaos/core": "workspace:*",
     "@elizaos/plugin-agent-orchestrator": "workspace:*",
     "@elizaos/plugin-anthropic": "workspace:*",
