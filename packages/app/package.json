@@ -230,6 +230,7 @@
     "@capacitor/share": "^8.0.0",
     "@capacitor/status-bar": "8.0.2",
     "@clack/prompts": "^1.0.0",
+    "@elizaos/acp": "workspace:*",
     "@elizaos/agent": "workspace:*",
     "@elizaos/auth": "workspace:*",
     "@elizaos/capacitor-agent": "workspace:*",

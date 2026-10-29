@@ -17,6 +17,7 @@ Usage:
   eliza-autonomous ios-bridge --stdio
   eliza-autonomous android-bridge
   eliza-autonomous benchmark [options]
+  eliza-autonomous acp
 
 Commands:
   serve          Start the autonomous backend in server-only mode
@@ -24,6 +25,7 @@ Commands:
   ios-bridge     Run the iOS full-engine stdio bridge
   android-bridge Boot the Android local-backend (HTTP server on 127.0.0.1:31337)
   benchmark      Run a benchmark task headlessly against the agent
+  acp            Run the eliza ACP stdio server (Buzz harness)
 
 Benchmark options:
   --task <path>    Path to task JSON file
@@ -116,6 +118,15 @@ export async function runAutonomousCli(
     );
     const opts = parseBenchmarkCommandOptions(argv);
     await runBenchmark(opts);
+    return;
+  }
+
+  if (command === "acp") {
+    const { applyElizaAcpProfileEnv, runElizaAcpServer } = await import(
+      "@elizaos/acp"
+    );
+    applyElizaAcpProfileEnv();
+    await runElizaAcpServer();
     return;
   }
 

@@ -87,6 +87,13 @@
       "import": "./dist/api/*.js",
       "default": "./dist/api/*.js"
     },
+    "./cli/benchmark": {
+      "eliza-source": "./src/cli/benchmark.ts",
+      "types": "./src/cli/benchmark.ts",
+      "bun": "./src/cli/benchmark.ts",
+      "import": "./dist/cli/benchmark.js",
+      "default": "./dist/cli/benchmark.js"
+    },
     "./config/character-schema": "./src/config/character-schema.ts",
     "./config/plugin-auto-enable": null,
     "./runtime": null,
@@ -260,6 +267,7 @@
     "@elizaos/plugin-native-contacts": "workspace:*",
     "@elizaos/plugin-native-phone": "workspace:*",
     "@elizaos/plugin-native-wifi": "workspace:*",
+    "@elizaos/acp": "workspace:*",
     "@elizaos/core": "workspace:*",
     "@elizaos/plugin-agent-orchestrator": "workspace:*",
     "@elizaos/plugin-anthropic": "workspace:*",

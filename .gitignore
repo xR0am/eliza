@@ -628,6 +628,8 @@ docs/*
 !docs/automation-glossary.md
 !docs/design/
 !docs/design/**
+!docs/integrations/
+!docs/integrations/**
 !docs/tee-architecture-implementation-plan.md
 !docs/security/
 !docs/security/**

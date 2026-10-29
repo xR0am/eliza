@@ -1,0 +1,52 @@
+{
+  "name": "@elizaos/acp",
+  "version": "2.0.12-beta.0",
+  "description": "stdio Agent Client Protocol (ACP v2) server for Buzz and other harnesses.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "eliza-acp": "./src/bin.ts"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "eliza-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc6 --noCheck -p tsconfig.emit.json && node ../scripts/rewrite-dist-relative-imports-node-esm.ts packages/acp",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node ../scripts/run-vitest.ts run",
+    "lint:check": "bunx @biomejs/biome check src test",
+    "lint": "bunx @biomejs/biome check --write src test",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@elizaos/agent": "workspace:*",
+    "@elizaos/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "elizaos": {
+    "scripts": {
+      "buildOnInstall": {},
+      "testLanes": [
+        "server"
+      ]
+    }
+  }
+}

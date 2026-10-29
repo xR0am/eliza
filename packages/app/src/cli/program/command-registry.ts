@@ -1,10 +1,11 @@
 /**
  * Registers every top-level `eliza` CLI command onto the Commander program —
- * start, benchmark, capability-router, setup, doctor, db, configure, config,
+ * start, acp, benchmark, capability-router, setup, doctor, db, configure, config,
  * dashboard, update, auth, and models. Commands are registered synchronously;
  * actions own any lazy runtime imports.
  */
 import type { Command } from "commander";
+import { registerAcpCommand } from "./register.acp";
 import { registerAuthCommand } from "./register.auth";
 import { registerAuthAdoptCodexSubcommand } from "./register.auth.adopt-codex";
 import { registerBenchmarkCommand } from "./register.benchmark";
@@ -21,6 +22,7 @@ import { registerUpdateCommand } from "./register.update";
 
 export function registerProgramCommands(program: Command) {
   registerStartCommand(program);
+  registerAcpCommand(program);
   registerBenchmarkCommand(program);
   registerCapabilityRouterCommand(program);
   registerSetupCommand(program);

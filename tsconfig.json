@@ -20,6 +20,8 @@
     "jsx": "react-jsx",
     "paths": {
       "@elizaos/ui/*": ["./packages/ui/src/*"],
+      "@elizaos/acp": ["./packages/acp/src/index.ts"],
+      "@elizaos/acp/*": ["./packages/acp/src/*"],
       "@elizaos/agent/*": ["./packages/agent/src/*"],
       "@elizaos/app": ["./packages/app/src/index.ts"],
       "@elizaos/app/*": ["./packages/app/src/*"],
